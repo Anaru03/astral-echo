@@ -1,5 +1,4 @@
 use engine::{EntityId, Vec3};
-
 use crate::types::ItemId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
