@@ -12,7 +12,7 @@ pub struct ObjectiveId(pub u32);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ResourceId(pub u32);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ItemId(pub u32);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

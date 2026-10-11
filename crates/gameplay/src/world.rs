@@ -2,6 +2,9 @@ use engine::{EntityId, EntityRegistry, GameTime};
 use std::collections::BTreeMap;
 
 use crate::{
+    collectible::{Collectible, CollectibleError, ItemDefinition, ItemDefinitionError},
+    combat::{Combatant, EnemyConfiguration},
+    components::{Inventory, InventoryError},
     door::{Door, DoorAccessRequirement},
     electrical::{ElectricalPanel, ElectricalPanelConfiguration, ElectricalPanelRegistrationError},
     events::EventLog,
@@ -13,6 +16,7 @@ use crate::{
         TravelState,
     },
     player::Player,
+    resources::{FuelError, FuelTank, ShipResources},
     station::{Station, StationType},
     types::{GameplayState, SimulationPhase},
 };
@@ -27,6 +31,11 @@ pub struct GameplayWorld {
     electrical_panels: BTreeMap<EntityId, ElectricalPanel>,
     life_support_panels: BTreeMap<EntityId, LifeSupportPanel>,
     navigation: NavigationState,
+    ship_resources: BTreeMap<EntityId, ShipResources>,
+    combatants: BTreeMap<EntityId, Combatant>,
+    inventories: BTreeMap<EntityId, Inventory>,
+    item_definitions: BTreeMap<crate::types::ItemId, ItemDefinition>,
+    collectibles: BTreeMap<EntityId, Collectible>,
     events: EventLog,
 }
 
@@ -54,6 +63,53 @@ impl GameplayWorld {
     }
     pub fn players(&self) -> impl Iterator<Item = &Player> {
         self.players.values()
+    }
+    pub fn combatant(&self, entity: EntityId) -> Option<&Combatant> {
+        self.combatants.get(&entity)
+    }
+    pub fn combatants(&self) -> impl Iterator<Item = &Combatant> {
+        self.combatants.values()
+    }
+    pub fn enemies(&self) -> impl Iterator<Item = &Combatant> {
+        self.combatants
+            .values()
+            .filter(|combatant| !combatant.is_player)
+    }
+    pub fn player_health(&self, entity: EntityId) -> Option<(u32, u32, bool)> {
+        let combatant = self.combatant(entity)?;
+        combatant.is_player.then_some((
+            combatant.current_health,
+            combatant.maximum_health,
+            !combatant.is_defeated(),
+        ))
+    }
+    pub fn inventory(&self, player: EntityId) -> Option<&Inventory> {
+        self.inventories.get(&player)
+    }
+    pub fn item_definition(&self, item: crate::types::ItemId) -> Option<&ItemDefinition> {
+        self.item_definitions.get(&item)
+    }
+    pub fn collectible(&self, entity: EntityId) -> Option<&Collectible> {
+        self.collectibles.get(&entity)
+    }
+    pub fn collectibles(&self) -> impl Iterator<Item = &Collectible> {
+        self.collectibles.values()
+    }
+    pub fn can_player_collect(&self, player: EntityId, collectible: EntityId, amount: u32) -> bool {
+        let Some(player_state) = self.players.get(&player) else {
+            return false;
+        };
+        let Some(item) = self.collectibles.get(&collectible) else {
+            return false;
+        };
+        player_state.is_active
+            && item.active
+            && amount > 0
+            && amount <= item.amount
+            && self
+                .inventories
+                .get(&player)
+                .is_some_and(|inventory| inventory.can_add(amount))
     }
     pub fn interactable(&self, entity: EntityId) -> Option<&Interactable> {
         self.interactables.get(&entity)
@@ -112,6 +168,49 @@ impl GameplayWorld {
         destination: Destination,
     ) -> Result<(), NavigationRegistrationError> {
         self.navigation.register_destination(destination)
+    }
+    pub fn ship_resources(&self, ship: EntityId) -> Option<ShipResources> {
+        self.ship_resources.get(&ship).copied()
+    }
+    pub fn ship_fuel(&self, ship: EntityId) -> Option<FuelTank> {
+        self.ship_resources
+            .get(&ship)
+            .map(|resources| resources.fuel())
+    }
+    pub fn destination_fuel_cost(&self, destination: DestinationId) -> Option<u32> {
+        self.navigation
+            .destination(destination)
+            .map(|destination| destination.fuel_cost)
+    }
+    pub fn can_afford_destination(&self, destination: DestinationId) -> Option<bool> {
+        let ship = self.navigation.ship_id()?;
+        let fuel = self.ship_fuel(ship)?;
+        Some(
+            self.destination_fuel_cost(destination)
+                .is_some_and(|cost| fuel.can_consume(cost)),
+        )
+    }
+    pub fn initialize_ship_resources(
+        &mut self,
+        ship: EntityId,
+        capacity: u32,
+        initial_fuel: u32,
+    ) -> Result<(), FuelError> {
+        if self.ship_resources.contains_key(&ship) {
+            return Err(FuelError::AlreadyInitialized);
+        }
+        if !self.entities.contains(ship) {
+            return Err(FuelError::ShipNotFound);
+        }
+        let resources = ShipResources::new(ship, capacity, initial_fuel)?;
+        self.ship_resources.insert(ship, resources);
+        self.events
+            .push(crate::events::GameplayEvent::ShipResourcesInitialized {
+                ship,
+                fuel: initial_fuel,
+                capacity,
+            });
+        Ok(())
     }
     pub fn mission(&self, mission: crate::types::MissionId) -> Option<&Mission> {
         self.missions.get(&mission)
@@ -342,6 +441,7 @@ impl GameplayWorld {
         let entity = self.entities.create();
         let player = Player::new(entity);
         self.players.insert(entity, player);
+        self.combatants.insert(entity, Combatant::player(entity));
         self.events
             .push(crate::events::GameplayEvent::PlayerCreated {
                 player: player.id(),
@@ -349,12 +449,75 @@ impl GameplayWorld {
             });
         entity
     }
+    pub fn initialize_inventory(
+        &mut self,
+        player: EntityId,
+        capacity: u32,
+    ) -> Result<(), InventoryError> {
+        if !self.players.contains_key(&player) {
+            return Err(InventoryError::PlayerNotFound);
+        }
+        if self.inventories.contains_key(&player) {
+            return Err(InventoryError::AlreadyInitialized);
+        }
+        self.inventories.insert(player, Inventory::new(capacity)?);
+        self.events
+            .push(crate::events::GameplayEvent::InventoryInitialized { player, capacity });
+        Ok(())
+    }
+    pub fn register_item_definition(
+        &mut self,
+        definition: ItemDefinition,
+    ) -> Result<(), ItemDefinitionError> {
+        definition.validate()?;
+        if self.item_definitions.contains_key(&definition.id) {
+            return Err(ItemDefinitionError::DuplicateItem);
+        }
+        self.item_definitions.insert(definition.id, definition);
+        Ok(())
+    }
+    pub fn create_collectible(
+        &mut self,
+        item: crate::types::ItemId,
+        amount: u32,
+        position: engine::Vec3,
+        interaction_range: f32,
+    ) -> Result<EntityId, CollectibleError> {
+        let Some(definition) = self.item_definitions.get(&item) else {
+            return Err(CollectibleError::ItemNotFound);
+        };
+        if amount > definition.max_stack {
+            return Err(CollectibleError::InvalidAmount);
+        }
+        let entity = self.entities.create();
+        let collectible = Collectible {
+            entity,
+            item,
+            amount,
+            position,
+            interaction_range,
+            active: true,
+        };
+        if let Err(error) = collectible.validate() {
+            self.entities.deactivate(entity);
+            return Err(error);
+        }
+        self.collectibles.insert(entity, collectible);
+        Ok(entity)
+    }
     pub fn deactivate_entity(&mut self, entity: EntityId) -> bool {
         let deactivated = self.entities.deactivate(entity);
         if deactivated {
             self.interactables.remove(&entity);
             self.electrical_panels.remove(&entity);
             self.life_support_panels.remove(&entity);
+            self.ship_resources.remove(&entity);
+            if let Some(combatant) = self.combatants.get_mut(&entity) {
+                combatant.active = false;
+            }
+            if let Some(collectible) = self.collectibles.get_mut(&entity) {
+                collectible.active = false;
+            }
             if let Some(player) = self.players.get_mut(&entity) {
                 player.is_active = false;
                 self.events
@@ -381,6 +544,25 @@ impl GameplayWorld {
     pub(crate) fn player_mut(&mut self, entity: EntityId) -> Option<&mut Player> {
         self.players.get_mut(&entity)
     }
+    pub(crate) fn combatant_mut(&mut self, entity: EntityId) -> Option<&mut Combatant> {
+        self.combatants.get_mut(&entity)
+    }
+    pub(crate) fn inventory_mut(&mut self, player: EntityId) -> Option<&mut Inventory> {
+        self.inventories.get_mut(&player)
+    }
+    pub(crate) fn collectible_mut(&mut self, entity: EntityId) -> Option<&mut Collectible> {
+        self.collectibles.get_mut(&entity)
+    }
+    pub(crate) fn register_enemy(
+        &mut self,
+        configuration: EnemyConfiguration,
+    ) -> Result<EntityId, crate::combat::CombatConfigurationError> {
+        configuration.validate()?;
+        let entity = self.entities.create();
+        self.combatants
+            .insert(entity, Combatant::enemy(entity, configuration));
+        Ok(entity)
+    }
     pub(crate) fn interactable_mut(&mut self, entity: EntityId) -> Option<&mut Interactable> {
         self.interactables.get_mut(&entity)
     }
@@ -398,6 +580,24 @@ impl GameplayWorld {
     }
     pub(crate) fn navigation_mut(&mut self) -> &mut NavigationState {
         &mut self.navigation
+    }
+    pub(crate) fn start_navigation_travel(
+        &mut self,
+        now: engine::Duration,
+    ) -> Result<
+        (DestinationId, engine::Duration, engine::Duration, u32, u32),
+        crate::navigation::NavigationStartError,
+    > {
+        let Some(ship) = self.navigation.ship_id() else {
+            return Err(crate::navigation::NavigationStartError::ShipNotFound);
+        };
+        let Some(resources) = self.ship_resources.get_mut(&ship) else {
+            return Err(crate::navigation::NavigationStartError::ResourcesNotInitialized);
+        };
+        self.navigation.start_travel(now, resources.fuel_mut())
+    }
+    pub(crate) fn ship_resources_mut(&mut self, ship: EntityId) -> Option<&mut ShipResources> {
+        self.ship_resources.get_mut(&ship)
     }
     pub(crate) fn set_interactable_enabled(&mut self, entity: EntityId, enabled: bool) -> bool {
         let Some(interactable) = self.interactables.get_mut(&entity) else {
