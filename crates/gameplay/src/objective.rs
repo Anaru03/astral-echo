@@ -56,6 +56,9 @@ pub enum ObjectiveTrigger {
     ShieldDisabled {
         enemy: Option<engine::EntityId>,
     },
+    ShieldDamaged {
+        enemy: Option<engine::EntityId>,
+    },
     ItemsCollected {
         item: ItemId,
         amount: u32,
@@ -96,6 +99,12 @@ pub enum ObjectiveTrigger {
     },
     KnowledgeStudiedCount {
         count: u32,
+    },
+    ShipDamagedByHazard {
+        hazard: Option<crate::hazard::HazardId>,
+    },
+    ShipRepaired {
+        ship: Option<engine::EntityId>,
     },
 }
 
@@ -153,6 +162,10 @@ impl ObjectiveTrigger {
             (
                 Self::ShieldDisabled { enemy: expected },
                 crate::events::GameplayEvent::ShieldDisabled { enemy, .. },
+            ) => expected.is_none_or(|value| value == *enemy),
+            (
+                Self::ShieldDamaged { enemy: expected },
+                crate::events::GameplayEvent::ShieldDamaged { enemy, .. },
             ) => expected.is_none_or(|value| value == *enemy),
             (
                 Self::ItemsCollected { item, .. },
@@ -215,6 +228,14 @@ impl ObjectiveTrigger {
                 Self::KnowledgeStudiedCount { .. },
                 crate::events::GameplayEvent::KnowledgeStudied { .. },
             ) => true,
+            (
+                Self::ShipDamagedByHazard { hazard: expected },
+                crate::events::GameplayEvent::ShipDamagedByHazard { hazard: actual, .. },
+            ) => expected.is_none_or(|value| value == *actual),
+            (
+                Self::ShipRepaired { ship: expected },
+                crate::events::GameplayEvent::ShipRepaired { ship: actual, .. },
+            ) => expected.is_none_or(|value| value == *actual),
             _ => self.matches_point_event(event),
         };
         if !matches {

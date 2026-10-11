@@ -1,5 +1,8 @@
+pub mod cooperacion;
 pub mod ecos_anomalia;
 pub mod el_despertar;
+pub mod la_defensa_imposible;
+pub mod tormenta_gravitacional;
 
 use engine::EntityId;
 use gameplay::types::MissionId;
@@ -142,6 +145,16 @@ impl ProjectEchoSession {
         world
             .register_mission(anomaly)
             .expect("La mision Ecos de la anomalia debe registrarse una sola vez");
+        let storm = tormenta_gravitacional::definition()
+            .expect("La mision Tormenta gravitacional debe tener una definicion valida");
+        world
+            .register_mission(storm)
+            .expect("La mision Tormenta gravitacional debe registrarse una sola vez");
+        let defense = la_defensa_imposible::definition()
+            .expect("La mision La defensa imposible debe tener una definicion valida");
+        world
+            .register_mission(defense)
+            .expect("La mision La defensa imposible debe registrarse una sola vez");
         let mut processor = GameplayProcessor::new();
         processor.add_system(PlayerSystem);
         processor.add_system(CombatSystem);

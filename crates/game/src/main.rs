@@ -1,8 +1,9 @@
 use engine::{Duration, Vec3};
 use game::{
-    ecos_anomalia, el_despertar, la_defensa_imposible, tormenta_gravitacional, ProjectEchoSession,
+    cooperacion, ecos_anomalia, el_despertar, la_defensa_imposible, tormenta_gravitacional,
+    ProjectEchoSession,
 };
-use gameplay::domains::{door::DoorState, mission::MissionState};
+use gameplay::domains::{door::DoorState, mission::MissionState, objective::ObjectiveState};
 use gameplay::{
     AttackType, BreakerId, BreakerState, CollectibleError, Destination, DestinationId,
     DestinationType, DiscoveryState, ElectricalBreakerConfiguration, ElectricalPanelConfiguration,
@@ -1553,6 +1554,331 @@ fn run_cooperative_combat_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_cooperative_progression_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player_a = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let player_b = session.world_mut().create_player();
+    session
+        .world_mut()
+        .initialize_inventory(player_b, 20)
+        .map_err(|error| format!("inicializar inventario del jugador B: {error:?}"))?;
+    if player_a == player_b
+        || !session.world().entities().contains(player_a)
+        || !session.world().entities().contains(player_b)
+        || !session
+            .world()
+            .player(player_a)
+            .is_some_and(|player| player.is_active)
+        || !session
+            .world()
+            .player(player_b)
+            .is_some_and(|player| player.is_active)
+    {
+        return Err("los jugadores de la progresion no son entidades activas distintas".to_owned());
+    }
+    session
+        .register_mission(
+            cooperacion::definition()
+                .map_err(|error| format!("definir mision cooperativa: {error:?}"))?,
+        )
+        .map_err(|error| format!("registrar mision cooperativa: {error:?}"))?;
+    session
+        .register_destination(Destination {
+            id: cooperacion::SIGNAL_DESTINATION,
+            destination_type: DestinationType::SpacePoint,
+            position: Vec3::ZERO,
+            travel_duration: Duration(100),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Unknown,
+        })
+        .map_err(|error| format!("registrar senal cooperativa: {error:?}"))?;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estacion cooperativa: {error:?}"))?;
+    let objective_states = |session: &ProjectEchoSession| {
+        session
+            .world()
+            .mission(cooperacion::PROGRESION_COOPERATIVA)
+            .and_then(|mission| {
+                Some((
+                    mission
+                        .objectives()
+                        .iter()
+                        .find(|objective| objective.id == cooperacion::IDENTIFICAR_SENAL)?
+                        .state(),
+                    mission
+                        .objectives()
+                        .iter()
+                        .find(|objective| objective.id == cooperacion::DERROTAR_AMENAZA)?
+                        .state(),
+                    mission
+                        .objectives()
+                        .iter()
+                        .find(|objective| objective.id == cooperacion::RECUPERAR_RECOMPENSA)?
+                        .state(),
+                ))
+            })
+    };
+
+    let initial = session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .ok_or_else(|| "no existe la mision cooperativa".to_owned())?;
+    if initial.state != MissionState::Locked
+        || initial.required_completed != 0
+        || initial.required_total != 3
+    {
+        return Err(format!(
+            "estado inicial cooperativo inesperado: {initial:?}"
+        ));
+    }
+    run_command(
+        &mut session,
+        "desbloquear mision cooperativa",
+        GameplayCommand::UnlockMission {
+            mission: cooperacion::PROGRESION_COOPERATIVA,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar mision cooperativa",
+        GameplayCommand::StartMission {
+            mission: cooperacion::PROGRESION_COOPERATIVA,
+        },
+    )?;
+    let active = session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .ok_or_else(|| "se perdio la mision cooperativa al iniciarla".to_owned())?;
+    if active.state != MissionState::Active
+        || active.required_completed != 0
+        || objective_states(&session)
+            != Some((
+                ObjectiveState::Available,
+                ObjectiveState::Locked,
+                ObjectiveState::Locked,
+            ))
+    {
+        return Err(format!(
+            "la mision cooperativa no inicio correctamente: {active:?}"
+        ));
+    }
+
+    run_command(
+        &mut session,
+        "ocupar estacion con jugador A",
+        GameplayCommand::Interact {
+            player: player_a,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "detectar senal con jugador A",
+        GameplayCommand::ScanSignals {
+            player: player_a,
+            ship,
+        },
+    )?;
+    let after_detection = session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .ok_or_else(|| "se perdio el progreso tras detectar la senal".to_owned())?;
+    if after_detection.state != MissionState::Active
+        || after_detection.required_completed != 0
+        || session
+            .world()
+            .navigation()
+            .signal_knowledge(cooperacion::SIGNAL_DESTINATION)
+            != SignalKnowledge::Detected
+    {
+        return Err("la deteccion avanzo indebidamente la mision cooperativa".to_owned());
+    }
+    run_command(
+        &mut session,
+        "esperar recarga cooperativa",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "identificar senal con jugador A",
+        GameplayCommand::ScanSignals {
+            player: player_a,
+            ship,
+        },
+    )?;
+    let after_identification = session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .ok_or_else(|| "se perdio el progreso tras identificar la senal".to_owned())?;
+    if after_identification.state != MissionState::Active
+        || after_identification.required_completed != 1
+        || objective_states(&session)
+            != Some((
+                ObjectiveState::Completed,
+                ObjectiveState::Available,
+                ObjectiveState::Locked,
+            ))
+        || session
+            .world()
+            .navigation()
+            .signal_knowledge(cooperacion::SIGNAL_DESTINATION)
+            != SignalKnowledge::Identified
+    {
+        return Err("el objetivo de identificacion no avanzo con el jugador A".to_owned());
+    }
+
+    let ammunition = gameplay::types::ItemId(2);
+    run_command(
+        &mut session,
+        "dar municion al jugador B",
+        GameplayCommand::AddInventoryItem {
+            player: player_b,
+            item: ammunition,
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "equipar arma del jugador B",
+        GameplayCommand::EquipPlayerWeapon {
+            player: player_b,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                60,
+                20,
+                Duration(1_000),
+                WeaponAmmunition {
+                    item: ammunition,
+                    amount_per_attack: 1,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "crear amenaza cooperativa",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let enemy = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "la amenaza cooperativa no publico su evento".to_owned())?;
+    run_command(
+        &mut session,
+        "derrotar amenaza con jugador B",
+        GameplayCommand::AttackEnemy {
+            player: player_b,
+            enemy,
+        },
+    )?;
+    let defeat_event = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyDefeated {
+                enemy: defeated,
+                archetype,
+            } if *defeated == enemy => Some(*archetype),
+            _ => None,
+        });
+    let damage_by_b = session.world().events().iter().any(|event| {
+        matches!(
+            event,
+            GameplayEvent::CombatDamageApplied {
+                attacker,
+                target,
+                amount: 60,
+                remaining_health: 0,
+            } if *attacker == player_b && *target == enemy
+        )
+    });
+    let after_defeat = session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .ok_or_else(|| "se perdio el progreso tras la derrota cooperativa".to_owned())?;
+    if defeat_event != Some(EnemyArchetype::Shooter)
+        || !damage_by_b
+        || after_defeat.state != MissionState::Active
+        || after_defeat.required_completed != 2
+        || objective_states(&session)
+            != Some((
+                ObjectiveState::Completed,
+                ObjectiveState::Completed,
+                ObjectiveState::Available,
+            ))
+        || session
+            .world()
+            .combatant(enemy)
+            .is_none_or(|combatant| combatant.active || combatant.current_health != 0)
+    {
+        return Err("el jugador B no completo el segundo objetivo cooperativo".to_owned());
+    }
+
+    let reward = session
+        .world()
+        .collectibles()
+        .find(|collectible| collectible.item == gameplay::types::ItemId(3))
+        .copied()
+        .ok_or_else(|| "la amenaza no genero la recompensa cooperativa".to_owned())?;
+    let reward_before = session
+        .world()
+        .inventory(player_a)
+        .ok_or_else(|| "no existe el inventario del jugador A".to_owned())?
+        .quantity(gameplay::types::ItemId(3));
+    run_command(
+        &mut session,
+        "recoger recompensa con jugador A",
+        GameplayCommand::CollectItem {
+            player: player_a,
+            collectible: reward.entity,
+            amount: 1,
+        },
+    )?;
+    let final_progress = session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .ok_or_else(|| "no existe el progreso final cooperativo".to_owned())?;
+    let reward_after = session
+        .world()
+        .inventory(player_a)
+        .ok_or_else(|| "desaparecio el inventario final del jugador A".to_owned())?
+        .quantity(gameplay::types::ItemId(3));
+    if final_progress.state != MissionState::Completed
+        || final_progress.required_completed != final_progress.required_total
+        || objective_states(&session)
+            != Some((
+                ObjectiveState::Completed,
+                ObjectiveState::Completed,
+                ObjectiveState::Completed,
+            ))
+        || reward_after != reward_before + 1
+        || session
+            .world()
+            .collectible(reward.entity)
+            .is_none_or(|collectible| collectible.active || collectible.amount != 0)
+    {
+        return Err(format!(
+            "la mision cooperativa no completo su cadena: {final_progress:?}, recompensa_antes={reward_before}, despues={reward_after}"
+        ));
+    }
+    println!(
+        "PROGRESION COOPERATIVA COMPLETADA: mision={:?}, jugador_A={}, jugador_B={}, enemigo={}, progreso={}/{}, recompensa_recogida=1",
+        cooperacion::PROGRESION_COOPERATIVA,
+        player_a,
+        player_b,
+        enemy,
+        final_progress.required_completed,
+        final_progress.required_total
+    );
+    Ok(())
+}
+
 fn required_completed(session: &ProjectEchoSession) -> Result<MissionProgress, String> {
     let progress = session
         .mission_progress(el_despertar::EL_DESPERTAR)
@@ -1758,5 +2084,6 @@ fn run_scenario() -> Result<(), String> {
     run_shielded_enemy_scenario()?;
     run_cooperative_revival_scenario()?;
     run_cooperative_combat_scenario()?;
+    run_cooperative_progression_scenario()?;
     Ok(())
 }
