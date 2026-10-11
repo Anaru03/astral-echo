@@ -1,3 +1,4 @@
+pub mod ecos_anomalia;
 pub mod el_despertar;
 
 use engine::EntityId;
@@ -12,7 +13,8 @@ use gameplay::{
     GameplayWorld,
 };
 use gameplay::{
-    KnowledgeSystem, Mission, MissionProgress, MissionRegistrationError, MissionSystem,
+    HealingSystem, KnowledgeSystem, Mission, MissionProgress, MissionRegistrationError,
+    MissionSystem, RevivalSystem, RewardSystem,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,8 +65,62 @@ impl ProjectEchoSession {
                 100,
             ))
             .expect("la munición de energía debe registrarse una sola vez");
+        world
+            .register_item_definition(
+                gameplay::ItemDefinition::new(
+                    gameplay::types::ItemId(4),
+                    gameplay::ItemCategory::HealingConsumable,
+                    10,
+                )
+                .with_healing(gameplay::HealingEffect::new(25)),
+            )
+            .expect("el consumible curativo debe registrarse una sola vez");
+        world
+            .register_item_definition(
+                gameplay::ItemDefinition::new(
+                    gameplay::types::ItemId(5),
+                    gameplay::ItemCategory::RevivalConsumable,
+                    5,
+                )
+                .with_revival(gameplay::ReviveEffect::new(
+                    gameplay::types::ItemId(5),
+                    1,
+                    30,
+                    3,
+                )),
+            )
+            .expect("el consumible de reanimaciÃ³n debe registrarse una sola vez");
+        world
+            .register_enemy_reward(gameplay::EnemyReward::new(
+                gameplay::EnemyArchetype::Shielded,
+                vec![gameplay::RewardEntry {
+                    item: repair_configuration.material,
+                    amount: 1,
+                }],
+            ))
+            .expect("la recompensa del enemigo escudado debe ser vÃ¡lida");
+        world
+            .register_enemy_reward(gameplay::EnemyReward::new(
+                gameplay::EnemyArchetype::Shooter,
+                vec![gameplay::RewardEntry {
+                    item: gameplay::types::ItemId(3),
+                    amount: 1,
+                }],
+            ))
+            .expect("la recompensa del tirador debe ser vÃ¡lida");
+        world
+            .register_enemy_reward(gameplay::EnemyReward::new(
+                gameplay::EnemyArchetype::Charger,
+                vec![gameplay::RewardEntry {
+                    item: repair_configuration.material,
+                    amount: 2,
+                }],
+            ))
+            .expect("la recompensa del embestidor debe ser vÃ¡lida");
         let first_ship = world.create_entity();
-        world.initialize_navigation_ship(first_ship);
+        world
+            .initialize_navigation_ship(first_ship)
+            .expect("la nave inicial debe registrarse una sola vez");
         world
             .initialize_ship_integrity(
                 first_ship,
@@ -81,10 +137,18 @@ impl ProjectEchoSession {
         world
             .register_mission(awakening)
             .expect("La misión El despertar debe registrarse una sola vez");
+        let anomaly = ecos_anomalia::definition()
+            .expect("La mision Ecos de la anomalia debe tener una definicion valida");
+        world
+            .register_mission(anomaly)
+            .expect("La mision Ecos de la anomalia debe registrarse una sola vez");
         let mut processor = GameplayProcessor::new();
         processor.add_system(PlayerSystem);
         processor.add_system(CombatSystem);
+        processor.add_system(RewardSystem::new());
         processor.add_system(InventorySystem);
+        processor.add_system(HealingSystem);
+        processor.add_system(RevivalSystem);
         processor.add_system(HullIntegritySystem);
         processor.add_system(PilotSystem::new());
         processor.add_system(ScannerSystem);
