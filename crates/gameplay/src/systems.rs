@@ -17,6 +17,8 @@ pub trait GameplaySystem {
     }
 
     fn observe_events(&mut self, _world: &mut GameplayWorld) {}
+
+    fn reset_event_cursor(&mut self) {}
 }
 
 pub struct TimeSystem;
@@ -193,11 +195,32 @@ impl PlayerSystem {
             return CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound);
         };
         if active {
-            if !world.entities().contains(entity) || player.is_active {
+            if player.is_active && world.entities().contains(entity) {
                 return CommandResult::success(false);
+            }
+            let Some(combatant) = world.combatant(entity).copied() else {
+                return CommandResult::rejected(crate::commands::CommandRejection::PlayerInactive);
+            };
+            if !combatant.is_player || combatant.is_defeated() || combatant.maximum_health == 0 {
+                return CommandResult::rejected(
+                    crate::commands::CommandRejection::CombatantDefeated,
+                );
+            }
+            if combatant.current_health > combatant.maximum_health {
+                return CommandResult::invalid(
+                    crate::commands::CommandInvalidity::InvalidCombatConfiguration,
+                );
+            }
+            if !world.activate_entity(entity) {
+                return CommandResult::invalid(
+                    crate::commands::CommandInvalidity::InvalidCombatConfiguration,
+                );
             }
             if let Some(updated) = world.player_mut(entity) {
                 updated.is_active = true;
+            }
+            if let Some(updated) = world.combatant_mut(entity) {
+                updated.active = true;
             }
             world.publish(crate::events::GameplayEvent::PlayerActivated {
                 player: player.id(),
@@ -207,12 +230,7 @@ impl PlayerSystem {
             if !world.entities().contains(entity) || !player.is_active {
                 return CommandResult::success(false);
             }
-            if let Some(updated) = world.player_mut(entity) {
-                updated.is_active = false;
-            }
-            world.publish(crate::events::GameplayEvent::PlayerDeactivated {
-                player: player.id(),
-            });
+            world.deactivate_entity(entity);
             CommandResult::success(true)
         }
     }
@@ -783,6 +801,765 @@ pub struct NavigationSystem {
     event_cursor: usize,
 }
 
+pub struct PilotSystem {
+    event_cursor: usize,
+}
+
+impl PilotSystem {
+    pub const fn new() -> Self {
+        Self { event_cursor: 0 }
+    }
+
+    fn configure(
+        &self,
+        world: &mut GameplayWorld,
+        ship: engine::EntityId,
+        parameters: crate::navigation::ShipMovementParameters,
+    ) -> CommandResult {
+        if world.phase() != crate::types::SimulationPhase::Running {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SimulationNotRunning,
+            );
+        }
+        if world.navigation().ship_id() != Some(ship) {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        }
+        if !world.entities().contains(ship) {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        }
+        match world.navigation_mut().configure_movement(parameters) {
+            Ok(()) => CommandResult::success(true),
+            Err(_) => CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidShipMovementConfiguration,
+            ),
+        }
+    }
+
+    fn control_access(
+        &self,
+        world: &GameplayWorld,
+        player: engine::EntityId,
+        station: engine::EntityId,
+    ) -> Result<(), CommandResult> {
+        validate_pilot_access(world, player, station)
+    }
+
+    fn set_active(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        station: engine::EntityId,
+        active: bool,
+    ) -> CommandResult {
+        if let Err(result) = self.control_access(world, player, station) {
+            return result;
+        }
+        let Some(ship) = world.navigation().ship_id() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        };
+        if world.navigation_mut().set_control_active(active) {
+            world.publish(crate::events::GameplayEvent::ShipControlChanged { ship, active });
+            CommandResult::success(true)
+        } else {
+            CommandResult::success(false)
+        }
+    }
+
+    fn accelerate(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        station: engine::EntityId,
+        input: engine::Vec3,
+    ) -> CommandResult {
+        if let Err(result) = self.control_access(world, player, station) {
+            return result;
+        }
+        if !world.navigation().control_active() {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipControlInactive);
+        }
+        match world.navigation_mut().set_acceleration_input(input) {
+            Ok(changed) => CommandResult::success(changed),
+            Err(_) => CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidShipMovementConfiguration,
+            ),
+        }
+    }
+
+    fn rotate(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        station: engine::EntityId,
+        yaw_input: f32,
+        pitch_input: f32,
+        delta: engine::Duration,
+    ) -> CommandResult {
+        if let Err(result) = self.control_access(world, player, station) {
+            return result;
+        }
+        if !world.navigation().control_active() {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipControlInactive);
+        }
+        let Some(ship) = world.navigation().ship_id() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        };
+        match world.navigation_mut().rotate(yaw_input, pitch_input, delta) {
+            Ok(false) => CommandResult::success(false),
+            Ok(true) => {
+                let orientation = world.navigation().orientation();
+                world.publish(crate::events::GameplayEvent::ShipOrientationChanged {
+                    ship,
+                    yaw_degrees: orientation.yaw_degrees,
+                    pitch_degrees: orientation.pitch_degrees,
+                });
+                CommandResult::success(true)
+            }
+            Err(_) => CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidShipMovementConfiguration,
+            ),
+        }
+    }
+
+    fn brake(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        station: engine::EntityId,
+    ) -> CommandResult {
+        if let Err(result) = self.control_access(world, player, station) {
+            return result;
+        }
+        if !world.navigation().control_active() {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipControlInactive);
+        }
+        let Some(ship) = world.navigation().ship_id() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        };
+        if world.navigation_mut().brake() {
+            world.publish(crate::events::GameplayEvent::ShipBraked { ship });
+            CommandResult::success(true)
+        } else {
+            CommandResult::success(false)
+        }
+    }
+}
+
+impl Default for PilotSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GameplaySystem for PilotSystem {
+    fn process(
+        &mut self,
+        world: &mut GameplayWorld,
+        command: GameplayCommand,
+    ) -> Option<CommandResult> {
+        let result = match command {
+            GameplayCommand::ConfigureShipMovement { ship, parameters } => {
+                self.configure(world, ship, parameters)
+            }
+            GameplayCommand::AccelerateShip {
+                player,
+                pilot_station,
+                input,
+            } => self.accelerate(world, player, pilot_station, input),
+            GameplayCommand::RotateShip {
+                player,
+                pilot_station,
+                yaw_input,
+                pitch_input,
+                delta,
+            } => self.rotate(world, player, pilot_station, yaw_input, pitch_input, delta),
+            GameplayCommand::BrakeShip {
+                player,
+                pilot_station,
+            } => self.brake(world, player, pilot_station),
+            GameplayCommand::SetShipControlActive {
+                player,
+                pilot_station,
+                active,
+            } => self.set_active(world, player, pilot_station, active),
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    fn observes_events(&self) -> bool {
+        true
+    }
+
+    fn reset_event_cursor(&mut self) {
+        self.event_cursor = 0;
+    }
+
+    fn observe_events(&mut self, world: &mut GameplayWorld) {
+        let length = world.events().len();
+        if self.event_cursor > length {
+            self.event_cursor = 0;
+        }
+        let events: Vec<_> = world
+            .events()
+            .iter()
+            .skip(self.event_cursor)
+            .cloned()
+            .collect();
+        self.event_cursor = length;
+        for event in events {
+            let crate::events::GameplayEvent::TimeAdvanced { from, to } = event else {
+                continue;
+            };
+            let Some(ship) = world.navigation().ship_id() else {
+                continue;
+            };
+            if world.ship_is_destroyed(ship) == Some(true) {
+                continue;
+            }
+            if world.navigation().has_active_travel() {
+                continue;
+            }
+            let delta = engine::Duration(to.elapsed.0.saturating_sub(from.elapsed.0));
+            let Some((before, after, position_changed)) =
+                world.navigation_mut().advance_manual(delta)
+            else {
+                continue;
+            };
+            if before != after {
+                world.publish(crate::events::GameplayEvent::ShipVelocityChanged {
+                    ship,
+                    velocity: after,
+                });
+            }
+            if position_changed {
+                world.publish(crate::events::GameplayEvent::ShipPositionChanged {
+                    ship,
+                    position: world.navigation().current_position(),
+                });
+            }
+        }
+    }
+}
+
+pub struct ScannerSystem;
+
+impl GameplaySystem for ScannerSystem {
+    fn process(
+        &mut self,
+        world: &mut GameplayWorld,
+        command: GameplayCommand,
+    ) -> Option<CommandResult> {
+        let result = match command {
+            GameplayCommand::ConfigureSignalScanner {
+                ship,
+                range,
+                cooldown,
+            } => self.configure(world, ship, range, cooldown),
+            GameplayCommand::SetSignalScannerEnabled { ship, enabled } => {
+                self.set_enabled(world, ship, enabled)
+            }
+            GameplayCommand::ScanSignals { player, ship } => self.scan(world, player, ship),
+            _ => return None,
+        };
+        Some(result)
+    }
+}
+
+impl ScannerSystem {
+    fn validate_ship(
+        &self,
+        world: &GameplayWorld,
+        ship: engine::EntityId,
+    ) -> Result<(), CommandResult> {
+        if world.navigation().ship_id() != Some(ship) || !world.entities().contains(ship) {
+            return Err(CommandResult::rejected(
+                crate::commands::CommandRejection::ScannerNotFound,
+            ));
+        }
+        Ok(())
+    }
+
+    fn configure(
+        &self,
+        world: &mut GameplayWorld,
+        ship: engine::EntityId,
+        range: f32,
+        cooldown: engine::Duration,
+    ) -> CommandResult {
+        if world.phase() != crate::types::SimulationPhase::Running {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SimulationNotRunning,
+            );
+        }
+        if let Err(result) = self.validate_ship(world, ship) {
+            return result;
+        }
+        match world.navigation_mut().configure_scanner(range, cooldown) {
+            Ok(()) => CommandResult::success(true),
+            Err(_) => CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidScannerConfiguration,
+            ),
+        }
+    }
+
+    fn set_enabled(
+        &self,
+        world: &mut GameplayWorld,
+        ship: engine::EntityId,
+        enabled: bool,
+    ) -> CommandResult {
+        if world.phase() != crate::types::SimulationPhase::Running {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SimulationNotRunning,
+            );
+        }
+        if let Err(result) = self.validate_ship(world, ship) {
+            return result;
+        }
+        CommandResult::success(world.navigation_mut().set_scanner_enabled(enabled))
+    }
+
+    fn scan(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        ship: engine::EntityId,
+    ) -> CommandResult {
+        if world.phase() != crate::types::SimulationPhase::Running {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SimulationNotRunning,
+            );
+        }
+        let Some(player_state) = world.player(player) else {
+            return CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound);
+        };
+        if !world.entities().contains(player) || !player_state.is_active {
+            return CommandResult::rejected(crate::commands::CommandRejection::PlayerInactive);
+        }
+        if let Err(result) = self.validate_ship(world, ship) {
+            return result;
+        }
+        if world.ship_is_destroyed(ship) == Some(true) {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipDestroyed);
+        }
+        let now = world.time().elapsed;
+        let transitions = match world.navigation_mut().scan_signals(now) {
+            Ok(transitions) => transitions,
+            Err(crate::navigation::ScannerError::Disabled) => {
+                return CommandResult::rejected(crate::commands::CommandRejection::ScannerDisabled)
+            }
+            Err(crate::navigation::ScannerError::Cooldown) => {
+                return CommandResult::rejected(crate::commands::CommandRejection::ScannerCooldown)
+            }
+            Err(_) => {
+                return CommandResult::invalid(
+                    crate::commands::CommandInvalidity::InvalidScannerConfiguration,
+                )
+            }
+        };
+        let detected = world.navigation().last_scan_results().len() as u32;
+        world.publish(crate::events::GameplayEvent::SignalScanCompleted {
+            ship,
+            detected,
+            at: now,
+        });
+        for (destination, previous, next, distance) in transitions {
+            if previous == crate::navigation::SignalKnowledge::Unknown
+                && next >= crate::navigation::SignalKnowledge::Detected
+            {
+                world.publish(crate::events::GameplayEvent::SignalDetected {
+                    ship,
+                    destination,
+                    distance,
+                });
+            }
+            if previous < crate::navigation::SignalKnowledge::Identified
+                && next >= crate::navigation::SignalKnowledge::Identified
+            {
+                world.publish(crate::events::GameplayEvent::DestinationIdentified {
+                    ship,
+                    destination,
+                });
+            }
+        }
+        CommandResult::success(true)
+    }
+}
+
+pub struct EnvironmentalHazardSystem {
+    event_cursor: usize,
+}
+
+impl EnvironmentalHazardSystem {
+    pub const fn new() -> Self {
+        Self { event_cursor: 0 }
+    }
+
+    fn apply_time_advance(
+        &mut self,
+        world: &mut GameplayWorld,
+        from: engine::GameTime,
+        to: engine::GameTime,
+    ) {
+        let Some(ship) = world.navigation().ship_id() else {
+            return;
+        };
+        if !world.entities().contains(ship) || world.ship_is_destroyed(ship) == Some(true) {
+            return;
+        }
+        let delta = engine::Duration(to.elapsed.0.saturating_sub(from.elapsed.0));
+        if delta.0 == 0 {
+            return;
+        }
+        let hazard_ids: Vec<_> = world
+            .environmental_hazards()
+            .map(|hazard| hazard.id)
+            .collect();
+        let ship_position = world.navigation().current_position();
+        for hazard_id in hazard_ids {
+            if world.ship_is_destroyed(ship) == Some(true) {
+                break;
+            }
+            let Some(hazard) = world.environmental_hazard(hazard_id) else {
+                continue;
+            };
+            if !hazard.active {
+                if let Some(hazard_mut) = world.environmental_hazard_mut(hazard_id) {
+                    hazard_mut.reset_accumulated();
+                }
+                continue;
+            }
+            let inside = crate::hazard::distance_squared(ship_position, hazard.position)
+                .is_some_and(|distance| distance <= hazard.radius as f64 * hazard.radius as f64);
+            if !inside {
+                if let Some(hazard_mut) = world.environmental_hazard_mut(hazard_id) {
+                    hazard_mut.reset_accumulated();
+                }
+                continue;
+            }
+            let intervals = world
+                .environmental_hazard_mut(hazard_id)
+                .map_or(0, |hazard_mut| hazard_mut.advance_accumulated(delta));
+            if intervals == 0 {
+                continue;
+            }
+            let attempted_damage = hazard
+                .damage
+                .saturating_mul(intervals.min(u32::MAX as u64) as u32);
+            let Some(before) = world.ship_integrity(ship) else {
+                continue;
+            };
+            let Ok((remaining, _, _)) = world.apply_ship_damage(ship, attempted_damage) else {
+                continue;
+            };
+            world.publish(crate::events::GameplayEvent::ShipDamagedByHazard {
+                hazard: hazard.id,
+                hazard_type: hazard.hazard_type,
+                ship,
+                attempted_damage,
+                applied_damage: before.current().saturating_sub(remaining),
+                remaining_integrity: remaining,
+                intervals,
+            });
+        }
+    }
+}
+
+impl Default for EnvironmentalHazardSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GameplaySystem for EnvironmentalHazardSystem {
+    fn process(
+        &mut self,
+        world: &mut GameplayWorld,
+        command: GameplayCommand,
+    ) -> Option<CommandResult> {
+        match command {
+            GameplayCommand::RegisterEnvironmentalHazard { hazard } => {
+                if world.phase() != crate::types::SimulationPhase::Running {
+                    return Some(CommandResult::rejected(
+                        crate::commands::CommandRejection::SimulationNotRunning,
+                    ));
+                }
+                Some(match world.register_environmental_hazard(hazard) {
+                    Ok(()) => CommandResult::success(true),
+                    Err(crate::hazard::EnvironmentalHazardError::DuplicateId) => {
+                        CommandResult::rejected(
+                            crate::commands::CommandRejection::EnvironmentalHazardAlreadyRegistered,
+                        )
+                    }
+                    Err(_) => CommandResult::invalid(
+                        crate::commands::CommandInvalidity::InvalidEnvironmentalHazardConfiguration,
+                    ),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn observes_events(&self) -> bool {
+        true
+    }
+
+    fn reset_event_cursor(&mut self) {
+        self.event_cursor = 0;
+    }
+
+    fn observe_events(&mut self, world: &mut GameplayWorld) {
+        let length = world.events().len();
+        if self.event_cursor > length {
+            self.event_cursor = 0;
+        }
+        let events: Vec<_> = world
+            .events()
+            .iter()
+            .skip(self.event_cursor)
+            .cloned()
+            .collect();
+        self.event_cursor = length;
+        for event in events {
+            if let crate::events::GameplayEvent::TimeAdvanced { from, to } = event {
+                self.apply_time_advance(world, from, to);
+            }
+        }
+    }
+}
+
+pub struct HullIntegritySystem;
+
+impl GameplaySystem for HullIntegritySystem {
+    fn process(
+        &mut self,
+        world: &mut GameplayWorld,
+        command: GameplayCommand,
+    ) -> Option<CommandResult> {
+        let result = match command {
+            GameplayCommand::InitializeShipIntegrity {
+                ship,
+                maximum,
+                initial,
+                critical_threshold,
+            } => self.initialize(world, ship, maximum, initial, critical_threshold),
+            GameplayCommand::DamageShip { ship, amount } => self.damage(world, ship, amount),
+            GameplayCommand::RepairShip { .. } => CommandResult::rejected(
+                crate::commands::CommandRejection::RepairRequiresEngineeringStation,
+            ),
+            GameplayCommand::RepairShipAtStation {
+                player,
+                ship,
+                station,
+            } => self.repair_at_station(world, player, ship, station),
+            _ => return None,
+        };
+        Some(result)
+    }
+}
+
+impl HullIntegritySystem {
+    fn validate_ship(
+        &self,
+        world: &GameplayWorld,
+        ship: engine::EntityId,
+    ) -> Result<(), CommandResult> {
+        if world.navigation().ship_id() != Some(ship) || !world.entities().contains(ship) {
+            return Err(CommandResult::rejected(
+                crate::commands::CommandRejection::ShipNotFound,
+            ));
+        }
+        Ok(())
+    }
+
+    fn initialize(
+        &self,
+        world: &mut GameplayWorld,
+        ship: engine::EntityId,
+        maximum: u32,
+        initial: u32,
+        critical_threshold: u32,
+    ) -> CommandResult {
+        if world.phase() != crate::types::SimulationPhase::Running {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SimulationNotRunning,
+            );
+        }
+        if let Err(result) = self.validate_ship(world, ship) {
+            return result;
+        }
+        match world.initialize_ship_integrity(ship, maximum, initial, critical_threshold) {
+            Ok(()) => CommandResult::success(true),
+            Err(crate::integrity::IntegrityError::AlreadyInitialized) => CommandResult::rejected(
+                crate::commands::CommandRejection::ShipIntegrityAlreadyInitialized,
+            ),
+            Err(crate::integrity::IntegrityError::ShipNotFound) => {
+                CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound)
+            }
+            Err(_) => CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidShipIntegrityConfiguration,
+            ),
+        }
+    }
+
+    fn damage(
+        &self,
+        world: &mut GameplayWorld,
+        ship: engine::EntityId,
+        amount: u32,
+    ) -> CommandResult {
+        if world.phase() != crate::types::SimulationPhase::Running {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SimulationNotRunning,
+            );
+        }
+        if let Err(result) = self.validate_ship(world, ship) {
+            return result;
+        }
+        match world.apply_ship_damage(ship, amount) {
+            Ok(_) => CommandResult::success(true),
+            Err(crate::integrity::IntegrityError::InvalidAmount) => CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidShipIntegrityConfiguration,
+            ),
+            Err(crate::integrity::IntegrityError::Destroyed) => {
+                CommandResult::rejected(crate::commands::CommandRejection::ShipDestroyed)
+            }
+            Err(_) => CommandResult::rejected(
+                crate::commands::CommandRejection::ShipIntegrityNotInitialized,
+            ),
+        }
+    }
+
+    fn repair_at_station(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        ship: engine::EntityId,
+        station: engine::EntityId,
+    ) -> CommandResult {
+        if world.phase() != crate::types::SimulationPhase::Running {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SimulationNotRunning,
+            );
+        }
+        match world.repair_ship_at_station(player, ship, station) {
+            Ok(_) => CommandResult::success(true),
+            Err(crate::integrity::ShipRepairError::PlayerNotFound) => {
+                CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound)
+            }
+            Err(crate::integrity::ShipRepairError::PlayerInactive) => {
+                CommandResult::rejected(crate::commands::CommandRejection::PlayerInactive)
+            }
+            Err(crate::integrity::ShipRepairError::ShipNotFound) => {
+                CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound)
+            }
+            Err(crate::integrity::ShipRepairError::ShipIntegrityNotInitialized) => {
+                CommandResult::rejected(
+                    crate::commands::CommandRejection::ShipIntegrityNotInitialized,
+                )
+            }
+            Err(crate::integrity::ShipRepairError::ShipDestroyed) => {
+                CommandResult::rejected(crate::commands::CommandRejection::ShipDestroyed)
+            }
+            Err(crate::integrity::ShipRepairError::ShipAtMaximum) => {
+                CommandResult::rejected(crate::commands::CommandRejection::ShipAtMaximumIntegrity)
+            }
+            Err(crate::integrity::ShipRepairError::StationNotFound) => {
+                CommandResult::rejected(crate::commands::CommandRejection::RepairStationNotFound)
+            }
+            Err(crate::integrity::ShipRepairError::StationDisabled) => {
+                CommandResult::rejected(crate::commands::CommandRejection::RepairStationDisabled)
+            }
+            Err(crate::integrity::ShipRepairError::WrongStationType) => {
+                CommandResult::rejected(crate::commands::CommandRejection::RepairStationWrongType)
+            }
+            Err(crate::integrity::ShipRepairError::StationNotOccupiedByPlayer) => {
+                CommandResult::rejected(
+                    crate::commands::CommandRejection::RepairStationNotOccupiedByPlayer,
+                )
+            }
+            Err(crate::integrity::ShipRepairError::InventoryNotInitialized) => {
+                CommandResult::rejected(crate::commands::CommandRejection::InventoryNotInitialized)
+            }
+            Err(crate::integrity::ShipRepairError::RepairMaterialNotFound) => {
+                CommandResult::rejected(crate::commands::CommandRejection::RepairMaterialNotFound)
+            }
+            Err(crate::integrity::ShipRepairError::InsufficientMaterial) => {
+                CommandResult::rejected(
+                    crate::commands::CommandRejection::InventoryInsufficientQuantity,
+                )
+            }
+            Err(crate::integrity::ShipRepairError::InvalidConfiguration) => CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidShipIntegrityConfiguration,
+            ),
+        }
+    }
+}
+
+fn validate_pilot_access(
+    world: &GameplayWorld,
+    player_id: engine::EntityId,
+    station_id: engine::EntityId,
+) -> Result<(), CommandResult> {
+    if world.phase() != crate::types::SimulationPhase::Running {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::SimulationNotRunning,
+        ));
+    }
+    let Some(player) = world.player(player_id) else {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::PlayerNotFound,
+        ));
+    };
+    if !world.entities().contains(player_id) || !player.is_active {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::PlayerInactive,
+        ));
+    }
+    let Some(interactable) = world.interactable(station_id) else {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::PilotStationNotFound,
+        ));
+    };
+    if !interactable.enabled {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::PilotStationDisabled,
+        ));
+    }
+    let crate::interaction::InteractionBehavior::Station { station } = interactable.behavior else {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::IncompatibleInteraction,
+        ));
+    };
+    if station.station_type != crate::station::StationType::Piloting {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::IncompatibleInteraction,
+        ));
+    }
+    if station.occupant != Some(player_id) {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::PilotStationNotOccupiedByPlayer,
+        ));
+    }
+    let Some(ship) = world.navigation().ship_id() else {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::ShipNotFound,
+        ));
+    };
+    if !world.entities().contains(ship) {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::ShipNotFound,
+        ));
+    }
+    if world.ship_is_destroyed(ship) == Some(true) {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::ShipDestroyed,
+        ));
+    }
+    Ok(())
+}
+
 impl NavigationSystem {
     pub const fn new() -> Self {
         Self { event_cursor: 0 }
@@ -794,48 +1571,7 @@ impl NavigationSystem {
         player_id: engine::EntityId,
         station_id: engine::EntityId,
     ) -> Result<(), CommandResult> {
-        if world.phase() != crate::types::SimulationPhase::Running {
-            return Err(CommandResult::rejected(
-                crate::commands::CommandRejection::SimulationNotRunning,
-            ));
-        }
-        let Some(player) = world.player(player_id) else {
-            return Err(CommandResult::rejected(
-                crate::commands::CommandRejection::PlayerNotFound,
-            ));
-        };
-        if !world.entities().contains(player_id) || !player.is_active {
-            return Err(CommandResult::rejected(
-                crate::commands::CommandRejection::PlayerInactive,
-            ));
-        }
-        let Some(interactable) = world.interactable(station_id) else {
-            return Err(CommandResult::rejected(
-                crate::commands::CommandRejection::PilotStationNotFound,
-            ));
-        };
-        if !interactable.enabled {
-            return Err(CommandResult::rejected(
-                crate::commands::CommandRejection::PilotStationDisabled,
-            ));
-        }
-        let crate::interaction::InteractionBehavior::Station { station } = interactable.behavior
-        else {
-            return Err(CommandResult::rejected(
-                crate::commands::CommandRejection::IncompatibleInteraction,
-            ));
-        };
-        if station.station_type != crate::station::StationType::Piloting {
-            return Err(CommandResult::rejected(
-                crate::commands::CommandRejection::IncompatibleInteraction,
-            ));
-        }
-        if station.occupant != Some(player_id) {
-            return Err(CommandResult::rejected(
-                crate::commands::CommandRejection::PilotStationNotOccupiedByPlayer,
-            ));
-        }
-        Ok(())
+        validate_pilot_access(world, player_id, station_id)
     }
 
     fn select_destination(
@@ -1021,6 +1757,10 @@ impl GameplaySystem for NavigationSystem {
 
     fn observes_events(&self) -> bool {
         true
+    }
+
+    fn reset_event_cursor(&mut self) {
+        self.event_cursor = 0;
     }
 
     fn observe_events(&mut self, world: &mut GameplayWorld) {
@@ -1350,6 +2090,9 @@ impl GameplaySystem for CombatSystem {
             GameplayCommand::EnemyAttackPlayer { enemy, player } => {
                 Some(self.attack(world, enemy, player, false))
             }
+            GameplayCommand::EnemyAttackShip { enemy, ship } => {
+                Some(self.attack_ship(world, enemy, ship))
+            }
             GameplayCommand::SetEnemyActive { enemy, active } => {
                 Some(self.set_enemy_active(world, enemy, active))
             }
@@ -1359,6 +2102,27 @@ impl GameplaySystem for CombatSystem {
 }
 
 impl CombatSystem {
+    fn validate_weapon_ammunition(
+        &self,
+        world: &GameplayWorld,
+        weapon: crate::combat::WeaponConfiguration,
+    ) -> Result<(), CommandResult> {
+        let Some(ammunition) = weapon.ammunition else {
+            return Ok(());
+        };
+        let Some(definition) = world.item_definition(ammunition.item) else {
+            return Err(CommandResult::rejected(
+                crate::commands::CommandRejection::ItemDefinitionNotFound,
+            ));
+        };
+        if definition.category != crate::collectible::ItemCategory::CombatAmmunition {
+            return Err(CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidCombatConfiguration,
+            ));
+        }
+        Ok(())
+    }
+
     fn equip_player_weapon(
         &self,
         world: &mut GameplayWorld,
@@ -1375,6 +2139,9 @@ impl CombatSystem {
                 crate::commands::CommandInvalidity::InvalidCombatConfiguration,
             );
         }
+        if let Err(result) = self.validate_weapon_ammunition(world, weapon) {
+            return result;
+        }
         let Some(combatant) = world.combatant_mut(player) else {
             return CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound);
         };
@@ -1384,10 +2151,11 @@ impl CombatSystem {
         if combatant.is_defeated() {
             return CommandResult::rejected(crate::commands::CommandRejection::CombatantDefeated);
         }
-        if combatant.weapon == weapon {
+        if combatant.equipped_weapon == Some(weapon) {
             return CommandResult::success(false);
         }
         combatant.weapon = weapon;
+        combatant.equipped_weapon = Some(weapon);
         world.publish(crate::events::GameplayEvent::WeaponStateChanged {
             owner: player,
             state: crate::domains::weapon::WeaponState::Ready,
@@ -1447,11 +2215,52 @@ impl CombatSystem {
         if attacker_state.is_player != player_attack || target_state.is_player == player_attack {
             return CommandResult::rejected(crate::commands::CommandRejection::InvalidCombatTarget);
         }
+        let target_archetype = if target_state.is_player {
+            None
+        } else {
+            let Some(archetype) = target_state.archetype else {
+                return CommandResult::rejected(
+                    crate::commands::CommandRejection::InvalidCombatTarget,
+                );
+            };
+            Some(archetype)
+        };
         if !attacker_state.active || !target_state.active {
+            return CommandResult::rejected(crate::commands::CommandRejection::CombatantInactive);
+        }
+        if (attacker_state.is_player
+            && !world
+                .player(attacker)
+                .is_some_and(|player| world.entities().contains(attacker) && player.is_active))
+            || (target_state.is_player
+                && !world
+                    .player(target)
+                    .is_some_and(|player| world.entities().contains(target) && player.is_active))
+        {
             return CommandResult::rejected(crate::commands::CommandRejection::CombatantInactive);
         }
         if attacker_state.is_defeated() || target_state.is_defeated() {
             return CommandResult::rejected(crate::commands::CommandRejection::CombatantDefeated);
+        }
+        let weapon = if player_attack {
+            let Some(weapon) = attacker_state.equipped_weapon else {
+                return CommandResult::rejected(
+                    crate::commands::CommandRejection::WeaponUnavailable,
+                );
+            };
+            weapon
+        } else {
+            attacker_state.weapon
+        };
+        if weapon.validate().is_err() {
+            return CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidCombatConfiguration,
+            );
+        }
+        if player_attack {
+            if let Err(result) = self.validate_weapon_ammunition(world, weapon) {
+                return result;
+            }
         }
         let attacker_position = if attacker_state.is_player {
             let Some(player) = world.player(attacker) else {
@@ -1470,18 +2279,44 @@ impl CombatSystem {
             target_state.position
         };
         let distance = Vec3Distance::between(attacker_position, target_position);
-        if distance.is_none() || distance.unwrap_or(u32::MAX) > attacker_state.weapon.range {
+        if distance.is_none() || distance.unwrap_or(u32::MAX) > weapon.range {
             return CommandResult::rejected(crate::commands::CommandRejection::OutOfAttackRange);
         }
         let now = world.time().elapsed;
         if let Some(last) = attacker_state.last_attack_at {
-            if now.0 < last.0.saturating_add(attacker_state.weapon.cooldown.0) {
+            if now.0.saturating_sub(last.0) < weapon.cooldown.0 {
                 return CommandResult::rejected(crate::commands::CommandRejection::AttackCooldown);
             }
         }
 
-        let attack_type = attacker_state.weapon.attack_type;
-        let base_damage = attacker_state.weapon.damage;
+        let ammunition = if player_attack {
+            weapon.ammunition
+        } else {
+            None
+        };
+        if let Some(ammunition) = ammunition {
+            let Some(inventory) = world.inventory_mut(attacker) else {
+                return CommandResult::rejected(
+                    crate::commands::CommandRejection::InventoryNotInitialized,
+                );
+            };
+            if inventory.quantity(ammunition.item) < ammunition.amount_per_attack {
+                return CommandResult::rejected(
+                    crate::commands::CommandRejection::AmmunitionUnavailable,
+                );
+            }
+            if inventory
+                .try_remove(ammunition.item, ammunition.amount_per_attack)
+                .is_err()
+            {
+                return CommandResult::rejected(
+                    crate::commands::CommandRejection::AmmunitionUnavailable,
+                );
+            }
+        }
+
+        let attack_type = weapon.attack_type;
+        let base_damage = weapon.damage;
         let mut health_damage = base_damage;
         let mut shield_event = None;
         let mut shield_disabled = false;
@@ -1526,6 +2361,20 @@ impl CombatSystem {
             };
             attacker_mut.last_attack_at = Some(now);
         }
+        if let Some(ammunition) = ammunition {
+            world.publish(crate::events::GameplayEvent::ItemRemoved {
+                player: attacker,
+                item: ammunition.item,
+                amount: ammunition.amount_per_attack,
+            });
+            world.publish(crate::events::GameplayEvent::AmmunitionConsumed {
+                player: attacker,
+                item: ammunition.item,
+                amount: ammunition.amount_per_attack,
+                attack_type,
+                at: now,
+            });
+        }
         world.publish(crate::events::GameplayEvent::AttackExecuted {
             attacker,
             target,
@@ -1543,11 +2392,113 @@ impl CombatSystem {
                 target_mut.active = false;
             }
             if target_state.is_player {
+                world.deactivate_entity(target);
                 world.publish(crate::events::GameplayEvent::PlayerDefeated { player: target });
             } else {
-                world.publish(crate::events::GameplayEvent::EnemyDefeated { enemy: target });
+                world.publish(crate::events::GameplayEvent::EnemyDefeated {
+                    enemy: target,
+                    archetype: target_archetype.unwrap_or(crate::combat::EnemyArchetype::Shooter),
+                });
             }
         }
+        CommandResult::success(true)
+    }
+
+    fn attack_ship(
+        &self,
+        world: &mut GameplayWorld,
+        enemy: engine::EntityId,
+        ship: engine::EntityId,
+    ) -> CommandResult {
+        if world.phase() != crate::types::SimulationPhase::Running {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SimulationNotRunning,
+            );
+        }
+        let Some(attacker) = world.combatant(enemy).copied() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::EnemyNotFound);
+        };
+        if attacker.is_player {
+            return CommandResult::rejected(crate::commands::CommandRejection::InvalidCombatTarget);
+        }
+        if !attacker.active {
+            return CommandResult::rejected(crate::commands::CommandRejection::CombatantInactive);
+        }
+        if attacker.is_defeated() {
+            return CommandResult::rejected(crate::commands::CommandRejection::CombatantDefeated);
+        }
+        match attacker.archetype {
+            Some(crate::combat::EnemyArchetype::Shielded)
+            | Some(crate::combat::EnemyArchetype::Shooter)
+            | Some(crate::combat::EnemyArchetype::Charger) => {}
+            None => {
+                return CommandResult::rejected(
+                    crate::commands::CommandRejection::InvalidCombatTarget,
+                )
+            }
+        }
+        let Some(navigation_ship) = world.navigation().ship_id() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        };
+        if navigation_ship != ship || !world.entities().contains(ship) {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        }
+        if world.ship_is_destroyed(ship) == Some(true) {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipDestroyed);
+        }
+        let Some(distance) =
+            Vec3Distance::between(attacker.position, world.navigation().current_position())
+        else {
+            return CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidCombatConfiguration,
+            );
+        };
+        if distance > attacker.weapon.range {
+            return CommandResult::rejected(crate::commands::CommandRejection::OutOfAttackRange);
+        }
+        let now = world.time().elapsed;
+        if let Some(last) = attacker.last_attack_at {
+            if now.0.saturating_sub(last.0) < attacker.weapon.cooldown.0 {
+                return CommandResult::rejected(crate::commands::CommandRejection::AttackCooldown);
+            }
+        }
+        if attacker.weapon.validate().is_err() {
+            return CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidCombatConfiguration,
+            );
+        }
+        let amount = attacker.weapon.damage;
+        let remaining = match world.apply_ship_damage(ship, amount) {
+            Ok((remaining, _, _)) => remaining,
+            Err(crate::integrity::IntegrityError::Destroyed) => {
+                return CommandResult::rejected(crate::commands::CommandRejection::ShipDestroyed)
+            }
+            Err(crate::integrity::IntegrityError::InvalidAmount) => {
+                return CommandResult::invalid(
+                    crate::commands::CommandInvalidity::InvalidCombatConfiguration,
+                )
+            }
+            Err(_) => {
+                return CommandResult::rejected(
+                    crate::commands::CommandRejection::ShipIntegrityNotInitialized,
+                )
+            }
+        };
+        if let Some(attacker_mut) = world.combatant_mut(enemy) {
+            attacker_mut.last_attack_at = Some(now);
+        }
+        world.publish(crate::events::GameplayEvent::AttackExecuted {
+            attacker: enemy,
+            target: ship,
+            attack_type: attacker.weapon.attack_type,
+            damage: amount,
+        });
+        world.publish(crate::events::GameplayEvent::ShipCombatDamageApplied {
+            attacker: enemy,
+            ship,
+            amount,
+            remaining_integrity: remaining,
+        });
         CommandResult::success(true)
     }
 }
@@ -1677,7 +2628,7 @@ impl InventorySystem {
         let Some(player_state) = world.player(player) else {
             return CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound);
         };
-        if !player_state.is_active {
+        if !world.entities().contains(player) || !player_state.is_active {
             return CommandResult::rejected(crate::commands::CommandRejection::PlayerInactive);
         }
         let Some(definition) = world.item_definition(item).copied() else {
@@ -1728,8 +2679,13 @@ impl InventorySystem {
         let Some(player_state) = world.player(player) else {
             return CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound);
         };
-        if !player_state.is_active {
+        if !world.entities().contains(player) || !player_state.is_active {
             return CommandResult::rejected(crate::commands::CommandRejection::PlayerInactive);
+        }
+        if world.item_definition(item).is_none() {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::ItemDefinitionNotFound,
+            );
         }
         let Some(inventory) = world.inventory_mut(player) else {
             return CommandResult::rejected(
@@ -1771,7 +2727,7 @@ impl InventorySystem {
         let Some(player_state) = world.player(player) else {
             return CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound);
         };
-        if !player_state.is_active {
+        if !world.entities().contains(player) || !player_state.is_active {
             return CommandResult::rejected(crate::commands::CommandRejection::PlayerInactive);
         }
         let Some(item_state) = world.collectible(collectible).copied() else {

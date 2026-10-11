@@ -35,6 +35,9 @@ impl GameplayProcessor {
     where
         I: IntoIterator<Item = GameplayCommand>,
     {
+        for system in &mut self.systems {
+            system.reset_event_cursor();
+        }
         world.clear_events();
         commands
             .into_iter()
@@ -67,9 +70,15 @@ pub(crate) fn advance_time(world: &mut GameplayWorld, delta: Duration) -> Comman
         return CommandResult::rejected(crate::commands::CommandRejection::InvalidDuration);
     }
     let before = world.time();
+    let Some(tick) = before.tick.0.checked_add(1) else {
+        return CommandResult::rejected(crate::commands::CommandRejection::InvalidDuration);
+    };
+    let Some(elapsed) = before.elapsed.0.checked_add(delta.0) else {
+        return CommandResult::rejected(crate::commands::CommandRejection::InvalidDuration);
+    };
     let after = engine::GameTime {
-        tick: Tick(before.tick.0.saturating_add(1)),
-        elapsed: Duration(before.elapsed.0.saturating_add(delta.0)),
+        tick: Tick(tick),
+        elapsed: Duration(elapsed),
     };
     world.set_time(after);
     world.publish(GameplayEvent::TimeAdvanced {

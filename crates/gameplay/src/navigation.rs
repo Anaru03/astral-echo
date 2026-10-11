@@ -74,7 +74,8 @@ impl SignalScanner {
         let Some(last) = self.last_scan else {
             return Duration(0);
         };
-        Duration(last.0.saturating_add(self.cooldown.0).saturating_sub(now.0))
+        let elapsed = now.0.saturating_sub(last.0);
+        Duration(self.cooldown.0.saturating_sub(elapsed))
     }
 }
 
@@ -104,6 +105,12 @@ pub enum NavigationRegistrationError {
     InvalidPosition,
     InvalidDuration,
     InvalidFuelCost,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NavigationInitializationError {
+    ShipNotFound,
+    AlreadyInitialized,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -341,6 +348,9 @@ impl NavigationState {
             return Err(NavigationMovementError::InvalidInput);
         }
         let seconds = delta.0 as f32 / 1000.0;
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return Err(NavigationMovementError::InvalidInput);
+        }
         let next = ShipOrientation {
             yaw_degrees: normalize_yaw(
                 self.orientation.yaw_degrees
@@ -500,7 +510,7 @@ impl NavigationState {
         if !finite_position(self.current_position) {
             return Err(ScannerError::InvalidPosition);
         }
-        let range_squared = self.scanner.range * self.scanner.range;
+        let range_squared = self.scanner.range as f64 * self.scanner.range as f64;
         let mut candidates = Vec::new();
         for destination in self.destinations.values() {
             let squared = distance_squared(self.current_position, destination.position);
@@ -508,7 +518,7 @@ impl NavigationState {
                 continue;
             }
             if squared <= range_squared {
-                candidates.push((destination.id, squared.sqrt()));
+                candidates.push((destination.id, squared.sqrt().min(f32::MAX as f64) as f32));
             }
         }
         candidates.sort_by(|(left_id, left_distance), (right_id, right_distance)| {
@@ -568,8 +578,15 @@ impl NavigationState {
         })
     }
 
-    pub(crate) fn initialize_ship(&mut self, ship_id: EntityId) {
+    pub(crate) fn initialize_ship(
+        &mut self,
+        ship_id: EntityId,
+    ) -> Result<(), NavigationInitializationError> {
+        if self.ship_id.is_some() {
+            return Err(NavigationInitializationError::AlreadyInitialized);
+        }
         self.ship_id = Some(ship_id);
+        Ok(())
     }
 
     pub(crate) fn select_destination(
@@ -607,6 +624,13 @@ impl NavigationState {
             return Err(NavigationStartError::DestinationUnknown);
         }
         if destination_data.travel_duration.0 == 0 {
+            return Err(NavigationStartError::InvalidDuration);
+        }
+        if now
+            .0
+            .checked_add(destination_data.travel_duration.0)
+            .is_none()
+        {
             return Err(NavigationStartError::InvalidDuration);
         }
         if !fuel.can_consume(destination_data.fuel_cost) {
@@ -692,13 +716,13 @@ fn finite_position(position: Vec3) -> bool {
 }
 
 fn distance(first: Vec3, second: Vec3) -> f32 {
-    distance_squared(first, second).sqrt()
+    distance_squared(first, second).sqrt().min(f32::MAX as f64) as f32
 }
 
-fn distance_squared(first: Vec3, second: Vec3) -> f32 {
-    let x = first.x - second.x;
-    let y = first.y - second.y;
-    let z = first.z - second.z;
+fn distance_squared(first: Vec3, second: Vec3) -> f64 {
+    let x = first.x as f64 - second.x as f64;
+    let y = first.y as f64 - second.y as f64;
+    let z = first.z as f64 - second.z as f64;
     x * x + y * y + z * z
 }
 
