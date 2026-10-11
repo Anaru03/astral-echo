@@ -118,6 +118,12 @@ pub enum GameplayCommand {
         item: crate::types::ItemId,
         amount: u32,
     },
+    TransferInventoryItem {
+        from: EntityId,
+        to: EntityId,
+        item: crate::types::ItemId,
+        amount: u32,
+    },
     RemoveInventoryItem {
         player: EntityId,
         item: crate::types::ItemId,
@@ -343,6 +349,7 @@ pub enum CommandRejection {
     ReviveTargetNotDefeated,
     ReviveTargetInvalid,
     ReviveOutOfRange,
+    TransferToSelf,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

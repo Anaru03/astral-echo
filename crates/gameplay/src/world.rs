@@ -36,6 +36,20 @@ pub enum PlayerCreationError {
     MaximumPlayersReached,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InventoryTransferError {
+    PlayerNotFound,
+    PlayerInactive,
+    SamePlayer,
+    InvalidQuantity,
+    ItemDefinitionNotFound,
+    InventoryNotInitialized,
+    InsufficientQuantity,
+    CapacityExceeded,
+    StackExceeded,
+    ArithmeticOverflow,
+}
+
 #[derive(Debug, Default)]
 pub struct GameplayWorld {
     state: GameplayState,
@@ -859,6 +873,91 @@ impl GameplayWorld {
         self.inventories.insert(player, Inventory::new(capacity)?);
         self.events
             .push(crate::events::GameplayEvent::InventoryInitialized { player, capacity });
+        Ok(())
+    }
+    pub(crate) fn transfer_inventory_item(
+        &mut self,
+        from: EntityId,
+        to: EntityId,
+        item: crate::types::ItemId,
+        amount: u32,
+    ) -> Result<(), InventoryTransferError> {
+        let sender = self.player(from).ok_or(InventoryTransferError::PlayerNotFound)?;
+        let receiver = self.player(to).ok_or(InventoryTransferError::PlayerNotFound)?;
+        if from == to {
+            return Err(InventoryTransferError::SamePlayer);
+        }
+        if !self.entities.contains(from)
+            || !sender.is_active
+            || !self.entities.contains(to)
+            || !receiver.is_active
+        {
+            return Err(InventoryTransferError::PlayerInactive);
+        }
+        if amount == 0 {
+            return Err(InventoryTransferError::InvalidQuantity);
+        }
+        let definition = self
+            .item_definition(item)
+            .ok_or(InventoryTransferError::ItemDefinitionNotFound)?;
+        if amount > definition.max_stack {
+            return Err(InventoryTransferError::InvalidQuantity);
+        }
+        let source = self
+            .inventories
+            .get(&from)
+            .cloned()
+            .ok_or(InventoryTransferError::InventoryNotInitialized)?;
+        let target = self
+            .inventories
+            .get(&to)
+            .cloned()
+            .ok_or(InventoryTransferError::InventoryNotInitialized)?;
+        if source.quantity(item) < amount {
+            return Err(InventoryTransferError::InsufficientQuantity);
+        }
+        let target_quantity = target
+            .quantity(item)
+            .checked_add(amount)
+            .ok_or(InventoryTransferError::ArithmeticOverflow)?;
+        if target_quantity > definition.max_stack {
+            return Err(InventoryTransferError::StackExceeded);
+        }
+        if !target.can_add(amount) {
+            return Err(InventoryTransferError::CapacityExceeded);
+        }
+
+        let mut updated_source = source;
+        let mut updated_target = target;
+        updated_source
+            .try_remove(item, amount)
+            .map_err(|error| match error {
+                InventoryError::InsufficientQuantity => InventoryTransferError::InsufficientQuantity,
+                InventoryError::InvalidQuantity => InventoryTransferError::InvalidQuantity,
+                _ => InventoryTransferError::ArithmeticOverflow,
+            })?;
+        updated_target
+            .try_add(item, amount)
+            .map_err(|error| match error {
+                InventoryError::CapacityExceeded => InventoryTransferError::CapacityExceeded,
+                InventoryError::InvalidQuantity => InventoryTransferError::InvalidQuantity,
+                InventoryError::ArithmeticOverflow => InventoryTransferError::ArithmeticOverflow,
+                InventoryError::InsufficientQuantity | InventoryError::PlayerNotFound
+                | InventoryError::AlreadyInitialized
+                | InventoryError::InvalidCapacity => InventoryTransferError::ArithmeticOverflow,
+            })?;
+        self.inventories.insert(from, updated_source);
+        self.inventories.insert(to, updated_target);
+        self.publish(crate::events::GameplayEvent::ItemRemoved {
+            player: from,
+            item,
+            amount,
+        });
+        self.publish(crate::events::GameplayEvent::ItemAdded {
+            player: crate::types::PlayerId(to),
+            item,
+            amount,
+        });
         Ok(())
     }
     pub fn register_item_definition(

@@ -1,16 +1,18 @@
-use engine::{Duration, Vec3};
+use engine::{Duration, EntityId, Vec3};
 use game::{
     cooperacion, ecos_anomalia, el_despertar, la_defensa_imposible, tormenta_gravitacional,
     ProjectEchoSession,
 };
 use gameplay::domains::{door::DoorState, mission::MissionState, objective::ObjectiveState};
+use gameplay::types::ItemId;
 use gameplay::{
     AttackType, BreakerId, BreakerState, CollectibleError, Destination, DestinationId,
     DestinationType, DiscoveryState, ElectricalBreakerConfiguration, ElectricalPanelConfiguration,
     ElectricalPanelRegistrationError, EnemyArchetype, EnemyConfiguration, EnvironmentalHazard,
-    GameplayCommand, GameplayEvent, LifeSupportConfiguration, LifeSupportRegistrationError,
-    MissionProgress, OxygenCompartmentConfiguration, ShipRepairConfiguration, SignalKnowledge,
-    StationState, StationType, TravelState, WeaponAmmunition, WeaponConfiguration,
+    CommandStatus, GameplayCommand, GameplayEvent, LifeSupportConfiguration,
+    LifeSupportRegistrationError, MissionProgress, OxygenCompartmentConfiguration,
+    ShipRepairConfiguration, SignalKnowledge, StationState, StationType, TravelState,
+    WeaponAmmunition, WeaponConfiguration,
 };
 
 fn run_atomicity_regressions() -> Result<(), String> {
@@ -155,6 +157,275 @@ fn run_command(
         gameplay::CommandStatus::Success { changed: true } => Ok(()),
         status => Err(format!("{label}: resultado inesperado: {status:?}")),
     }
+}
+
+fn expect_transfer_rejection(
+    session: &mut ProjectEchoSession,
+    from: EntityId,
+    to: EntityId,
+    item: ItemId,
+    amount: u32,
+    expected: CommandStatus,
+    label: &str,
+) -> Result<(), String> {
+    let before_from = session.world().inventory(from).cloned();
+    let before_to = session.world().inventory(to).cloned();
+    let before_active = session.world().entities().active_count();
+    let before_players = session.world().players().count();
+    let result = session
+        .update([GameplayCommand::TransferInventoryItem {
+            from,
+            to,
+            item,
+            amount,
+        }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("{label}: no se devolvió resultado"))?;
+    if result.status != expected {
+        return Err(format!(
+            "{label}: resultado inesperado: {:?}, esperado {:?}",
+            result.status, expected
+        ));
+    }
+    if session.world().inventory(from).cloned() != before_from
+        || session.world().inventory(to).cloned() != before_to
+        || session.world().entities().active_count() != before_active
+        || session.world().players().count() != before_players
+        || !session.world().events().is_empty()
+    {
+        return Err(format!("{label}: el rechazo dejó cambios parciales"));
+    }
+    Ok(())
+}
+
+fn run_inventory_transfer_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let sender = session.ids.first_player;
+    let receiver = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador receptor: {error:?}"))?;
+    let capacity_limited = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador con capacidad limitada: {error:?}"))?;
+    session
+        .world_mut()
+        .initialize_inventory(receiver, 20)
+        .map_err(|error| format!("inicializar inventario receptor: {error:?}"))?;
+    session
+        .world_mut()
+        .initialize_inventory(capacity_limited, 1)
+        .map_err(|error| format!("inicializar inventario limitado: {error:?}"))?;
+    let item = ItemId(2);
+    run_command(
+        &mut session,
+        "preparar inventario emisor",
+        GameplayCommand::AddInventoryItem {
+            player: sender,
+            item,
+            amount: 5,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "preparar inventario receptor",
+        GameplayCommand::AddInventoryItem {
+            player: receiver,
+            item,
+            amount: 2,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "preparar inventario limitado",
+        GameplayCommand::AddInventoryItem {
+            player: capacity_limited,
+            item,
+            amount: 1,
+        },
+    )?;
+
+    let before_sender = session
+        .world()
+        .inventory(sender)
+        .and_then(|inventory| Some(inventory.quantity(item)))
+        .ok_or_else(|| "no se pudo leer la munición inicial del emisor".to_owned())?;
+    let before_receiver = session
+        .world()
+        .inventory(receiver)
+        .and_then(|inventory| Some(inventory.quantity(item)))
+        .ok_or_else(|| "no se pudo leer la munición inicial del receptor".to_owned())?;
+    let before_limited = session
+        .world()
+        .inventory(capacity_limited)
+        .and_then(|inventory| Some(inventory.quantity(item)))
+        .ok_or_else(|| "no se pudo leer el inventario limitado inicial".to_owned())?;
+
+    run_command(
+        &mut session,
+        "transferir cantidad parcial",
+        GameplayCommand::TransferInventoryItem {
+            from: sender,
+            to: receiver,
+            item,
+            amount: 3,
+        },
+    )?;
+    if session.world().inventory(sender).map_or(0, |value| value.quantity(item)) != 2
+        || session.world().inventory(receiver).map_or(0, |value| value.quantity(item)) != 5
+        || session
+            .world()
+            .inventory(capacity_limited)
+            .map_or(0, |value| value.quantity(item))
+            != before_limited
+    {
+        return Err("la transferencia válida no actualizó exactamente los inventarios".to_owned());
+    }
+    let transfer_events = session.world().events().len();
+    if transfer_events != 2 {
+        return Err(format!(
+            "la transferencia válida produjo {transfer_events} eventos en lugar de 2"
+        ));
+    }
+
+    expect_transfer_rejection(
+        &mut session,
+        sender,
+        receiver,
+        item,
+        0,
+        CommandStatus::Invalid {
+            reason: gameplay::CommandInvalidity::InvalidInventoryConfiguration,
+        },
+        "cantidad cero",
+    )?;
+    expect_transfer_rejection(
+        &mut session,
+        sender,
+        receiver,
+        item,
+        99,
+        CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::InventoryInsufficientQuantity,
+        },
+        "cantidad insuficiente",
+    )?;
+    expect_transfer_rejection(
+        &mut session,
+        sender,
+        sender,
+        item,
+        1,
+        CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::TransferToSelf,
+        },
+        "transferencia a sí mismo",
+    )?;
+    expect_transfer_rejection(
+        &mut session,
+        sender,
+        receiver,
+        ItemId(999),
+        1,
+        CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::ItemDefinitionNotFound,
+        },
+        "objeto inexistente",
+    )?;
+    expect_transfer_rejection(
+        &mut session,
+        EntityId::new(999_999),
+        receiver,
+        item,
+        1,
+        CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::PlayerNotFound,
+        },
+        "emisor inexistente",
+    )?;
+    expect_transfer_rejection(
+        &mut session,
+        sender,
+        EntityId::new(999_999),
+        item,
+        1,
+        CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::PlayerNotFound,
+        },
+        "receptor inexistente",
+    )?;
+    run_command(
+        &mut session,
+        "desactivar receptor para regresión",
+        GameplayCommand::SetPlayerActive {
+            player: receiver,
+            active: false,
+        },
+    )?;
+    expect_transfer_rejection(
+        &mut session,
+        sender,
+        receiver,
+        item,
+        1,
+        CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::PlayerInactive,
+        },
+        "receptor inactivo",
+    )?;
+    run_command(
+        &mut session,
+        "reactivar receptor después del rechazo",
+        GameplayCommand::SetPlayerActive {
+            player: receiver,
+            active: true,
+        },
+    )?;
+    expect_transfer_rejection(
+        &mut session,
+        sender,
+        capacity_limited,
+        item,
+        1,
+        CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::InventoryCapacityExceeded,
+        },
+        "capacidad del receptor",
+    )?;
+
+    if session.world().inventory(sender).map_or(0, |value| value.quantity(item))
+        != before_sender - 3
+        || session
+            .world()
+            .inventory(receiver)
+            .map_or(0, |value| value.quantity(item))
+            != before_receiver + 3
+        || session
+            .world()
+            .inventory(capacity_limited)
+            .map_or(0, |value| value.quantity(item))
+            != before_limited
+    {
+        return Err("los rechazos posteriores alteraron cantidades válidas".to_owned());
+    }
+    if session.world().players().count() != 3 {
+        return Err("la transferencia alteró el número de jugadores".to_owned());
+    }
+    println!(
+        "TRANSFERENCIAS COMPLETADAS: emisor={}, receptor={}, limitado={}, emisor_restante={}, receptor_final={}, limitado_final={}",
+        sender,
+        receiver,
+        capacity_limited,
+        session.world().inventory(sender).map_or(0, |value| value.quantity(item)),
+        session.world().inventory(receiver).map_or(0, |value| value.quantity(item)),
+        session
+            .world()
+            .inventory(capacity_limited)
+            .map_or(0, |value| value.quantity(item))
+    );
+    Ok(())
 }
 
 fn run_integrated_scenario() -> Result<(), String> {
@@ -2369,5 +2640,6 @@ fn run_scenario() -> Result<(), String> {
     run_player_count_scenario(1)?;
     run_player_count_scenario(2)?;
     run_player_count_scenario(3)?;
+    run_inventory_transfer_scenario()?;
     Ok(())
 }

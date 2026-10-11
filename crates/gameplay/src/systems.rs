@@ -2552,6 +2552,12 @@ impl GameplaySystem for InventorySystem {
                 item,
                 amount,
             } => Some(self.add(world, player, item, amount)),
+            GameplayCommand::TransferInventoryItem {
+                from,
+                to,
+                item,
+                amount,
+            } => Some(self.transfer(world, from, to, item, amount)),
             GameplayCommand::RemoveInventoryItem {
                 player,
                 item,
@@ -2715,6 +2721,58 @@ impl InventorySystem {
             Err(_) => CommandResult::invalid(
                 crate::commands::CommandInvalidity::InvalidInventoryConfiguration,
             ),
+        }
+    }
+
+    fn transfer(
+        &self,
+        world: &mut GameplayWorld,
+        from: engine::EntityId,
+        to: engine::EntityId,
+        item: crate::types::ItemId,
+        amount: u32,
+    ) -> CommandResult {
+        if world.phase() != crate::types::SimulationPhase::Running {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SimulationNotRunning,
+            );
+        }
+        match world.transfer_inventory_item(from, to, item, amount) {
+            Ok(()) => CommandResult::success(true),
+            Err(crate::world::InventoryTransferError::PlayerNotFound) => {
+                CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound)
+            }
+            Err(crate::world::InventoryTransferError::PlayerInactive) => {
+                CommandResult::rejected(crate::commands::CommandRejection::PlayerInactive)
+            }
+            Err(crate::world::InventoryTransferError::SamePlayer) => {
+                CommandResult::rejected(crate::commands::CommandRejection::TransferToSelf)
+            }
+            Err(crate::world::InventoryTransferError::InvalidQuantity) => CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidInventoryConfiguration,
+            ),
+            Err(crate::world::InventoryTransferError::ItemDefinitionNotFound) => {
+                CommandResult::rejected(crate::commands::CommandRejection::ItemDefinitionNotFound)
+            }
+            Err(crate::world::InventoryTransferError::InventoryNotInitialized) => {
+                CommandResult::rejected(crate::commands::CommandRejection::InventoryNotInitialized)
+            }
+            Err(crate::world::InventoryTransferError::InsufficientQuantity) => {
+                CommandResult::rejected(
+                    crate::commands::CommandRejection::InventoryInsufficientQuantity,
+                )
+            }
+            Err(crate::world::InventoryTransferError::CapacityExceeded) => {
+                CommandResult::rejected(crate::commands::CommandRejection::InventoryCapacityExceeded)
+            }
+            Err(crate::world::InventoryTransferError::StackExceeded) => CommandResult::invalid(
+                crate::commands::CommandInvalidity::InvalidInventoryConfiguration,
+            ),
+            Err(crate::world::InventoryTransferError::ArithmeticOverflow) => {
+                CommandResult::invalid(
+                    crate::commands::CommandInvalidity::InvalidInventoryConfiguration,
+                )
+            }
         }
     }
 
