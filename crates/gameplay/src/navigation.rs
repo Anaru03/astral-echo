@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
-use engine::{Duration, EntityId, Vec3};
 use crate::resources::FuelTank;
+use engine::{Duration, EntityId, Vec3};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DestinationId(u32);

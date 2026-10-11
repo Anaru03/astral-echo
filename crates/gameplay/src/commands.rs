@@ -1,6 +1,7 @@
 use crate::collectible::ItemDefinition;
 use crate::combat::{EnemyConfiguration, WeaponConfiguration};
 use crate::electrical::{BreakerId, BreakerState, ElectricalPanelConfiguration};
+use crate::knowledge::KnowledgeTarget;
 use crate::life_support::{CompartmentId, LifeSupportConfiguration};
 use crate::navigation::ShipMovementParameters;
 use crate::navigation::{Destination, DestinationId};
@@ -93,6 +94,10 @@ pub enum GameplayCommand {
         enemy: EntityId,
         player: EntityId,
     },
+    EnemyAttackShip {
+        enemy: EntityId,
+        ship: EntityId,
+    },
     SetEnemyActive {
         enemy: EntityId,
         active: bool,
@@ -124,6 +129,16 @@ pub enum GameplayCommand {
         player: EntityId,
         collectible: EntityId,
         amount: u32,
+    },
+    RegisterKnowledge {
+        target: KnowledgeTarget,
+    },
+    IdentifyKnowledge {
+        target: KnowledgeTarget,
+    },
+    StudyKnowledge {
+        player: EntityId,
+        target: KnowledgeTarget,
     },
     ConfigureShipMovement {
         ship: EntityId,
@@ -176,6 +191,14 @@ pub enum GameplayCommand {
     RepairShip {
         ship: EntityId,
         amount: u32,
+    },
+    RepairShipAtStation {
+        player: EntityId,
+        ship: EntityId,
+        station: EntityId,
+    },
+    RegisterEnvironmentalHazard {
+        hazard: crate::hazard::EnvironmentalHazard,
     },
     LockDoor {
         door: EntityId,
@@ -262,6 +285,7 @@ pub enum CommandRejection {
     CombatantInactive,
     CombatantDefeated,
     WeaponUnavailable,
+    AmmunitionUnavailable,
     OutOfAttackRange,
     AttackCooldown,
     InvalidCombatTarget,
@@ -283,6 +307,20 @@ pub enum CommandRejection {
     ShipDestroyed,
     ShipIntegrityInvalidAmount,
     ShipIntegrityAtMaximum,
+    RepairRequiresEngineeringStation,
+    RepairStationNotFound,
+    RepairStationDisabled,
+    RepairStationNotOccupiedByPlayer,
+    RepairStationWrongType,
+    RepairMaterialNotFound,
+    ShipAtMaximumIntegrity,
+    EnvironmentalHazardAlreadyRegistered,
+    EnvironmentalHazardNotFound,
+    KnowledgeTargetNotFound,
+    KnowledgeAlreadyRegistered,
+    KnowledgeUnknown,
+    KnowledgeNotIdentified,
+    KnowledgeTransitionNotAllowed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -302,6 +340,7 @@ pub enum CommandInvalidity {
     InvalidShipMovementConfiguration,
     InvalidScannerConfiguration,
     InvalidShipIntegrityConfiguration,
+    InvalidEnvironmentalHazardConfiguration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

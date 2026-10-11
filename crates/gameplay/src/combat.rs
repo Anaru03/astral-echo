@@ -1,3 +1,4 @@
+use crate::types::ItemId;
 use engine::{Duration, EntityId, Vec3};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -8,11 +9,18 @@ pub enum AttackType {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WeaponAmmunition {
+    pub item: ItemId,
+    pub amount_per_attack: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WeaponConfiguration {
     pub attack_type: AttackType,
     pub damage: u32,
     pub range: u32,
     pub cooldown: Duration,
+    pub ammunition: Option<WeaponAmmunition>,
 }
 
 impl WeaponConfiguration {
@@ -22,12 +30,35 @@ impl WeaponConfiguration {
             damage,
             range,
             cooldown,
+            ammunition: None,
+        }
+    }
+
+    pub const fn with_ammunition(
+        attack_type: AttackType,
+        damage: u32,
+        range: u32,
+        cooldown: Duration,
+        ammunition: WeaponAmmunition,
+    ) -> Self {
+        Self {
+            attack_type,
+            damage,
+            range,
+            cooldown,
+            ammunition: Some(ammunition),
         }
     }
 
     pub fn validate(self) -> Result<(), CombatConfigurationError> {
         if self.damage == 0 || self.range == 0 || self.cooldown.0 == 0 {
             return Err(CombatConfigurationError::InvalidWeapon);
+        }
+        if self
+            .ammunition
+            .is_some_and(|ammunition| ammunition.amount_per_attack == 0)
+        {
+            return Err(CombatConfigurationError::InvalidAmmunition);
         }
         Ok(())
     }
@@ -129,6 +160,7 @@ pub enum CombatConfigurationError {
     InvalidEnemy,
     InvalidWeapon,
     InvalidShield,
+    InvalidAmmunition,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -141,6 +173,7 @@ pub struct Combatant {
     pub archetype: Option<EnemyArchetype>,
     pub position: Vec3,
     pub weapon: WeaponConfiguration,
+    pub equipped_weapon: Option<WeaponConfiguration>,
     pub shield: Option<Shield>,
     pub mobility: u32,
     pub last_attack_at: Option<Duration>,
@@ -157,6 +190,7 @@ impl Combatant {
             archetype: None,
             position: Vec3::ZERO,
             weapon: WeaponConfiguration::new(AttackType::Kinetic, 15, 10, Duration(1_000)),
+            equipped_weapon: None,
             shield: None,
             mobility: 10,
             last_attack_at: None,
@@ -173,6 +207,7 @@ impl Combatant {
             archetype: Some(config.archetype),
             position: config.position,
             weapon: config.weapon,
+            equipped_weapon: None,
             shield: config.shield,
             mobility: config.mobility,
             last_attack_at: None,

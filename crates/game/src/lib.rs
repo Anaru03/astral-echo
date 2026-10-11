@@ -4,14 +4,16 @@ use engine::EntityId;
 use gameplay::types::MissionId;
 use gameplay::{
     systems::{
-        CombatSystem, DoorSystem, ElectricalSystem, HullIntegritySystem, InteractionSystem,
-        InventorySystem, LifeSupportSystem, NavigationSystem, PilotSystem, PlayerSystem,
-        ResourceSystem, ScannerSystem, StationSystem,
+        CombatSystem, DoorSystem, ElectricalSystem, EnvironmentalHazardSystem, HullIntegritySystem,
+        InteractionSystem, InventorySystem, LifeSupportSystem, NavigationSystem, PilotSystem,
+        PlayerSystem, ResourceSystem, ScannerSystem, StationSystem,
     },
     CommandResult, DoorAccessRequirement, GameplayCommand, GameplayProcessor, GameplayState,
     GameplayWorld,
 };
-use gameplay::{Mission, MissionProgress, MissionRegistrationError, MissionSystem};
+use gameplay::{
+    KnowledgeSystem, Mission, MissionProgress, MissionRegistrationError, MissionSystem,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProjectEchoIds {
@@ -39,6 +41,28 @@ impl ProjectEchoSession {
         world
             .initialize_inventory(first_player, 20)
             .expect("el inventario inicial del jugador debe ser válido");
+        let repair_configuration = gameplay::ShipRepairConfiguration::default();
+        world
+            .register_item_definition(gameplay::ItemDefinition::new(
+                repair_configuration.material,
+                gameplay::ItemCategory::RepairMaterial,
+                20,
+            ))
+            .expect("el material de reparación debe registrarse una sola vez");
+        world
+            .register_item_definition(gameplay::ItemDefinition::new(
+                gameplay::types::ItemId(2),
+                gameplay::ItemCategory::CombatAmmunition,
+                100,
+            ))
+            .expect("la munición estándar debe registrarse una sola vez");
+        world
+            .register_item_definition(gameplay::ItemDefinition::new(
+                gameplay::types::ItemId(3),
+                gameplay::ItemCategory::CombatAmmunition,
+                100,
+            ))
+            .expect("la munición de energía debe registrarse una sola vez");
         let first_ship = world.create_entity();
         world.initialize_navigation_ship(first_ship);
         world
@@ -67,10 +91,12 @@ impl ProjectEchoSession {
         processor.add_system(InteractionSystem);
         processor.add_system(ElectricalSystem::new());
         processor.add_system(LifeSupportSystem::new());
+        processor.add_system(EnvironmentalHazardSystem::new());
         processor.add_system(NavigationSystem::new());
         processor.add_system(ResourceSystem);
         processor.add_system(DoorSystem);
         processor.add_system(StationSystem);
+        processor.add_system(KnowledgeSystem::new());
         processor.add_system(MissionSystem::new());
         Self {
             ids: ProjectEchoIds {

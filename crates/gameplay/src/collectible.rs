@@ -1,9 +1,10 @@
-use engine::{EntityId, Vec3};
 use crate::types::ItemId;
+use engine::{EntityId, Vec3};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ItemCategory {
     RepairMaterial,
+    CombatAmmunition,
     MineralSample,
     ElectronicComponent,
 }
