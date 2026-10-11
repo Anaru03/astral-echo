@@ -1104,7 +1104,10 @@ fn run_shielded_enemy_scenario() -> Result<(), String> {
 fn run_cooperative_revival_scenario() -> Result<(), String> {
     let mut session = ProjectEchoSession::new();
     let helper = session.ids.first_player;
-    let target = session.world_mut().create_player();
+    let target = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador objetivo: {error:?}"))?;
     session
         .world_mut()
         .initialize_inventory(target, 20)
@@ -1305,7 +1308,10 @@ fn run_cooperative_revival_scenario() -> Result<(), String> {
 fn run_cooperative_combat_scenario() -> Result<(), String> {
     let mut session = ProjectEchoSession::new();
     let player_a = session.ids.first_player;
-    let player_b = session.world_mut().create_player();
+    let player_b = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador B: {error:?}"))?;
     session
         .world_mut()
         .initialize_inventory(player_b, 20)
@@ -1558,7 +1564,10 @@ fn run_cooperative_progression_scenario() -> Result<(), String> {
     let mut session = ProjectEchoSession::new();
     let player_a = session.ids.first_player;
     let ship = session.ids.first_ship;
-    let player_b = session.world_mut().create_player();
+    let player_b = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador B: {error:?}"))?;
     session
         .world_mut()
         .initialize_inventory(player_b, 20)
@@ -1879,6 +1888,278 @@ fn run_cooperative_progression_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_player_count_scenario(player_count: usize) -> Result<(), String> {
+    if !(1..=gameplay::MAX_LOCAL_PLAYERS).contains(&player_count) {
+        return Err(format!("cantidad de jugadores invalida: {player_count}"));
+    }
+    let mut session = ProjectEchoSession::new();
+    let mut players = vec![session.ids.first_player];
+    let ship = session.ids.first_ship;
+    while players.len() < player_count {
+        let player = session
+            .world_mut()
+            .create_player()
+            .map_err(|error| format!("crear jugador {player_count}: {error:?}"))?;
+        session
+            .world_mut()
+            .initialize_inventory(player, 20)
+            .map_err(|error| format!("inicializar inventario de jugador {player}: {error:?}"))?;
+        players.push(player);
+    }
+    if players.iter().enumerate().any(|(index, player)| {
+        players[..index].contains(player)
+            || !session.world().entities().contains(*player)
+            || session.world().player(*player).is_none()
+            || session.world().combatant(*player).is_none_or(|combatant| !combatant.is_player)
+            || session.world().inventory(*player).is_none()
+    }) || session.world().players().count() != player_count
+    {
+        return Err(format!(
+            "la sesion de {player_count} jugadores no registro componentes independientes"
+        ));
+    }
+
+    let ammunition = gameplay::types::ItemId(2);
+    for player in players.iter().copied() {
+        run_command(
+            &mut session,
+            "dar municion de completabilidad",
+            GameplayCommand::AddInventoryItem {
+                player,
+                item: ammunition,
+                amount: 1,
+            },
+        )?;
+    }
+    if players.iter().any(|player| {
+        session
+            .world()
+            .inventory(*player)
+            .is_none_or(|inventory| inventory.quantity(ammunition) != 1)
+    }) {
+        return Err(format!(
+            "los inventarios de la sesion de {player_count} jugadores no son independientes"
+        ));
+    }
+
+    if player_count == gameplay::MAX_LOCAL_PLAYERS {
+        let players_before = session.world().players().count();
+        let active_before = session.world().entities().active_count();
+        let events_before = session.world().events().len();
+        let rejected = session.world_mut().create_player();
+        if rejected != Err(gameplay::PlayerCreationError::MaximumPlayersReached)
+            || session.world().players().count() != players_before
+            || session.world().entities().active_count() != active_before
+            || session.world().events().len() != events_before
+        {
+            return Err("crear el cuarto jugador no fue rechazado atomica y tipadamente".to_owned());
+        }
+    }
+
+    session
+        .register_mission(
+            cooperacion::definition()
+                .map_err(|error| format!("definir mision de {player_count} jugadores: {error:?}"))?,
+        )
+        .map_err(|error| format!("registrar mision de {player_count} jugadores: {error:?}"))?;
+    session
+        .register_destination(Destination {
+            id: cooperacion::SIGNAL_DESTINATION,
+            destination_type: DestinationType::SpacePoint,
+            position: Vec3::ZERO,
+            travel_duration: Duration(100),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Unknown,
+        })
+        .map_err(|error| format!("registrar senal de {player_count} jugadores: {error:?}"))?;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estacion de {player_count} jugadores: {error:?}"))?;
+    run_command(
+        &mut session,
+        "desbloquear mision de completabilidad",
+        GameplayCommand::UnlockMission {
+            mission: cooperacion::PROGRESION_COOPERATIVA,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar mision de completabilidad",
+        GameplayCommand::StartMission {
+            mission: cooperacion::PROGRESION_COOPERATIVA,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estacion de completabilidad",
+        GameplayCommand::Interact {
+            player: players[0],
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "detectar senal de completabilidad",
+        GameplayCommand::ScanSignals {
+            player: players[0],
+            ship,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "recargar escaner de completabilidad",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "identificar senal de completabilidad",
+        GameplayCommand::ScanSignals {
+            player: players[0],
+            ship,
+        },
+    )?;
+    let after_signal = session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .ok_or_else(|| "se perdio la mision de completabilidad tras la senal".to_owned())?;
+    if after_signal.state != MissionState::Active || after_signal.required_completed != 1 {
+        return Err(format!(
+            "la sesion de {player_count} jugadores no completo el objetivo de senal: {after_signal:?}"
+        ));
+    }
+    if player_count > 1 {
+        run_command(
+            &mut session,
+            "desactivar jugador A despues de la senal",
+            GameplayCommand::SetPlayerActive {
+                player: players[0],
+                active: false,
+            },
+        )?;
+        if session
+            .world()
+            .player(players[0])
+            .is_none_or(|player| player.is_active)
+            || session
+                .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+                .is_none_or(|progress| progress.required_completed != 1)
+        {
+            return Err("desactivar un jugador borro la progresion cooperativa".to_owned());
+        }
+    }
+
+    let attacker = players.get(1).copied().unwrap_or(players[0]);
+    run_command(
+        &mut session,
+        "equipar arma de completabilidad",
+        GameplayCommand::EquipPlayerWeapon {
+            player: attacker,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                60,
+                20,
+                Duration(1_000),
+                WeaponAmmunition {
+                    item: ammunition,
+                    amount_per_attack: 1,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "crear enemigo de completabilidad",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let enemy = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "el enemigo de completabilidad no fue creado".to_owned())?;
+    run_command(
+        &mut session,
+        "derrotar enemigo de completabilidad",
+        GameplayCommand::AttackEnemy { player: attacker, enemy },
+    )?;
+    let after_defeat = session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .ok_or_else(|| "se perdio la mision tras la derrota de completabilidad".to_owned())?;
+    let ammunition_isolated = players.iter().all(|player| {
+        session
+            .world()
+            .inventory(*player)
+            .is_some_and(|inventory| inventory.quantity(ammunition) == u32::from(*player != attacker))
+    });
+    if after_defeat.state != MissionState::Active
+        || after_defeat.required_completed != 2
+        || !ammunition_isolated
+    {
+        return Err(format!(
+            "la sesion de {player_count} jugadores no completo el objetivo de combate: {after_defeat:?}"
+        ));
+    }
+    let collector = players[player_count - 1];
+    let reward = session
+        .world()
+        .collectibles()
+        .find(|collectible| collectible.item == gameplay::types::ItemId(3))
+        .copied()
+        .ok_or_else(|| "no se genero la recompensa de completabilidad".to_owned())?;
+    run_command(
+        &mut session,
+        "recoger recompensa de completabilidad",
+        GameplayCommand::CollectItem {
+            player: collector,
+            collectible: reward.entity,
+            amount: 1,
+        },
+    )?;
+    let final_progress = session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .ok_or_else(|| "no existe el progreso final de completabilidad".to_owned())?;
+    if final_progress.state != MissionState::Completed
+        || final_progress.required_completed != final_progress.required_total
+        || players.iter().any(|player| {
+            session
+                .world()
+                .inventory(*player)
+                .is_none_or(|inventory| {
+                    inventory.quantity(gameplay::types::ItemId(3))
+                        != u32::from(*player == collector)
+                })
+        })
+        || session
+            .world()
+            .inventory(collector)
+            .is_none_or(|inventory| inventory.quantity(gameplay::types::ItemId(3)) != 1)
+        || session
+            .world()
+            .collectible(reward.entity)
+            .is_none_or(|collectible| collectible.active || collectible.amount != 0)
+    {
+        return Err(format!(
+            "la sesion de {player_count} jugadores no completo la mision: {final_progress:?}"
+        ));
+    }
+    println!(
+        "COMPLETABILIDAD {} JUGADOR(ES) COMPLETADA: mision={:?}, progreso={}/{}, atacante={}, recolector={}",
+        player_count,
+        cooperacion::PROGRESION_COOPERATIVA,
+        final_progress.required_completed,
+        final_progress.required_total,
+        attacker,
+        collector
+    );
+    Ok(())
+}
+
 fn required_completed(session: &ProjectEchoSession) -> Result<MissionProgress, String> {
     let progress = session
         .mission_progress(el_despertar::EL_DESPERTAR)
@@ -2085,5 +2366,8 @@ fn run_scenario() -> Result<(), String> {
     run_cooperative_revival_scenario()?;
     run_cooperative_combat_scenario()?;
     run_cooperative_progression_scenario()?;
+    run_player_count_scenario(1)?;
+    run_player_count_scenario(2)?;
+    run_player_count_scenario(3)?;
     Ok(())
 }

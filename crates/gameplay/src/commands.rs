@@ -257,6 +257,7 @@ pub enum CommandRejection {
     InvalidDuration,
     PlayerNotFound,
     PlayerInactive,
+    MaximumPlayersReached,
     TargetNotFound,
     TargetDisabled,
     OutOfInteractionRange,

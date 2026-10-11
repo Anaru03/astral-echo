@@ -48,8 +48,14 @@ impl GameplaySystem for PlayerSystem {
     ) -> Option<CommandResult> {
         let result = match command {
             GameplayCommand::CreatePlayer => {
-                world.create_player();
-                CommandResult::success(true)
+                match world.create_player() {
+                    Ok(_) => CommandResult::success(true),
+                    Err(crate::world::PlayerCreationError::MaximumPlayersReached) => {
+                        CommandResult::rejected(
+                            crate::commands::CommandRejection::MaximumPlayersReached,
+                        )
+                    }
+                }
             }
             GameplayCommand::MovePlayer {
                 player,

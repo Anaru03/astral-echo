@@ -42,7 +42,9 @@ impl ProjectEchoSession {
     pub fn new() -> Self {
         let mut world = GameplayWorld::new();
         world.start();
-        let first_player = world.create_player();
+        let first_player = world
+            .create_player()
+            .expect("el jugador inicial debe poder crearse");
         world
             .initialize_inventory(first_player, 20)
             .expect("el inventario inicial del jugador debe ser válido");

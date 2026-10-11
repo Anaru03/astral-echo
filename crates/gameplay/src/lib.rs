@@ -90,4 +90,4 @@ pub use systems::{
     ResourceSystem, ScannerSystem, StationSystem,
 };
 pub use types::{GameResult, GameplayState, SimulationPhase};
-pub use world::GameplayWorld;
+pub use world::{GameplayWorld, PlayerCreationError, MAX_LOCAL_PLAYERS};

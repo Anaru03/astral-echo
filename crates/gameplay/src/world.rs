@@ -29,6 +29,13 @@ use crate::{
     types::{GameplayState, SimulationPhase},
 };
 
+pub const MAX_LOCAL_PLAYERS: usize = 3;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlayerCreationError {
+    MaximumPlayersReached,
+}
+
 #[derive(Debug, Default)]
 pub struct GameplayWorld {
     state: GameplayState,
@@ -823,7 +830,10 @@ impl GameplayWorld {
         self.life_support_panels.insert(entity, panel);
         Ok(entity)
     }
-    pub fn create_player(&mut self) -> EntityId {
+    pub fn create_player(&mut self) -> Result<EntityId, PlayerCreationError> {
+        if self.players.len() >= MAX_LOCAL_PLAYERS {
+            return Err(PlayerCreationError::MaximumPlayersReached);
+        }
         let entity = self.entities.create();
         let player = Player::new(entity);
         self.players.insert(entity, player);
@@ -833,7 +843,7 @@ impl GameplayWorld {
                 player: player.id(),
                 position: player.position,
             });
-        entity
+        Ok(entity)
     }
     pub fn initialize_inventory(
         &mut self,
