@@ -178,6 +178,10 @@ impl GameplaySystem for KnowledgeSystem {
         true
     }
 
+    fn reset_event_cursor(&mut self) {
+        self.event_cursor = 0;
+    }
+
     fn observe_events(&mut self, world: &mut GameplayWorld) {
         self.observe_new_events(world);
     }

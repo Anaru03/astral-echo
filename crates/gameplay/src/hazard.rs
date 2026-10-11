@@ -80,10 +80,17 @@ impl EnvironmentalHazard {
     }
 
     pub(crate) fn advance_accumulated(&mut self, delta: Duration) -> u64 {
-        self.accumulated = self.accumulated.saturating_add(delta.0);
-        let intervals = self.accumulated / self.interval.0;
-        self.accumulated %= self.interval.0;
-        intervals
+        let interval = self.interval.0;
+        let whole_intervals = delta.0 / interval;
+        let remainder = delta.0 % interval;
+        let remaining_capacity = interval - remainder;
+        if self.accumulated >= remaining_capacity {
+            self.accumulated -= remaining_capacity;
+            whole_intervals.saturating_add(1)
+        } else {
+            self.accumulated += remainder;
+            whole_intervals
+        }
     }
 }
 
@@ -100,10 +107,10 @@ fn finite_position(position: Vec3) -> bool {
     position.x.is_finite() && position.y.is_finite() && position.z.is_finite()
 }
 
-pub(crate) fn distance_squared(first: Vec3, second: Vec3) -> Option<f32> {
-    let dx = first.x - second.x;
-    let dy = first.y - second.y;
-    let dz = first.z - second.z;
+pub(crate) fn distance_squared(first: Vec3, second: Vec3) -> Option<f64> {
+    let dx = first.x as f64 - second.x as f64;
+    let dy = first.y as f64 - second.y as f64;
+    let dz = first.z as f64 - second.z as f64;
     if !dx.is_finite() || !dy.is_finite() || !dz.is_finite() {
         return None;
     }

@@ -784,6 +784,7 @@ impl GameplayWorld {
         interaction_range: f32,
         configuration: ElectricalPanelConfiguration,
     ) -> Result<EntityId, ElectricalPanelRegistrationError> {
+        ElectricalPanel::validate_configuration(position, interaction_range, &configuration)?;
         let entity = self.entities.create();
         let panel = match ElectricalPanel::new(entity, position, interaction_range, configuration) {
             Ok(panel) => panel,
@@ -805,6 +806,7 @@ impl GameplayWorld {
         interaction_range: f32,
         configuration: LifeSupportConfiguration,
     ) -> Result<EntityId, LifeSupportRegistrationError> {
+        LifeSupportPanel::validate_configuration(position, interaction_range, &configuration)?;
         let entity = self.entities.create();
         let panel = match LifeSupportPanel::new(entity, position, interaction_range, configuration)
         {
@@ -891,6 +893,7 @@ impl GameplayWorld {
         if amount > definition.max_stack {
             return Err(CollectibleError::InvalidAmount);
         }
+        Collectible::validate_configuration(amount, position, interaction_range)?;
         let entity = self.entities.create();
         let collectible = Collectible {
             entity,

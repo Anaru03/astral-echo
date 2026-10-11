@@ -93,12 +93,11 @@ pub struct LifeSupportPanel {
 }
 
 impl LifeSupportPanel {
-    pub fn new(
-        entity_id: EntityId,
+    pub(crate) fn validate_configuration(
         position: engine::Vec3,
         interaction_range: f32,
-        configuration: LifeSupportConfiguration,
-    ) -> Result<Self, LifeSupportRegistrationError> {
+        configuration: &LifeSupportConfiguration,
+    ) -> Result<(), LifeSupportRegistrationError> {
         if !position.x.is_finite() || !position.y.is_finite() || !position.z.is_finite() {
             return Err(LifeSupportRegistrationError::InvalidPosition);
         }
@@ -108,14 +107,11 @@ impl LifeSupportPanel {
         if configuration.compartments.is_empty() {
             return Err(LifeSupportRegistrationError::EmptyConfiguration);
         }
-
         let mut ids = BTreeSet::new();
         let mut minimum_total = 0u32;
         let mut maximum_total = 0u32;
         let mut initial_total = 0u32;
-        let mut compartments = Vec::with_capacity(configuration.compartments.len());
-
-        for definition in configuration.compartments {
+        for definition in &configuration.compartments {
             if definition.id.value() == 0 {
                 return Err(LifeSupportRegistrationError::InvalidCompartmentId);
             }
@@ -137,14 +133,7 @@ impl LifeSupportPanel {
             initial_total = initial_total
                 .checked_add(definition.initial_allocation)
                 .ok_or(LifeSupportRegistrationError::ArithmeticOverflow)?;
-            compartments.push(OxygenCompartment {
-                id: definition.id,
-                allocation: definition.initial_allocation,
-                minimum_allocation: definition.minimum_allocation,
-                maximum_allocation: definition.maximum_allocation,
-            });
         }
-
         if minimum_total > configuration.capacity {
             return Err(LifeSupportRegistrationError::MinimumCapacityExceeded);
         }
@@ -154,6 +143,34 @@ impl LifeSupportPanel {
         if initial_total > configuration.capacity {
             return Err(LifeSupportRegistrationError::InitialCapacityExceeded);
         }
+        if initial_total == configuration.capacity
+            && configuration.compartments.iter().all(|compartment| {
+                compartment.initial_allocation >= compartment.minimum_allocation
+                    && compartment.initial_allocation <= compartment.maximum_allocation
+            })
+        {
+            return Err(LifeSupportRegistrationError::InitiallySolved);
+        }
+        Ok(())
+    }
+
+    pub fn new(
+        entity_id: EntityId,
+        position: engine::Vec3,
+        interaction_range: f32,
+        configuration: LifeSupportConfiguration,
+    ) -> Result<Self, LifeSupportRegistrationError> {
+        Self::validate_configuration(position, interaction_range, &configuration)?;
+        let mut compartments = Vec::with_capacity(configuration.compartments.len());
+
+        for definition in configuration.compartments {
+            compartments.push(OxygenCompartment {
+                id: definition.id,
+                allocation: definition.initial_allocation,
+                minimum_allocation: definition.minimum_allocation,
+                maximum_allocation: definition.maximum_allocation,
+            });
+        }
 
         let panel = Self {
             entity_id,
@@ -161,9 +178,6 @@ impl LifeSupportPanel {
             compartments,
             state: LifeSupportState::Pending,
         };
-        if panel.is_solved() {
-            return Err(LifeSupportRegistrationError::InitiallySolved);
-        }
         Ok(panel)
     }
 

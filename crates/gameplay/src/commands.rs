@@ -5,6 +5,7 @@ use crate::knowledge::KnowledgeTarget;
 use crate::life_support::{CompartmentId, LifeSupportConfiguration};
 use crate::navigation::ShipMovementParameters;
 use crate::navigation::{Destination, DestinationId};
+use crate::reward::EnemyReward;
 use crate::types::{MissionId, ObjectiveId};
 use engine::{Duration, EntityId, Vec3};
 
@@ -102,6 +103,9 @@ pub enum GameplayCommand {
         enemy: EntityId,
         active: bool,
     },
+    RegisterEnemyReward {
+        reward: EnemyReward,
+    },
     InitializePlayerInventory {
         player: EntityId,
         capacity: u32,
@@ -139,6 +143,16 @@ pub enum GameplayCommand {
     StudyKnowledge {
         player: EntityId,
         target: KnowledgeTarget,
+    },
+    UseHealingConsumable {
+        player: EntityId,
+        item: crate::types::ItemId,
+        amount: u32,
+    },
+    RevivePlayer {
+        helper: EntityId,
+        target: EntityId,
+        item: crate::types::ItemId,
     },
     ConfigureShipMovement {
         ship: EntityId,
@@ -321,6 +335,13 @@ pub enum CommandRejection {
     KnowledgeUnknown,
     KnowledgeNotIdentified,
     KnowledgeTransitionNotAllowed,
+    RewardAlreadyRegistered,
+    HealingNotConfigured,
+    PlayerHealthAtMaximum,
+    RevivalNotConfigured,
+    ReviveTargetNotDefeated,
+    ReviveTargetInvalid,
+    ReviveOutOfRange,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -341,6 +362,9 @@ pub enum CommandInvalidity {
     InvalidScannerConfiguration,
     InvalidShipIntegrityConfiguration,
     InvalidEnvironmentalHazardConfiguration,
+    InvalidRewardConfiguration,
+    InvalidHealingConfiguration,
+    InvalidRevivalConfiguration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

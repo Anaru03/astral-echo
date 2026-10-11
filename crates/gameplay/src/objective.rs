@@ -4,6 +4,7 @@ use crate::{
     combat::EnemyArchetype,
     door::DoorRole,
     interaction::{ConsoleRole, ConsoleState},
+    knowledge::KnowledgeTarget,
     navigation::DestinationId,
     station::{StationState, StationType},
     types::{ItemId, MissionId, ObjectiveId},
@@ -75,6 +76,27 @@ pub enum ObjectiveTrigger {
     SignalsDetected {
         count: u32,
     },
+    KnowledgeDetected {
+        target: Option<KnowledgeTarget>,
+    },
+    KnowledgeIdentified {
+        target: Option<KnowledgeTarget>,
+    },
+    KnowledgeDiscovered {
+        target: Option<KnowledgeTarget>,
+    },
+    KnowledgeStudied {
+        target: Option<KnowledgeTarget>,
+    },
+    KnowledgeDetectedCount {
+        count: u32,
+    },
+    KnowledgeIdentifiedCount {
+        count: u32,
+    },
+    KnowledgeStudiedCount {
+        count: u32,
+    },
 }
 
 impl ObjectiveTrigger {
@@ -83,7 +105,10 @@ impl ObjectiveTrigger {
             Self::PlanetsDiscovered { count } | Self::EnemiesDefeated { count, .. } => *count,
             Self::ItemsCollected { amount, .. }
             | Self::FuelConsumed { amount, .. }
-            | Self::SignalsDetected { count: amount } => *amount,
+            | Self::SignalsDetected { count: amount }
+            | Self::KnowledgeDetectedCount { count: amount }
+            | Self::KnowledgeIdentifiedCount { count: amount }
+            | Self::KnowledgeStudiedCount { count: amount } => *amount,
             _ => 1,
         }
     }
@@ -162,6 +187,34 @@ impl ObjectiveTrigger {
             (Self::SignalsDetected { .. }, crate::events::GameplayEvent::SignalDetected { .. }) => {
                 true
             }
+            (
+                Self::KnowledgeDetected { target: expected },
+                crate::events::GameplayEvent::KnowledgeDetected { target: actual },
+            ) => expected.is_none_or(|value| value == *actual),
+            (
+                Self::KnowledgeIdentified { target: expected },
+                crate::events::GameplayEvent::KnowledgeIdentified { target: actual },
+            ) => expected.is_none_or(|value| value == *actual),
+            (
+                Self::KnowledgeDiscovered { target: expected },
+                crate::events::GameplayEvent::KnowledgeDiscovered { target: actual },
+            ) => expected.is_none_or(|value| value == *actual),
+            (
+                Self::KnowledgeStudied { target: expected },
+                crate::events::GameplayEvent::KnowledgeStudied { target: actual, .. },
+            ) => expected.is_none_or(|value| value == *actual),
+            (
+                Self::KnowledgeDetectedCount { .. },
+                crate::events::GameplayEvent::KnowledgeDetected { .. },
+            ) => true,
+            (
+                Self::KnowledgeIdentifiedCount { .. },
+                crate::events::GameplayEvent::KnowledgeIdentified { .. },
+            ) => true,
+            (
+                Self::KnowledgeStudiedCount { .. },
+                crate::events::GameplayEvent::KnowledgeStudied { .. },
+            ) => true,
             _ => self.matches_point_event(event),
         };
         if !matches {

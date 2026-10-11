@@ -79,12 +79,11 @@ pub struct ElectricalPanel {
 }
 
 impl ElectricalPanel {
-    pub fn new(
-        entity_id: EntityId,
+    pub(crate) fn validate_configuration(
         position: Vec3,
         interaction_range: f32,
-        configuration: ElectricalPanelConfiguration,
-    ) -> Result<Self, ElectricalPanelRegistrationError> {
+        configuration: &ElectricalPanelConfiguration,
+    ) -> Result<(), ElectricalPanelRegistrationError> {
         if !position.x.is_finite() || !position.y.is_finite() || !position.z.is_finite() {
             return Err(ElectricalPanelRegistrationError::InvalidPosition);
         }
@@ -94,25 +93,35 @@ impl ElectricalPanel {
         if configuration.breakers.is_empty() {
             return Err(ElectricalPanelRegistrationError::EmptyConfiguration);
         }
-
         let mut ids = BTreeSet::new();
-        let mut breakers = Vec::with_capacity(configuration.breakers.len());
         let mut solved = true;
-        for definition in configuration.breakers {
+        for definition in &configuration.breakers {
             if !ids.insert(definition.id) {
                 return Err(ElectricalPanelRegistrationError::DuplicateBreakerId);
             }
             solved &= definition.initial_state == definition.target_state;
+        }
+        if solved {
+            return Err(ElectricalPanelRegistrationError::InitiallySolved);
+        }
+        Ok(())
+    }
+
+    pub fn new(
+        entity_id: EntityId,
+        position: Vec3,
+        interaction_range: f32,
+        configuration: ElectricalPanelConfiguration,
+    ) -> Result<Self, ElectricalPanelRegistrationError> {
+        Self::validate_configuration(position, interaction_range, &configuration)?;
+        let mut breakers = Vec::with_capacity(configuration.breakers.len());
+        for definition in configuration.breakers {
             breakers.push(ElectricalBreaker {
                 id: definition.id,
                 state: definition.initial_state,
                 target_state: definition.target_state,
             });
         }
-        if solved {
-            return Err(ElectricalPanelRegistrationError::InitiallySolved);
-        }
-
         Ok(Self {
             entity_id,
             breakers,

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use crate::{
     commands::{CommandResult, CommandStatus, GameplayCommand},
@@ -299,7 +299,7 @@ impl MissionSystem {
             .cloned()
             .collect();
         self.event_cursor = length;
-        let targets: Vec<(ObjectiveId, u32)> = events
+        let targets: BTreeMap<ObjectiveId, u32> = events
             .iter()
             .flat_map(|event| {
                 world.missions().flat_map(move |mission| {
@@ -311,12 +311,15 @@ impl MissionSystem {
                     })
                 })
             })
-            .collect();
-        let mut unique = BTreeSet::new();
+            .fold(BTreeMap::new(), |mut progress, (objective, amount)| {
+                progress
+                    .entry(objective)
+                    .and_modify(|total| *total = total.saturating_add(amount))
+                    .or_insert(amount);
+                progress
+            });
         for (objective, amount) in targets {
-            if unique.insert(objective) {
-                self.advance_from_event(world, objective, amount);
-            }
+            self.advance_from_event(world, objective, amount);
         }
     }
 }
@@ -350,6 +353,10 @@ impl GameplaySystem for MissionSystem {
 
     fn observes_events(&self) -> bool {
         true
+    }
+
+    fn reset_event_cursor(&mut self) {
+        self.event_cursor = 0;
     }
 
     fn observe_events(&mut self, world: &mut GameplayWorld) {
