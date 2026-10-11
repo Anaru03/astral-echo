@@ -85,7 +85,7 @@ impl Shield {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum EnemyArchetype {
     Shielded,
     Shooter,

@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use engine::{EntityId, Vec3};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BreakerId(u16);

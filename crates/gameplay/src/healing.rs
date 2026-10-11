@@ -1,5 +1,5 @@
-use engine::EntityId;
 use crate::types::ItemId;
+use engine::EntityId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HealingEffect {

@@ -22,6 +22,7 @@ impl fmt::Display for EntityId {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EntityRegistry {
     next_id: u64,
+    known: BTreeSet<EntityId>,
     active: BTreeSet<EntityId>,
 }
 
@@ -29,6 +30,7 @@ impl EntityRegistry {
     pub fn new() -> Self {
         Self {
             next_id: 1,
+            known: BTreeSet::new(),
             active: BTreeSet::new(),
         }
     }
@@ -36,6 +38,7 @@ impl EntityRegistry {
     pub fn create(&mut self) -> EntityId {
         let id = EntityId::new(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
+        self.known.insert(id);
         self.active.insert(id);
         id
     }
@@ -46,6 +49,13 @@ impl EntityRegistry {
 
     pub fn deactivate(&mut self, entity: EntityId) -> bool {
         self.active.remove(&entity)
+    }
+
+    pub fn activate(&mut self, entity: EntityId) -> bool {
+        if !self.known.contains(&entity) {
+            return false;
+        }
+        self.active.insert(entity)
     }
 
     pub fn active_count(&self) -> usize {
