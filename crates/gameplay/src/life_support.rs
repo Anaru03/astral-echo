@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use engine::EntityId;
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CompartmentId(u16);

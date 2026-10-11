@@ -8,6 +8,7 @@ use crate::{
     door::{Door, DoorAccessRequirement},
     electrical::{ElectricalPanel, ElectricalPanelConfiguration, ElectricalPanelRegistrationError},
     events::EventLog,
+    integrity::{IntegrityError, ShipIntegrity, StructuralState},
     interaction::{Interactable, InteractionBehavior, InteractionRegistrationError},
     life_support::{LifeSupportConfiguration, LifeSupportPanel, LifeSupportRegistrationError},
     mission::{Mission, MissionRegistrationError},
@@ -36,6 +37,7 @@ pub struct GameplayWorld {
     inventories: BTreeMap<EntityId, Inventory>,
     item_definitions: BTreeMap<crate::types::ItemId, ItemDefinition>,
     collectibles: BTreeMap<EntityId, Collectible>,
+    ship_integrity: BTreeMap<EntityId, ShipIntegrity>,
     events: EventLog,
 }
 
@@ -160,8 +162,98 @@ impl GameplayWorld {
     pub fn travel_state(&self) -> TravelState {
         self.navigation.travel_state()
     }
+    pub fn ship_integrity(&self, ship: EntityId) -> Option<ShipIntegrity> {
+        self.ship_integrity.get(&ship).copied()
+    }
+    pub fn ship_structural_state(&self, ship: EntityId) -> Option<StructuralState> {
+        self.ship_integrity(ship).map(ShipIntegrity::state)
+    }
+    pub fn ship_is_operational(&self, ship: EntityId) -> Option<bool> {
+        self.ship_integrity(ship).map(ShipIntegrity::is_operational)
+    }
+    pub fn ship_is_critical(&self, ship: EntityId) -> Option<bool> {
+        self.ship_integrity(ship).map(ShipIntegrity::is_critical)
+    }
+    pub fn ship_is_destroyed(&self, ship: EntityId) -> Option<bool> {
+        self.ship_integrity(ship).map(ShipIntegrity::is_destroyed)
+    }
+    pub fn ship_position(&self) -> Option<engine::Vec3> {
+        self.navigation
+            .ship_id()
+            .map(|_| self.navigation.current_position())
+    }
+    pub fn ship_orientation(&self) -> Option<crate::navigation::ShipOrientation> {
+        self.navigation
+            .ship_id()
+            .map(|_| self.navigation.orientation())
+    }
+    pub fn ship_velocity(&self) -> Option<engine::Vec3> {
+        self.navigation
+            .ship_id()
+            .map(|_| self.navigation.velocity())
+    }
+    pub fn ship_movement_parameters(&self) -> Option<crate::navigation::ShipMovementParameters> {
+        self.navigation
+            .ship_id()
+            .map(|_| self.navigation.movement_parameters())
+    }
+    pub fn ship_control_active(&self) -> Option<bool> {
+        self.navigation
+            .ship_id()
+            .map(|_| self.navigation.control_active())
+    }
+    pub fn ship_at_rest(&self) -> Option<bool> {
+        self.navigation
+            .ship_id()
+            .map(|_| self.navigation.is_at_rest())
+    }
+    pub fn can_player_control_ship(&self, player: EntityId, station: EntityId) -> bool {
+        let Some(player_state) = self.player(player) else {
+            return false;
+        };
+        if !self.entities.contains(player) || !player_state.is_active {
+            return false;
+        }
+        let Some(ship) = self.navigation.ship_id() else {
+            return false;
+        };
+        if !self.entities.contains(ship) {
+            return false;
+        }
+        let Some(interactable) = self.interactable(station) else {
+            return false;
+        };
+        if !interactable.enabled {
+            return false;
+        }
+        matches!(interactable.behavior, InteractionBehavior::Station { station: value }
+            if value.station_type == StationType::Piloting && value.occupant == Some(player))
+    }
     pub fn initialize_navigation_ship(&mut self, ship: EntityId) {
         self.navigation.initialize_ship(ship);
+    }
+    pub fn initialize_ship_integrity(
+        &mut self,
+        ship: EntityId,
+        maximum: u32,
+        initial: u32,
+        critical_threshold: u32,
+    ) -> Result<(), IntegrityError> {
+        if !self.entities.contains(ship) {
+            return Err(IntegrityError::ShipNotFound);
+        }
+        if self.ship_integrity.contains_key(&ship) {
+            return Err(IntegrityError::AlreadyInitialized);
+        }
+        let integrity = ShipIntegrity::new(ship, maximum, initial, critical_threshold)?;
+        self.ship_integrity.insert(ship, integrity);
+        self.events
+            .push(crate::events::GameplayEvent::ShipIntegrityInitialized {
+                ship,
+                current: initial,
+                maximum,
+            });
+        Ok(())
     }
     pub fn register_destination(
         &mut self,
@@ -512,6 +604,7 @@ impl GameplayWorld {
             self.electrical_panels.remove(&entity);
             self.life_support_panels.remove(&entity);
             self.ship_resources.remove(&entity);
+            self.ship_integrity.remove(&entity);
             if let Some(combatant) = self.combatants.get_mut(&entity) {
                 combatant.active = false;
             }
@@ -580,6 +673,9 @@ impl GameplayWorld {
     }
     pub(crate) fn navigation_mut(&mut self) -> &mut NavigationState {
         &mut self.navigation
+    }
+    pub(crate) fn ship_integrity_mut(&mut self, ship: EntityId) -> Option<&mut ShipIntegrity> {
+        self.ship_integrity.get_mut(&ship)
     }
     pub(crate) fn start_navigation_travel(
         &mut self,

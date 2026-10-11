@@ -1,5 +1,5 @@
-use engine::{Duration, EntityId, Vec3};
 use crate::types::PlayerId;
+use engine::{Duration, EntityId, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Orientation {
