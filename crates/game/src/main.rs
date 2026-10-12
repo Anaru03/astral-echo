@@ -16,6 +16,7 @@ use gameplay::{
     SpatialEncounterKind, SpatialEncounterState, StationType, TravelState,
     WeaponAmmunition, WeaponConfiguration,
 };
+use gameplay::{Derelict, DerelictId, DerelictReward, DerelictState};
 
 fn run_atomicity_regressions() -> Result<(), String> {
     let electrical_configuration = || {
@@ -159,6 +160,332 @@ fn run_command(
         gameplay::CommandStatus::Success { changed: true } => Ok(()),
         status => Err(format!("{label}: resultado inesperado: {status:?}")),
     }
+}
+
+fn run_derelict_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player_a = session.ids.first_player;
+    let player_b = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear explorador B: {error:?}"))?;
+    let player_c = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear explorador C: {error:?}"))?;
+    for player in [player_b, player_c] {
+        session
+            .world_mut()
+            .initialize_inventory(player, 20)
+            .map_err(|error| format!("inicializar inventario del explorador: {error:?}"))?;
+    }
+    let enemy_configuration = EnemyConfiguration {
+        archetype: EnemyArchetype::Shooter,
+        position: Vec3::ZERO,
+        maximum_health: 20,
+        weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)),
+        shield: None,
+        mobility: 1,
+    };
+    let hazard = gameplay::HazardId::new(950);
+    let hazard_encounter = EncounterId::new(950);
+    run_command(
+        &mut session,
+        "registrar peligro del derelicto",
+        GameplayCommand::RegisterEnvironmentalHazard {
+            hazard: EnvironmentalHazard::new(
+                hazard,
+                gameplay::EnvironmentalHazardType::DebrisField,
+                Vec3::ZERO,
+                2.0,
+                7,
+                Duration(10_000),
+                true,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "registrar encuentro del derelicto",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                hazard_encounter,
+                SpatialEncounterKind::Hazard { hazard },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    let derelict_id = DerelictId::new(1);
+    let derelict = Derelict::new(derelict_id, Vec3::ZERO, 2.0)
+        .with_encounter(hazard_encounter)
+        .with_enemy(enemy_configuration)
+        .with_rewards(
+            vec![DerelictReward {
+                item: ItemId(1),
+                amount: 1,
+            }],
+            RewardDistributionPolicy::Shared,
+        );
+    let before = session
+        .update([GameplayCommand::RegisterDerelict { derelict }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| "registrar derelicto no devolvio resultado".to_owned())?;
+    if !matches!(before.status, CommandStatus::Success { changed: true }) {
+        return Err(format!("registro de derelicto rechazado: {:?}", before.status));
+    }
+    if session.world().derelict(derelict_id).is_none_or(|value| {
+        value.state != DerelictState::Undiscovered
+    }) {
+        return Err("el derelicto no comenzo desconocido".to_owned());
+    }
+    let rejected_access = session
+        .update([GameplayCommand::ExploreDerelict {
+            player: player_a,
+            derelict: derelict_id,
+        }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| "acceso previo no devolvio resultado".to_owned())?;
+    if rejected_access.status
+        != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::DerelictNotDiscovered,
+        })
+    {
+        return Err(format!("se accedio antes de descubrir: {:?}", rejected_access.status));
+    }
+    run_command(
+        &mut session,
+        "descubrir derelicto",
+        GameplayCommand::DiscoverDerelict {
+            player: player_a,
+            derelict: derelict_id,
+        },
+    )?;
+    if session.world().derelict(derelict_id).is_none_or(|value| {
+        value.state != DerelictState::Discovered
+    }) {
+        return Err("el descubrimiento del derelicto no fue persistente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "explorar derelicto",
+        GameplayCommand::ExploreDerelict {
+            player: player_a,
+            derelict: derelict_id,
+        },
+    )?;
+    let integrity_before = session
+        .world()
+        .ship_integrity(session.ids.first_ship)
+        .ok_or_else(|| "falta integridad antes del peligro del derelicto".to_owned())?
+        .current();
+    run_command(
+        &mut session,
+        "resolver peligro del derelicto",
+        GameplayCommand::ResolveSpatialEncounter {
+            player: player_a,
+            encounter: hazard_encounter,
+        },
+    )?;
+    let integrity_after = session
+        .world()
+        .ship_integrity(session.ids.first_ship)
+        .ok_or_else(|| "falta integridad despues del peligro del derelicto".to_owned())?
+        .current();
+    if integrity_after >= integrity_before {
+        return Err("el peligro del derelicto no dano la nave".to_owned());
+    }
+    let repeated_hazard = session.update([GameplayCommand::ResolveSpatialEncounter {
+        player: player_a,
+        encounter: hazard_encounter,
+    }]);
+    if repeated_hazard.first().is_none_or(|result| {
+        result.status != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::SpatialEncounterAlreadyResolved,
+        })
+    }) {
+        return Err("el peligro del derelicto pudo resolverse dos veces".to_owned());
+    }
+    let enemy = session
+        .world()
+        .derelict(derelict_id)
+        .and_then(|value| value.spawned_enemy)
+        .ok_or_else(|| "la exploracion no activo un enemigo real".to_owned())?;
+    let before_repeat = session.world().entities().active_count();
+    let repeat = session.update([GameplayCommand::ExploreDerelict {
+        player: player_b,
+        derelict: derelict_id,
+    }]);
+    if repeat.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::DerelictAlreadyExploring,
+            })
+    }) || session.world().entities().active_count() != before_repeat
+    {
+        return Err("la exploracion repetida genero contenido duplicado".to_owned());
+    }
+    run_command(
+        &mut session,
+        "equipar arma del explorador",
+        GameplayCommand::EquipPlayerWeapon {
+            player: player_b,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1_000)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "derrotar enemigo del derelicto",
+        GameplayCommand::AttackEnemy {
+            player: player_b,
+            enemy,
+        },
+    )?;
+    if session.world().derelict(derelict_id).is_none_or(|value| {
+        !value.enemy_defeated || !value.reward_generated
+    }) {
+        return Err("la derrota no resolvio el contenido ni genero loot".to_owned());
+    }
+    let reward = session
+        .world()
+        .derelict(derelict_id)
+        .and_then(|value| value.reward_collectibles.first().copied())
+        .ok_or_else(|| "el derelicto no genero un recolectable".to_owned())?;
+    run_command(
+        &mut session,
+        "recoger loot compartido",
+        GameplayCommand::CollectItem {
+            player: player_c,
+            collectible: reward,
+            amount: 1,
+        },
+    )?;
+    let second_collect = session.update([GameplayCommand::CollectItem {
+        player: player_a,
+        collectible: reward,
+        amount: 1,
+    }]);
+    if second_collect.first().is_none_or(|result| {
+        result.status != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::CollectibleUnavailable,
+        })
+    }) {
+        return Err("el loot compartido pudo recogerse dos veces".to_owned());
+    }
+    run_command(
+        &mut session,
+        "resolver derelicto",
+        GameplayCommand::ResolveDerelict {
+            player: player_a,
+            derelict: derelict_id,
+        },
+    )?;
+    let resolved_repeat = session.update([GameplayCommand::ExploreDerelict {
+        player: player_a,
+        derelict: derelict_id,
+    }]);
+    if resolved_repeat.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::DerelictAlreadyResolved,
+            })
+    }) || session.world().derelicts().count() != 1
+    {
+        return Err("el derelicto resuelto no fue idempotente".to_owned());
+    }
+    let personal_id = DerelictId::new(2);
+    run_command(
+        &mut session,
+        "registrar derelicto personal",
+        GameplayCommand::RegisterDerelict {
+            derelict: Derelict::new(personal_id, Vec3::ZERO, 2.0).with_rewards(
+                vec![DerelictReward {
+                    item: ItemId(3),
+                    amount: 1,
+                }],
+                RewardDistributionPolicy::Personal,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "descubrir derelicto personal",
+        GameplayCommand::DiscoverDerelict {
+            player: player_a,
+            derelict: personal_id,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "explorar derelicto personal",
+        GameplayCommand::ExploreDerelict {
+            player: player_a,
+            derelict: personal_id,
+        },
+    )?;
+    let personal_rewards: Vec<_> = session
+        .world()
+        .derelict(personal_id)
+        .map(|value| value.reward_collectibles.clone())
+        .unwrap_or_default();
+    if personal_rewards.len() != 3 {
+        return Err(format!("recompensas personales inesperadas: {personal_rewards:?}"));
+    }
+    let owned = personal_rewards
+        .iter()
+        .copied()
+        .find(|collectible| session.world().collectible(*collectible).is_some_and(|value| value.owner == Some(player_a)))
+        .ok_or_else(|| "no existe recompensa personal del jugador A".to_owned())?;
+    let foreign = personal_rewards
+        .iter()
+        .copied()
+        .find(|collectible| session.world().collectible(*collectible).is_some_and(|value| value.owner == Some(player_b)))
+        .ok_or_else(|| "no existe recompensa personal del jugador B".to_owned())?;
+    let foreign_result = session.update([GameplayCommand::CollectItem {
+        player: player_a,
+        collectible: foreign,
+        amount: 1,
+    }]);
+    if foreign_result.first().is_none_or(|result| {
+        result.status != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::CollectibleNotOwned,
+        })
+    }) {
+        return Err("se permitio recoger loot personal ajeno".to_owned());
+    }
+    for (player, collectible) in [
+        (player_a, owned),
+        (player_b, foreign),
+        (player_c, personal_rewards[2]),
+    ] {
+        run_command(
+            &mut session,
+            "recoger recompensa personal",
+            GameplayCommand::CollectItem {
+                player,
+                collectible,
+                amount: 1,
+            },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "resolver derelicto personal",
+        GameplayCommand::ResolveDerelict {
+            player: player_a,
+            derelict: personal_id,
+        },
+    )?;
+    if session.world().derelict(personal_id).is_none_or(|value| value.state != DerelictState::Resolved) {
+        return Err("el derelicto personal no quedo resuelto".to_owned());
+    }
+    println!(
+        "DERELICTOS COMPLETADOS: compartido={:?}, personal=3 propietarios, jugadores={:?}",
+        derelict_id, [player_a, player_b, player_c]
+    );
+    Ok(())
 }
 
 fn expect_transfer_rejection(
@@ -3760,5 +4087,6 @@ fn run_scenario() -> Result<(), String> {
     run_autonomous_enemy_scenario()?;
     run_spatial_encounter_scenario()?;
     run_autopilot_scenario()?;
+    run_derelict_scenario()?;
     Ok(())
 }

@@ -1337,6 +1337,327 @@ impl GameplaySystem for EnvironmentalHazardSystem {
 
 pub struct HullIntegritySystem;
 
+pub struct DerelictSystem {
+    event_cursor: usize,
+}
+
+impl DerelictSystem {
+    pub const fn new() -> Self {
+        Self { event_cursor: 0 }
+    }
+
+    fn player_can_access(
+        world: &GameplayWorld,
+        player: engine::EntityId,
+        derelict: &crate::derelict::Derelict,
+    ) -> Result<(), crate::derelict::DerelictCommandError> {
+        let Some(player_state) = world.player(player) else {
+            return Err(crate::derelict::DerelictCommandError::PlayerNotFound);
+        };
+        let Some(combatant) = world.combatant(player) else {
+            return Err(crate::derelict::DerelictCommandError::PlayerInactive);
+        };
+        if !world.entities().contains(player)
+            || !player_state.is_active
+            || !combatant.is_player
+            || combatant.is_defeated()
+        {
+            return Err(crate::derelict::DerelictCommandError::PlayerInactive);
+        }
+        let Some(ship) = world.navigation().ship_id() else {
+            return Err(crate::derelict::DerelictCommandError::ShipNotOperational);
+        };
+        if !world.ship_is_operational(ship).unwrap_or(false) {
+            return Err(crate::derelict::DerelictCommandError::ShipNotOperational);
+        }
+        let Some(position) = world.ship_position() else {
+            return Err(crate::derelict::DerelictCommandError::OutOfRange);
+        };
+        if crate::encounter::distance_squared(position, derelict.position).is_none_or(
+            |distance| {
+                distance
+                    > f64::from(derelict.interaction_range)
+                        * f64::from(derelict.interaction_range)
+            },
+        ) {
+            return Err(crate::derelict::DerelictCommandError::OutOfRange);
+        }
+        Ok(())
+    }
+
+    fn result(error: crate::derelict::DerelictCommandError) -> CommandResult {
+        use crate::commands::CommandRejection;
+        let reason = match error {
+            crate::derelict::DerelictCommandError::NotFound => CommandRejection::DerelictNotFound,
+            crate::derelict::DerelictCommandError::NotDiscovered => {
+                CommandRejection::DerelictNotDiscovered
+            }
+            crate::derelict::DerelictCommandError::AlreadyDiscovered => {
+                CommandRejection::DerelictAlreadyExploring
+            }
+            crate::derelict::DerelictCommandError::AlreadyExploring => {
+                CommandRejection::DerelictAlreadyExploring
+            }
+            crate::derelict::DerelictCommandError::AlreadyResolved => {
+                CommandRejection::DerelictAlreadyResolved
+            }
+            crate::derelict::DerelictCommandError::PlayerNotFound => {
+                CommandRejection::PlayerNotFound
+            }
+            crate::derelict::DerelictCommandError::PlayerInactive => {
+                CommandRejection::DerelictRequiresActivePlayer
+            }
+            crate::derelict::DerelictCommandError::ShipNotOperational => {
+                CommandRejection::DerelictShipNotOperational
+            }
+            crate::derelict::DerelictCommandError::OutOfRange => {
+                CommandRejection::DerelictOutOfRange
+            }
+            crate::derelict::DerelictCommandError::EncounterUnavailable => {
+                CommandRejection::DerelictEncounterUnavailable
+            }
+            crate::derelict::DerelictCommandError::EnemyRegistrationFailed => {
+                CommandRejection::DerelictEnemyRegistrationFailed
+            }
+            crate::derelict::DerelictCommandError::EnemyStillActive => {
+                CommandRejection::DerelictEnemyStillActive
+            }
+            crate::derelict::DerelictCommandError::RewardNotCollected => {
+                CommandRejection::DerelictRewardNotCollected
+            }
+        };
+        CommandResult::rejected(reason)
+    }
+
+    fn discover(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        id: crate::derelict::DerelictId,
+    ) -> CommandResult {
+        let Some(derelict) = world.derelict(id).cloned() else {
+            return Self::result(crate::derelict::DerelictCommandError::NotFound);
+        };
+        if let Err(error) = Self::player_can_access(world, player, &derelict) {
+            return Self::result(error);
+        }
+        if derelict.state != crate::derelict::DerelictState::Undiscovered {
+            return CommandResult::success(false);
+        }
+        if let Some(updated) = world.derelict_mut(id) {
+            updated.state = crate::derelict::DerelictState::Discovered;
+        }
+        world.publish(crate::events::GameplayEvent::DerelictDiscovered {
+            derelict: id,
+            player,
+        });
+        CommandResult::success(true)
+    }
+
+    fn generate_reward(
+        &self,
+        world: &mut GameplayWorld,
+        id: crate::derelict::DerelictId,
+    ) -> Result<(), crate::derelict::DerelictCommandError> {
+        let Some(derelict) = world.derelict(id).cloned() else {
+            return Err(crate::derelict::DerelictCommandError::NotFound);
+        };
+        if derelict.reward_generated {
+            return Ok(());
+        }
+        let created = world
+            .create_derelict_collectibles(id)
+            .map_err(|_| crate::derelict::DerelictCommandError::RewardNotCollected)?;
+        if let Some(updated) = world.derelict_mut(id) {
+            updated.reward_collectibles = created.iter().map(|entry| entry.0).collect();
+            updated.reward_generated = true;
+        }
+        for (collectible, item, amount, owner) in created {
+            world.publish(crate::events::GameplayEvent::CollectibleCreated {
+                collectible,
+                item,
+                amount,
+                position: derelict.position,
+            });
+            world.publish(crate::events::GameplayEvent::DerelictRewardCollectibleCreated {
+                derelict: id,
+                collectible,
+                item,
+                amount,
+                owner,
+            });
+        }
+        Ok(())
+    }
+
+    fn explore(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        id: crate::derelict::DerelictId,
+    ) -> CommandResult {
+        let Some(derelict) = world.derelict(id).cloned() else {
+            return Self::result(crate::derelict::DerelictCommandError::NotFound);
+        };
+        if let Err(error) = Self::player_can_access(world, player, &derelict) {
+            return Self::result(error);
+        }
+        match derelict.state {
+            crate::derelict::DerelictState::Undiscovered => {
+                return Self::result(crate::derelict::DerelictCommandError::NotDiscovered)
+            }
+            crate::derelict::DerelictState::Exploring => {
+                return Self::result(crate::derelict::DerelictCommandError::AlreadyExploring)
+            }
+            crate::derelict::DerelictState::Resolved => {
+                return Self::result(crate::derelict::DerelictCommandError::AlreadyResolved)
+            }
+            crate::derelict::DerelictState::Discovered => {}
+        }
+        if let Some(encounter) = derelict.associated_encounter {
+            let result = SpatialEncounterSystem::activate_for_gameplay(world, encounter);
+            if !matches!(result.status, crate::commands::CommandStatus::Success { .. }) {
+                return Self::result(crate::derelict::DerelictCommandError::EncounterUnavailable);
+            }
+        }
+        let spawned_enemy = if let Some(configuration) = derelict.enemy_configuration {
+            let Ok(enemy) = world.register_enemy(configuration) else {
+                return Self::result(crate::derelict::DerelictCommandError::EnemyRegistrationFailed);
+            };
+            world.publish(crate::events::GameplayEvent::EnemyCreated {
+                enemy,
+                archetype: configuration.archetype,
+                position: configuration.position,
+            });
+            Some(enemy)
+        } else {
+            None
+        };
+        if let Some(updated) = world.derelict_mut(id) {
+            updated.state = crate::derelict::DerelictState::Exploring;
+            updated.spawned_enemy = spawned_enemy;
+            updated.enemy_defeated = spawned_enemy.is_none();
+        }
+        world.publish(crate::events::GameplayEvent::DerelictExplorationStarted {
+            derelict: id,
+            player,
+        });
+        world.publish(crate::events::GameplayEvent::DerelictContentActivated { derelict: id });
+        if spawned_enemy.is_none() && self.generate_reward(world, id).is_err() {
+            return Self::result(crate::derelict::DerelictCommandError::RewardNotCollected);
+        }
+        CommandResult::success(true)
+    }
+
+    fn resolve(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        id: crate::derelict::DerelictId,
+    ) -> CommandResult {
+        let Some(derelict) = world.derelict(id).cloned() else {
+            return Self::result(crate::derelict::DerelictCommandError::NotFound);
+        };
+        if let Err(error) = Self::player_can_access(world, player, &derelict) {
+            return Self::result(error);
+        }
+        if derelict.state == crate::derelict::DerelictState::Resolved {
+            return Self::result(crate::derelict::DerelictCommandError::AlreadyResolved);
+        }
+        if derelict.state != crate::derelict::DerelictState::Exploring {
+            return Self::result(crate::derelict::DerelictCommandError::NotDiscovered);
+        }
+        if derelict.spawned_enemy.is_some() && !derelict.enemy_defeated {
+            return Self::result(crate::derelict::DerelictCommandError::EnemyStillActive);
+        }
+        if !derelict.reward_generated {
+            return Self::result(crate::derelict::DerelictCommandError::RewardNotCollected);
+        }
+        if derelict
+            .reward_collectibles
+            .iter()
+            .any(|collectible| world.collectible(*collectible).is_some_and(|value| value.active))
+        {
+            return Self::result(crate::derelict::DerelictCommandError::RewardNotCollected);
+        }
+        if let Some(updated) = world.derelict_mut(id) {
+            updated.state = crate::derelict::DerelictState::Resolved;
+        }
+        world.publish(crate::events::GameplayEvent::DerelictResolved {
+            derelict: id,
+            player,
+        });
+        CommandResult::success(true)
+    }
+}
+
+impl Default for DerelictSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GameplaySystem for DerelictSystem {
+    fn process(
+        &mut self,
+        world: &mut GameplayWorld,
+        command: GameplayCommand,
+    ) -> Option<CommandResult> {
+        match command {
+            GameplayCommand::RegisterDerelict { derelict } => Some(match world.register_derelict(derelict) {
+                Ok(()) => CommandResult::success(true),
+                Err(crate::derelict::DerelictError::DuplicateId) => CommandResult::rejected(
+                    crate::commands::CommandRejection::DerelictAlreadyRegistered,
+                ),
+                Err(crate::derelict::DerelictError::EncounterNotFound) => CommandResult::rejected(
+                    crate::commands::CommandRejection::DerelictEncounterUnavailable,
+                ),
+                Err(_) => CommandResult::invalid(
+                    crate::commands::CommandInvalidity::InvalidDerelictConfiguration,
+                ),
+            }),
+            GameplayCommand::DiscoverDerelict { player, derelict } => {
+                Some(self.discover(world, player, derelict))
+            }
+            GameplayCommand::ExploreDerelict { player, derelict } => {
+                Some(self.explore(world, player, derelict))
+            }
+            GameplayCommand::ResolveDerelict { player, derelict } => {
+                Some(self.resolve(world, player, derelict))
+            }
+            _ => None,
+        }
+    }
+
+    fn observes_events(&self) -> bool {
+        true
+    }
+
+    fn observe_events(&mut self, world: &mut GameplayWorld) {
+        let length = world.events().len();
+        if self.event_cursor > length {
+            self.event_cursor = 0;
+        }
+        let events: Vec<_> = world.events().iter().skip(self.event_cursor).cloned().collect();
+        self.event_cursor = length;
+        for event in events {
+            if let crate::events::GameplayEvent::EnemyDefeated { enemy, .. } = event {
+                let ids: Vec<_> = world
+                    .derelicts()
+                    .filter(|derelict| derelict.spawned_enemy == Some(enemy))
+                    .map(|derelict| derelict.id)
+                    .collect();
+                for id in ids {
+                    if let Some(updated) = world.derelict_mut(id) {
+                        updated.enemy_defeated = true;
+                    }
+                    let _ = self.generate_reward(world, id);
+                }
+            }
+        }
+    }
+}
+
 pub struct SpatialEncounterSystem {
     event_cursor: usize,
 }
@@ -1344,6 +1665,13 @@ pub struct SpatialEncounterSystem {
 impl SpatialEncounterSystem {
     pub const fn new() -> Self {
         Self { event_cursor: 0 }
+    }
+
+    pub(crate) fn activate_for_gameplay(
+        world: &mut GameplayWorld,
+        id: crate::encounter::EncounterId,
+    ) -> CommandResult {
+        Self::new().activate(world, id)
     }
 
     fn within_range(world: &GameplayWorld, encounter: &crate::encounter::SpatialEncounter) -> bool {

@@ -6,6 +6,7 @@ use crate::{
     combat::{Combatant, EnemyConfiguration},
     components::{Inventory, InventoryError},
     door::{Door, DoorAccessRequirement},
+    derelict::{Derelict, DerelictError, DerelictId},
     electrical::{ElectricalPanel, ElectricalPanelConfiguration, ElectricalPanelRegistrationError},
     encounter::{EncounterId, SpatialEncounter, SpatialEncounterError, SpatialEncounterKind},
     events::EventLog,
@@ -69,6 +70,7 @@ pub struct GameplayWorld {
     ship_integrity: BTreeMap<EntityId, ShipIntegrity>,
     environmental_hazards: BTreeMap<HazardId, EnvironmentalHazard>,
     spatial_encounters: BTreeMap<EncounterId, SpatialEncounter>,
+    derelicts: BTreeMap<DerelictId, Derelict>,
     enemy_rewards: BTreeMap<crate::combat::EnemyArchetype, EnemyReward>,
     processed_enemy_rewards: BTreeSet<EntityId>,
     knowledge: BTreeMap<KnowledgeTarget, KnowledgeState>,
@@ -517,6 +519,39 @@ impl GameplayWorld {
     }
     pub fn spatial_encounters(&self) -> impl Iterator<Item = &SpatialEncounter> {
         self.spatial_encounters.values()
+    }
+    pub fn derelict(&self, id: DerelictId) -> Option<&Derelict> {
+        self.derelicts.get(&id)
+    }
+    pub fn derelicts(&self) -> impl Iterator<Item = &Derelict> {
+        self.derelicts.values()
+    }
+    pub fn register_derelict(&mut self, derelict: Derelict) -> Result<(), DerelictError> {
+        derelict.validate()?;
+        if self.derelicts.contains_key(&derelict.id) {
+            return Err(DerelictError::DuplicateId);
+        }
+        if let Some(encounter) = derelict.associated_encounter {
+            if self.spatial_encounter(encounter).is_none() {
+                return Err(DerelictError::EncounterNotFound);
+            }
+        }
+        for reward in &derelict.rewards {
+            let Some(definition) = self.item_definition(reward.item) else {
+                return Err(DerelictError::ItemDefinitionNotFound);
+            };
+            if reward.amount > definition.max_stack {
+                return Err(DerelictError::InvalidReward);
+            }
+        }
+        let id = derelict.id;
+        let position = derelict.position;
+        self.derelicts.insert(id, derelict);
+        self.publish(crate::events::GameplayEvent::DerelictRegistered {
+            derelict: id,
+            position,
+        });
+        Ok(())
     }
     pub fn register_spatial_encounter(
         &mut self,
@@ -1527,6 +1562,86 @@ impl GameplayWorld {
         encounter: EncounterId,
     ) -> Option<&mut SpatialEncounter> {
         self.spatial_encounters.get_mut(&encounter)
+    }
+    pub(crate) fn derelict_mut(&mut self, id: DerelictId) -> Option<&mut Derelict> {
+        self.derelicts.get_mut(&id)
+    }
+    pub(crate) fn create_owned_collectible(
+        &mut self,
+        item: crate::types::ItemId,
+        amount: u32,
+        position: engine::Vec3,
+        interaction_range: f32,
+        owner: Option<EntityId>,
+    ) -> Result<EntityId, CollectibleError> {
+        let Some(definition) = self.item_definitions.get(&item) else {
+            return Err(CollectibleError::ItemNotFound);
+        };
+        if amount > definition.max_stack {
+            return Err(CollectibleError::InvalidAmount);
+        }
+        if let Some(owner) = owner {
+            if !self.players.contains_key(&owner) {
+                return Err(CollectibleError::EntityNotFound);
+            }
+        }
+        Collectible::validate_configuration(amount, position, interaction_range)?;
+        let entity = self.entities.create();
+        self.collectibles.insert(
+            entity,
+            Collectible {
+                entity,
+                item,
+                amount,
+                position,
+                interaction_range,
+                owner,
+                active: true,
+            },
+        );
+        Ok(entity)
+    }
+    pub(crate) fn create_derelict_collectibles(
+        &mut self,
+        derelict: DerelictId,
+    ) -> Result<Vec<(EntityId, crate::types::ItemId, u32, Option<EntityId>)>, DerelictError> {
+        let definition = self
+            .derelict(derelict)
+            .cloned()
+            .ok_or(DerelictError::DuplicateId)?;
+        let owners: Vec<Option<EntityId>> = match definition.distribution {
+            crate::reward::RewardDistributionPolicy::Shared => vec![None],
+            crate::reward::RewardDistributionPolicy::Personal => self
+                .players
+                .iter()
+                .filter(|(player, value)| self.entities.contains(**player) && value.is_active)
+                .map(|(player, _)| Some(*player))
+                .collect(),
+        };
+        for reward in &definition.rewards {
+            let Some(item) = self.item_definition(reward.item) else {
+                return Err(DerelictError::ItemDefinitionNotFound);
+            };
+            if reward.amount == 0 || reward.amount > item.max_stack {
+                return Err(DerelictError::InvalidReward);
+            }
+        }
+        let mut created = Vec::new();
+        for reward in &definition.rewards {
+            for owner in &owners {
+                let entity = self
+                    .create_owned_collectible(
+                        reward.item,
+                        reward.amount,
+                        definition.position,
+                        definition.interaction_range,
+                        *owner,
+                    )
+                    .map_err(|_| DerelictError::InvalidReward)?;
+                created.push((entity, reward.item, reward.amount, *owner));
+            }
+        }
+        Ok(created)
     }
     pub(crate) fn repair_ship_at_station(
         &mut self,

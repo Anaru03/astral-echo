@@ -456,6 +456,32 @@ pub enum GameplayEvent {
     SpatialEncounterResolved {
         encounter: crate::encounter::EncounterId,
     },
+    DerelictRegistered {
+        derelict: crate::derelict::DerelictId,
+        position: Vec3,
+    },
+    DerelictDiscovered {
+        derelict: crate::derelict::DerelictId,
+        player: EntityId,
+    },
+    DerelictExplorationStarted {
+        derelict: crate::derelict::DerelictId,
+        player: EntityId,
+    },
+    DerelictContentActivated {
+        derelict: crate::derelict::DerelictId,
+    },
+    DerelictRewardCollectibleCreated {
+        derelict: crate::derelict::DerelictId,
+        collectible: EntityId,
+        item: ItemId,
+        amount: u32,
+        owner: Option<EntityId>,
+    },
+    DerelictResolved {
+        derelict: crate::derelict::DerelictId,
+        player: EntityId,
+    },
     ShipDamagedByHazard {
         hazard: crate::hazard::HazardId,
         hazard_type: crate::hazard::EnvironmentalHazardType,

@@ -2,6 +2,7 @@ pub mod collectible;
 pub mod combat;
 pub mod commands;
 pub mod components;
+pub mod derelict;
 pub mod domains;
 pub mod door;
 pub mod electrical;
@@ -43,6 +44,7 @@ pub use commands::{
 };
 pub use components::{Health, Inventory, InventoryError, ResourceAmount};
 pub use door::{Door, DoorAccessRequirement, DoorRole, DoorTransitionError};
+pub use derelict::{Derelict, DerelictCommandError, DerelictError, DerelictId, DerelictReward, DerelictState};
 pub use electrical::{
     BreakerId, BreakerState, ElectricalBreaker, ElectricalBreakerConfiguration, ElectricalPanel,
     ElectricalPanelConfiguration, ElectricalPanelProgress, ElectricalPanelRegistrationError,
@@ -96,6 +98,7 @@ pub use systems::{
     CombatSystem, DoorSystem, ElectricalSystem, EnemyAiSystem, EnvironmentalHazardSystem,
     HullIntegritySystem, InteractionSystem, InventorySystem, LifeSupportSystem, NavigationSystem,
     PilotSystem, ResourceSystem, ScannerSystem, SpatialEncounterSystem, StationSystem,
+    DerelictSystem,
 };
 pub use types::{GameResult, GameplayState, SimulationPhase};
 pub use world::{GameplayWorld, InventoryTransferError, PlayerCreationError, MAX_LOCAL_PLAYERS};

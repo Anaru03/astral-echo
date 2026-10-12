@@ -1,5 +1,6 @@
 use crate::collectible::ItemDefinition;
 use crate::combat::{EnemyConfiguration, WeaponConfiguration};
+use crate::derelict::Derelict;
 use crate::electrical::{BreakerId, BreakerState, ElectricalPanelConfiguration};
 use crate::encounter::{EncounterId, SpatialEncounter};
 use crate::knowledge::KnowledgeTarget;
@@ -248,6 +249,21 @@ pub enum GameplayCommand {
         player: EntityId,
         encounter: EncounterId,
     },
+    RegisterDerelict {
+        derelict: Derelict,
+    },
+    DiscoverDerelict {
+        player: EntityId,
+        derelict: crate::derelict::DerelictId,
+    },
+    ExploreDerelict {
+        player: EntityId,
+        derelict: crate::derelict::DerelictId,
+    },
+    ResolveDerelict {
+        player: EntityId,
+        derelict: crate::derelict::DerelictId,
+    },
     LockDoor {
         door: EntityId,
     },
@@ -387,6 +403,18 @@ pub enum CommandRejection {
     SpatialEncounterRequiresScanner,
     SpatialEncounterRequiresActivePlayer,
     SpatialEncounterResolutionFailed,
+    DerelictNotFound,
+    DerelictAlreadyRegistered,
+    DerelictNotDiscovered,
+    DerelictAlreadyExploring,
+    DerelictAlreadyResolved,
+    DerelictOutOfRange,
+    DerelictRequiresActivePlayer,
+    DerelictShipNotOperational,
+    DerelictEncounterUnavailable,
+    DerelictEnemyRegistrationFailed,
+    DerelictEnemyStillActive,
+    DerelictRewardNotCollected,
     NavigationRouteAlreadyRegistered,
     NavigationRouteNotFound,
     NavigationRouteNotDiscovered,
@@ -421,6 +449,7 @@ pub enum CommandInvalidity {
     InvalidRevivalConfiguration,
     InvalidSpatialEncounterConfiguration,
     InvalidNavigationRouteConfiguration,
+    InvalidDerelictConfiguration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
