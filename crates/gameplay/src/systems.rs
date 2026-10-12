@@ -1998,6 +1998,17 @@ impl SpatialEncounterSystem {
         };
         updated.state = crate::encounter::SpatialEncounterState::Active;
         updated.spawned_enemy = spawned_enemy;
+        if matches!(
+            updated.kind,
+            crate::encounter::SpatialEncounterKind::Hostile { .. }
+        ) && matches!(
+            world.autopilot_state(),
+            crate::navigation::AutopilotState::InTransit { .. }
+        ) {
+            world
+                .navigation_mut()
+                .set_autopilot_continuation_authorized(false);
+        }
         world.publish(crate::events::GameplayEvent::SpatialEncounterActivated { encounter: id });
         CommandResult::success(true)
     }
@@ -2676,6 +2687,31 @@ impl NavigationSystem {
         }
     }
 
+    fn continue_autopilot(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        pilot_station: engine::EntityId,
+    ) -> CommandResult {
+        if let Err(result) = self.validate_pilot_access(world, player, pilot_station) {
+            return result;
+        }
+        if matches!(
+            world.autopilot_state(),
+            crate::navigation::AutopilotState::InTransit { .. }
+        ) && matches!(
+            world.navigation().travel_state(),
+            crate::navigation::TravelState::InProgress { .. }
+        ) {
+            world
+                .navigation_mut()
+                .set_autopilot_continuation_authorized(true);
+            CommandResult::success(true)
+        } else {
+            CommandResult::rejected(crate::commands::CommandRejection::AutopilotNotInTransit)
+        }
+    }
+
     fn cancel_autopilot(
         &self,
         world: &mut GameplayWorld,
@@ -2719,6 +2755,19 @@ impl NavigationSystem {
             else {
                 continue;
             };
+            let waiting_for_encounter_decision = !world
+                .navigation()
+                .autopilot_continuation_authorized()
+                && world.spatial_encounters().any(|encounter| {
+                    encounter.state == crate::encounter::SpatialEncounterState::Active
+                        && matches!(
+                            encounter.kind,
+                            crate::encounter::SpatialEncounterKind::Hostile { .. }
+                        )
+                });
+            if waiting_for_encounter_decision {
+                continue;
+            }
             let deadline = started_at.0.saturating_add(duration.0);
             if to.elapsed.0 < deadline {
                 continue;
@@ -2855,6 +2904,10 @@ impl GameplaySystem for NavigationSystem {
                 player,
                 pilot_station,
             } => self.start_autopilot(world, player, pilot_station),
+            GameplayCommand::ContinueAutopilot {
+                player,
+                pilot_station,
+            } => self.continue_autopilot(world, player, pilot_station),
             GameplayCommand::CancelAutopilot {
                 player,
                 pilot_station,

@@ -1359,6 +1359,431 @@ fn run_derelict_exploration_flow_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_exploration_continuity_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let station_a = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estaci\u{00f3}n A: {error:?}"))?;
+    run_command(
+        &mut session,
+        "registrar ERICK para continuidad",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no qued\u{00f3} registrado para continuidad".to_owned())?;
+    let destination_a = DestinationId::new(5_401);
+    let destination_b = DestinationId::new(5_402);
+    let destination_c = DestinationId::new(5_403);
+    let position_b = Vec3 { x: 10.0, y: 0.0, z: 0.0 };
+    let position_c = Vec3 { x: 20.0, y: 0.0, z: 0.0 };
+    for (id, position, discovery) in [
+        (destination_a, Vec3::ZERO, DiscoveryState::Discovered),
+        (destination_b, position_b, DiscoveryState::Known),
+        (destination_c, position_c, DiscoveryState::Discovered),
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de continuidad",
+            GameplayCommand::RegisterDestination {
+                destination: Destination {
+                    id,
+                    destination_type: DestinationType::Planet,
+                    position,
+                    travel_duration: Duration(5),
+                    fuel_cost: 1,
+                    discovery,
+                },
+            },
+        )?;
+    }
+    let derelict = DerelictId::new(5_402);
+    run_command(
+        &mut session,
+        "registrar derelict en B",
+        GameplayCommand::RegisterDerelict {
+            derelict: Derelict::new(derelict, position_b, 2.0)
+                .with_enemy(EnemyConfiguration {
+                    archetype: EnemyArchetype::Shooter,
+                    position: position_b,
+                    maximum_health: 20,
+                    weapon: WeaponConfiguration::new(
+                        AttackType::Energy,
+                        1,
+                        1,
+                        Duration(1_000),
+                    ),
+                    shield: None,
+                    mobility: 1,
+                })
+                .with_rewards(
+                    vec![DerelictReward {
+                        item: ItemId(3),
+                        amount: 1,
+                    }],
+                    RewardDistributionPolicy::Shared,
+                ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estaci\u{00f3}n A",
+        GameplayCommand::Interact {
+            player,
+            target: station_a,
+        },
+    )?;
+    let fuel_before_b = session
+        .world()
+        .ship_fuel(session.ids.first_ship)
+        .ok_or_else(|| "falta combustible antes del viaje A-B".to_owned())?
+        .current();
+    run_command(
+        &mut session,
+        "seleccionar B",
+        GameplayCommand::SelectDestination {
+            player,
+            pilot_station: station_a,
+            destination: destination_b,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "viajar de A a B",
+        GameplayCommand::StartTravel {
+            player,
+            pilot_station: station_a,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "llegar a B",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(5),
+        },
+    )?;
+    let fuel_after_b = session
+        .world()
+        .ship_fuel(session.ids.first_ship)
+        .ok_or_else(|| "falta combustible al llegar a B".to_owned())?
+        .current();
+    if session.world().ship_position() != Some(position_b)
+        || fuel_after_b + 1 != fuel_before_b
+        || session.world().destination(destination_b).map(|value| value.discovery)
+            != Some(DiscoveryState::Discovered)
+        || !matches!(
+            session.world().travel_state(),
+            TravelState::Completed { destination } if destination == destination_b
+        )
+    {
+        return Err("el viaje A-B no produjo un estado coherente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "registrar ruta A-B despu\u{00e9}s del descubrimiento",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: destination_a,
+                to: destination_b,
+                distance: 10.0,
+                duration: Duration(5),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    let station_b = session
+        .create_station(position_b, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estaci\u{00f3}n B: {error:?}"))?;
+    run_command(
+        &mut session,
+        "mover jugador a B",
+        GameplayCommand::MovePlayer {
+            player,
+            direction: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+            delta: Duration(2_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estaci\u{00f3}n B",
+        GameplayCommand::Interact {
+            player,
+            target: station_b,
+        },
+    )?;
+    let before_discovery = session.world().derelict(derelict).cloned();
+    if before_discovery.is_none_or(|value| value.state != DerelictState::Undiscovered) {
+        return Err("el derelict no comenz\u{00f3} desconocido en B".to_owned());
+    }
+    let premature_explore = session.update([GameplayCommand::ExploreDerelict { player, derelict }]);
+    if premature_explore.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::DerelictNotDiscovered,
+            })
+    }) {
+        return Err("el acceso prematuro al derelict no fue rechazado".to_owned());
+    }
+    run_command(
+        &mut session,
+        "descubrir derelict en B",
+        GameplayCommand::DiscoverDerelict { player, derelict },
+    )?;
+    if session.world().derelict(derelict).map(|value| value.state)
+        != Some(DerelictState::Discovered)
+    {
+        return Err("el derelict no qued\u{00f3} descubierto".to_owned());
+    }
+    run_command(
+        &mut session,
+        "explorar derelict en B",
+        GameplayCommand::ExploreDerelict { player, derelict },
+    )?;
+    let spawned_enemy = session
+        .world()
+        .derelict(derelict)
+        .and_then(|value| value.spawned_enemy)
+        .ok_or_else(|| "el derelict no gener\u{00f3} un enemigo real".to_owned())?;
+    run_command(
+        &mut session,
+        "equipar arma en B",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1_000)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "derrotar enemigo del derelict",
+        GameplayCommand::AttackEnemy {
+            player,
+            enemy: spawned_enemy,
+        },
+    )?;
+    let reward = session
+        .world()
+        .derelict(derelict)
+        .and_then(|value| value.reward_collectibles.first().copied())
+        .ok_or_else(|| "el derelict no gener\u{00f3} recompensa".to_owned())?;
+    run_command(
+        &mut session,
+        "recoger recompensa del derelict",
+        GameplayCommand::CollectItem {
+            player,
+            collectible: reward,
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "resolver derelict en B",
+        GameplayCommand::ResolveDerelict { player, derelict },
+    )?;
+    if session.world().derelict(derelict).map(|value| value.state)
+        != Some(DerelictState::Resolved)
+        || !session
+            .world()
+            .combatant(spawned_enemy)
+            .is_some_and(|value| value.is_defeated())
+        || session.world().collectible(reward).is_none_or(|value| value.active)
+        || session
+            .world()
+            .inventory(player)
+            .is_none_or(|value| value.quantity(ItemId(3)) != 1)
+    {
+        return Err("el derelict no qued\u{00f3} resuelto con recompensa consumida".to_owned());
+    }
+    let resolved_state = session.save_state().serialize();
+    let repeat_resolution = session.update([GameplayCommand::ResolveDerelict { player, derelict }]);
+    if repeat_resolution.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::DerelictAlreadyResolved,
+            })
+    }) || session.save_state().serialize() != resolved_state
+    {
+        return Err("resolver nuevamente el derelict no respet\u{00f3} la idempotencia".to_owned());
+    }
+    run_command(
+        &mut session,
+        "registrar ruta B-C",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: destination_b,
+                to: destination_c,
+                distance: 10.0,
+                duration: Duration(5),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar autopilot B-C",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station_b,
+            origin: destination_b,
+            destination: destination_c,
+        },
+    )?;
+    let planned_state = session.save_state().serialize();
+    let navigation_one = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar ruta B-C: {error:?}"))?
+        .ok_or_else(|| "ERICK no evalu\u{00f3} la ruta B-C".to_owned())?;
+    let navigation_two = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("repetir evaluaci\u{00f3}n B-C: {error:?}"))?
+        .ok_or_else(|| "ERICK perdi\u{00f3} la ruta B-C".to_owned())?;
+    if navigation_one != navigation_two
+        || navigation_one.recommendation
+            != Some(gameplay::NavigationAdvice::StartPlannedAutopilot {
+                destination: destination_c,
+            })
+        || navigation_one.route.as_slice() != [destination_b, destination_c]
+        || session.save_state().serialize() != planned_state
+    {
+        return Err("la recomendaci\u{00f3}n B-C no fue determinista o mut\u{00f3} el autopilot".to_owned());
+    }
+    run_command(
+        &mut session,
+        "iniciar autopilot B-C",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station_b,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "llegar a C",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(5),
+        },
+    )?;
+    let fuel_at_c = session
+        .world()
+        .ship_fuel(session.ids.first_ship)
+        .ok_or_else(|| "falta combustible al llegar a C".to_owned())?
+        .current();
+    if session.world().ship_position() != Some(position_c)
+        || session.world().destination(destination_c).map(|value| value.discovery)
+            != Some(DiscoveryState::Discovered)
+        || !matches!(
+            session.world().autopilot_state(),
+            AutopilotState::Completed { destination } if *destination == destination_c
+        )
+        || session.world().derelict(derelict).map(|value| value.state)
+            != Some(DerelictState::Resolved)
+    {
+        return Err("la llegada a C no conserv\u{00f3} el estado de exploraci\u{00f3}n".to_owned());
+    }
+    let guidance_before = session
+        .world()
+        .guidance_for_player(player)
+        .map_err(|error| format!("consultar guidance en C: {error:?}"))?;
+    let exploration_before = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("consultar exploraci\u{00f3}n en C: {error:?}"))?;
+    let derived_state = session.save_state().serialize();
+    let guidance_after = session
+        .world()
+        .guidance_for_player(player)
+        .map_err(|error| format!("repetir guidance en C: {error:?}"))?;
+    let exploration_after = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("repetir exploraci\u{00f3}n en C: {error:?}"))?;
+    if guidance_before != guidance_after
+        || exploration_before != exploration_after
+        || session.save_state().serialize() != derived_state
+    {
+        return Err("guidance o ERICK no fueron deterministas en C".to_owned());
+    }
+    let checkpoint = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&checkpoint)
+        .map_err(|error| format!("deserializar continuidad B-C: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar continuidad B-C: {error}"))?;
+    if restored.world().destination(destination_b).map(|value| value.discovery)
+            != Some(DiscoveryState::Discovered)
+        || restored.world().destination(destination_c).map(|value| value.discovery)
+            != Some(DiscoveryState::Discovered)
+        || restored.world().ship_position() != Some(position_c)
+        || restored.world().ship_fuel(restored.ids.first_ship).map(|value| value.current())
+            != Some(fuel_at_c)
+        || restored.world().navigation_route(destination_b, destination_c).is_none()
+        || restored.world().derelict(derelict).map(|value| value.state)
+            != Some(DerelictState::Resolved)
+        || !restored
+            .world()
+            .combatant(spawned_enemy)
+            .is_some_and(|value| value.is_defeated())
+        || restored.world().collectible(reward).is_none_or(|value| value.active)
+        || restored
+            .world()
+            .inventory(player)
+            .is_none_or(|value| value.quantity(ItemId(3)) != 1)
+    {
+        return Err("la restauraci\u{00f3}n no conserv\u{00f3} la continuidad B-C".to_owned());
+    }
+    let restored_exploration = restored
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("evaluar exploraci\u{00f3}n restaurada: {error:?}"))?;
+    if restored_exploration
+        != restored
+            .world()
+            .companion_exploration_assessment(erick.entity)
+            .map_err(|error| format!("repetir exploraci\u{00f3}n restaurada: {error:?}"))?
+        || restored.save_state().serialize() != checkpoint
+    {
+        return Err("la evaluaci\u{00f3}n restaurada no fue determinista".to_owned());
+    }
+    let restored_inventory = restored
+        .world()
+        .inventory(player)
+        .map(|value| value.quantity(ItemId(3)));
+    let restored_collectible = restored.world().collectible(reward).map(|value| (value.active, value.amount));
+    let restored_repeat = restored.update([GameplayCommand::ResolveDerelict { player, derelict }]);
+    if restored_repeat.first().is_none_or(|result| {
+        !matches!(result.status, CommandStatus::Rejected { .. })
+    })
+        || restored.world().inventory(player).map(|value| value.quantity(ItemId(3)))
+            != restored_inventory
+        || restored.world().collectible(reward).map(|value| (value.active, value.amount))
+            != restored_collectible
+    {
+        return Err(format!(
+            "el derelict restaurado pudo producir contenido otra vez: resultado={:?}, inventario={:?}/{:?}, collectible={:?}/{:?}",
+            restored_repeat.first().map(|result| &result.status),
+            restored_inventory,
+            restored.world().inventory(player).map(|value| value.quantity(ItemId(3))),
+            restored_collectible,
+            restored.world().collectible(reward).map(|value| (value.active, value.amount))
+        ));
+    }
+    println!(
+        "CONTINUIDAD DE EXPLORACION COMPLETADA: A={:?}, B={:?}, C={:?}, derelict=Resolved, enemigo_derrotado=true, ruta_BC=true, destino_final={:?}, restaurado=true",
+        destination_a, destination_b, destination_c, restored.world().ship_position()
+    );
+    Ok(())
+}
+
 fn run_functional_world_scenario() -> Result<(), String> {
     let mut session = ProjectEchoSession::new();
     let player_a = session.ids.first_player;
@@ -3824,6 +4249,1301 @@ fn run_autopilot_scenario() -> Result<(), String> {
     println!(
         "AUTOPILOT COMPLETADO: ruta={:?}, eta=8, combustible={}→{}, destino_final={:?}, hostil_resuelto=true",
         [second, first, home], fuel_before, fuel_after, home
+    );
+    Ok(())
+}
+
+fn run_autopilot_interruption_recovery_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estaci\u{00f3}n de interrupci\u{00f3}n: {error:?}"))?;
+    run_command(
+        &mut session,
+        "registrar ERICK para interrupci\u{00f3}n",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no qued\u{00f3} registrado".to_owned())?;
+    let origin = DestinationId::new(8_201);
+    let destination = DestinationId::new(8_202);
+    let destination_position = Vec3 { x: 30.0, y: 0.0, z: 0.0 };
+    for (id, position) in [(origin, Vec3::ZERO), (destination, destination_position)] {
+        run_command(
+            &mut session,
+            "registrar destino de interrupci\u{00f3}n",
+            GameplayCommand::RegisterDestination {
+                destination: Destination {
+                    id,
+                    destination_type: DestinationType::Planet,
+                    position,
+                    travel_duration: Duration(10),
+                    fuel_cost: 1,
+                    discovery: DiscoveryState::Discovered,
+                },
+            },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar ruta de interrupci\u{00f3}n",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: origin,
+                to: destination,
+                distance: 30.0,
+                duration: Duration(10),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estaci\u{00f3}n de interrupci\u{00f3}n",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    let fuel_before = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "falta combustible inicial".to_owned())?
+        .current();
+    run_command(
+        &mut session,
+        "planificar autopilot interrumpible",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar autopilot interrumpible",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let fuel_after_start = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "falta combustible tras iniciar autopilot".to_owned())?
+        .current();
+    if fuel_before - fuel_after_start != 1
+        || !matches!(session.world().autopilot_state(), AutopilotState::InTransit { .. })
+    {
+        return Err("el autopilot no inici\u{00f3} con el consumo esperado".to_owned());
+    }
+    run_command(
+        &mut session,
+        "avanzar autopilot antes del da\u{00f1}o",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(2),
+        },
+    )?;
+    if session.world().ship_position() != Some(Vec3::ZERO)
+        || !matches!(session.world().travel_state(), TravelState::InProgress { .. })
+    {
+        return Err("el autopilot avanz\u{00f3} sin completar el primer tramo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "destruir nave durante autopilot",
+        GameplayCommand::DamageShip { ship, amount: 100 },
+    )?;
+    let fuel_after_interruption = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "falta combustible tras la interrupci\u{00f3}n".to_owned())?
+        .current();
+    if !matches!(
+        session.world().autopilot_state(),
+        AutopilotState::Interrupted { destination: value } if *value == destination
+    ) || !matches!(
+        session.world().travel_state(),
+        TravelState::Cancelled { destination: value } if value == destination
+    )
+        || session.world().ship_position() != Some(Vec3::ZERO)
+        || fuel_after_interruption != fuel_after_start
+        || session
+            .world()
+            .ship_integrity(ship)
+            .is_none_or(|value| !value.is_destroyed())
+    {
+        return Err("la destrucci\u{00f3}n no interrumpi\u{00f3} autopilot de forma coherente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "avanzar tiempo tras interrupci\u{00f3}n",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        },
+    )?;
+    if !matches!(session.world().autopilot_state(), AutopilotState::Interrupted { .. })
+        || session.world().ship_position() != Some(Vec3::ZERO)
+        || session.world().ship_fuel(ship).map(|value| value.current())
+            != Some(fuel_after_interruption)
+    {
+        return Err("el viaje continu\u{00f3} tras la interrupci\u{00f3}n".to_owned());
+    }
+    let restart = session
+        .update([GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| "reinicio posterior a destrucci\u{00f3}n sin resultado".to_owned())?;
+    if restart.status
+        != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::ShipDestroyed,
+        })
+    {
+        return Err(format!("el autopilot destruido no fue rechazado: {:?}", restart.status));
+    }
+    let engineering = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Engineering)
+        .map_err(|error| format!("crear estaci\u{00f3}n de reparaci\u{00f3}n: {error:?}"))?;
+    run_command(
+        &mut session,
+        "agregar material para intento de reparaci\u{00f3}n",
+        GameplayCommand::AddInventoryItem {
+            player,
+            item: ItemId(1),
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estaci\u{00f3}n de ingenier\u{00eda}",
+        GameplayCommand::Interact {
+            player,
+            target: engineering,
+        },
+    )?;
+    let repair = session
+        .update([GameplayCommand::RepairShipAtStation {
+            player,
+            ship,
+            station: engineering,
+        }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| "reparaci\u{00f3}n de nave destruida sin resultado".to_owned())?;
+    if repair.status
+        != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::ShipDestroyed,
+        })
+    {
+        return Err(format!("la reparaci\u{00f3}n incompatible no fue rechazada: {:?}", repair.status));
+    }
+    let before_assessments = session.save_state().serialize();
+    let navigation_one = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar navegaci\u{00f3}n interrumpida: {error:?}"))?;
+    let maintenance_one = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("evaluar mantenimiento interrumpido: {error:?}"))?;
+    let navigation_two = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("repetir navegaci\u{00f3}n interrumpida: {error:?}"))?;
+    let maintenance_two = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("repetir mantenimiento interrumpido: {error:?}"))?;
+    if navigation_one != navigation_two
+        || maintenance_one != maintenance_two
+        || !maintenance_one.as_ref().is_some_and(|value| {
+            value.hull == gameplay::HullCondition::Destroyed
+                && value.recommendation
+                    == Some(gameplay::MaintenanceRecommendation::AvoidShipActivity { ship })
+        })
+        || session.save_state().serialize() != before_assessments
+    {
+        return Err("ERICK no reflej\u{00f3} de forma determinista la nave destruida".to_owned());
+    }
+    let restored_before = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&restored_before)
+        .map_err(|error| format!("deserializar autopilot interrumpido: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar autopilot interrumpido: {error}"))?;
+    if restored.world().ship_position() != Some(Vec3::ZERO)
+        || restored.world().ship_fuel(restored.ids.first_ship).map(|value| value.current())
+            != Some(fuel_after_interruption)
+        || restored
+            .world()
+            .ship_integrity(restored.ids.first_ship)
+            .is_none_or(|value| !value.is_destroyed())
+        || restored.world().destination(destination).is_none()
+        || restored.world().navigation_route(origin, destination).is_none()
+        || matches!(restored.world().autopilot_state(), AutopilotState::InTransit { .. })
+    {
+        return Err("la restauraci\u{00f3}n reanud\u{00f3} o perdi\u{00f3} el viaje interrumpido".to_owned());
+    }
+    let restored_navigation = restored
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar navegaci\u{00f3}n restaurada: {error:?}"))?;
+    if restored_navigation.is_some_and(|value| matches!(value.autopilot, AutopilotState::InTransit { .. }))
+        || restored.save_state().serialize() != restored_before
+    {
+        return Err("la evaluaci\u{00f3}n restaurada reactiv\u{00f3} el viaje".to_owned());
+    }
+    println!(
+        "INTERRUPCION Y RECUPERACION DE AUTOPILOT: destino={:?}, autopilot=Interrupted, viaje=Cancelled, integridad=Destroyed, combustible={}, reparacion=rechazada, restaurado=true",
+        destination, fuel_after_interruption
+    );
+    Ok(())
+}
+
+fn run_autopilot_spatial_encounter_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estaci\u{00f3}n de encuentro: {error:?}"))?;
+    run_command(
+        &mut session,
+        "registrar ERICK para encuentro en autopilot",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no qued\u{00f3} registrado".to_owned())?;
+    let origin = DestinationId::new(8_301);
+    let destination = DestinationId::new(8_302);
+    for (id, position) in [
+        (origin, Vec3::ZERO),
+        (destination, Vec3 { x: 30.0, y: 0.0, z: 0.0 }),
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de encuentro",
+            GameplayCommand::RegisterDestination {
+                destination: Destination {
+                    id,
+                    destination_type: DestinationType::Planet,
+                    position,
+                    travel_duration: Duration(10),
+                    fuel_cost: 1,
+                    discovery: DiscoveryState::Discovered,
+                },
+            },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar ruta con encuentro",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: origin,
+                to: destination,
+                distance: 30.0,
+                duration: Duration(10),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    let encounter = EncounterId::new(8_301);
+    run_command(
+        &mut session,
+        "registrar encuentro hostil en la ruta",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                encounter,
+                SpatialEncounterKind::Hostile {
+                    configuration: EnemyConfiguration {
+                        archetype: EnemyArchetype::Shooter,
+                        position: Vec3::ZERO,
+                        maximum_health: 20,
+                        weapon: WeaponConfiguration::new(
+                            AttackType::Energy,
+                            1,
+                            1,
+                            Duration(1_000),
+                        ),
+                        shield: None,
+                        mobility: 1,
+                    },
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "equipar arma para encuentro hostil",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1_000)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estaci\u{00f3}n de encuentro",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar autopilot con encuentro",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar autopilot con encuentro",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let fuel_after_start = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "falta combustible tras iniciar autopilot".to_owned())?
+        .current();
+    run_command(
+        &mut session,
+        "avanzar tránsito hasta el encuentro",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(2),
+        },
+    )?;
+    if !matches!(session.world().autopilot_state(), AutopilotState::InTransit { .. })
+        || !matches!(session.world().travel_state(), TravelState::InProgress { .. })
+        || session.world().ship_position() != Some(Vec3::ZERO)
+    {
+        return Err("el tránsito no quedó activo antes del encuentro".to_owned());
+    }
+    run_command(
+        &mut session,
+        "activar encuentro durante autopilot",
+        GameplayCommand::ActivateSpatialEncounter { encounter },
+    )?;
+    let spawned_enemy = session
+        .world()
+        .spatial_encounter(encounter)
+        .and_then(|value| value.spawned_enemy)
+        .ok_or_else(|| "el encuentro no generó un enemigo real".to_owned())?;
+    if session.world().spatial_encounter(encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Active)
+        || !matches!(session.world().autopilot_state(), AutopilotState::InTransit { .. })
+        || !matches!(session.world().travel_state(), TravelState::InProgress { .. })
+    {
+        return Err("la activación del encuentro cambió incorrectamente el tránsito".to_owned());
+    }
+    run_command(
+        &mut session,
+        "avanzar sin decidir ante encuentro hostil",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(10),
+        },
+    )?;
+    if !matches!(session.world().autopilot_state(), AutopilotState::InTransit { .. })
+        || !matches!(session.world().travel_state(), TravelState::InProgress { .. })
+        || session.world().ship_position() != Some(Vec3::ZERO)
+        || session.world().ship_fuel(ship).map(|value| value.current()) != Some(fuel_after_start)
+    {
+        return Err("el viaje avanzó sin una decisión explícita ante el encuentro".to_owned());
+    }
+    let before_erick = session.save_state().serialize();
+    let navigation_one = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar encuentro en autopilot: {error:?}"))?
+        .ok_or_else(|| "ERICK no evaluó el encuentro en tránsito".to_owned())?;
+    let navigation_two = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("repetir evaluación en autopilot: {error:?}"))?
+        .ok_or_else(|| "ERICK perdió la evaluación en tránsito".to_owned())?;
+    if navigation_one != navigation_two
+        || !navigation_one
+            .risks
+            .contains(&gameplay::NavigationRisk::KnownEncounter(encounter))
+        || navigation_one.recommendation
+            != Some(gameplay::NavigationAdvice::AddressEncounter(encounter))
+        || session.save_state().serialize() != before_erick
+    {
+        return Err("ERICK no reflejó el encuentro sin mutar el tránsito".to_owned());
+    }
+    let repeated_activation = session.update([GameplayCommand::ActivateSpatialEncounter { encounter }]);
+    if repeated_activation.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::SpatialEncounterAlreadyActive,
+            })
+    }) {
+        return Err("la activación repetida del encuentro no fue rechazada".to_owned());
+    }
+    let before_continue = session.save_state().serialize();
+    run_command(
+        &mut session,
+        "elegir continuar el autopilot durante el encuentro",
+        GameplayCommand::ContinueAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    if !matches!(session.world().autopilot_state(), AutopilotState::InTransit { .. })
+        || !matches!(session.world().travel_state(), TravelState::InProgress { .. })
+        || session.world().ship_fuel(ship).map(|value| value.current()) != Some(fuel_after_start)
+        || session.save_state().serialize() != before_continue
+    {
+        return Err("continuar el autopilot alteró indebidamente el tránsito o el combustible".to_owned());
+    }
+    run_command(
+        &mut session,
+        "derrotar enemigo del encuentro",
+        GameplayCommand::AttackEnemy {
+            player,
+            enemy: spawned_enemy,
+        },
+    )?;
+    let reward = session
+        .world()
+        .collectibles()
+        .find(|value| value.item == ItemId(3) && value.active)
+        .map(|value| value.entity)
+        .ok_or_else(|| "el encuentro no generó recompensa".to_owned())?;
+    if session.world().spatial_encounter(encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Resolved)
+        || !session
+            .world()
+            .combatant(spawned_enemy)
+            .is_some_and(|value| value.is_defeated())
+        || !matches!(session.world().autopilot_state(), AutopilotState::InTransit { .. })
+        || fuel_after_start != session.world().ship_fuel(ship).map(|value| value.current()).unwrap_or_default()
+    {
+        return Err("resolver el encuentro alteró incorrectamente el viaje o combustible".to_owned());
+    }
+    run_command(
+        &mut session,
+        "recoger recompensa del encuentro",
+        GameplayCommand::CollectItem {
+            player,
+            collectible: reward,
+            amount: 1,
+        },
+    )?;
+    let after_resolution = session.save_state().serialize();
+    let navigation_after = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar autopilot tras encuentro: {error:?}"))?
+        .ok_or_else(|| "ERICK no evaluó la continuación".to_owned())?;
+    if navigation_after
+        .risks
+        .contains(&gameplay::NavigationRisk::KnownEncounter(encounter))
+        || navigation_after.recommendation
+            != Some(gameplay::NavigationAdvice::MonitorAutopilot { destination })
+        || session.save_state().serialize() != after_resolution
+    {
+        return Err("la evaluación no retiró el encuentro resuelto o mutó el mundo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "continuar explícitamente el tránsito",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(10),
+        },
+    )?;
+    if !matches!(
+        session.world().autopilot_state(),
+        AutopilotState::Completed { destination: value } if *value == destination
+    )
+        || session.world().ship_position()
+            != Some(Vec3 { x: 30.0, y: 0.0, z: 0.0 })
+        || session.world().ship_fuel(ship).map(|value| value.current())
+            != Some(fuel_after_start)
+    {
+        return Err("la continuación explícita no completó el viaje coherentemente".to_owned());
+    }
+    let repeated_attack = session.update([GameplayCommand::AttackEnemy {
+        player,
+        enemy: spawned_enemy,
+    }]);
+    if repeated_attack.first().is_none_or(|result| {
+        !matches!(result.status, CommandStatus::Rejected { .. })
+    }) {
+        return Err("el enemigo derrotado pudo volver a actuar".to_owned());
+    }
+    let repeated_collect = session.update([GameplayCommand::CollectItem {
+        player,
+        collectible: reward,
+        amount: 1,
+    }]);
+    if repeated_collect.first().is_none_or(|result| {
+        !matches!(result.status, CommandStatus::Rejected { .. })
+    }) || session.world().inventory(player).is_none_or(|value| value.quantity(ItemId(3)) != 1)
+    {
+        return Err("la recompensa del encuentro se duplicó".to_owned());
+    }
+    let checkpoint = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&checkpoint)
+        .map_err(|error| format!("deserializar encuentro de autopilot: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar encuentro de autopilot: {error}"))?;
+    if restored.world().spatial_encounter(encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Resolved)
+        || !restored
+            .world()
+            .combatant(spawned_enemy)
+            .is_some_and(|value| value.is_defeated())
+        || restored.world().collectible(reward).is_none_or(|value| value.active)
+        || restored.world().inventory(player).is_none_or(|value| value.quantity(ItemId(3)) != 1)
+        || restored.world().ship_position()
+            != Some(Vec3 { x: 30.0, y: 0.0, z: 0.0 })
+        || restored.world().ship_fuel(restored.ids.first_ship).map(|value| value.current())
+            != Some(fuel_after_start)
+        || restored.world().navigation_route(origin, destination).is_none()
+        || matches!(restored.world().autopilot_state(), AutopilotState::InTransit { .. })
+    {
+        return Err("la restauración perdió el encuentro resuelto o reanudó un viaje".to_owned());
+    }
+    let restored_state = restored.save_state().serialize();
+    let restored_navigation_one = restored
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar ERICK restaurado: {error:?}"))?;
+    let restored_navigation_two = restored
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("repetir ERICK restaurado: {error:?}"))?;
+    if restored_navigation_one != restored_navigation_two
+        || restored.save_state().serialize() != restored_state
+    {
+        return Err("ERICK restaurado no fue determinista o mutó el estado".to_owned());
+    }
+    println!(
+        "ENCUENTRO DURANTE AUTOPILOT: encuentro={:?}, enemigo={}, autopilot_durante=InTransit, encuentro=Resolved, destino_final={:?}, combustible={}, restaurado=true",
+        encounter, spawned_enemy, restored.world().ship_position(), fuel_after_start
+    );
+    Ok(())
+}
+
+fn run_autopilot_spatial_encounter_interrupt_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación de interrupción explícita: {error:?}"))?;
+    run_command(
+        &mut session,
+        "registrar ERICK para recuperación explícita",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para recuperación explícita".to_owned())?;
+    let origin = DestinationId::new(8_303);
+    let destination = DestinationId::new(8_304);
+    for (id, position) in [
+        (origin, Vec3::ZERO),
+        (destination, Vec3 { x: 30.0, y: 0.0, z: 0.0 }),
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de interrupción explícita",
+            GameplayCommand::RegisterDestination {
+                destination: Destination {
+                    id,
+                    destination_type: DestinationType::Planet,
+                    position,
+                    travel_duration: Duration(10),
+                    fuel_cost: 1,
+                    discovery: DiscoveryState::Discovered,
+                },
+            },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar ruta de interrupción explícita",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: origin,
+                to: destination,
+                distance: 30.0,
+                duration: Duration(10),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    let encounter = EncounterId::new(8_302);
+    run_command(
+        &mut session,
+        "registrar encuentro para interrupción explícita",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                encounter,
+                SpatialEncounterKind::Hostile {
+                    configuration: EnemyConfiguration {
+                        archetype: EnemyArchetype::Shooter,
+                        position: Vec3::ZERO,
+                        maximum_health: 20,
+                        weapon: WeaponConfiguration::new(
+                            AttackType::Energy,
+                            1,
+                            1,
+                            Duration(1_000),
+                        ),
+                        shield: None,
+                        mobility: 1,
+                    },
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "equipar arma para interrupción explícita",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1_000)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estación para interrupción explícita",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar autopilot para interrupción explícita",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar autopilot para interrupción explícita",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let fuel_after_start = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "falta combustible en interrupción explícita".to_owned())?
+        .current();
+    run_command(
+        &mut session,
+        "avanzar antes de interrumpir explícitamente",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(2),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro antes de interrumpir explícitamente",
+        GameplayCommand::ActivateSpatialEncounter { encounter },
+    )?;
+    let before_cancel_assessment = session.save_state().serialize();
+    let cancel_assessment = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar ERICK antes de interrumpir: {error:?}"))?
+        .ok_or_else(|| "ERICK no evaluó el encuentro antes de interrumpir".to_owned())?;
+    if cancel_assessment.recommendation
+        != Some(gameplay::NavigationAdvice::AddressEncounter(encounter))
+        || session.save_state().serialize() != before_cancel_assessment
+    {
+        return Err("ERICK no recomendó atender el encuentro sin mutar el viaje".to_owned());
+    }
+    run_command(
+        &mut session,
+        "elegir interrumpir el autopilot",
+        GameplayCommand::CancelAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    if !matches!(
+        session.world().autopilot_state(),
+        AutopilotState::Interrupted { destination: value } if *value == destination
+    ) || !matches!(
+        session.world().travel_state(),
+        TravelState::Cancelled { destination: value } if value == destination
+    ) || session.world().ship_position() != Some(Vec3::ZERO)
+        || session.world().ship_fuel(ship).map(|value| value.current()) != Some(fuel_after_start)
+    {
+        return Err("la interrupción explícita no conservó el estado del viaje".to_owned());
+    }
+    let rejected_continue = session.update([GameplayCommand::ContinueAutopilot {
+        player,
+        pilot_station: station,
+    }]);
+    if rejected_continue.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::AutopilotNotInTransit,
+            })
+    }) {
+        return Err("un autopilot interrumpido aceptó continuar sin una nueva planificación".to_owned());
+    }
+    run_command(
+        &mut session,
+        "confirmar que el autopilot interrumpido no avanza",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(10),
+        },
+    )?;
+    if !matches!(session.world().autopilot_state(), AutopilotState::Interrupted { .. })
+        || !matches!(session.world().travel_state(), TravelState::Cancelled { .. })
+        || session.world().ship_position() != Some(Vec3::ZERO)
+        || session.world().ship_fuel(ship).map(|value| value.current()) != Some(fuel_after_start)
+    {
+        return Err("el autopilot interrumpido reanudó o consumió recursos".to_owned());
+    }
+    let spawned_enemy = session
+        .world()
+        .spatial_encounter(encounter)
+        .and_then(|value| value.spawned_enemy)
+        .ok_or_else(|| "la interrupción perdió el enemigo del encuentro".to_owned())?;
+    run_command(
+        &mut session,
+        "resolver encuentro después de interrumpir",
+        GameplayCommand::AttackEnemy {
+            player,
+            enemy: spawned_enemy,
+        },
+    )?;
+    if session.world().spatial_encounter(encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Resolved)
+        || !matches!(session.world().autopilot_state(), AutopilotState::Interrupted { .. })
+        || !matches!(session.world().travel_state(), TravelState::Cancelled { .. })
+    {
+        return Err("resolver el encuentro reanudó indebidamente el autopilot interrumpido".to_owned());
+    }
+    let reward = session
+        .world()
+        .collectibles()
+        .find(|value| value.item == ItemId(3) && value.active)
+        .map(|value| value.entity)
+        .ok_or_else(|| "el encuentro interrumpido no generó recompensa".to_owned())?;
+    run_command(
+        &mut session,
+        "recoger recompensa tras interrumpir",
+        GameplayCommand::CollectItem {
+            player,
+            collectible: reward,
+            amount: 1,
+        },
+    )?;
+    if session.world().inventory(player).is_none_or(|value| value.quantity(ItemId(3)) != 1)
+        || session.world().collectible(reward).is_none_or(|value| value.active)
+        || !matches!(session.world().autopilot_state(), AutopilotState::Interrupted { .. })
+    {
+        return Err("la recompensa o el inventario quedaron incoherentes tras resolver".to_owned());
+    }
+    let repeated_attack = session.update([GameplayCommand::AttackEnemy {
+        player,
+        enemy: spawned_enemy,
+    }]);
+    let repeated_collect = session.update([GameplayCommand::CollectItem {
+        player,
+        collectible: reward,
+        amount: 1,
+    }]);
+    if repeated_attack.first().is_none_or(|result| !matches!(result.status, CommandStatus::Rejected { .. }))
+        || repeated_collect.first().is_none_or(|result| !matches!(result.status, CommandStatus::Rejected { .. }))
+        || session.world().inventory(player).is_none_or(|value| value.quantity(ItemId(3)) != 1)
+    {
+        return Err("el encuentro interrumpido duplicó combate o recompensa".to_owned());
+    }
+    let after_resolution = session.save_state().serialize();
+    let after_resolution_assessment = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar ERICK tras resolver: {error:?}"))?
+        .ok_or_else(|| "ERICK no evaluó el autopilot interrumpido".to_owned())?;
+    let repeated_resolution_assessment = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("repetir ERICK tras resolver: {error:?}"))?
+        .ok_or_else(|| "ERICK perdió la evaluación tras resolver".to_owned())?;
+    if after_resolution_assessment != repeated_resolution_assessment
+        || after_resolution_assessment.recommendation
+            != Some(gameplay::NavigationAdvice::ReplanAutopilot { destination })
+        || session.save_state().serialize() != after_resolution
+    {
+        return Err("ERICK no reflejó de forma determinista la contingencia".to_owned());
+    }
+    let continuation = DestinationId::new(8_305);
+    run_command(
+        &mut session,
+        "registrar destino de continuación",
+        GameplayCommand::RegisterDestination {
+            destination: Destination {
+                id: continuation,
+                destination_type: DestinationType::Planet,
+                position: Vec3 { x: 20.0, y: 0.0, z: 0.0 },
+                travel_duration: Duration(10),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            },
+        },
+    )?;
+    run_command(
+        &mut session,
+        "registrar ruta de continuación",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: origin,
+                to: continuation,
+                distance: 20.0,
+                duration: Duration(10),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar viaje nuevo después del encuentro",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination: continuation,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar viaje nuevo después del encuentro",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let fuel_before_continuation = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "falta combustible en la continuación".to_owned())?
+        .current();
+    if fuel_before_continuation != fuel_after_start.saturating_sub(1)
+        || !matches!(session.world().autopilot_state(), AutopilotState::InTransit { .. })
+    {
+        return Err("el viaje nuevo no consumió exactamente su propio combustible".to_owned());
+    }
+    run_command(
+        &mut session,
+        "avanzar continuación real",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(10),
+        },
+    )?;
+    if !matches!(
+        session.world().autopilot_state(),
+        AutopilotState::Completed { destination: value } if *value == continuation
+    ) || !matches!(
+        session.world().travel_state(),
+        TravelState::Completed { destination: value } if value == continuation
+    ) || session.world().ship_position() != Some(Vec3 { x: 20.0, y: 0.0, z: 0.0 })
+        || session.world().ship_fuel(ship).map(|value| value.current()) != Some(fuel_before_continuation)
+    {
+        return Err("la continuación no llegó al destino o consumió combustible adicional".to_owned());
+    }
+    let checkpoint = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&checkpoint)
+        .map_err(|error| format!("deserializar recuperación de autopilot: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar recuperación de autopilot: {error}"))?;
+    if restored.world().spatial_encounter(encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Resolved)
+        || restored.world().collectible(reward).is_none_or(|value| value.active)
+        || restored.world().inventory(player).is_none_or(|value| value.quantity(ItemId(3)) != 1)
+        || restored.world().ship_position() != Some(Vec3 { x: 20.0, y: 0.0, z: 0.0 })
+        || restored.world().ship_fuel(restored.ids.first_ship).map(|value| value.current())
+            != Some(fuel_before_continuation)
+        || !matches!(restored.world().autopilot_state(), AutopilotState::Inactive)
+        || !matches!(restored.world().travel_state(), TravelState::Idle)
+    {
+        return Err("la restauración perdió la continuación o duplicó sus efectos".to_owned());
+    }
+    let restored_state = restored.save_state().serialize();
+    let restored_assessment_one = restored
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar ERICK restaurado: {error:?}"))?;
+    let restored_assessment_two = restored
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("repetir ERICK restaurado: {error:?}"))?;
+    if restored_assessment_one != restored_assessment_two
+        || restored.save_state().serialize() != restored_state
+    {
+        return Err("la evaluación restaurada no fue determinista o mutó el estado".to_owned());
+    }
+    println!(
+        "RECUPERACIÓN EXPLÍCITA DE AUTOPILOT: encuentro={:?}, viaje_cancelado=true, recompensa_recogida=true, continuación={:?}, destino_final={:?}, combustible={}→{}, restaurado=true",
+        encounter,
+        continuation,
+        restored.world().ship_position(),
+        fuel_after_start,
+        fuel_before_continuation
+    );
+    Ok(())
+}
+
+fn run_autopilot_chained_encounters_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación de encuentros encadenados: {error:?}"))?;
+    run_command(
+        &mut session,
+        "registrar ERICK para encuentros encadenados",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para encuentros encadenados".to_owned())?;
+    let origin = DestinationId::new(8_801);
+    let destination = DestinationId::new(8_802);
+    for (id, position) in [
+        (origin, Vec3::ZERO),
+        (destination, Vec3 { x: 30.0, y: 0.0, z: 0.0 }),
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de encuentros encadenados",
+            GameplayCommand::RegisterDestination {
+                destination: Destination {
+                    id,
+                    destination_type: DestinationType::Planet,
+                    position,
+                    travel_duration: Duration(100_000),
+                    fuel_cost: 1,
+                    discovery: DiscoveryState::Discovered,
+                },
+            },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar ruta de encuentros encadenados",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: origin,
+                to: destination,
+                distance: 30.0,
+                duration: Duration(100_000),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    let encounters = [EncounterId::new(8_801), EncounterId::new(8_802)];
+    for encounter in encounters {
+        run_command(
+            &mut session,
+            "registrar encuentro hostil encadenado",
+            GameplayCommand::RegisterSpatialEncounter {
+                encounter: SpatialEncounter::new(
+                    encounter,
+                    SpatialEncounterKind::Hostile {
+                        configuration: EnemyConfiguration {
+                            archetype: EnemyArchetype::Shooter,
+                            position: Vec3::ZERO,
+                            maximum_health: 20,
+                            weapon: WeaponConfiguration::new(
+                                AttackType::Energy,
+                                1,
+                                1,
+                                Duration(1_000),
+                            ),
+                            shield: None,
+                            mobility: 1,
+                        },
+                    },
+                    Vec3::ZERO,
+                    2.0,
+                ),
+            },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "equipar arma para encuentros encadenados",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1_000)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estación de encuentros encadenados",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar autopilot de encuentros encadenados",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar autopilot de encuentros encadenados",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let fuel_after_start = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "falta combustible en encuentros encadenados".to_owned())?
+        .current();
+    run_command(
+        &mut session,
+        "activar primer encuentro encadenado",
+        GameplayCommand::ActivateSpatialEncounter {
+            encounter: encounters[0],
+        },
+    )?;
+    let first_enemy = session
+        .world()
+        .spatial_encounter(encounters[0])
+        .and_then(|value| value.spawned_enemy)
+        .ok_or_else(|| "el primer encuentro no generó enemigo".to_owned())?;
+    run_command(
+        &mut session,
+        "avanzar sin decisión ante primer encuentro",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(10),
+        },
+    )?;
+    if !matches!(session.world().autopilot_state(), AutopilotState::InTransit { .. })
+        || session.world().ship_position() != Some(Vec3::ZERO)
+        || session.world().ship_fuel(ship).map(|value| value.current()) != Some(fuel_after_start)
+    {
+        return Err("el primer encuentro permitió avanzar sin decisión".to_owned());
+    }
+    run_command(
+        &mut session,
+        "autorizar continuar tras primer encuentro",
+        GameplayCommand::ContinueAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar segundo encuentro durante el mismo tránsito",
+        GameplayCommand::ActivateSpatialEncounter {
+            encounter: encounters[1],
+        },
+    )?;
+    let second_enemy = session
+        .world()
+        .spatial_encounter(encounters[1])
+        .and_then(|value| value.spawned_enemy)
+        .ok_or_else(|| "el segundo encuentro no generó enemigo".to_owned())?;
+    let before_second_assessment = session.save_state().serialize();
+    let second_assessment_one = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar segundo encuentro: {error:?}"))?
+        .ok_or_else(|| "ERICK no evaluó el segundo encuentro".to_owned())?;
+    let second_assessment_two = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("repetir evaluación del segundo encuentro: {error:?}"))?
+        .ok_or_else(|| "ERICK perdió la evaluación del segundo encuentro".to_owned())?;
+    if second_assessment_one != second_assessment_two
+        || !second_assessment_one
+            .risks
+            .contains(&gameplay::NavigationRisk::KnownEncounter(encounters[1]))
+        || session.save_state().serialize() != before_second_assessment
+    {
+        return Err("la evaluación del segundo encuentro no fue determinista".to_owned());
+    }
+    run_command(
+        &mut session,
+        "avanzar sin nueva decisión ante segundo encuentro",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(10),
+        },
+    )?;
+    if !matches!(session.world().autopilot_state(), AutopilotState::InTransit { .. })
+        || session.world().ship_position() != Some(Vec3::ZERO)
+        || session.world().ship_fuel(ship).map(|value| value.current()) != Some(fuel_after_start)
+    {
+        return Err("la autorización del primer encuentro eludió la decisión del segundo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "autorizar continuar tras segundo encuentro",
+        GameplayCommand::ContinueAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    for (index, enemy) in [first_enemy, second_enemy].into_iter().enumerate() {
+        run_command(
+            &mut session,
+            "derrotar enemigo de encuentro encadenado",
+            GameplayCommand::AttackEnemy { player, enemy },
+        )?;
+        let reward = session
+            .world()
+            .collectibles()
+            .find(|value| value.item == ItemId(3) && value.active)
+            .map(|value| value.entity)
+            .ok_or_else(|| "faltó recompensa de encuentro encadenado".to_owned())?;
+        run_command(
+            &mut session,
+            "recoger recompensa de encuentro encadenado",
+            GameplayCommand::CollectItem {
+                player,
+                collectible: reward,
+                amount: 1,
+            },
+        )?;
+        if index == 0 {
+            run_command(
+                &mut session,
+                "esperar enfriamiento entre encuentros encadenados",
+                GameplayCommand::AdvanceTime {
+                    delta: Duration(1_000),
+                },
+            )?;
+        }
+    }
+    if session.world().inventory(player).is_none_or(|value| value.quantity(ItemId(3)) != 2)
+        || encounters.iter().any(|encounter| {
+            session.world().spatial_encounter(*encounter).map(|value| value.state)
+                != Some(SpatialEncounterState::Resolved)
+        })
+    {
+        return Err("los encuentros encadenados no resolvieron sus recompensas una sola vez".to_owned());
+    }
+    run_command(
+        &mut session,
+        "avanzar viaje tras segunda decisión",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(100_000),
+        },
+    )?;
+    if !matches!(
+        session.world().autopilot_state(),
+        AutopilotState::Completed { destination: value } if *value == destination
+    ) || session.world().ship_position() != Some(Vec3 { x: 30.0, y: 0.0, z: 0.0 })
+        || session.world().ship_fuel(ship).map(|value| value.current()) != Some(fuel_after_start)
+    {
+        return Err("el viaje no llegó después de la segunda decisión".to_owned());
+    }
+    let checkpoint = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&checkpoint)
+        .map_err(|error| format!("deserializar encuentros encadenados: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar encuentros encadenados: {error}"))?;
+    if encounters.iter().any(|encounter| {
+        restored.world().spatial_encounter(*encounter).map(|value| value.state)
+            != Some(SpatialEncounterState::Resolved)
+    }) || restored.world().inventory(player).is_none_or(|value| value.quantity(ItemId(3)) != 2)
+        || restored.world().ship_position() != Some(Vec3 { x: 30.0, y: 0.0, z: 0.0 })
+        || restored.world().ship_fuel(restored.ids.first_ship).map(|value| value.current())
+            != Some(fuel_after_start)
+        || !matches!(restored.world().autopilot_state(), AutopilotState::Inactive)
+    {
+        return Err("la restauración repitió o perdió efectos de encuentros encadenados".to_owned());
+    }
+    let restored_state = restored.save_state().serialize();
+    let restored_assessment_one = restored
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar ERICK restaurado encadenado: {error:?}"))?;
+    let restored_assessment_two = restored
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("repetir ERICK restaurado encadenado: {error:?}"))?;
+    if restored_assessment_one != restored_assessment_two
+        || restored.save_state().serialize() != restored_state
+    {
+        return Err("ERICK restaurado no fue determinista".to_owned());
+    }
+    println!(
+        "ENCUENTROS ENCADENADOS DE AUTOPILOT: primero={:?}, segundo={:?}, combustible={}, destino_final={:?}, restaurado=true",
+        encounters[0],
+        encounters[1],
+        fuel_after_start,
+        restored.world().ship_position()
     );
     Ok(())
 }
@@ -12817,8 +14537,13 @@ fn run_scenario() -> Result<(), String> {
     run_dynamic_spatial_event_scenario()?;
     run_spatial_encounter_consequence_scenario()?;
     run_autopilot_scenario()?;
+    run_autopilot_interruption_recovery_scenario()?;
+    run_autopilot_spatial_encounter_scenario()?;
+    run_autopilot_spatial_encounter_interrupt_scenario()?;
+    run_autopilot_chained_encounters_scenario()?;
     run_derelict_scenario()?;
     run_derelict_exploration_flow_scenario()?;
+    run_exploration_continuity_scenario()?;
     run_functional_world_scenario()?;
     run_guidance_progression_scenario()?;
     run_group_scaling_scenario()?;

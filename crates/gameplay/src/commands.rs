@@ -83,6 +83,10 @@ pub enum GameplayCommand {
         player: EntityId,
         pilot_station: EntityId,
     },
+    ContinueAutopilot {
+        player: EntityId,
+        pilot_station: EntityId,
+    },
     CancelAutopilot {
         player: EntityId,
         pilot_station: EntityId,
@@ -484,6 +488,7 @@ pub enum CommandRejection {
     AutopilotSameDestination,
     AutopilotOriginMismatch,
     AutopilotInterrupted,
+    AutopilotNotInTransit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

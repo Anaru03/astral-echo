@@ -280,6 +280,7 @@ pub struct NavigationState {
     last_scan_results: Vec<SignalDetection>,
     routes: BTreeMap<(DestinationId, DestinationId), NavigationRoute>,
     autopilot: AutopilotState,
+    autopilot_continuation_authorized: bool,
 }
 
 impl Default for NavigationState {
@@ -301,6 +302,7 @@ impl Default for NavigationState {
             last_scan_results: Vec::new(),
             routes: BTreeMap::new(),
             autopilot: AutopilotState::Inactive,
+            autopilot_continuation_authorized: false,
         }
     }
 }
@@ -570,6 +572,14 @@ impl NavigationState {
 
     pub fn autopilot_state(&self) -> &AutopilotState {
         &self.autopilot
+    }
+
+    pub(crate) const fn autopilot_continuation_authorized(&self) -> bool {
+        self.autopilot_continuation_authorized
+    }
+
+    pub(crate) fn set_autopilot_continuation_authorized(&mut self, authorized: bool) {
+        self.autopilot_continuation_authorized = authorized;
     }
 
     pub fn destination(&self, id: DestinationId) -> Option<&Destination> {
@@ -863,6 +873,7 @@ impl NavigationState {
             return Err(AutopilotError::InsufficientFuel);
         }
         fuel.consume(leg.fuel_cost).map_err(|_| AutopilotError::InsufficientFuel)?;
+        self.autopilot_continuation_authorized = false;
         self.travel_state = TravelState::InProgress {
             destination: leg.to,
             started_at: now,
@@ -900,6 +911,7 @@ impl NavigationState {
             return Ok(None);
         };
         if next_leg + 1 >= route.len() {
+            self.autopilot_continuation_authorized = false;
             self.autopilot = AutopilotState::Completed { destination };
             return Ok(None);
         }
@@ -912,6 +924,7 @@ impl NavigationState {
             return Err(AutopilotError::InsufficientFuel);
         }
         fuel.consume(leg.fuel_cost).map_err(|_| AutopilotError::InsufficientFuel)?;
+        self.autopilot_continuation_authorized = false;
         self.travel_state = TravelState::InProgress {
             destination: leg.to,
             started_at: now,
@@ -949,6 +962,7 @@ impl NavigationState {
         if matches!(self.autopilot, AutopilotState::InTransit { .. }) {
             self.travel_state = TravelState::Cancelled { destination };
         }
+        self.autopilot_continuation_authorized = false;
         self.autopilot = AutopilotState::Interrupted { destination };
         Some(destination)
     }
