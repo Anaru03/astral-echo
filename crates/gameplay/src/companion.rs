@@ -399,6 +399,85 @@ pub struct CoordinationAssessment {
     pub missing_requirements: Vec<PreparationRequirement>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryCategory {
+    Preparation,
+    Navigation,
+    Combat,
+    Encounter,
+    Inventory,
+    Knowledge,
+    Mission,
+    Exploration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryStatus {
+    Actionable,
+    Recoverable,
+    Blocked,
+    Satisfied,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryReason {
+    FuelInsufficient,
+    ShipDestroyed,
+    ShipNotOperational,
+    PreparationRequired,
+    ActiveThreat,
+    ActiveEncounter,
+    InventoryCapacity,
+    KnowledgeMissing,
+    NoKnownRoute,
+    ObjectiveSatisfied,
+    PlayerDecisionRequired,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryAction {
+    Coordination(CoordinationAction),
+    PlayerRequired,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecoveryBlocker {
+    pub category: RecoveryCategory,
+    pub reason: RecoveryReason,
+    pub action: Option<RecoveryAction>,
+    pub objective: Option<crate::types::ObjectiveId>,
+    pub destination: Option<DestinationId>,
+    pub entity: Option<EntityId>,
+    pub missing_requirements: Vec<PreparationRequirement>,
+    pub evidence: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecoveryAlternative {
+    pub category: RecoveryCategory,
+    pub action: RecoveryAction,
+    pub priority: CoordinationPriority,
+    pub destination: Option<DestinationId>,
+    pub entity: Option<EntityId>,
+    pub viable: bool,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecoveryAssessment {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub objective: Option<crate::types::ObjectiveId>,
+    pub mission: Option<crate::types::MissionId>,
+    pub attempted: Option<CoordinationStep>,
+    pub status: RecoveryStatus,
+    pub blocker: Option<RecoveryBlocker>,
+    pub alternatives: Vec<RecoveryAlternative>,
+    pub missing_requirements: Vec<PreparationRequirement>,
+    pub actionable: bool,
+    pub explanation: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavigationAssessment {
     pub companion: EntityId,

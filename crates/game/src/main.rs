@@ -7882,6 +7882,46 @@ fn run_erick_coordination_scenario() -> Result<(), String> {
             },
         },
     )?;
+    let derelict = DerelictId::new(6_801);
+    run_command(
+        &mut session,
+        "registrar derelicto para pasos posteriores",
+        GameplayCommand::RegisterDerelict {
+            derelict: Derelict::new(derelict, Vec3::ZERO, 2.0).with_rewards(
+                vec![DerelictReward {
+                    item: ItemId(1),
+                    amount: 1,
+                }],
+                RewardDistributionPolicy::Shared,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "descubrir derelicto para pasos posteriores",
+        GameplayCommand::DiscoverDerelict { player, derelict },
+    )?;
+    let encounter = EncounterId::new(6_801);
+    run_command(
+        &mut session,
+        "registrar encuentro para pasos posteriores",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                encounter,
+                SpatialEncounterKind::Resource {
+                    item: ItemId(1),
+                    amount: 1,
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro para pasos posteriores",
+        GameplayCommand::ActivateSpatialEncounter { encounter },
+    )?;
     session
         .world_mut()
         .register_mission(
@@ -7923,6 +7963,36 @@ fn run_erick_coordination_scenario() -> Result<(), String> {
         .next()
         .copied()
         .ok_or_else(|| "ERICK no quedo registrado para coordinacion".to_owned())?;
+    let ship = session.ids.first_ship;
+    run_command(
+        &mut session,
+        "agotar combustible para bloquear preparacion",
+        GameplayCommand::RemoveShipFuel {
+            ship,
+            amount: 60,
+        },
+    )?;
+    let blocked_preparation = session
+        .world()
+        .companion_coordination_assessment(erick.entity)
+        .map_err(|error| format!("evaluar preparacion bloqueante: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluacion de preparacion bloqueante".to_owned())?;
+    if !blocked_preparation.blocked
+        || blocked_preparation.next_step.as_ref().is_none_or(|step| {
+            step.category != gameplay::CoordinationCategory::Preparation
+                || step.priority != gameplay::CoordinationPriority::Critical
+        })
+    {
+        return Err(format!("preparacion no bloqueo la secuencia: {blocked_preparation:?}"));
+    }
+    run_command(
+        &mut session,
+        "resolver preparacion de combustible",
+        GameplayCommand::AddShipFuel {
+            ship,
+            amount: 60,
+        },
+    )?;
     let initial = session
         .world()
         .companion_coordination_assessment(erick.entity)
@@ -7938,6 +8008,9 @@ fn run_erick_coordination_scenario() -> Result<(), String> {
         || initial_step.category != gameplay::CoordinationCategory::Navigation
         || initial_step.action != gameplay::CoordinationAction::StartAutopilot(destination)
         || initial_step.order != 1
+        || initial.later_steps.len() < 2
+        || initial.later_steps[0].order != 2
+        || initial.later_steps[1].order != 3
     {
         return Err(format!("coordinacion inicial inesperada: {initial:?}"));
     }
@@ -8024,6 +8097,66 @@ fn run_erick_coordination_scenario() -> Result<(), String> {
     {
         return Err(format!("coordinacion no volvio a la ruta: {after_risk:?}"));
     }
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estacion de coordinacion: {error:?}"))?;
+    run_command(
+        &mut session,
+        "ocupar estacion para completar objetivo",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar ruta de coordinacion",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    let planned = session
+        .world()
+        .companion_coordination_assessment(erick.entity)
+        .map_err(|error| format!("evaluar autopilot planificado: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluacion con autopilot planificado".to_owned())?;
+    if planned.next_step.as_ref().is_none_or(|step| {
+        step.action != gameplay::CoordinationAction::MonitorAutopilot(destination)
+    }) {
+        return Err(format!("autopilot planificado no se monitorizo: {planned:?}"));
+    }
+    run_command(
+        &mut session,
+        "iniciar ruta de coordinacion",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "avanzar tiempo para completar objetivo",
+        GameplayCommand::AdvanceTime { delta: Duration(1) },
+    )?;
+    let completed = session
+        .mission_progress(mission)
+        .ok_or_else(|| "no hubo progreso de mision tras la llegada".to_owned())?;
+    if completed.state != MissionState::Completed || completed.required_completed != 1 {
+        return Err(format!("objetivo no completado por la ruta: {completed:?}"));
+    }
+    let after_completion = session
+        .world()
+        .companion_coordination_assessment(erick.entity)
+        .map_err(|error| format!("evaluar coordinacion tras completar objetivo: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluacion tras completar objetivo".to_owned())?;
+    if after_completion.objective == Some(objective)
+        || after_completion.next_step.as_ref().is_some_and(|step| step.objective == Some(objective))
+    {
+        return Err(format!("ERICK mantuvo objetivo completado: {after_completion:?}"));
+    }
     run_command(
         &mut session,
         "marcar ERICK no disponible",
@@ -8048,7 +8181,6 @@ fn run_erick_coordination_scenario() -> Result<(), String> {
             behavior: gameplay::CompanionBehavior::Accompany,
         },
     )?;
-    let ship = session.ids.first_ship;
     run_command(
         &mut session,
         "destruir nave para bloquear coordinacion",
@@ -8073,6 +8205,251 @@ fn run_erick_coordination_scenario() -> Result<(), String> {
     println!(
         "COORDINACION SECUENCIAL DE ERICK COMPLETADA: mision={mission:?}, objetivo={objective:?}, ruta={destination:?}, riesgo={enemy:?}, pasos_futuros={}",
         after_risk.later_steps.len()
+    );
+    Ok(())
+}
+
+fn run_erick_recovery_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let origin = DestinationId::new(6_901);
+    let destination = DestinationId::new(6_902);
+    let mission = gameplay::types::MissionId(69);
+    let objective = gameplay::types::ObjectiveId(6_901);
+    for value in [
+        Destination {
+            id: origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 10,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 10,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de recuperacion",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar ruta de recuperacion",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: origin,
+                to: destination,
+                distance: 10.0,
+                duration: Duration(1),
+                fuel_cost: 10,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    session
+        .world_mut()
+        .register_mission(
+            gameplay::Mission::new(
+                mission,
+                "Diagnostico de recuperacion de ERICK",
+                vec![gameplay::Objective::new(
+                    objective,
+                    mission,
+                    "Recuperar la ruta",
+                    true,
+                    gameplay::ObjectiveTrigger::DestinationArrived { destination },
+                )],
+            )
+            .map_err(|error| format!("definir mision de recuperacion: {error:?}"))?,
+        )
+        .map_err(|error| format!("registrar mision de recuperacion: {error:?}"))?;
+    run_command(
+        &mut session,
+        "desbloquear mision de recuperacion",
+        GameplayCommand::UnlockMission { mission },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar mision de recuperacion",
+        GameplayCommand::StartMission { mission },
+    )?;
+    run_command(
+        &mut session,
+        "crear ERICK para diagnostico",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedo registrado para diagnostico".to_owned())?;
+    run_command(
+        &mut session,
+        "agotar combustible para diagnosticar bloqueo",
+        GameplayCommand::RemoveShipFuel { ship, amount: 60 },
+    )?;
+    let fuel_block = session
+        .world()
+        .companion_recovery_assessment(erick.entity)
+        .map_err(|error| format!("diagnosticar combustible: {error:?}"))?
+        .ok_or_else(|| "no hubo diagnostico de combustible".to_owned())?;
+    if fuel_block.status != gameplay::RecoveryStatus::Blocked
+        || fuel_block.blocker.as_ref().map(|value| value.reason)
+            != Some(gameplay::RecoveryReason::FuelInsufficient)
+        || !fuel_block.alternatives.is_empty()
+        || fuel_block.actionable
+    {
+        return Err(format!("diagnostico de combustible inesperado: {fuel_block:?}"));
+    }
+    let saved_block = session.save_state();
+    let repeated_block = session
+        .world()
+        .companion_recovery_assessment(erick.entity)
+        .map_err(|error| format!("repetir diagnostico de combustible: {error:?}"))?;
+    if repeated_block != Some(fuel_block.clone())
+        || session.save_state().serialize() != saved_block.serialize()
+    {
+        return Err("el diagnostico de combustible no fue determinista o mutó el mundo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "resolver combustible mediante API existente",
+        GameplayCommand::AddShipFuel { ship, amount: 60 },
+    )?;
+    let route_ready = session
+        .world()
+        .companion_recovery_assessment(erick.entity)
+        .map_err(|error| format!("diagnosticar ruta recuperada: {error:?}"))?
+        .ok_or_else(|| "no hubo diagnostico de ruta recuperada".to_owned())?;
+    if route_ready.status != gameplay::RecoveryStatus::Actionable
+        || route_ready.blocker.is_some()
+        || route_ready.attempted.as_ref().is_none_or(|step| {
+            step.action != gameplay::CoordinationAction::StartAutopilot(destination)
+        })
+    {
+        return Err(format!("ruta recuperada inesperada: {route_ready:?}"));
+    }
+    run_command(
+        &mut session,
+        "crear amenaza para diagnostico de combate",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Charger, Vec3::ZERO),
+        },
+    )?;
+    let enemy = session
+        .world()
+        .enemies()
+        .next()
+        .map(|value| value.entity)
+        .ok_or_else(|| "amenaza no registrada para diagnostico".to_owned())?;
+    run_command(
+        &mut session,
+        "equipar arma para diagnostico de combate",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                15,
+                10,
+                Duration(1_000),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 1,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "añadir municion para diagnostico de combate",
+        GameplayCommand::AddInventoryItem {
+            player,
+            item: ItemId(2),
+            amount: 2,
+        },
+    )?;
+    let threat = session
+        .world()
+        .companion_recovery_assessment(erick.entity)
+        .map_err(|error| format!("diagnosticar amenaza: {error:?}"))?
+        .ok_or_else(|| "no hubo diagnostico de amenaza".to_owned())?;
+    if threat.blocker.as_ref().map(|value| value.reason)
+            != Some(gameplay::RecoveryReason::ActiveThreat)
+        || threat.blocker.as_ref().and_then(|value| value.entity) != Some(enemy)
+        || threat.status != gameplay::RecoveryStatus::Recoverable
+        || !threat.actionable
+    {
+        return Err(format!("diagnostico de amenaza inesperado: {threat:?}"));
+    }
+    run_command(
+        &mut session,
+        "derrotar amenaza para actualizar diagnostico",
+        GameplayCommand::AttackEnemy { player, enemy },
+    )?;
+    run_command(
+        &mut session,
+        "esperar enfriamiento para derrotar amenaza",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "completar derrota para actualizar diagnostico",
+        GameplayCommand::AttackEnemy { player, enemy },
+    )?;
+    let after_enemy = session
+        .world()
+        .companion_recovery_assessment(erick.entity)
+        .map_err(|error| format!("diagnosticar despues de la amenaza: {error:?}"))?
+        .ok_or_else(|| "no hubo diagnostico despues de la amenaza".to_owned())?;
+    if after_enemy.blocker.as_ref().is_some_and(|value| value.entity == Some(enemy)) {
+        return Err("la amenaza derrotada siguio bloqueando la recuperacion".to_owned());
+    }
+    let saved_ready = session.save_state();
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(saved_ready)
+        .map_err(|error| format!("restaurar diagnostico de recuperacion: {error}"))?;
+    let restored_assessment = restored
+        .world()
+        .companion_recovery_assessment(erick.entity)
+        .map_err(|error| format!("consultar diagnostico restaurado: {error:?}"))?;
+    if restored_assessment != Some(after_enemy.clone()) {
+        return Err("el diagnostico restaurado no fue equivalente".to_owned());
+    }
+    run_command(
+        &mut restored,
+        "desactivar jugador para diagnostico bloqueado",
+        GameplayCommand::SetPlayerActive {
+            player,
+            active: false,
+        },
+    )?;
+    if restored
+        .world()
+        .companion_recovery_assessment(erick.entity)
+        .map_err(|error| format!("consultar jugador inactivo: {error:?}"))?
+        .is_some()
+    {
+        return Err("el jugador inactivo conservo diagnostico accionable".to_owned());
+    }
+    println!(
+        "DIAGNOSTICO DE RECUPERACION DE ERICK COMPLETADO: combustible= bloqueado→recuperado, amenaza={enemy:?}, alternativas_sin_ruta={}, restaurado=true",
+        fuel_block.alternatives.len()
     );
     Ok(())
 }
@@ -8287,5 +8664,6 @@ fn run_scenario() -> Result<(), String> {
     run_erick_exploration_coordination_scenario()?;
     run_erick_preparation_scenario()?;
     run_erick_coordination_scenario()?;
+    run_erick_recovery_scenario()?;
     Ok(())
 }

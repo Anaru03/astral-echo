@@ -44,6 +44,8 @@ pub use companion::{
     Companion, CompanionActionMode, CompanionBehavior, CompanionError, CompanionRecommendation,
     CoordinationAction, CoordinationAssessment, CoordinationCategory, CoordinationPriority,
     CoordinationReason, CoordinationStep, CoordinationStepStatus,
+    RecoveryAction, RecoveryAlternative, RecoveryAssessment, RecoveryBlocker, RecoveryCategory,
+    RecoveryReason, RecoveryStatus,
     NavigationAdvice, NavigationAlternativeRecommendation, NavigationAssessment, NavigationRisk,
     NavigationRecommendationReason, NavigationRouteOption, NavigationRouteRisk,
     NavigationRouteRiskClassification, NavigationRouteRiskSource, NavigationRouteComparison,

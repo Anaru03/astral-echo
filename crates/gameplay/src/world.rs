@@ -15,6 +15,8 @@ use crate::{
         PreparationRequirement, TacticalAction, TacticalPriority, TacticalRecommendation,
         CoordinationAction, CoordinationAssessment, CoordinationCategory, CoordinationPriority,
         CoordinationReason, CoordinationStep, CoordinationStepStatus,
+        RecoveryAction, RecoveryAlternative, RecoveryAssessment, RecoveryBlocker,
+        RecoveryCategory, RecoveryReason, RecoveryStatus,
     },
     collectible::{Collectible, CollectibleError, ItemDefinition, ItemDefinitionError},
     combat::{Combatant, EnemyConfiguration},
@@ -1860,6 +1862,48 @@ impl GameplayWorld {
                 });
             }
         }
+        if let Some(current_mission) = mission {
+            for guided in guidance.objectives.iter().filter(|value| {
+                value.mission == current_mission
+                    && Some(value.id) != objective
+                    && matches!(
+                        value.status,
+                        crate::guidance::GuidanceStatus::Available
+                            | crate::guidance::GuidanceStatus::Active
+                    )
+            }) {
+                let Some(action) = guided.recommended_action else {
+                    continue;
+                };
+                let destination = match action {
+                    GuidanceAction::TravelTo(value)
+                    | GuidanceAction::IdentifySignal(Some(value))
+                    | GuidanceAction::DiscoverDestination(value) => Some(value),
+                    _ => None,
+                };
+                steps.push(CoordinationStep {
+                    order: 0,
+                    category: if destination.is_some() {
+                        CoordinationCategory::Navigation
+                    } else {
+                        CoordinationCategory::Mission
+                    },
+                    action: CoordinationAction::Guidance(action),
+                    objective: Some(guided.id),
+                    destination,
+                    entity: match action {
+                        GuidanceAction::Interact(value)
+                        | GuidanceAction::DefeatEnemy(Some(value)) => Some(value),
+                        _ => None,
+                    },
+                    status: CoordinationStepStatus::Future,
+                    requirements: Vec::new(),
+                    reason: CoordinationReason::FutureDependency,
+                    priority: CoordinationPriority::Low,
+                    description: "Siguiente objetivo disponible segun la guia actual".to_string(),
+                });
+            }
+        }
         steps.sort_by_key(|step| {
             let priority = match step.priority {
                 CoordinationPriority::Critical => 0_u8,
@@ -1891,6 +1935,246 @@ impl GameplayWorld {
             next_step,
             later_steps: steps.into_iter().skip(1).collect(),
             missing_requirements,
+        }))
+    }
+    pub fn companion_recovery_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<RecoveryAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active || !self.entities.contains(player.entity_id) {
+            return Ok(None);
+        }
+        let coordination = self.companion_coordination_assessment(entity)?;
+        let Some(coordination) = coordination else {
+            return Ok(None);
+        };
+        let preparation = self.companion_preparation_assessment(entity)?;
+        let exploration = self.companion_exploration_assessment(entity)?;
+        let operational = self.companion_operational_assessment(entity)?;
+        let tactical = self.companion_tactical_recommendation(entity)?;
+        let attempted = coordination.next_step.clone();
+        let mut alternatives = Vec::new();
+        let coordination_category = |category| match category {
+            CoordinationCategory::Preparation => RecoveryCategory::Preparation,
+            CoordinationCategory::Risk => RecoveryCategory::Encounter,
+            CoordinationCategory::Navigation => RecoveryCategory::Navigation,
+            CoordinationCategory::Exploration => RecoveryCategory::Exploration,
+            CoordinationCategory::Combat => RecoveryCategory::Combat,
+            CoordinationCategory::Activity => RecoveryCategory::Exploration,
+            CoordinationCategory::Mission => RecoveryCategory::Mission,
+        };
+        for step in &coordination.later_steps {
+            alternatives.push(RecoveryAlternative {
+                category: coordination_category(step.category),
+                action: RecoveryAction::Coordination(step.action),
+                priority: step.priority,
+                destination: step.destination,
+                entity: step.entity,
+                viable: step.status != CoordinationStepStatus::Blocked,
+                reason: step.description.clone(),
+            });
+        }
+        if let Some(operational) = operational.as_ref() {
+            if !matches!(
+                operational.navigation.as_ref().map(|value| &value.autopilot),
+                Some(crate::navigation::AutopilotState::InTransit { .. })
+            ) {
+                if let Some(comparison) = operational.route_comparison.as_ref() {
+                    for route in comparison.alternatives.iter().filter(|value| value.viable) {
+                        let Some(destination) = route.route.last().copied() else {
+                            continue;
+                        };
+                        alternatives.push(RecoveryAlternative {
+                            category: RecoveryCategory::Navigation,
+                            action: RecoveryAction::Coordination(
+                                CoordinationAction::StartAutopilot(destination),
+                            ),
+                            priority: CoordinationPriority::Normal,
+                            destination: Some(destination),
+                            entity: None,
+                            viable: true,
+                            reason: "Ruta alternativa registrada y viable".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        alternatives.sort_by_key(|alternative| {
+            let priority = match alternative.priority {
+                CoordinationPriority::Critical => 0_u8,
+                CoordinationPriority::High => 1,
+                CoordinationPriority::Normal => 2,
+                CoordinationPriority::Low => 3,
+            };
+            (
+                priority,
+                alternative.destination.map_or(0, DestinationId::value),
+                alternative.entity.map_or(0, EntityId::value),
+                alternative.category as u8,
+            )
+        });
+        alternatives.dedup();
+        let mut blocker = None;
+        if let Some(preparation) = preparation.as_ref().filter(|value| !value.prepared) {
+            let reason = match preparation.reason {
+                PreparationReason::FuelShortage => RecoveryReason::FuelInsufficient,
+                PreparationReason::RepairMaterialShortage => RecoveryReason::PreparationRequired,
+                PreparationReason::InventoryCapacity => RecoveryReason::InventoryCapacity,
+                PreparationReason::AmmunitionShortage => RecoveryReason::PreparationRequired,
+                PreparationReason::ActivityResourceShortage => RecoveryReason::PreparationRequired,
+                PreparationReason::Ready => RecoveryReason::PreparationRequired,
+            };
+            blocker = Some(RecoveryBlocker {
+                category: RecoveryCategory::Preparation,
+                reason,
+                action: attempted
+                    .as_ref()
+                    .map(|step| RecoveryAction::Coordination(step.action)),
+                objective: coordination.objective,
+                destination: attempted.as_ref().and_then(|step| step.destination),
+                entity: attempted.as_ref().and_then(|step| step.entity),
+                missing_requirements: preparation.missing_requirements.clone(),
+                evidence: "La evaluacion de preparacion reporta requisitos faltantes".to_string(),
+            });
+        } else if operational
+            .as_ref()
+            .is_some_and(|value| value.hull == HullCondition::Destroyed)
+        {
+            blocker = Some(RecoveryBlocker {
+                category: RecoveryCategory::Preparation,
+                reason: RecoveryReason::ShipDestroyed,
+                action: Some(RecoveryAction::PlayerRequired),
+                objective: coordination.objective,
+                destination: None,
+                entity: operational.as_ref().map(|value| value.ship),
+                missing_requirements: Vec::new(),
+                evidence: "La integridad autoritativa de la nave esta destruida".to_string(),
+            });
+        } else if let Some(tactical) = tactical.as_ref().filter(|value| {
+            value.priority == TacticalPriority::Critical
+        }) {
+            let (category, reason, entity) = match tactical.action {
+                TacticalAction::DefeatEnemy(enemy) => {
+                    (RecoveryCategory::Combat, RecoveryReason::ActiveThreat, Some(enemy))
+                }
+                TacticalAction::AddressEncounter(_) => {
+                    (RecoveryCategory::Encounter, RecoveryReason::ActiveEncounter, None)
+                }
+                TacticalAction::WithdrawFromHazard(_) => {
+                    (RecoveryCategory::Navigation, RecoveryReason::ActiveEncounter, None)
+                }
+                TacticalAction::PlayerAction(_) => {
+                    (RecoveryCategory::Mission, RecoveryReason::PlayerDecisionRequired, None)
+                }
+            };
+            blocker = Some(RecoveryBlocker {
+                category,
+                reason,
+                action: Some(RecoveryAction::Coordination(
+                    CoordinationAction::Tactical(tactical.action),
+                )),
+                objective: coordination.objective,
+                destination: None,
+                entity,
+                missing_requirements: Vec::new(),
+                evidence: "Existe una amenaza activa con prioridad critica".to_string(),
+            });
+        } else if let Some(step) = attempted.as_ref().filter(|value| {
+            value.status == CoordinationStepStatus::Blocked
+        }) {
+            blocker = Some(RecoveryBlocker {
+                category: coordination_category(step.category),
+                reason: RecoveryReason::PlayerDecisionRequired,
+                action: Some(RecoveryAction::Coordination(step.action)),
+                objective: step.objective,
+                destination: step.destination,
+                entity: step.entity,
+                missing_requirements: step.requirements.clone(),
+                evidence: "El siguiente paso existe pero sus requisitos no estan satisfechos".to_string(),
+            });
+        } else if let Some(target) = exploration.as_ref().and_then(|value| value.primary.as_ref()) {
+            if target.missing_requirements.iter().any(|requirement| {
+                matches!(requirement, GuidanceRequirement::KnowledgeAtLeast { .. })
+            }) {
+                blocker = Some(RecoveryBlocker {
+                    category: RecoveryCategory::Knowledge,
+                    reason: RecoveryReason::KnowledgeMissing,
+                    action: Some(RecoveryAction::Coordination(
+                        CoordinationAction::Exploration(target.action),
+                    )),
+                    objective: target.objective,
+                    destination: target.destination,
+                    entity: target.entity,
+                    missing_requirements: Vec::new(),
+                    evidence: "La guia exige conocimiento que aun no esta registrado".to_string(),
+                });
+            }
+        }
+        let (status, actionable, explanation) = match blocker.as_ref() {
+            Some(blocker)
+                if alternatives.iter().any(|value| value.viable)
+                    || blocker.action.is_some_and(|action| {
+                        !matches!(
+                            action,
+                            RecoveryAction::PlayerRequired
+                                | RecoveryAction::Coordination(
+                                    CoordinationAction::PlayerRequired
+                                )
+                                | RecoveryAction::Coordination(
+                                    CoordinationAction::Preparation(
+                                        PreparationAction::PlayerRequired
+                                    )
+                                )
+                        )
+                    }) =>
+            (
+                RecoveryStatus::Recoverable,
+                true,
+                "Existe una accion real conocida para recuperar la progresion".to_string(),
+            ),
+            Some(_) => (
+                RecoveryStatus::Blocked,
+                false,
+                "El bloqueo requiere una decision o intervencion del jugador".to_string(),
+            ),
+            None if attempted.is_some() => (
+                RecoveryStatus::Actionable,
+                true,
+                "El siguiente paso esta respaldado por el estado actual".to_string(),
+            ),
+            None => (
+                RecoveryStatus::Satisfied,
+                false,
+                "No existe un objetivo pendiente en la guia actual".to_string(),
+            ),
+        };
+        let missing_requirements = preparation
+            .as_ref()
+            .map_or_else(Vec::new, |value| value.missing_requirements.clone());
+        Ok(Some(RecoveryAssessment {
+            companion: entity,
+            player: companion.followed_player,
+            objective: coordination.objective,
+            mission: coordination.mission,
+            attempted,
+            status,
+            blocker,
+            alternatives,
+            missing_requirements,
+            actionable,
+            explanation,
         }))
     }
     fn guidance_action_is_available(
