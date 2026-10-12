@@ -42,12 +42,17 @@ pub use collectible::{
 };
 pub use companion::{
     Companion, CompanionActionMode, CompanionBehavior, CompanionError, CompanionRecommendation,
+    CoordinationAction, CoordinationAssessment, CoordinationCategory, CoordinationPriority,
+    CoordinationReason, CoordinationStep, CoordinationStepStatus,
     NavigationAdvice, NavigationAlternativeRecommendation, NavigationAssessment, NavigationRisk,
     NavigationRecommendationReason, NavigationRouteOption, NavigationRouteRisk,
     NavigationRouteRiskClassification, NavigationRouteRiskSource, NavigationRouteComparison,
+    ExplorationAction, ExplorationAssessment, ExplorationPriority,
+    ExplorationRecommendation, ExplorationRecommendationReason, ExplorationTargetCategory,
     FuelCondition, HullCondition, MaintenancePriority, MaintenanceRecommendation,
-    OperationalAssessment, TacticalAction, TacticalPriority, TacticalRecommendation, ERICK_NAME,
-    FOLLOW_DISTANCE, FOLLOW_SPEED,
+    OperationalAssessment, PreparationAction, PreparationAssessment, PreparationCategory,
+    PreparationPriority, PreparationReason, PreparationRequirement, TacticalAction,
+    TacticalPriority, TacticalRecommendation, ERICK_NAME, FOLLOW_DISTANCE, FOLLOW_SPEED,
 };
 pub use combat::{
     AttackType, CombatConfigurationError, Combatant, EnemyArchetype, EnemyConfiguration, Shield,

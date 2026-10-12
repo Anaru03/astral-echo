@@ -7033,6 +7033,1050 @@ fn run_erick_operational_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_erick_exploration_coordination_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let destination_origin = DestinationId::new(6_601);
+    let destination_target = DestinationId::new(6_602);
+    let mission = gameplay::types::MissionId(66);
+    let objective = gameplay::types::ObjectiveId(6_601);
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación para coordinación: {error:?}"))?;
+    session
+        .world_mut()
+        .register_mission(
+            gameplay::Mission::new(
+                mission,
+                "Objetivo de exploración de ERICK",
+                vec![gameplay::Objective::new(
+                    objective,
+                    mission,
+                    "Alcanzar el destino de exploración",
+                    true,
+                    gameplay::ObjectiveTrigger::DestinationArrived {
+                        destination: destination_target,
+                    },
+                )],
+            )
+            .map_err(|error| format!("definir misión de coordinación: {error:?}"))?,
+        )
+        .map_err(|error| format!("registrar misión de coordinación: {error:?}"))?;
+    for destination in [
+        Destination {
+            id: destination_origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 10,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination_target,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 10,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de coordinación",
+            GameplayCommand::RegisterDestination { destination },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar ruta de coordinación",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: destination_origin,
+                to: destination_target,
+                distance: 10.0,
+                duration: Duration(1),
+                fuel_cost: 10,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    let derelict = DerelictId::new(6_601);
+    run_command(
+        &mut session,
+        "registrar derelicto pendiente de coordinación",
+        GameplayCommand::RegisterDerelict {
+            derelict: Derelict::new(derelict, Vec3::ZERO, 2.0).with_rewards(
+                vec![DerelictReward {
+                    item: ItemId(1),
+                    amount: 1,
+                }],
+                RewardDistributionPolicy::Shared,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "descubrir derelicto para coordinación",
+        GameplayCommand::DiscoverDerelict { player, derelict },
+    )?;
+    let encounter = EncounterId::new(6_601);
+    run_command(
+        &mut session,
+        "registrar encuentro pendiente de coordinación",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                encounter,
+                SpatialEncounterKind::Resource {
+                    item: ItemId(1),
+                    amount: 1,
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro de coordinación",
+        GameplayCommand::ActivateSpatialEncounter { encounter },
+    )?;
+    run_command(
+        &mut session,
+        "registrar mundo de recursos de coordinación",
+        GameplayCommand::RegisterFunctionalWorld {
+            world: FunctionalWorld::new(
+                destination_target,
+                2.0,
+                vec![WorldActivity::Resource(ResourceSite {
+                    item: ItemId(1),
+                    available: 1,
+                    extraction_amount: 1,
+                })],
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "desbloquear misión de coordinación",
+        GameplayCommand::UnlockMission { mission },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar misión de coordinación",
+        GameplayCommand::StartMission { mission },
+    )?;
+    run_command(
+        &mut session,
+        "crear ERICK para coordinar exploración",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para coordinar exploración".to_owned())?;
+    let initial = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("consultar coordinación inicial: {error:?}"))?
+        .ok_or_else(|| "no hubo coordinación inicial".to_owned())?;
+    let mission_recommendation = initial
+        .primary
+        .as_ref()
+        .ok_or_else(|| "ERICK no identificó el objetivo de misión".to_owned())?;
+    if mission_recommendation.category != gameplay::ExplorationTargetCategory::MissionObjective
+        || mission_recommendation.mission != Some(mission)
+        || mission_recommendation.objective != Some(objective)
+        || mission_recommendation.destination != Some(destination_target)
+        || !mission_recommendation.accessible
+        || mission_recommendation.action
+            != gameplay::ExplorationAction::Guidance(gameplay::GuidanceAction::TravelTo(
+                destination_target,
+            ))
+        || !initial.alternatives.iter().any(|value| {
+            value.category == gameplay::ExplorationTargetCategory::Encounter
+                && value.action == gameplay::ExplorationAction::ResolveEncounter(encounter)
+        })
+    {
+        return Err(format!("recomendación de misión inesperada: {initial:?}"));
+    }
+    let saved_initial = session.save_state();
+    let repeated = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("repetir coordinación inicial: {error:?}"))?;
+    if repeated != Some(initial.clone())
+        || session.save_state().serialize() != saved_initial.serialize()
+    {
+        return Err("la coordinación inicial no fue determinista o mutó el mundo".to_owned());
+    }
+    let ship = session.ids.first_ship;
+    run_command(
+        &mut session,
+        "agotar combustible para probar ruta inviable",
+        GameplayCommand::RemoveShipFuel {
+            ship,
+            amount: 60,
+        },
+    )?;
+    let infeasible = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("consultar ruta inviable: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación con ruta inviable".to_owned())?;
+    if infeasible.primary.as_ref().is_some_and(|value| {
+        value.mission == Some(mission) && value.destination == Some(destination_target)
+    }) || infeasible
+        .alternatives
+        .iter()
+        .any(|value| value.mission == Some(mission) && !value.accessible)
+    {
+        return Err("ERICK recomendó una misión sin ruta viable".to_owned());
+    }
+    session
+        .restore_state(saved_initial)
+        .map_err(|error| format!("restaurar coordinación inicial: {error}"))?;
+    run_command(
+        &mut session,
+        "resolver encuentro para actualizar coordinación",
+        GameplayCommand::ResolveSpatialEncounter { player, encounter },
+    )?;
+    let after_encounter = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("consultar coordinación tras encuentro: {error:?}"))?
+        .ok_or_else(|| "no hubo coordinación tras resolver encuentro".to_owned())?;
+    if after_encounter
+        .alternatives
+        .iter()
+        .any(|value| value.action == gameplay::ExplorationAction::ResolveEncounter(encounter))
+    {
+        return Err("el encuentro resuelto siguió siendo recomendado".to_owned());
+    }
+    run_command(
+        &mut session,
+        "ocupar estación para ejecutar objetivo recomendado",
+        GameplayCommand::Interact { player, target: station },
+    )?;
+    run_command(
+        &mut session,
+        "planificar destino recomendado",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin: destination_origin,
+            destination: destination_target,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar viaje recomendado por el jugador",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "avanzar tiempo lógico hasta el destino",
+        GameplayCommand::AdvanceTime { delta: Duration(1) },
+    )?;
+    run_command(
+        &mut session,
+        "acercar jugador al destino mediante movimiento real",
+        GameplayCommand::MovePlayer {
+            player,
+            direction: Vec3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            delta: Duration(2_000),
+        },
+    )?;
+    let after_arrival = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("consultar coordinación tras llegada: {error:?}"))?
+        .ok_or_else(|| "no hubo coordinación tras llegada".to_owned())?;
+    if after_arrival.primary.as_ref().is_some_and(|value| {
+        value.objective == Some(objective)
+    }) || !after_arrival.primary.as_ref().is_some_and(|value| {
+        value.category == gameplay::ExplorationTargetCategory::WorldActivity
+            && value.destination == Some(destination_target)
+    }) {
+        return Err(format!("el objetivo completado o el mundo no actualizaron la recomendación: {after_arrival:?}"));
+    }
+    let before_extract = session.save_state();
+    run_command(
+        &mut session,
+        "extraer recurso del objetivo recomendado",
+        GameplayCommand::ExtractWorldResource {
+            player,
+            destination: destination_target,
+        },
+    )?;
+    let after_extract = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("consultar actividad agotada: {error:?}"))?
+        .ok_or_else(|| "no hubo coordinación tras agotar actividad".to_owned())?;
+    if after_extract
+        .primary
+        .as_ref()
+        .is_some_and(|value| value.destination == Some(destination_target))
+        || after_extract
+            .alternatives
+            .iter()
+            .any(|value| value.destination == Some(destination_target))
+    {
+        return Err("la actividad agotada siguió siendo recomendada".to_owned());
+    }
+    let saved_final = session.save_state();
+    let saved_final_text = saved_final.serialize();
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(saved_final)
+        .map_err(|error| format!("restaurar coordinación final: {error}"))?;
+    let restored_assessment = restored
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("consultar coordinación restaurada: {error:?}"))?;
+    if restored_assessment != Some(after_extract.clone())
+        || before_extract.serialize() == saved_final_text
+    {
+        return Err("la restauración o el consumo de recurso no fueron observables correctamente".to_owned());
+    }
+    run_command(
+        &mut restored,
+        "deshabilitar ERICK para validar asistencia",
+        GameplayCommand::SetCompanionBehavior {
+            companion: erick.entity,
+            behavior: gameplay::CompanionBehavior::Unavailable,
+        },
+    )?;
+    if restored
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("consultar ERICK no disponible: {error:?}"))?
+        .is_some()
+    {
+        return Err("ERICK no disponible conservó asistencia accionable".to_owned());
+    }
+    println!(
+        "COORDINACION DE EXPLORACION DE ERICK COMPLETADA: mision={mission:?}, objetivo={objective:?}, destino={destination_target:?}, derelicto={derelict:?}, encuentro_resuelto=true, actividad_agotada=true, restaurado=true"
+    );
+    Ok(())
+}
+
+fn run_erick_preparation_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let origin = DestinationId::new(6_701);
+    let destination = DestinationId::new(6_702);
+    let mission = gameplay::types::MissionId(67);
+    let objective = gameplay::types::ObjectiveId(6_701);
+    for value in [
+        Destination {
+            id: origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 10,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 10,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de preparación",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar ruta de preparación",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: origin,
+                to: destination,
+                distance: 10.0,
+                duration: Duration(1),
+                fuel_cost: 10,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    session
+        .world_mut()
+        .register_mission(
+            gameplay::Mission::new(
+                mission,
+                "Preparación de misión de ERICK",
+                vec![gameplay::Objective::new(
+                    objective,
+                    mission,
+                    "Preparar viaje",
+                    true,
+                    gameplay::ObjectiveTrigger::DestinationArrived { destination },
+                )],
+            )
+            .map_err(|error| format!("definir misión de preparación: {error:?}"))?,
+        )
+        .map_err(|error| format!("registrar misión de preparación: {error:?}"))?;
+    run_command(
+        &mut session,
+        "desbloquear misión de preparación",
+        GameplayCommand::UnlockMission { mission },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar misión de preparación",
+        GameplayCommand::StartMission { mission },
+    )?;
+    run_command(
+        &mut session,
+        "crear ERICK para evaluar preparación",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para preparación".to_owned())?;
+    let complete = session
+        .world()
+        .companion_preparation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar preparación completa: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación de preparación completa".to_owned())?;
+    if !complete.prepared
+        || complete.priority != gameplay::PreparationPriority::Normal
+        || complete.reason != gameplay::PreparationReason::Ready
+        || !complete
+            .satisfied_requirements
+            .contains(&gameplay::PreparationRequirement::Fuel {
+                required: 10,
+                available: 60,
+            })
+    {
+        return Err(format!("preparación completa inesperada: {complete:?}"));
+    }
+    let complete_snapshot = session.save_state();
+    let repeated = session
+        .world()
+        .companion_preparation_assessment(erick.entity)
+        .map_err(|error| format!("repetir preparación completa: {error:?}"))?;
+    if repeated != Some(complete.clone())
+        || session.save_state().serialize() != complete_snapshot.serialize()
+    {
+        return Err("consultar preparación produjo mutaciones o no fue determinista".to_owned());
+    }
+    run_command(
+        &mut session,
+        "reducir combustible para preparación insuficiente",
+        GameplayCommand::RemoveShipFuel { ship, amount: 55 },
+    )?;
+    let fuel_missing = session
+        .world()
+        .companion_preparation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar combustible insuficiente: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación con combustible insuficiente".to_owned())?;
+    if fuel_missing.prepared
+        || fuel_missing.priority != gameplay::PreparationPriority::Critical
+        || fuel_missing.reason != gameplay::PreparationReason::FuelShortage
+        || fuel_missing.action != Some(gameplay::PreparationAction::PlayerRequired)
+        || !fuel_missing
+            .missing_requirements
+            .contains(&gameplay::PreparationRequirement::Fuel {
+                required: 10,
+                available: 5,
+            })
+    {
+        return Err(format!("preparación de combustible inesperada: {fuel_missing:?}"));
+    }
+    run_command(
+        &mut session,
+        "reponer combustible mediante API existente",
+        GameplayCommand::AddShipFuel { ship, amount: 55 },
+    )?;
+    let collectible = session
+        .world_mut()
+        .create_collectible(ItemId(1), 1, Vec3::ZERO, 2.0)
+        .map_err(|error| format!("crear recompensa pendiente: {error:?}"))?;
+    run_command(
+        &mut session,
+        "llenar inventario para probar capacidad",
+        GameplayCommand::AddInventoryItem {
+            player,
+            item: ItemId(1),
+            amount: 20,
+        },
+    )?;
+    let inventory_missing = session
+        .world()
+        .companion_preparation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar capacidad de recompensa: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación de capacidad".to_owned())?;
+    if inventory_missing.prepared
+        || inventory_missing.reason != gameplay::PreparationReason::InventoryCapacity
+        || inventory_missing.action != Some(gameplay::PreparationAction::FreeInventory)
+        || !inventory_missing
+            .missing_requirements
+            .contains(&gameplay::PreparationRequirement::InventoryCapacity {
+                required: 1,
+                available: 0,
+            })
+        || session.world().collectible(collectible).is_none_or(|item| !item.active)
+    {
+        return Err(format!("preparación de inventario inesperada: {inventory_missing:?}"));
+    }
+    run_command(
+        &mut session,
+        "liberar capacidad antes de recoger recompensa",
+        GameplayCommand::RemoveInventoryItem {
+            player,
+            item: ItemId(1),
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "recoger recompensa pendiente con jugador",
+        GameplayCommand::CollectItem {
+            player,
+            collectible,
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "crear enemigo para evaluar munición",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let enemy = session
+        .world()
+        .enemies()
+        .next()
+        .map(|enemy| enemy.entity)
+        .ok_or_else(|| "la creación del enemigo no registró entidad".to_owned())?;
+    run_command(
+        &mut session,
+        "equipar arma con munición real",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                15,
+                10,
+                Duration(1_000),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 1,
+                },
+            ),
+        },
+    )?;
+    let ammunition_missing = session
+        .world()
+        .companion_preparation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar munición insuficiente: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación de munición".to_owned())?;
+    if ammunition_missing.prepared
+        || ammunition_missing.reason != gameplay::PreparationReason::AmmunitionShortage
+        || ammunition_missing.action != Some(gameplay::PreparationAction::PrepareCombat(enemy))
+    {
+        return Err(format!("preparación de combate inesperada: {ammunition_missing:?}"));
+    }
+    run_command(
+        &mut session,
+        "liberar espacio para munición",
+        GameplayCommand::RemoveInventoryItem {
+            player,
+            item: ItemId(1),
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "añadir munición real",
+        GameplayCommand::AddInventoryItem {
+            player,
+            item: ItemId(2),
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "dañar nave para evaluar reparación",
+        GameplayCommand::DamageShip { ship, amount: 80 },
+    )?;
+    run_command(
+        &mut session,
+        "retirar material para crear carencia de reparación",
+        GameplayCommand::RemoveInventoryItem {
+            player,
+            item: ItemId(1),
+            amount: 19,
+        },
+    )?;
+    let repair_missing = session
+        .world()
+        .companion_preparation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar reparación insuficiente: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación de reparación".to_owned())?;
+    if repair_missing.prepared
+        || repair_missing.reason != gameplay::PreparationReason::RepairMaterialShortage
+        || repair_missing.priority != gameplay::PreparationPriority::Critical
+    {
+        return Err(format!("preparación de reparación inesperada: {repair_missing:?}"));
+    }
+    let engineering = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Engineering)
+        .map_err(|error| format!("crear estación de reparación: {error:?}"))?;
+    run_command(
+        &mut session,
+        "añadir material real para reparar",
+        GameplayCommand::AddInventoryItem {
+            player,
+            item: ItemId(1),
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estación de reparación",
+        GameplayCommand::Interact {
+            player,
+            target: engineering,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "reparar nave con acción del jugador",
+        GameplayCommand::RepairShipAtStation {
+            player,
+            ship,
+            station: engineering,
+        },
+    )?;
+    let repair_ready = session
+        .world()
+        .companion_preparation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar reparación aplicada: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación tras reparación".to_owned())?;
+    if !repair_ready.prepared {
+        return Err(format!("la reparación real no actualizó preparación: {repair_ready:?}"));
+    }
+    let before_queries = session.save_state();
+    let repeated_missing = session
+        .world()
+        .companion_preparation_assessment(erick.entity)
+        .map_err(|error| format!("repetir preparación insuficiente: {error:?}"))?;
+    if repeated_missing != Some(repair_ready)
+        || session.save_state().serialize() != before_queries.serialize()
+    {
+        return Err("la consulta repetida de preparación no fue determinista".to_owned());
+    }
+    let mut activity_session = ProjectEchoSession::new();
+    let activity_player = activity_session.ids.first_player;
+    activity_session
+        .world_mut()
+        .register_destination(Destination {
+            id: DestinationId::new(6_703),
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        })
+        .map_err(|error| format!("registrar destino de actividad: {error:?}"))?;
+    run_command(
+        &mut activity_session,
+        "registrar actividad de recursos",
+        GameplayCommand::RegisterFunctionalWorld {
+            world: FunctionalWorld::new(
+                DestinationId::new(6_703),
+                2.0,
+                vec![WorldActivity::Resource(ResourceSite {
+                    item: ItemId(1),
+                    available: 1,
+                    extraction_amount: 1,
+                })],
+            ),
+        },
+    )?;
+    run_command(
+        &mut activity_session,
+        "crear ERICK para actividad",
+        GameplayCommand::CreateCompanion {
+            followed_player: activity_player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let activity_erick = activity_session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para actividad".to_owned())?;
+    let activity_ready = activity_session
+        .world()
+        .companion_preparation_assessment(activity_erick.entity)
+        .map_err(|error| format!("evaluar actividad preparada: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación de actividad".to_owned())?;
+    if !activity_ready.prepared
+        || activity_ready.exploration.as_ref().is_none_or(|target| {
+            target.destination != Some(DestinationId::new(6_703))
+        })
+    {
+        return Err(format!("actividad preparada inesperada: {activity_ready:?}"));
+    }
+    let activity_snapshot = activity_session.save_state();
+    let repeated_activity = activity_session
+        .world()
+        .companion_preparation_assessment(activity_erick.entity)
+        .map_err(|error| format!("repetir evaluación de actividad: {error:?}"))?;
+    if repeated_activity != Some(activity_ready.clone())
+        || activity_session.save_state().serialize() != activity_snapshot.serialize()
+    {
+        return Err("evaluar actividad produjo una mutación".to_owned());
+    }
+    run_command(
+        &mut activity_session,
+        "llenar inventario antes de extraer recurso",
+        GameplayCommand::AddInventoryItem {
+            player: activity_player,
+            item: ItemId(1),
+            amount: 20,
+        },
+    )?;
+    let activity_blocked = activity_session
+        .world()
+        .companion_preparation_assessment(activity_erick.entity)
+        .map_err(|error| format!("evaluar capacidad de actividad: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación bloqueada de actividad".to_owned())?;
+    if activity_blocked.prepared
+        || activity_blocked.reason != gameplay::PreparationReason::InventoryCapacity
+    {
+        return Err(format!("actividad bloqueada inesperada: {activity_blocked:?}"));
+    }
+    run_command(
+        &mut activity_session,
+        "vaciar inventario antes de extracción real",
+        GameplayCommand::RemoveInventoryItem {
+            player: activity_player,
+            item: ItemId(1),
+            amount: 20,
+        },
+    )?;
+    run_command(
+        &mut activity_session,
+        "extraer recurso con jugador",
+        GameplayCommand::ExtractWorldResource {
+            player: activity_player,
+            destination: DestinationId::new(6_703),
+        },
+    )?;
+    let activity_exhausted = activity_session
+        .world()
+        .companion_preparation_assessment(activity_erick.entity)
+        .map_err(|error| format!("evaluar actividad agotada: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación tras agotar actividad".to_owned())?;
+    if activity_exhausted.exploration.is_some() || !activity_exhausted.prepared {
+        return Err(format!("actividad agotada no actualizó preparación: {activity_exhausted:?}"));
+    }
+    let saved_activity = activity_session.save_state();
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(saved_activity)
+        .map_err(|error| format!("restaurar preparación de actividad: {error}"))?;
+    let restored_activity = restored
+        .world()
+        .companion_preparation_assessment(activity_erick.entity)
+        .map_err(|error| format!("evaluar preparación restaurada: {error:?}"))?;
+    if restored_activity != Some(activity_exhausted) {
+        return Err("la preparación restaurada no fue equivalente".to_owned());
+    }
+    run_command(
+        &mut restored,
+        "deshabilitar ERICK para bloquear preparación",
+        GameplayCommand::SetCompanionBehavior {
+            companion: activity_erick.entity,
+            behavior: gameplay::CompanionBehavior::Unavailable,
+        },
+    )?;
+    if restored
+        .world()
+        .companion_preparation_assessment(activity_erick.entity)
+        .map_err(|error| format!("consultar ERICK no disponible: {error:?}"))?
+        .is_some()
+    {
+        return Err("ERICK no disponible conservó evaluación de preparación".to_owned());
+    }
+    println!(
+        "PREPARACION DE ERICK COMPLETADA: combustible=5→60, capacidad_recompensa=true, enemigo={enemy}, reparacion=material_faltante, actividad_agotada=true, restaurado=true"
+    );
+    Ok(())
+}
+
+fn run_erick_coordination_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let origin = DestinationId::new(6_801);
+    let destination = DestinationId::new(6_802);
+    let mission = gameplay::types::MissionId(68);
+    let objective = gameplay::types::ObjectiveId(6_801);
+    for value in [
+        Destination {
+            id: origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 10,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 10,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de coordinacion",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar ruta de coordinacion",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: origin,
+                to: destination,
+                distance: 10.0,
+                duration: Duration(1),
+                fuel_cost: 10,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    session
+        .world_mut()
+        .register_mission(
+            gameplay::Mission::new(
+                mission,
+                "Coordinacion secuencial de ERICK",
+                vec![gameplay::Objective::new(
+                    objective,
+                    mission,
+                    "Alcanzar el siguiente objetivo",
+                    true,
+                    gameplay::ObjectiveTrigger::DestinationArrived { destination },
+                )],
+            )
+            .map_err(|error| format!("definir mision de coordinacion: {error:?}"))?,
+        )
+        .map_err(|error| format!("registrar mision de coordinacion: {error:?}"))?;
+    run_command(
+        &mut session,
+        "desbloquear mision de coordinacion",
+        GameplayCommand::UnlockMission { mission },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar mision de coordinacion",
+        GameplayCommand::StartMission { mission },
+    )?;
+    run_command(
+        &mut session,
+        "crear ERICK para coordinar objetivos",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedo registrado para coordinacion".to_owned())?;
+    let initial = session
+        .world()
+        .companion_coordination_assessment(erick.entity)
+        .map_err(|error| format!("evaluar coordinacion inicial: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluacion inicial de coordinacion".to_owned())?;
+    let initial_step = initial
+        .next_step
+        .as_ref()
+        .ok_or_else(|| "ERICK no propuso un siguiente paso".to_owned())?;
+    if initial.objective != Some(objective)
+        || initial.mission != Some(mission)
+        || initial.blocked
+        || initial_step.category != gameplay::CoordinationCategory::Navigation
+        || initial_step.action != gameplay::CoordinationAction::StartAutopilot(destination)
+        || initial_step.order != 1
+    {
+        return Err(format!("coordinacion inicial inesperada: {initial:?}"));
+    }
+    let snapshot = session.save_state();
+    let repeated = session
+        .world()
+        .companion_coordination_assessment(erick.entity)
+        .map_err(|error| format!("repetir coordinacion inicial: {error:?}"))?;
+    if repeated != Some(initial.clone()) || session.save_state().serialize() != snapshot.serialize() {
+        return Err("la coordinacion inicial no fue determinista o modifico el mundo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "crear amenaza para coordinacion tactica",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let enemy = session
+        .world()
+        .enemies()
+        .next()
+        .map(|value| value.entity)
+        .ok_or_else(|| "la amenaza de coordinacion no quedo registrada".to_owned())?;
+    run_command(
+        &mut session,
+        "equipar arma para resolver riesgo",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                15,
+                10,
+                Duration(1_000),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 1,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "preparar municion para resolver riesgo",
+        GameplayCommand::AddInventoryItem {
+            player,
+            item: ItemId(2),
+            amount: 1,
+        },
+    )?;
+    let risk = session
+        .world()
+        .companion_coordination_assessment(erick.entity)
+        .map_err(|error| format!("evaluar riesgo tactico: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluacion de riesgo tactico".to_owned())?;
+    let risk_step = risk
+        .next_step
+        .as_ref()
+        .ok_or_else(|| "no hubo paso tactico inmediato".to_owned())?;
+    if risk_step.category != gameplay::CoordinationCategory::Combat
+        || risk_step.action != gameplay::CoordinationAction::Tactical(gameplay::TacticalAction::DefeatEnemy(enemy))
+        || risk_step.priority != gameplay::CoordinationPriority::Critical
+    {
+        return Err(format!("coordinacion tactica inesperada: {risk:?}"));
+    }
+    run_command(
+        &mut session,
+        "retirar amenaza para continuar coordinacion",
+        GameplayCommand::SetEnemyActive {
+            enemy,
+            active: false,
+        },
+    )?;
+    let after_risk = session
+        .world()
+        .companion_coordination_assessment(erick.entity)
+        .map_err(|error| format!("reevaluar coordinacion: {error:?}"))?
+        .ok_or_else(|| "no hubo reevaluacion de coordinacion".to_owned())?;
+    if after_risk.next_step.is_none()
+        || after_risk.next_step.as_ref().is_some_and(|step| {
+            step.category != gameplay::CoordinationCategory::Navigation
+                || step.action != gameplay::CoordinationAction::StartAutopilot(destination)
+        })
+    {
+        return Err(format!("coordinacion no volvio a la ruta: {after_risk:?}"));
+    }
+    run_command(
+        &mut session,
+        "marcar ERICK no disponible",
+        GameplayCommand::SetCompanionBehavior {
+            companion: erick.entity,
+            behavior: gameplay::CompanionBehavior::Unavailable,
+        },
+    )?;
+    if session
+        .world()
+        .companion_coordination_assessment(erick.entity)
+        .map_err(|error| format!("consultar ERICK no disponible: {error:?}"))?
+        .is_some()
+    {
+        return Err("ERICK no disponible conservo coordinacion".to_owned());
+    }
+    run_command(
+        &mut session,
+        "reactivar ERICK para evaluar destruccion",
+        GameplayCommand::SetCompanionBehavior {
+            companion: erick.entity,
+            behavior: gameplay::CompanionBehavior::Accompany,
+        },
+    )?;
+    let ship = session.ids.first_ship;
+    run_command(
+        &mut session,
+        "destruir nave para bloquear coordinacion",
+        GameplayCommand::DamageShip {
+            ship,
+            amount: 100,
+        },
+    )?;
+    let destroyed = session
+        .world()
+        .companion_coordination_assessment(erick.entity)
+        .map_err(|error| format!("evaluar nave destruida: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluacion con nave destruida".to_owned())?;
+    if !destroyed.blocked
+        || destroyed.next_step.as_ref().is_none_or(|step| {
+            step.priority != gameplay::CoordinationPriority::Critical
+                || step.status != gameplay::CoordinationStepStatus::Blocked
+        })
+    {
+        return Err(format!("nave destruida no bloqueo coordinacion: {destroyed:?}"));
+    }
+    println!(
+        "COORDINACION SECUENCIAL DE ERICK COMPLETADA: mision={mission:?}, objetivo={objective:?}, ruta={destination:?}, riesgo={enemy:?}, pasos_futuros={}",
+        after_risk.later_steps.len()
+    );
+    Ok(())
+}
+
 fn run_scenario() -> Result<(), String> {
     run_atomicity_regressions()?;
     let mut session = ProjectEchoSession::new();
@@ -7240,5 +8284,8 @@ fn run_scenario() -> Result<(), String> {
     run_erick_route_risk_scenario()?;
     run_erick_route_comparison_scenario()?;
     run_erick_operational_scenario()?;
+    run_erick_exploration_coordination_scenario()?;
+    run_erick_preparation_scenario()?;
+    run_erick_coordination_scenario()?;
     Ok(())
 }

@@ -4,23 +4,29 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     companion::{
         Companion, CompanionActionMode, CompanionBehavior, CompanionError, CompanionRecommendation,
+        ExplorationAction, ExplorationAssessment, ExplorationPriority,
+        ExplorationRecommendation, ExplorationRecommendationReason, ExplorationTargetCategory,
         FuelCondition, HullCondition, MaintenancePriority, MaintenanceRecommendation,
         NavigationAdvice, NavigationAlternativeRecommendation, NavigationAssessment,
         NavigationRecommendationReason, NavigationRisk, NavigationRouteComparison,
         NavigationRouteOption, NavigationRouteRisk, NavigationRouteRiskClassification,
-        NavigationRouteRiskSource, OperationalAssessment, TacticalAction, TacticalPriority,
-        TacticalRecommendation,
+        NavigationRouteRiskSource, OperationalAssessment, PreparationAction,
+        PreparationAssessment, PreparationCategory, PreparationPriority, PreparationReason,
+        PreparationRequirement, TacticalAction, TacticalPriority, TacticalRecommendation,
+        CoordinationAction, CoordinationAssessment, CoordinationCategory, CoordinationPriority,
+        CoordinationReason, CoordinationStep, CoordinationStepStatus,
     },
     collectible::{Collectible, CollectibleError, ItemDefinition, ItemDefinitionError},
     combat::{Combatant, EnemyConfiguration},
     components::{Inventory, InventoryError},
     door::{Door, DoorAccessRequirement},
-    derelict::{Derelict, DerelictError, DerelictId},
+    derelict::{Derelict, DerelictError, DerelictId, DerelictState},
     electrical::{ElectricalPanel, ElectricalPanelConfiguration, ElectricalPanelRegistrationError},
     encounter::{EncounterId, SpatialEncounter, SpatialEncounterError, SpatialEncounterKind},
     events::EventLog,
     hazard::{EnvironmentalHazard, EnvironmentalHazardError, HazardId},
     healing::{HealingError, HealingResult},
+    guidance::{GuidanceAction, GuidanceRequirement},
     integrity::{
         IntegrityError, ShipIntegrity, ShipRepairConfiguration, ShipRepairError, StructuralState,
     },
@@ -1170,6 +1176,721 @@ impl GameplayWorld {
             route_comparison,
             priority,
             recommendation,
+        }))
+    }
+    pub fn companion_exploration_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<ExplorationAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active || !self.entities.contains(player.entity_id) {
+            return Ok(None);
+        }
+        let ship = self.navigation().ship_id();
+        let ship_operational = ship
+            .and_then(|value| self.ship_is_operational(value))
+            .unwrap_or(false);
+        let fuel = ship.and_then(|value| self.ship_fuel(value)).map(|value| value.current());
+        let current_position = self.navigation().current_position();
+        let route_is_viable = |destination: DestinationId| {
+            let Some(origin) = self
+                .destinations()
+                .find(|value| value.position == current_position)
+                .map(|value| value.id)
+            else {
+                return false;
+            };
+            let Some(route) = self.navigation().route(origin, destination) else {
+                return false;
+            };
+            route.state == crate::navigation::NavigationRouteState::Available
+                && ship_operational
+                && fuel.is_some_and(|available| available >= route.fuel_cost)
+        };
+        let player_can_reach = |position: engine::Vec3, range: f32| {
+            finite_vec3(player.position)
+                && finite_vec3(position)
+                && range.is_finite()
+                && range > 0.0
+                && crate::encounter::distance_squared(player.position, position)
+                    .is_some_and(|distance| distance <= f64::from(range) * f64::from(range))
+        };
+        let guidance = self
+            .guidance_for_player(companion.followed_player)
+            .map_err(|_| CompanionError::GuidanceUnavailable)?;
+        let mut recommendations = Vec::new();
+        if let Some(current_id) = guidance.current_objective {
+            if let Some(objective) = guidance.objectives.iter().find(|value| value.id == current_id) {
+                if let Some(action) = objective.recommended_action {
+                    let destination = match action {
+                        GuidanceAction::TravelTo(value)
+                        | GuidanceAction::IdentifySignal(Some(value))
+                        | GuidanceAction::DiscoverDestination(value) => Some(value),
+                        _ => None,
+                    };
+                    let accessible = match action {
+                        GuidanceAction::TravelTo(value) => {
+                            self.destination(value).is_some_and(|destination| {
+                                destination.discovery == crate::navigation::DiscoveryState::Discovered
+                            }) && route_is_viable(value)
+                        }
+                        GuidanceAction::DiscoverDestination(value) => self.destination(value).is_some(),
+                        GuidanceAction::IdentifySignal(Some(value)) => {
+                            self.destination(value).is_some()
+                                && self.guidance_action_is_available(companion.followed_player, action)
+                        }
+                        GuidanceAction::RepairShip => ship_operational,
+                        GuidanceAction::CompleteObjective(_) => false,
+                        _ => self.guidance_action_is_available(companion.followed_player, action),
+                    };
+                    if accessible && action != GuidanceAction::CompleteObjective(current_id) {
+                        let mut fulfilled = vec![GuidanceRequirement::MissionActive(objective.mission)];
+                        if let Some(destination) = destination {
+                            if self.destination(destination).is_some_and(|value| {
+                                value.discovery == crate::navigation::DiscoveryState::Discovered
+                            }) {
+                                fulfilled.push(GuidanceRequirement::DestinationDiscovered(destination));
+                            }
+                        }
+                        recommendations.push(ExplorationRecommendation {
+                            companion: entity,
+                            player: companion.followed_player,
+                            category: if matches!(action, GuidanceAction::StudyKnowledge(_)) {
+                                ExplorationTargetCategory::Knowledge
+                            } else {
+                                ExplorationTargetCategory::MissionObjective
+                            },
+                            mission: Some(objective.mission),
+                            objective: Some(objective.id),
+                            destination,
+                            entity: match action {
+                                GuidanceAction::Interact(value)
+                                | GuidanceAction::DefeatEnemy(Some(value)) => Some(value),
+                                _ => None,
+                            },
+                            reason: ExplorationRecommendationReason::MissionProgress,
+                            priority: ExplorationPriority::Critical,
+                            fulfilled_requirements: fulfilled,
+                            missing_requirements: objective.missing_requirements.clone(),
+                            accessible: true,
+                            action: ExplorationAction::Guidance(action),
+                        });
+                    }
+                }
+            }
+        }
+        for encounter in self.spatial_encounters() {
+            if encounter.state != crate::encounter::SpatialEncounterState::Active
+                || !player_can_reach(encounter.position, encounter.activation_radius)
+            {
+                continue;
+            }
+            recommendations.push(ExplorationRecommendation {
+                companion: entity,
+                player: companion.followed_player,
+                category: ExplorationTargetCategory::Encounter,
+                mission: None,
+                objective: None,
+                destination: None,
+                entity: None,
+                reason: ExplorationRecommendationReason::PendingEncounter,
+                priority: ExplorationPriority::High,
+                fulfilled_requirements: Vec::new(),
+                missing_requirements: Vec::new(),
+                accessible: true,
+                action: ExplorationAction::ResolveEncounter(encounter.id),
+            });
+        }
+        for derelict in self.derelicts() {
+            if !matches!(derelict.state, DerelictState::Discovered | DerelictState::Exploring)
+                || !ship_operational
+                || !player_can_reach(derelict.position, derelict.interaction_range)
+            {
+                continue;
+            }
+            recommendations.push(ExplorationRecommendation {
+                companion: entity,
+                player: companion.followed_player,
+                category: ExplorationTargetCategory::Derelict,
+                mission: None,
+                objective: None,
+                destination: None,
+                entity: None,
+                reason: ExplorationRecommendationReason::DerelictContent,
+                priority: ExplorationPriority::Normal,
+                fulfilled_requirements: Vec::new(),
+                missing_requirements: Vec::new(),
+                accessible: true,
+                action: ExplorationAction::ExploreDerelict(derelict.id),
+            });
+        }
+        for world in self.functional_worlds() {
+            let Some(destination) = self.destination(world.destination) else {
+                continue;
+            };
+            if destination.discovery != crate::navigation::DiscoveryState::Discovered
+                || !ship_operational
+                || !player_can_reach(destination.position, world.interaction_range)
+            {
+                continue;
+            }
+            let available = world.activities.iter().any(|activity| match activity {
+                WorldActivity::Trade(market) => market.offers.iter().any(|offer| offer.stock > 0),
+                WorldActivity::Resource(site) => site.available > 0,
+                WorldActivity::Combat(zone) => !zone.resolved,
+                WorldActivity::Story(story) => !story.interacted,
+            });
+            if !available {
+                continue;
+            }
+            let activity = world
+                .activities
+                .iter()
+                .find(|activity| match activity {
+                    WorldActivity::Trade(market) => market.offers.iter().any(|offer| offer.stock > 0),
+                    WorldActivity::Resource(site) => site.available > 0,
+                    WorldActivity::Combat(zone) => !zone.resolved,
+                    WorldActivity::Story(story) => !story.interacted,
+                })
+                .map(WorldActivity::category);
+            let Some(category) = activity else {
+                continue;
+            };
+            recommendations.push(ExplorationRecommendation {
+                companion: entity,
+                player: companion.followed_player,
+                category: ExplorationTargetCategory::WorldActivity,
+                mission: None,
+                objective: None,
+                destination: Some(world.destination),
+                entity: None,
+                reason: ExplorationRecommendationReason::WorldActivity,
+                priority: ExplorationPriority::Low,
+                fulfilled_requirements: Vec::new(),
+                missing_requirements: Vec::new(),
+                accessible: true,
+                action: ExplorationAction::PerformWorldActivity {
+                    destination: world.destination,
+                    category,
+                },
+            });
+        }
+        recommendations.sort_by_key(|recommendation| {
+            let priority = match recommendation.priority {
+                ExplorationPriority::Critical => 0,
+                ExplorationPriority::High => 1,
+                ExplorationPriority::Normal => 2,
+                ExplorationPriority::Low => 3,
+            };
+            let category = match recommendation.category {
+                ExplorationTargetCategory::MissionObjective => 0,
+                ExplorationTargetCategory::Knowledge => 1,
+                ExplorationTargetCategory::Encounter => 2,
+                ExplorationTargetCategory::Derelict => 3,
+                ExplorationTargetCategory::WorldActivity => 4,
+            };
+            (
+                priority,
+                category,
+                recommendation.destination.map_or(0, DestinationId::value),
+                recommendation.entity.map_or(0, EntityId::value),
+                recommendation.objective.map_or(0, |value| value.0),
+            )
+        });
+        let primary = recommendations.first().cloned();
+        let alternatives = recommendations.into_iter().skip(1).take(2).collect();
+        Ok(Some(ExplorationAssessment {
+            companion: entity,
+            player: companion.followed_player,
+            primary,
+            alternatives,
+        }))
+    }
+    pub fn companion_preparation_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<PreparationAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active || !self.entities.contains(player.entity_id) {
+            return Ok(None);
+        }
+        let exploration = self.companion_exploration_assessment(entity)?;
+        let exploration_target = exploration.as_ref().and_then(|value| value.primary.clone());
+        let guidance = self
+            .guidance_for_player(companion.followed_player)
+            .map_err(|_| CompanionError::GuidanceUnavailable)?;
+        let guided_action = guidance.current_objective.and_then(|id| {
+            guidance
+                .objectives
+                .iter()
+                .find(|objective| objective.id == id)
+                .and_then(|objective| objective.recommended_action)
+        });
+        let ship = self.navigation().ship_id();
+        let fuel_available = ship.and_then(|value| self.ship_fuel(value)).map(|value| value.current());
+        let current_position = self.navigation().current_position();
+        let route_requirement = |destination: DestinationId| {
+            let origin = self
+                .destinations()
+                .find(|value| value.position == current_position)
+                .map(|value| value.id)?;
+            let route = self.navigation().route(origin, destination)?;
+            Some((route.fuel_cost, fuel_available.unwrap_or_default()))
+        };
+        let mut satisfied = Vec::new();
+        let mut missing = Vec::new();
+        let mut action = None;
+        let mut category = PreparationCategory::Ready;
+        let mut reason = PreparationReason::Ready;
+        let mut priority = PreparationPriority::Normal;
+        let target_destination = exploration_target
+            .as_ref()
+            .and_then(|target| target.destination)
+            .or_else(|| match guided_action {
+                Some(GuidanceAction::TravelTo(destination)) => Some(destination),
+                _ => None,
+            });
+        if let Some(destination) = target_destination {
+            if let Some((required, available)) = route_requirement(destination) {
+                let requirement = PreparationRequirement::Fuel { required, available };
+                if available >= required {
+                    satisfied.push(requirement);
+                } else {
+                    missing.push(requirement);
+                    category = PreparationCategory::Fuel;
+                    reason = PreparationReason::FuelShortage;
+                    priority = PreparationPriority::Critical;
+                    action = Some(PreparationAction::PlayerRequired);
+                }
+            }
+        }
+        if let Some(operational) = self.companion_operational_assessment(entity)? {
+            if operational.hull == HullCondition::Critical {
+                let configuration = self.ship_repair_configuration();
+                let available = self
+                    .inventory(companion.followed_player)
+                    .map_or(0, |inventory| inventory.quantity(configuration.material));
+                let requirement = PreparationRequirement::RepairMaterial {
+                    item: configuration.material,
+                    required: configuration.material_cost,
+                    available,
+                };
+                if available >= configuration.material_cost {
+                    satisfied.push(requirement);
+                    if missing.is_empty() {
+                        category = PreparationCategory::Repair;
+                        action = ship.map(PreparationAction::RepairShip);
+                    }
+                } else {
+                    missing.push(requirement);
+                    category = PreparationCategory::Repair;
+                    reason = PreparationReason::RepairMaterialShortage;
+                    priority = PreparationPriority::Critical;
+                    action = Some(PreparationAction::PlayerRequired);
+                }
+            }
+        }
+        let tactical = self.companion_tactical_recommendation(entity)?;
+        if let Some(TacticalRecommendation {
+            action: TacticalAction::DefeatEnemy(enemy),
+            ..
+        }) = tactical
+        {
+            let (item, required, available) = self
+                .equipped_weapon(companion.followed_player)
+                .and_then(|weapon| weapon.ammunition)
+                .map(|ammunition| {
+                    (
+                        Some(ammunition.item),
+                        ammunition.amount_per_attack,
+                        self.inventory(companion.followed_player)
+                            .map_or(0, |inventory| inventory.quantity(ammunition.item)),
+                    )
+                })
+                .unwrap_or((None, 1, 0));
+            let requirement = PreparationRequirement::Ammunition {
+                item,
+                required,
+                available,
+            };
+            if available >= required {
+                satisfied.push(requirement);
+            } else {
+                missing.push(requirement);
+                category = PreparationCategory::Ammunition;
+                reason = PreparationReason::AmmunitionShortage;
+                if priority != PreparationPriority::Critical {
+                    priority = PreparationPriority::High;
+                    action = Some(PreparationAction::PrepareCombat(enemy));
+                }
+            }
+        }
+        if let Some(inventory) = self.inventory(companion.followed_player) {
+            for collectible in self.collectibles() {
+                if !collectible.active
+                    || collectible.owner.is_some_and(|owner| owner != companion.followed_player)
+                {
+                    continue;
+                }
+                let requirement = PreparationRequirement::InventoryCapacity {
+                    required: collectible.amount,
+                    available: inventory.remaining_capacity(),
+                };
+                if inventory.can_add(collectible.amount) {
+                    satisfied.push(requirement);
+                } else {
+                    missing.push(requirement);
+                    category = PreparationCategory::Inventory;
+                    reason = PreparationReason::InventoryCapacity;
+                    if priority != PreparationPriority::Critical {
+                        priority = PreparationPriority::High;
+                        action = Some(PreparationAction::FreeInventory);
+                    }
+                }
+            }
+        }
+        if let Some(target) = exploration_target.as_ref() {
+            if target.category == ExplorationTargetCategory::WorldActivity {
+                if let Some(destination) = target.destination {
+                    if let Some(world) = self.functional_world(destination) {
+                        if let Some(WorldActivity::Resource(site)) = world.activities.iter().find(|activity| {
+                            matches!(activity, WorldActivity::Resource(site) if site.available > 0)
+                        }) {
+                            let available_capacity = self
+                                .inventory(companion.followed_player)
+                                .map_or(0, |inventory| inventory.remaining_capacity());
+                            let requirement = PreparationRequirement::ActivityResource {
+                                item: site.item,
+                                required: site.extraction_amount,
+                                available: site.available,
+                            };
+                            if site.available >= site.extraction_amount {
+                                satisfied.push(requirement);
+                            } else {
+                                missing.push(requirement);
+                                category = PreparationCategory::Activity;
+                                reason = PreparationReason::ActivityResourceShortage;
+                                if priority != PreparationPriority::Critical {
+                                    priority = PreparationPriority::High;
+                                    action = Some(PreparationAction::PrepareActivity(destination));
+                                }
+                            }
+                            if available_capacity >= site.extraction_amount {
+                                satisfied.push(PreparationRequirement::InventoryCapacity {
+                                    required: site.extraction_amount,
+                                    available: available_capacity,
+                                });
+                            } else {
+                                missing.push(PreparationRequirement::InventoryCapacity {
+                                    required: site.extraction_amount,
+                                    available: available_capacity,
+                                });
+                                category = PreparationCategory::Inventory;
+                                reason = PreparationReason::InventoryCapacity;
+                                if priority != PreparationPriority::Critical {
+                                    priority = PreparationPriority::High;
+                                    action = Some(PreparationAction::FreeInventory);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let prepared = missing.is_empty();
+        if prepared {
+            category = PreparationCategory::Ready;
+            reason = PreparationReason::Ready;
+            priority = PreparationPriority::Normal;
+            action = None;
+        }
+        Ok(Some(PreparationAssessment {
+            companion: entity,
+            player: companion.followed_player,
+            exploration: exploration_target,
+            category,
+            priority,
+            reason,
+            prepared,
+            satisfied_requirements: satisfied,
+            missing_requirements: missing,
+            action,
+        }))
+    }
+    pub fn companion_coordination_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<CoordinationAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active || !self.entities.contains(player.entity_id) {
+            return Ok(None);
+        }
+        let exploration = self.companion_exploration_assessment(entity)?;
+        let preparation = self.companion_preparation_assessment(entity)?;
+        let operational = self.companion_operational_assessment(entity)?;
+        let tactical = self.companion_tactical_recommendation(entity)?;
+        let guidance = self
+            .guidance_for_player(companion.followed_player)
+            .map_err(|_| CompanionError::GuidanceUnavailable)?;
+        let primary_exploration = exploration.as_ref().and_then(|value| value.primary.clone());
+        let objective = primary_exploration
+            .as_ref()
+            .and_then(|value| value.objective)
+            .or(guidance.current_objective);
+        let mission = primary_exploration.as_ref().and_then(|value| value.mission).or_else(|| {
+            objective.and_then(|id| guidance.objectives.iter().find(|value| value.id == id).map(|value| value.mission))
+        });
+        let mut steps = Vec::new();
+        let mut add_step = |category: CoordinationCategory,
+                            action: CoordinationAction,
+                            objective: Option<crate::types::ObjectiveId>,
+                            destination: Option<DestinationId>,
+                            entity: Option<EntityId>,
+                            status: CoordinationStepStatus,
+                            requirements: Vec<PreparationRequirement>,
+                            reason: CoordinationReason,
+                            priority: CoordinationPriority,
+                            description: &'static str| {
+            steps.push(CoordinationStep {
+                order: 0,
+                category,
+                action,
+                objective,
+                destination,
+                entity,
+                status,
+                requirements,
+                reason,
+                priority,
+                description: description.to_string(),
+            });
+        };
+        if let Some(preparation) = preparation.as_ref().filter(|value| !value.prepared) {
+            add_step(
+                CoordinationCategory::Preparation,
+                CoordinationAction::Preparation(preparation.action.unwrap_or(PreparationAction::PlayerRequired)),
+                objective,
+                primary_exploration.as_ref().and_then(|value| value.destination),
+                primary_exploration.as_ref().and_then(|value| value.entity),
+                CoordinationStepStatus::Blocked,
+                preparation.missing_requirements.clone(),
+                CoordinationReason::PreparationRequired,
+                match preparation.priority {
+                    PreparationPriority::Critical => CoordinationPriority::Critical,
+                    PreparationPriority::High => CoordinationPriority::High,
+                    PreparationPriority::Normal => CoordinationPriority::Normal,
+                },
+                "Preparar los recursos necesarios antes de continuar",
+            );
+        } else if operational.as_ref().is_some_and(|value| value.hull == HullCondition::Destroyed) {
+            add_step(
+                CoordinationCategory::Preparation,
+                CoordinationAction::PlayerRequired,
+                objective,
+                None,
+                operational.as_ref().map(|value| value.ship),
+                CoordinationStepStatus::Blocked,
+                Vec::new(),
+                CoordinationReason::CriticalRisk,
+                CoordinationPriority::Critical,
+                "La nave no puede continuar en su estado actual",
+            );
+        } else if let Some(tactical) = tactical.as_ref().filter(|value| value.priority == TacticalPriority::Critical) {
+            let (action, category, entity, description) = match tactical.action {
+                TacticalAction::DefeatEnemy(enemy) => (
+                    CoordinationAction::Tactical(tactical.action),
+                    CoordinationCategory::Combat,
+                    Some(enemy),
+                    "Resolver la amenaza enemiga inmediata",
+                ),
+                TacticalAction::AddressEncounter(_encounter) => (
+                    CoordinationAction::Tactical(tactical.action),
+                    CoordinationCategory::Risk,
+                    None,
+                    "Resolver el encuentro activo antes de continuar",
+                ),
+                TacticalAction::WithdrawFromHazard(_hazard) => (
+                    CoordinationAction::Tactical(tactical.action),
+                    CoordinationCategory::Risk,
+                    None,
+                    "Salir del peligro activo antes de continuar",
+                ),
+                TacticalAction::PlayerAction(action) => (
+                    CoordinationAction::Guidance(action),
+                    CoordinationCategory::Risk,
+                    None,
+                    "Ejecutar la acción requerida por el riesgo actual",
+                ),
+            };
+            add_step(
+                category,
+                action,
+                objective,
+                None,
+                entity,
+                CoordinationStepStatus::Recommended,
+                Vec::new(),
+                CoordinationReason::CriticalRisk,
+                CoordinationPriority::Critical,
+                description,
+            );
+        } else if let Some(target) = primary_exploration.as_ref() {
+            match target.action {
+                ExplorationAction::Guidance(GuidanceAction::TravelTo(destination)) => {
+                    let action = match self.autopilot_state() {
+                        crate::navigation::AutopilotState::InTransit { destination: current, .. }
+                        | crate::navigation::AutopilotState::Planned { destination: current, .. }
+                            if *current == destination => CoordinationAction::MonitorAutopilot(destination),
+                        _ => CoordinationAction::StartAutopilot(destination),
+                    };
+                    add_step(
+                        CoordinationCategory::Navigation,
+                        action,
+                        target.objective,
+                        Some(destination),
+                        target.entity,
+                        CoordinationStepStatus::Recommended,
+                        preparation.as_ref().map_or_else(Vec::new, |value| value.missing_requirements.clone()),
+                        CoordinationReason::RouteToObjective,
+                        CoordinationPriority::Normal,
+                        "Continuar la ruta hacia el objetivo activo",
+                    );
+                }
+                ExplorationAction::Guidance(action) => add_step(
+                    CoordinationCategory::Mission,
+                    CoordinationAction::Guidance(action),
+                    target.objective,
+                    target.destination,
+                    target.entity,
+                    CoordinationStepStatus::Recommended,
+                    Vec::new(),
+                    CoordinationReason::ObjectiveAction,
+                    CoordinationPriority::Normal,
+                    "Ejecutar la acción del objetivo activo",
+                ),
+                action => add_step(
+                    match target.category {
+                        ExplorationTargetCategory::WorldActivity => CoordinationCategory::Activity,
+                        ExplorationTargetCategory::Encounter | ExplorationTargetCategory::Derelict => {
+                            CoordinationCategory::Exploration
+                        }
+                        _ => CoordinationCategory::Mission,
+                    },
+                    CoordinationAction::Exploration(action),
+                    target.objective,
+                    target.destination,
+                    target.entity,
+                    CoordinationStepStatus::Recommended,
+                    Vec::new(),
+                    CoordinationReason::ObjectiveAction,
+                    CoordinationPriority::Normal,
+                    "Continuar la exploración requerida por el objetivo",
+                ),
+            }
+        } else if let Some(action) = guidance.recommended_action {
+            add_step(
+                CoordinationCategory::Mission,
+                CoordinationAction::Guidance(action),
+                objective,
+                None,
+                None,
+                CoordinationStepStatus::Recommended,
+                Vec::new(),
+                CoordinationReason::ObjectiveAction,
+                CoordinationPriority::Normal,
+                "Ejecutar la siguiente acción guiada",
+            );
+        }
+        if let Some(assessment) = exploration.as_ref() {
+            for target in assessment.alternatives.iter().take(2) {
+                steps.push(CoordinationStep {
+                    order: 0,
+                    category: match target.category {
+                        ExplorationTargetCategory::WorldActivity => CoordinationCategory::Activity,
+                        ExplorationTargetCategory::Encounter | ExplorationTargetCategory::Derelict => {
+                            CoordinationCategory::Exploration
+                        }
+                        _ => CoordinationCategory::Mission,
+                    },
+                    action: match target.action {
+                        ExplorationAction::Guidance(action) => CoordinationAction::Guidance(action),
+                        action => CoordinationAction::Exploration(action),
+                    },
+                    objective: target.objective,
+                    destination: target.destination,
+                    entity: target.entity,
+                    status: CoordinationStepStatus::Future,
+                    requirements: Vec::new(),
+                    reason: CoordinationReason::FutureDependency,
+                    priority: CoordinationPriority::Low,
+                    description: "Paso posterior disponible cuando corresponda".to_string(),
+                });
+            }
+        }
+        steps.sort_by_key(|step| {
+            let priority = match step.priority {
+                CoordinationPriority::Critical => 0_u8,
+                CoordinationPriority::High => 1,
+                CoordinationPriority::Normal => 2,
+                CoordinationPriority::Low => 3,
+            };
+            (
+                priority,
+                step.objective.map_or(0, |value| value.0),
+                step.destination.map_or(0, DestinationId::value),
+                step.entity.map_or(0, EntityId::value),
+            )
+        });
+        for (index, step) in steps.iter_mut().enumerate() {
+            step.order = (index + 1) as u32;
+        }
+        let next_step = steps.first().cloned();
+        let missing_requirements = preparation
+            .as_ref()
+            .map_or_else(Vec::new, |value| value.missing_requirements.clone());
+        Ok(Some(CoordinationAssessment {
+            companion: entity,
+            player: companion.followed_player,
+            objective,
+            mission,
+            blocked: next_step.as_ref().is_some_and(|step| step.status == CoordinationStepStatus::Blocked),
+            ready: next_step.is_none(),
+            next_step,
+            later_steps: steps.into_iter().skip(1).collect(),
+            missing_requirements,
         }))
     }
     fn guidance_action_is_available(

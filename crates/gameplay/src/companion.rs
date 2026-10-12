@@ -2,7 +2,7 @@ use engine::{Duration, EntityId, Vec3};
 
 use crate::{
     encounter::EncounterId,
-    guidance::GuidanceAction,
+    guidance::{GuidanceAction, GuidanceRequirement},
     hazard::HazardId,
     knowledge::KnowledgeTarget,
     navigation::{AutopilotState, DestinationId, TravelState},
@@ -186,6 +186,217 @@ pub struct OperationalAssessment {
     pub route_comparison: Option<NavigationRouteComparison>,
     pub priority: MaintenancePriority,
     pub recommendation: Option<MaintenanceRecommendation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExplorationTargetCategory {
+    MissionObjective,
+    Encounter,
+    Derelict,
+    Knowledge,
+    WorldActivity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExplorationPriority {
+    Critical,
+    High,
+    Normal,
+    Low,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExplorationRecommendationReason {
+    MissionProgress,
+    PendingEncounter,
+    DerelictContent,
+    KnowledgeProgress,
+    WorldActivity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExplorationAction {
+    Guidance(GuidanceAction),
+    ResolveEncounter(EncounterId),
+    ExploreDerelict(crate::derelict::DerelictId),
+    PerformWorldActivity {
+        destination: DestinationId,
+        category: crate::world_activity::WorldCategory,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExplorationRecommendation {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub category: ExplorationTargetCategory,
+    pub mission: Option<crate::types::MissionId>,
+    pub objective: Option<crate::types::ObjectiveId>,
+    pub destination: Option<DestinationId>,
+    pub entity: Option<EntityId>,
+    pub reason: ExplorationRecommendationReason,
+    pub priority: ExplorationPriority,
+    pub fulfilled_requirements: Vec<GuidanceRequirement>,
+    pub missing_requirements: Vec<GuidanceRequirement>,
+    pub accessible: bool,
+    pub action: ExplorationAction,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExplorationAssessment {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub primary: Option<ExplorationRecommendation>,
+    pub alternatives: Vec<ExplorationRecommendation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreparationCategory {
+    Ready,
+    Fuel,
+    Inventory,
+    Ammunition,
+    Repair,
+    Activity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreparationPriority {
+    Critical,
+    High,
+    Normal,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreparationReason {
+    Ready,
+    FuelShortage,
+    InventoryCapacity,
+    AmmunitionShortage,
+    RepairMaterialShortage,
+    ActivityResourceShortage,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreparationRequirement {
+    Fuel { required: u32, available: u32 },
+    InventoryCapacity { required: u32, available: u32 },
+    Ammunition {
+        item: Option<crate::types::ItemId>,
+        required: u32,
+        available: u32,
+    },
+    RepairMaterial {
+        item: crate::types::ItemId,
+        required: u32,
+        available: u32,
+    },
+    ActivityResource {
+        item: crate::types::ItemId,
+        required: u32,
+        available: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreparationAction {
+    PlayerRequired,
+    FreeInventory,
+    CollectItem(EntityId),
+    RepairShip(EntityId),
+    PrepareCombat(EntityId),
+    PrepareActivity(DestinationId),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparationAssessment {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub exploration: Option<ExplorationRecommendation>,
+    pub category: PreparationCategory,
+    pub priority: PreparationPriority,
+    pub reason: PreparationReason,
+    pub prepared: bool,
+    pub satisfied_requirements: Vec<PreparationRequirement>,
+    pub missing_requirements: Vec<PreparationRequirement>,
+    pub action: Option<PreparationAction>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoordinationPriority {
+    Critical,
+    High,
+    Normal,
+    Low,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoordinationStepStatus {
+    Blocked,
+    Recommended,
+    Future,
+    Satisfied,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoordinationCategory {
+    Preparation,
+    Risk,
+    Navigation,
+    Exploration,
+    Combat,
+    Activity,
+    Mission,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoordinationAction {
+    Preparation(PreparationAction),
+    Exploration(ExplorationAction),
+    Guidance(GuidanceAction),
+    Tactical(TacticalAction),
+    StartAutopilot(DestinationId),
+    MonitorAutopilot(DestinationId),
+    PlayerRequired,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoordinationReason {
+    PreparationRequired,
+    CriticalRisk,
+    RouteToObjective,
+    ObjectiveAction,
+    FutureDependency,
+    ObjectiveCompleted,
+    Ready,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoordinationStep {
+    pub order: u32,
+    pub category: CoordinationCategory,
+    pub action: CoordinationAction,
+    pub objective: Option<crate::types::ObjectiveId>,
+    pub destination: Option<DestinationId>,
+    pub entity: Option<EntityId>,
+    pub status: CoordinationStepStatus,
+    pub requirements: Vec<PreparationRequirement>,
+    pub reason: CoordinationReason,
+    pub priority: CoordinationPriority,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoordinationAssessment {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub objective: Option<crate::types::ObjectiveId>,
+    pub mission: Option<crate::types::MissionId>,
+    pub blocked: bool,
+    pub ready: bool,
+    pub next_step: Option<CoordinationStep>,
+    pub later_steps: Vec<CoordinationStep>,
+    pub missing_requirements: Vec<PreparationRequirement>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
