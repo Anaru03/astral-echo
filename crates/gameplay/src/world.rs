@@ -129,6 +129,12 @@ impl GameplayWorld {
                     maximum_health: combatant.maximum_health,
                     current_health: combatant.current_health,
                     position: combatant.position,
+                    archetype: combatant.archetype,
+                    weapon: combatant.weapon,
+                    equipped_weapon: combatant.equipped_weapon,
+                    shield: combatant.shield,
+                    mobility: combatant.mobility,
+                    last_attack_at: combatant.last_attack_at,
                 })
                 .collect(),
             currencies: self.currencies.iter().map(|(id, value)| (*id, *value)).collect(),
@@ -183,6 +189,13 @@ impl GameplayWorld {
             ship_position: self.navigation.ship_id().map(|_| self.navigation.current_position()),
             destinations: self.navigation.destinations().cloned().collect(),
             routes: self.navigation.routes().cloned().collect(),
+            item_definitions: self.item_definitions.values().copied().collect(),
+            enemy_rewards: self.enemy_rewards.values().cloned().collect(),
+            processed_enemy_rewards: self.processed_enemy_rewards.iter().copied().collect(),
+            hazards: self.environmental_hazards.values().copied().collect(),
+            encounters: self.spatial_encounters.values().copied().collect(),
+            derelicts: self.derelicts.values().cloned().collect(),
+            functional_worlds: self.functional_worlds.values().cloned().collect(),
             world_snapshot: None,
         };
         save.world_snapshot = Some(Box::new(self.clone()));
@@ -200,6 +213,16 @@ impl GameplayWorld {
         }
         let registry = EntityRegistry::from_snapshot(save.registry.clone())
             .map_err(|_| SaveError::InvalidRegistry)?;
+        let mut item_definitions = BTreeMap::new();
+        for definition in &save.item_definitions {
+            definition.validate().map_err(|_| SaveError::InvalidState)?;
+            if item_definitions.insert(definition.id, *definition).is_some() {
+                return Err(SaveError::DuplicateRecord);
+            }
+        }
+        if item_definitions.is_empty() {
+            item_definitions = self.item_definitions.clone();
+        }
         let mut players = BTreeMap::new();
         let mut player_ids = BTreeSet::new();
         for saved in &save.players {
@@ -218,6 +241,9 @@ impl GameplayWorld {
             player.orientation.pitch_degrees = saved.pitch;
             player.velocity = saved.velocity;
             player.is_active = saved.active;
+            if saved.active != registry.snapshot().active.contains(&saved.id) {
+                return Err(SaveError::InvalidState);
+            }
             players.insert(saved.id, player);
         }
         let mut inventories = BTreeMap::new();
@@ -226,7 +252,7 @@ impl GameplayWorld {
                 return Err(SaveError::InvalidReference);
             }
             for (item, _) in &saved.entries {
-                if !self.item_definitions.contains_key(item) {
+                if !item_definitions.contains_key(item) {
                     return Err(SaveError::InvalidReference);
                 }
             }
@@ -237,7 +263,7 @@ impl GameplayWorld {
         if inventories.len() > players.len() {
             return Err(SaveError::InvalidState);
         }
-        let mut combatants = self.combatants.clone();
+        let mut combatants = BTreeMap::new();
         for saved in &save.combatants {
             if !registry.snapshot().known.contains(&saved.id)
                 || saved.maximum_health == 0
@@ -246,24 +272,24 @@ impl GameplayWorld {
             {
                 return Err(SaveError::InvalidState);
             }
-            if !combatants.contains_key(&saved.id) && !saved.is_player {
-                return Err(SaveError::InvalidReference);
-            }
-            let combatant = combatants
-                .entry(saved.id)
-                .or_insert_with(|| Combatant::player(saved.id));
-            if combatant.is_player != saved.is_player {
-                return Err(SaveError::InvalidState);
-            }
-            combatant.active = saved.active;
-            combatant.maximum_health = saved.maximum_health;
-            combatant.current_health = saved.current_health;
-            combatant.position = saved.position;
+            if saved.is_player && !players.contains_key(&saved.id) { return Err(SaveError::InvalidReference); }
+            if saved.is_player != saved.archetype.is_none()
+                || saved.is_player != players.get(&saved.id).is_some_and(|player| player.is_active == saved.active)
+                || (saved.is_player && saved.active != registry.snapshot().active.contains(&saved.id))
+            { return Err(SaveError::InvalidState); }
+            combatants.insert(saved.id, Combatant {
+                entity: saved.id, is_player: saved.is_player, active: saved.active,
+                maximum_health: saved.maximum_health, current_health: saved.current_health,
+                archetype: saved.archetype, position: saved.position, weapon: saved.weapon,
+                equipped_weapon: saved.equipped_weapon, shield: saved.shield,
+                mobility: saved.mobility, last_attack_at: saved.last_attack_at,
+            });
         }
         for saved in &save.collectibles {
             if !registry.snapshot().known.contains(&saved.entity)
-                || !self.item_definitions.contains_key(&saved.item)
-                || saved.amount == 0
+                || !item_definitions.contains_key(&saved.item)
+                || (saved.active && saved.amount == 0)
+                || (!saved.active && saved.amount != 0)
                 || saved.owner.is_some_and(|owner| !players.contains_key(&owner))
                 || !saved.position.x.is_finite()
                 || !saved.position.y.is_finite()
@@ -274,6 +300,7 @@ impl GameplayWorld {
         }
         let mut ship_resources = BTreeMap::new();
         for (ship, current, capacity) in &save.ship_fuel {
+            if !registry.snapshot().known.contains(ship) { return Err(SaveError::InvalidReference); }
             ship_resources.insert(
                 *ship,
                 ShipResources::new(*ship, *capacity, *current).map_err(|_| SaveError::InvalidState)?,
@@ -281,6 +308,7 @@ impl GameplayWorld {
         }
         let mut ship_integrity = BTreeMap::new();
         for (ship, current, maximum, threshold, _) in &save.ship_integrity {
+            if !registry.snapshot().known.contains(ship) { return Err(SaveError::InvalidReference); }
             ship_integrity.insert(
                 *ship,
                 ShipIntegrity::new(*ship, *maximum, *current, *threshold)
@@ -317,7 +345,7 @@ impl GameplayWorld {
             let valid = match target {
                 KnowledgeTarget::Destination(destination) => restored_navigation.destination(*destination).is_some(),
                 KnowledgeTarget::Enemy(enemy) => combatants.get(enemy).is_some_and(|combatant| !combatant.is_player),
-                KnowledgeTarget::Item(item) => self.item_definitions.contains_key(item),
+                KnowledgeTarget::Item(item) => item_definitions.contains_key(item),
             };
             if !valid {
                 return Err(SaveError::InvalidReference);
@@ -335,12 +363,72 @@ impl GameplayWorld {
         {
             return Err(SaveError::DuplicateRecord);
         }
+        if save.currencies.iter().any(|(entity, _)| !players.contains_key(entity)) {
+            return Err(SaveError::InvalidReference);
+        }
+        let mut enemy_rewards = BTreeMap::new();
+        for reward in &save.enemy_rewards {
+            reward.validate().map_err(|_| SaveError::InvalidState)?;
+            if enemy_rewards.insert(reward.archetype, reward.clone()).is_some() {
+                return Err(SaveError::DuplicateRecord);
+            }
+            if reward.entries.iter().any(|entry| !item_definitions.contains_key(&entry.item)) {
+                return Err(SaveError::InvalidReference);
+            }
+        }
+        let processed_enemy_rewards = save.processed_enemy_rewards.iter().copied().collect::<BTreeSet<_>>();
+        if processed_enemy_rewards.len() != save.processed_enemy_rewards.len()
+            || processed_enemy_rewards.iter().any(|enemy| !combatants.get(enemy).is_some_and(|combatant| !combatant.is_player && combatant.is_defeated()))
+        { return Err(SaveError::InvalidState); }
+        let mut hazards = BTreeMap::new();
+        for hazard in &save.hazards {
+            hazard.validate().map_err(|_| SaveError::InvalidState)?;
+            if hazards.insert(hazard.id, *hazard).is_some() { return Err(SaveError::DuplicateRecord); }
+        }
+        let mut encounters = BTreeMap::new();
+        for encounter in &save.encounters {
+            encounter.validate().map_err(|_| SaveError::InvalidState)?;
+            if encounters.insert(encounter.id, *encounter).is_some() { return Err(SaveError::DuplicateRecord); }
+        }
+        for encounter in encounters.values() {
+            match encounter.kind {
+                crate::encounter::SpatialEncounterKind::Signal { destination } if !restored_navigation.destinations().any(|value| value.id == destination) => return Err(SaveError::InvalidReference),
+                crate::encounter::SpatialEncounterKind::Hazard { hazard } if !hazards.contains_key(&hazard) => return Err(SaveError::InvalidReference),
+                crate::encounter::SpatialEncounterKind::Resource { item, .. } if !item_definitions.contains_key(&item) => return Err(SaveError::InvalidReference),
+                _ => {}
+            }
+            if encounter.spawned_enemy.is_some_and(|enemy| !combatants.get(&enemy).is_some_and(|combatant| !combatant.is_player)) { return Err(SaveError::InvalidReference); }
+        }
+        let mut derelicts = BTreeMap::new();
+        for derelict in &save.derelicts {
+            derelict.validate().map_err(|_| SaveError::InvalidState)?;
+            if derelict.rewards.iter().any(|reward| !item_definitions.contains_key(&reward.item)) { return Err(SaveError::InvalidReference); }
+            if derelict.associated_encounter.is_some_and(|id| !encounters.contains_key(&id)) { return Err(SaveError::InvalidReference); }
+            if derelict.spawned_enemy.is_some_and(|enemy| !combatants.get(&enemy).is_some_and(|combatant| !combatant.is_player)) { return Err(SaveError::InvalidReference); }
+            if derelict.reward_collectibles.iter().any(|collectible| !save.collectibles.iter().any(|value| value.entity == *collectible)) { return Err(SaveError::InvalidReference); }
+            if derelicts.insert(derelict.id, derelict.clone()).is_some() { return Err(SaveError::DuplicateRecord); }
+        }
+        let mut functional_worlds = BTreeMap::new();
+        for functional_world in &save.functional_worlds {
+            if !restored_navigation.destinations().any(|value| value.id == functional_world.destination) { return Err(SaveError::InvalidReference); }
+            crate::persistence::validate_persisted_functional_world(functional_world)?;
+            if functional_world.activities.iter().any(|activity| match activity { WorldActivity::Trade(market) => market.offers.iter().any(|offer| !item_definitions.contains_key(&offer.item)), WorldActivity::Resource(site) => !item_definitions.contains_key(&site.item), WorldActivity::Combat(zone) => zone.configuration.validate().is_err(), WorldActivity::Story(site) => !self.knowledge_target_exists(site.target) }) { return Err(SaveError::InvalidReference); }
+            if functional_world.activities.iter().any(|activity| matches!(activity, WorldActivity::Combat(zone) if zone.active_enemy.is_some_and(|enemy| !combatants.get(&enemy).is_some_and(|combatant| !combatant.is_player)))) { return Err(SaveError::InvalidReference); }
+            if functional_worlds.insert(functional_world.destination, functional_world.clone()).is_some() { return Err(SaveError::DuplicateRecord); }
+        }
         self.entities = registry;
+        self.item_definitions = item_definitions;
         self.state.time = save.time;
         self.state.phase = save.phase;
         self.players = players;
         self.inventories = inventories;
         self.combatants = combatants;
+        self.enemy_rewards = enemy_rewards;
+        self.processed_enemy_rewards = processed_enemy_rewards;
+        self.environmental_hazards = hazards;
+        self.spatial_encounters = encounters;
+        self.derelicts = derelicts;
+        self.functional_worlds = functional_worlds;
         self.currencies = save.currencies.into_iter().collect();
         self.ship_resources = ship_resources;
         self.ship_integrity = ship_integrity;

@@ -23,11 +23,13 @@ pub mod navigation;
 pub mod objective;
 pub mod pipeline;
 pub mod player;
+pub mod persistence;
 pub mod resources;
 pub mod revival;
 pub mod revival_system;
 pub mod reward;
 pub mod reward_system;
+pub mod scaling;
 pub mod station;
 pub mod systems;
 pub mod types;
@@ -92,6 +94,7 @@ pub use navigation::{
 pub use objective::{Objective, ObjectiveTrigger, ObjectiveTriggerError};
 pub use pipeline::GameplayProcessor;
 pub use player::{MovementParameters, Orientation, Player};
+pub use persistence::{GameplaySaveState, SaveError, GAMEPLAY_SAVE_SCHEMA_VERSION};
 pub use resources::{FuelError, FuelTank, ShipResources};
 pub use revival::{RevivalError, ReviveEffect, ReviveResult};
 pub use revival_system::RevivalSystem;
@@ -99,6 +102,7 @@ pub use reward::{
     EnemyReward, RewardConfigurationError, RewardDistributionPolicy, RewardEntry, RewardError,
 };
 pub use reward_system::RewardSystem;
+pub use scaling::{GameplayScaling, GroupSize, ScalingError};
 pub use station::{Station, StationError, StationState, StationType};
 pub use systems::{
     CombatSystem, DoorSystem, ElectricalSystem, EnemyAiSystem, EnvironmentalHazardSystem,

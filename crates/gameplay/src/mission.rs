@@ -72,6 +72,10 @@ impl Mission {
         &mut self.objectives
     }
 
+    pub(crate) fn restore_state(&mut self, state: MissionState) {
+        self.state = state;
+    }
+
     pub fn progress(&self) -> MissionProgress {
         let required_total = self
             .objectives

@@ -118,6 +118,21 @@ impl Inventory {
             .map_or(0, |(_, quantity)| *quantity)
     }
 
+    pub fn entries(&self) -> impl Iterator<Item = (ItemId, u32)> + '_ {
+        self.items.iter().copied()
+    }
+
+    pub fn from_entries(
+        capacity: u32,
+        entries: impl IntoIterator<Item = (ItemId, u32)>,
+    ) -> Result<Self, InventoryError> {
+        let mut inventory = Self::new(capacity)?;
+        for (item, quantity) in entries {
+            inventory.try_add(item, quantity)?;
+        }
+        Ok(inventory)
+    }
+
     pub fn add(&mut self, item: ItemId, quantity: u32) {
         let _ = self.try_add(item, quantity);
     }

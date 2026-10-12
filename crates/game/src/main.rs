@@ -9,7 +9,7 @@ use gameplay::{
     AttackType, BreakerId, BreakerState, CollectibleError, Destination, DestinationId,
     DestinationType, DiscoveryState, ElectricalBreakerConfiguration, ElectricalPanelConfiguration,
     ElectricalPanelRegistrationError, EnemyArchetype, EnemyConfiguration, EnvironmentalHazard,
-    CommandStatus, EncounterId, GameplayCommand, GameplayEvent, LifeSupportConfiguration,
+    CommandStatus, EncounterId, GameplayCommand, GameplayEvent, HazardId, LifeSupportConfiguration,
     LifeSupportRegistrationError, MissionProgress, OxygenCompartmentConfiguration,
     RewardDistributionPolicy, ShipRepairConfiguration, SignalKnowledge, StationState,
     AutopilotState, NavigationRoute, NavigationRouteState, SpatialEncounter,
@@ -216,6 +216,361 @@ fn run_guidance_progression_scenario() -> Result<(), String> {
         "GUIA DE PROGRESION COMPLETADA: jugadores=3, objetivos={}, actual={:?}",
         active.objectives.len(),
         active.current_objective
+    );
+    Ok(())
+}
+
+fn run_group_scaling_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player_a = session.ids.first_player;
+    let player_b = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador B para escalado: {error:?}"))?;
+    let player_c = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador C para escalado: {error:?}"))?;
+    for player in [player_b, player_c] {
+        session
+            .world_mut()
+            .initialize_inventory(player, 20)
+            .map_err(|error| format!("inicializar inventario de escalado: {error:?}"))?;
+    }
+
+    let solo = session.world().current_group_scaling();
+    if solo.group_size != gameplay::GroupSize::Trio {
+        return Err("la sesión no reflejó inicialmente el trío activo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "desactivar jugador C para solo",
+        GameplayCommand::SetPlayerActive {
+            player: player_c,
+            active: false,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "desactivar jugador B para solo",
+        GameplayCommand::SetPlayerActive {
+            player: player_b,
+            active: false,
+        },
+    )?;
+    let solo = session.world().current_group_scaling();
+    if solo.group_size != gameplay::GroupSize::Solo
+        || solo.enemy_health_percent != 100
+        || solo.enemy_damage_percent != 100
+    {
+        return Err("el escalado solo no conserva el nivel base".to_owned());
+    }
+    run_command(
+        &mut session,
+        "reactivar jugador B para duo",
+        GameplayCommand::SetPlayerActive {
+            player: player_b,
+            active: true,
+        },
+    )?;
+    let duo = session.world().current_group_scaling();
+    if duo.group_size != gameplay::GroupSize::Duo
+        || duo.enemy_health_percent <= solo.enemy_health_percent
+        || duo.enemy_damage_percent <= solo.enemy_damage_percent
+    {
+        return Err("el escalado duo no fue moderado y creciente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "reactivar jugador C para trio",
+        GameplayCommand::SetPlayerActive {
+            player: player_c,
+            active: true,
+        },
+    )?;
+    let trio = session.world().current_group_scaling();
+    if trio.group_size != gameplay::GroupSize::Trio
+        || trio.enemy_health_percent <= duo.enemy_health_percent
+        || trio.enemy_damage_percent <= duo.enemy_damage_percent
+        || trio.enemy_health_percent > solo.enemy_health_percent * 3
+        || trio.enemy_damage_percent > solo.enemy_damage_percent * 3
+    {
+        return Err("el escalado trio excedio los limites".to_owned());
+    }
+    for _ in 0..3 {
+        if session.world().current_group_scaling() != trio {
+            return Err("consultar el escalado no fue determinista".to_owned());
+        }
+    }
+    run_command(
+        &mut session,
+        "desactivar jugador A para grupo vacio parcial",
+        GameplayCommand::SetPlayerActive {
+            player: player_a,
+            active: false,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "desactivar jugador B para grupo vacio parcial",
+        GameplayCommand::SetPlayerActive {
+            player: player_b,
+            active: false,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "desactivar jugador C para grupo vacio",
+        GameplayCommand::SetPlayerActive {
+            player: player_c,
+            active: false,
+        },
+    )?;
+    if session.world().current_group_scaling().group_size != gameplay::GroupSize::Empty
+        || session
+            .world()
+            .scaling_for_player(player_a)
+            .is_ok()
+        || gameplay::GameplayScaling::for_group_size(gameplay::GroupSize::Empty)
+            .scale_enemy_configuration(EnemyConfiguration::for_archetype(
+                EnemyArchetype::Shooter,
+                Vec3::ZERO,
+            ))
+            != Err(gameplay::ScalingError::NoActivePlayers)
+    {
+        return Err("el grupo vacio no fue rechazado de forma segura".to_owned());
+    }
+    for player in [player_a, player_b, player_c] {
+        run_command(
+            &mut session,
+            "reactivar jugador tras grupo vacio",
+            GameplayCommand::SetPlayerActive {
+                player,
+                active: true,
+            },
+        )?;
+    }
+    if session.world().current_group_scaling().group_size != gameplay::GroupSize::Trio
+        || session
+            .world()
+            .scaling_for_player(EntityId::new(999_999))
+            .is_ok()
+        || gameplay::GameplayScaling::for_group_size(gameplay::GroupSize::Trio)
+            .scale_amount(u32::MAX, 100)
+            != Err(gameplay::ScalingError::ArithmeticOverflow)
+    {
+        return Err("las validaciones de identidad o overflow fallaron".to_owned());
+    }
+
+    let destination = DestinationId::new(5601);
+    session
+        .register_destination(Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        })
+        .map_err(|error| format!("registrar destino de escalado: {error:?}"))?;
+    let base_configuration = EnemyConfiguration {
+        archetype: EnemyArchetype::Shooter,
+        position: Vec3::ZERO,
+        maximum_health: 20,
+        weapon: WeaponConfiguration::new(AttackType::Energy, 5, 20, Duration(1_000)),
+        shield: None,
+        mobility: 1,
+    };
+    run_command(
+        &mut session,
+        "registrar mundo hostil escalable",
+        GameplayCommand::RegisterFunctionalWorld {
+            world: FunctionalWorld::new(
+                destination,
+                2.0,
+                vec![WorldActivity::Combat(CombatZone {
+                    configuration: base_configuration,
+                    active_enemy: None,
+                    resolved: false,
+                })],
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro hostil escalado",
+        GameplayCommand::ActivateWorldCombat {
+            player: player_c,
+            destination,
+        },
+    )?;
+    let enemy = session
+        .world()
+        .functional_world(destination)
+        .and_then(|functional_world| {
+            functional_world.activities.iter().find_map(|activity| match activity {
+                WorldActivity::Combat(zone) => zone.active_enemy,
+                _ => None,
+            })
+        })
+        .ok_or_else(|| "el encuentro escalado no creo enemigo".to_owned())?;
+    let scaled_enemy = session
+        .world()
+        .combatant(enemy)
+        .ok_or_else(|| "falta combatiente escalado".to_owned())?;
+    if scaled_enemy.maximum_health != 30 || scaled_enemy.weapon.damage != 6 {
+        return Err(format!(
+            "la configuracion efectiva no uso el escalado trio: salud={}, dano={}",
+            scaled_enemy.maximum_health, scaled_enemy.weapon.damage
+        ));
+    }
+    run_command(
+        &mut session,
+        "equipar arma contra encuentro escalado",
+        GameplayCommand::EquipPlayerWeapon {
+            player: player_c,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1)),
+        },
+    )?;
+    let collectibles_before = session.world().collectibles().filter(|value| value.active).count();
+    run_command(
+        &mut session,
+        "derrotar enemigo escalado",
+        GameplayCommand::AttackEnemy {
+            player: player_c,
+            enemy,
+        },
+    )?;
+    let collectibles_after = session.world().collectibles().filter(|value| value.active).count();
+    if session.world().combatant(enemy).is_none_or(|value| value.active || !value.is_defeated())
+        || collectibles_after != collectibles_before + 1
+    {
+        return Err("el combate escalado no produjo derrota y recompensa unica".to_owned());
+    }
+    let repeated_attack = session.update([GameplayCommand::AttackEnemy {
+        player: player_c,
+        enemy,
+    }]);
+    if repeated_attack.first().is_none_or(|result| {
+        !matches!(result.status, CommandStatus::Rejected { .. })
+    }) || session.world().collectibles().filter(|value| value.active).count() != collectibles_after
+    {
+        return Err("el enemigo escalado o su recompensa se duplicaron".to_owned());
+    }
+    let reward = session
+        .world()
+        .collectibles()
+        .find(|value| value.active)
+        .map(|value| value.entity)
+        .ok_or_else(|| "falta recompensa del encuentro escalado".to_owned())?;
+    run_command(
+        &mut session,
+        "recoger recompensa del encuentro escalado",
+        GameplayCommand::CollectItem {
+            player: player_c,
+            collectible: reward,
+            amount: 1,
+        },
+    )?;
+
+    let derelict_id = DerelictId::new(5602);
+    run_command(
+        &mut session,
+        "registrar derelict escalable",
+        GameplayCommand::RegisterDerelict {
+            derelict: Derelict::new(derelict_id, Vec3::ZERO, 2.0)
+                .with_enemy(base_configuration)
+                .with_rewards(
+                    vec![DerelictReward {
+                        item: ItemId(1),
+                        amount: 1,
+                    }],
+                    RewardDistributionPolicy::Shared,
+                ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "descubrir derelict escalable",
+        GameplayCommand::DiscoverDerelict {
+            player: player_a,
+            derelict: derelict_id,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar derelict escalable",
+        GameplayCommand::ExploreDerelict {
+            player: player_a,
+            derelict: derelict_id,
+        },
+    )?;
+    let derelict_enemy = session
+        .world()
+        .derelict(derelict_id)
+        .and_then(|value| value.spawned_enemy)
+        .ok_or_else(|| "el derelict escalable no creo su enemigo".to_owned())?;
+    if session
+        .world()
+        .combatant(derelict_enemy)
+        .is_none_or(|value| value.maximum_health != 30)
+    {
+        return Err("el derelict no uso la configuracion escalada".to_owned());
+    }
+    run_command(
+        &mut session,
+        "equipar arma contra derelict escalado",
+        GameplayCommand::EquipPlayerWeapon {
+            player: player_a,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "derrotar enemigo del derelict escalado",
+        GameplayCommand::AttackEnemy {
+            player: player_a,
+            enemy: derelict_enemy,
+        },
+    )?;
+    let derelict_reward = session
+        .world()
+        .derelict(derelict_id)
+        .and_then(|value| value.reward_collectibles.first().copied())
+        .ok_or_else(|| "el derelict escalado no genero recompensa".to_owned())?;
+    run_command(
+        &mut session,
+        "recoger recompensa del derelict escalado",
+        GameplayCommand::CollectItem {
+            player: player_b,
+            collectible: derelict_reward,
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "resolver derelict escalado",
+        GameplayCommand::ResolveDerelict {
+            player: player_a,
+            derelict: derelict_id,
+        },
+    )?;
+    let repeated_explore = session.update([GameplayCommand::ExploreDerelict {
+        player: player_b,
+        derelict: derelict_id,
+    }]);
+    if repeated_explore.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::DerelictAlreadyResolved,
+            })
+    }) {
+        return Err("el derelict escalado no fue idempotente".to_owned());
+    }
+    println!(
+        "ESCALADO DE GRUPO COMPLETADO: solo=100%, duo={}%, trio={}%, enemigo_salud=30, derelict_resuelto=true",
+        duo.enemy_health_percent,
+        trio.enemy_health_percent
     );
     Ok(())
 }
@@ -534,7 +889,7 @@ fn run_derelict_scenario() -> Result<(), String> {
         "equipar arma del explorador",
         GameplayCommand::EquipPlayerWeapon {
             player: player_b,
-            weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1_000)),
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1_000)),
         },
     )?;
     run_command(
@@ -1026,7 +1381,7 @@ fn run_functional_world_scenario() -> Result<(), String> {
         "equipar arma del mundo hostil",
         GameplayCommand::EquipPlayerWeapon {
             player: player_c,
-            weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1_000)),
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1_000)),
         },
     )?;
     run_command(
@@ -4498,6 +4853,360 @@ fn main() {
     }
 }
 
+fn run_persistence_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let first = session.ids.first_player;
+    let second = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador para persistencia: {error:?}"))?;
+    let third = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear tercer jugador para persistencia: {error:?}"))?;
+    session
+        .world_mut()
+        .initialize_inventory(second, 20)
+        .map_err(|error| format!("inicializar inventario para persistencia: {error:?}"))?;
+    session
+        .world_mut()
+        .initialize_inventory(third, 20)
+        .map_err(|error| format!("inicializar inventario del tercer jugador: {error:?}"))?;
+    run_command(
+        &mut session,
+        "agregar munición al primer jugador antes de guardar",
+        GameplayCommand::AddInventoryItem {
+            player: first,
+            item: ItemId(2),
+            amount: 3,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "agregar munición al segundo jugador antes de guardar",
+        GameplayCommand::AddInventoryItem {
+            player: second,
+            item: ItemId(3),
+            amount: 2,
+        },
+    )?;
+    let persistence_origin = DestinationId::new(5701);
+    let persistence_destination = DestinationId::new(5702);
+    for (id, position) in [
+        (persistence_origin, Vec3::ZERO),
+        (persistence_destination, Vec3::ZERO),
+    ] {
+        session
+            .register_destination(Destination {
+                id,
+                destination_type: DestinationType::Planet,
+                position,
+                travel_duration: Duration(4),
+                fuel_cost: 2,
+                discovery: DiscoveryState::Discovered,
+            })
+            .map_err(|error| format!("registrar destino de persistencia: {error:?}"))?;
+    }
+    session
+        .world_mut()
+        .register_navigation_route(NavigationRoute {
+            from: persistence_origin,
+            to: persistence_destination,
+            distance: 4.0,
+            duration: Duration(4),
+            fuel_cost: 2,
+            state: NavigationRouteState::Available,
+        })
+        .map_err(|error| format!("registrar ruta de persistencia: {error:?}"))?;
+    session
+        .world_mut()
+        .register_environmental_hazard(EnvironmentalHazard::new(
+            HazardId::new(5701),
+            gameplay::EnvironmentalHazardType::SpaceStorm,
+            Vec3 { x: 2.0, y: 0.0, z: 0.0 },
+            5.0,
+            7,
+            Duration(10),
+            true,
+        ))
+        .map_err(|error| format!("registrar peligro de persistencia: {error:?}"))?;
+    session
+        .world_mut()
+        .register_spatial_encounter(SpatialEncounter::new(
+            EncounterId::new(5701),
+            SpatialEncounterKind::Signal {
+                destination: persistence_destination,
+            },
+            Vec3 { x: 2.0, y: 0.0, z: 0.0 },
+            4.0,
+        ))
+        .map_err(|error| format!("registrar encuentro de persistencia: {error:?}"))?;
+    session
+        .world_mut()
+        .register_derelict(
+            Derelict::new(DerelictId::new(5701), Vec3 { x: 2.0, y: 0.0, z: 0.0 }, 2.0)
+                .with_rewards(
+                    vec![DerelictReward {
+                        item: ItemId(3),
+                        amount: 1,
+                    }],
+                    RewardDistributionPolicy::Shared,
+                ),
+        )
+        .map_err(|error| format!("registrar derelicto de persistencia: {error:?}"))?;
+    session
+        .world_mut()
+        .register_functional_world(FunctionalWorld::new(
+            persistence_destination,
+            3.0,
+            vec![
+                WorldActivity::Trade(TradeMarket {
+                    offers: vec![TradeOffer {
+                        item: ItemId(3),
+                        buy_price: 2,
+                        sell_price: 1,
+                        stock: 4,
+                    }],
+                }),
+                WorldActivity::Resource(ResourceSite {
+                    item: ItemId(3),
+                    available: 4,
+                    extraction_amount: 2,
+                }),
+            ],
+        ))
+        .map_err(|error| format!("registrar mundo funcional de persistencia: {error:?}"))?;
+    run_command(
+        &mut session,
+        "extraer stock de recursos para persistencia",
+        GameplayCommand::ExtractWorldResource { player: first, destination: persistence_destination },
+    )?;
+    run_command(
+        &mut session,
+        "agotar stock de recursos para persistencia",
+        GameplayCommand::ExtractWorldResource { player: first, destination: persistence_destination },
+    )?;
+    run_command(
+        &mut session,
+        "vender recursos para persistencia",
+        GameplayCommand::SellWorldItem { player: first, destination: persistence_destination, item: ItemId(3), amount: 2 },
+    )?;
+    run_command(
+        &mut session,
+        "comprar recurso para persistencia",
+        GameplayCommand::BuyWorldItem { player: first, destination: persistence_destination, item: ItemId(3), amount: 1 },
+    )?;
+    let collected_collectible = session
+        .world_mut()
+        .create_collectible(ItemId(2), 1, Vec3::ZERO, 2.0)
+        .map_err(|error| format!("crear coleccionable recogido: {error:?}"))?;
+    run_command(
+        &mut session,
+        "recoger coleccionable antes de guardar",
+        GameplayCommand::CollectItem { player: third, collectible: collected_collectible, amount: 1 },
+    )?;
+    let pending_collectible = session
+        .world_mut()
+        .create_collectible(ItemId(2), 1, Vec3::ZERO, 2.0)
+        .map_err(|error| format!("crear coleccionable pendiente: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear enemigo vivo para persistencia",
+        GameplayCommand::CreateEnemy { configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Charger, Vec3::ZERO) },
+    )?;
+    let live_enemy = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event { GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy), _ => None })
+        .ok_or_else(|| "no se registro el enemigo vivo".to_owned())?;
+    run_command(
+        &mut session,
+        "equipar arma para derrota persistida",
+        GameplayCommand::EquipPlayerWeapon { player: first, weapon: WeaponConfiguration::with_ammunition(AttackType::Kinetic, 200, 20, Duration(1), WeaponAmmunition { item: ItemId(2), amount_per_attack: 1 }) },
+    )?;
+    run_command(
+        &mut session,
+        "crear enemigo derrotado para persistencia",
+        GameplayCommand::CreateEnemy { configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO) },
+    )?;
+    let defeated_enemy = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event { GameplayEvent::EnemyCreated { enemy, .. } if *enemy != live_enemy => Some(*enemy), _ => None })
+        .ok_or_else(|| "no se registro el enemigo derrotado".to_owned())?;
+    run_command(
+        &mut session,
+        "derrotar enemigo para persistencia",
+        GameplayCommand::AttackEnemy { player: first, enemy: defeated_enemy },
+    )?;
+    let defeated_reward = session
+        .world()
+        .collectibles()
+        .find(|value| value.active && value.item == ItemId(3))
+        .copied()
+        .ok_or_else(|| "no se genero recompensa persistida".to_owned())?;
+    run_command(
+        &mut session,
+        "recoger recompensa antes de guardar",
+        GameplayCommand::CollectItem { player: third, collectible: defeated_reward.entity, amount: 1 },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro persistido",
+        GameplayCommand::ActivateSpatialEncounter { encounter: EncounterId::new(5701) },
+    )?;
+    session
+        .world_mut()
+        .register_spatial_encounter(SpatialEncounter::new(EncounterId::new(5702), SpatialEncounterKind::Resource { item: ItemId(3), amount: 1 }, Vec3::ZERO, 4.0))
+        .map_err(|error| format!("registrar encuentro resuelto: {error:?}"))?;
+    run_command(
+        &mut session,
+        "activar encuentro que sera resuelto",
+        GameplayCommand::ActivateSpatialEncounter { encounter: EncounterId::new(5702) },
+    )?;
+    run_command(
+        &mut session,
+        "resolver encuentro persistido",
+        GameplayCommand::ResolveSpatialEncounter { player: third, encounter: EncounterId::new(5702) },
+    )?;
+    run_command(
+        &mut session,
+        "descubrir derelicto en exploracion",
+        GameplayCommand::DiscoverDerelict { player: first, derelict: DerelictId::new(5701) },
+    )?;
+    run_command(
+        &mut session,
+        "explorar derelicto en exploracion",
+        GameplayCommand::ExploreDerelict { player: first, derelict: DerelictId::new(5701) },
+    )?;
+    session
+        .world_mut()
+        .register_derelict(Derelict::new(DerelictId::new(5702), Vec3::ZERO, 2.0))
+        .map_err(|error| format!("registrar derelicto resuelto: {error:?}"))?;
+    run_command(
+        &mut session,
+        "descubrir derelicto resuelto",
+        GameplayCommand::DiscoverDerelict { player: third, derelict: DerelictId::new(5702) },
+    )?;
+    run_command(
+        &mut session,
+        "explorar derelicto resuelto",
+        GameplayCommand::ExploreDerelict { player: third, derelict: DerelictId::new(5702) },
+    )?;
+    run_command(
+        &mut session,
+        "resolver derelicto persistido",
+        GameplayCommand::ResolveDerelict { player: third, derelict: DerelictId::new(5702) },
+    )?;
+    let before = session.save_state();
+    let mut direct = ProjectEchoSession::new();
+    direct
+        .restore_state(before.clone())
+        .map_err(|error| format!("restaurar snapshot completo: {error}"))?;
+    if direct.world().destinations().count() != session.world().destinations().count()
+        || direct.world().spatial_encounters().count() != session.world().spatial_encounters().count()
+        || direct.world().derelicts().count() != session.world().derelicts().count()
+        || direct.world().functional_worlds().count() != session.world().functional_worlds().count()
+    {
+        return Err("el snapshot completo no conservó los dominios de exploración".to_owned());
+    }
+    let encoded = before.serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&encoded)
+        .map_err(|error| format!("deserializar estado válido: {error}"))?;
+    if decoded.serialize() != encoded {
+        return Err("la serialización no fue determinista en el round-trip".to_owned());
+    }
+    let invalid = encoded.replacen("ASTRAL_ECHO_SAVE|1", "ASTRAL_ECHO_SAVE|99", 1);
+    if gameplay::GameplaySaveState::deserialize(&invalid).is_ok() {
+        return Err("se aceptó un esquema de guardado no soportado".to_owned());
+    }
+    let player_record = encoded
+        .lines()
+        .find(|line| line.starts_with("player|"))
+        .ok_or_else(|| "el estado no incluyó el registro del jugador".to_owned())?;
+    let duplicated = format!("{encoded}{player_record}\n");
+    if gameplay::GameplaySaveState::deserialize(&duplicated).is_ok() {
+        return Err("se aceptó un identificador de jugador duplicado".to_owned());
+    }
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar estado válido: {error}"))?;
+    if restored.world().entities().active_count() != session.world().entities().active_count()
+        || restored.world().player(second).is_none()
+        || restored.world().destinations().count() != 2
+        || restored.world().navigation_routes().count() != 1
+        || restored.world().destination(persistence_destination).is_none()
+        || restored.world().inventory(first).map(|value| value.quantity(ItemId(2))) != Some(2)
+        || restored.world().inventory(second).map(|value| value.quantity(ItemId(3))) != Some(2)
+        || restored.world().ship_fuel(restored.ids.first_ship) != session.world().ship_fuel(session.ids.first_ship)
+        || restored.world().environmental_hazards().count() != 1
+        || restored.world().spatial_encounters().count() != 2
+        || restored.world().derelicts().count() != 2
+        || restored.world().functional_worlds().count() != 1
+        || restored.world().derelict(DerelictId::new(5701)).map(|value| value.rewards.len()) != Some(1)
+        || restored.world().players().count() != 3
+        || restored.world().combatant(live_enemy).is_none_or(|value| !value.active || value.is_defeated())
+        || restored.world().combatant(defeated_enemy).is_none_or(|value| value.active || !value.is_defeated())
+        || restored.world().combatant(defeated_enemy).is_some_and(|value| value.archetype != Some(EnemyArchetype::Shooter))
+        || restored.world().collectible(collected_collectible).is_none_or(|value| value.active || value.amount != 0)
+        || restored.world().collectible(pending_collectible).is_none_or(|value| !value.active || value.amount != 1)
+        || restored.world().collectibles().any(|value| value.entity == defeated_reward.entity && value.active)
+        || restored.world().spatial_encounter(EncounterId::new(5701)).map(|value| value.state) != Some(SpatialEncounterState::Active)
+        || restored.world().spatial_encounter(EncounterId::new(5702)).map(|value| value.state) != Some(SpatialEncounterState::Resolved)
+        || restored.world().derelict(DerelictId::new(5701)).map(|value| value.state) != Some(DerelictState::Exploring)
+        || restored.world().derelict(DerelictId::new(5702)).map(|value| value.state) != Some(DerelictState::Resolved)
+        || restored.world().functional_world(persistence_destination).is_none_or(|value| !value.activities.iter().any(|activity| matches!(activity, WorldActivity::Resource(site) if site.available == 0)))
+        || restored.world().world_trade_offer(persistence_destination, ItemId(3)).is_none_or(|offer| offer.stock != 3)
+    {
+        return Err("la restauración no conservó identidades, inventarios o recursos".to_owned());
+    }
+    if restored.save_state().serialize() != before.serialize() {
+        return Err("la restauración no conservó el estado persistido".to_owned());
+    }
+    run_command(
+        &mut restored,
+        "continuar gameplay tras restaurar persistencia",
+        GameplayCommand::AddInventoryItem {
+            player: first,
+            item: ItemId(2),
+            amount: 1,
+        },
+    )?;
+    if restored.world().inventory(first).map(|value| value.quantity(ItemId(2))) != Some(3) {
+        return Err("la sesión restaurada no pudo continuar el gameplay".to_owned());
+    }
+    let target_before_invalid = restored.save_state().serialize();
+    let invalid_item = encoded.replace("|2:2", "|999:2");
+    let invalid_item_state = gameplay::GameplaySaveState::deserialize(&invalid_item)
+        .map_err(|error| format!("deserializar caso de item inválido: {error}"))?;
+    if restored.restore_state(invalid_item_state).is_ok()
+        || restored.save_state().serialize() != target_before_invalid
+    {
+        return Err("una carga inválida de inventario dejó mutaciones parciales".to_owned());
+    }
+    let invalid_reference = encoded.replace("|d:5702|", "|d:999999|");
+    let invalid_reference_state = gameplay::GameplaySaveState::deserialize(&invalid_reference)
+        .map_err(|error| format!("referencia invalidada: {error}"))?;
+    if restored.restore_state(invalid_reference_state).is_ok()
+        || restored.save_state().serialize() != target_before_invalid
+    {
+        return Err("una referencia inexistente dejo mutaciones parciales".to_owned());
+    }
+    let duplicated_reward = format!("{encoded}processed_reward|{}\n", defeated_enemy.value());
+    if gameplay::GameplaySaveState::deserialize(&duplicated_reward).is_ok() {
+        return Err("se acepto una recompensa procesada duplicada".to_owned());
+    }
+    println!(
+        "PERSISTENCIA COMPLETADA: jugadores={}, entidades_activas={}, estado_determinista=true",
+        restored.world().players().count(),
+        restored.world().entities().active_count()
+    );
+    Ok(())
+}
+
 fn run_scenario() -> Result<(), String> {
     run_atomicity_regressions()?;
     let mut session = ProjectEchoSession::new();
@@ -4696,5 +5405,7 @@ fn run_scenario() -> Result<(), String> {
     run_derelict_scenario()?;
     run_functional_world_scenario()?;
     run_guidance_progression_scenario()?;
+    run_group_scaling_scenario()?;
+    run_persistence_scenario()?;
     Ok(())
 }

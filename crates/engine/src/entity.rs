@@ -26,6 +26,21 @@ pub struct EntityRegistry {
     active: BTreeSet<EntityId>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EntityRegistrySnapshot {
+    pub next_id: u64,
+    pub known: Vec<EntityId>,
+    pub active: Vec<EntityId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EntityRegistrySnapshotError {
+    InvalidNextId,
+    DuplicateKnown,
+    DuplicateActive,
+    ActiveEntityUnknown,
+}
+
 impl EntityRegistry {
     pub fn new() -> Self {
         Self {
@@ -60,5 +75,40 @@ impl EntityRegistry {
 
     pub fn active_count(&self) -> usize {
         self.active.len()
+    }
+
+    pub fn snapshot(&self) -> EntityRegistrySnapshot {
+        EntityRegistrySnapshot {
+            next_id: self.next_id,
+            known: self.known.iter().copied().collect(),
+            active: self.active.iter().copied().collect(),
+        }
+    }
+
+    pub fn from_snapshot(
+        snapshot: EntityRegistrySnapshot,
+    ) -> Result<Self, EntityRegistrySnapshotError> {
+        if snapshot.next_id == 0 {
+            return Err(EntityRegistrySnapshotError::InvalidNextId);
+        }
+        let known: BTreeSet<_> = snapshot.known.iter().copied().collect();
+        if known.len() != snapshot.known.len() {
+            return Err(EntityRegistrySnapshotError::DuplicateKnown);
+        }
+        let active: BTreeSet<_> = snapshot.active.iter().copied().collect();
+        if active.len() != snapshot.active.len() {
+            return Err(EntityRegistrySnapshotError::DuplicateActive);
+        }
+        if active.iter().any(|entity| !known.contains(entity)) {
+            return Err(EntityRegistrySnapshotError::ActiveEntityUnknown);
+        }
+        if known.iter().any(|entity| entity.value() >= snapshot.next_id) {
+            return Err(EntityRegistrySnapshotError::InvalidNextId);
+        }
+        Ok(Self {
+            next_id: snapshot.next_id,
+            known,
+            active,
+        })
     }
 }

@@ -75,6 +75,10 @@ impl EnvironmentalHazard {
         Duration(self.accumulated)
     }
 
+    pub(crate) fn restore_accumulated(&mut self, value: Duration) {
+        self.accumulated = value.0;
+    }
+
     pub(crate) fn reset_accumulated(&mut self) {
         self.accumulated = 0;
     }

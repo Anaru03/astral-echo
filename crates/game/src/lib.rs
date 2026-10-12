@@ -199,6 +199,17 @@ impl ProjectEchoSession {
     pub fn world_mut(&mut self) -> &mut GameplayWorld {
         &mut self.world
     }
+
+    pub fn save_state(&self) -> gameplay::GameplaySaveState {
+        self.world.save_state()
+    }
+
+    pub fn restore_state(
+        &mut self,
+        save: gameplay::GameplaySaveState,
+    ) -> Result<(), gameplay::SaveError> {
+        self.world.load_state(save)
+    }
     pub fn state(&self) -> GameplayState {
         self.world.state()
     }
