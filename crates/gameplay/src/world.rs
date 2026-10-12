@@ -4,10 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     companion::{
         Companion, CompanionActionMode, CompanionBehavior, CompanionError, CompanionRecommendation,
+        FuelCondition, HullCondition, MaintenancePriority, MaintenanceRecommendation,
         NavigationAdvice, NavigationAlternativeRecommendation, NavigationAssessment,
         NavigationRecommendationReason, NavigationRisk, NavigationRouteComparison,
         NavigationRouteOption, NavigationRouteRisk, NavigationRouteRiskClassification,
-        NavigationRouteRiskSource, TacticalAction, TacticalPriority, TacticalRecommendation,
+        NavigationRouteRiskSource, OperationalAssessment, TacticalAction, TacticalPriority,
+        TacticalRecommendation,
     },
     collectible::{Collectible, CollectibleError, ItemDefinition, ItemDefinitionError},
     combat::{Combatant, EnemyConfiguration},
@@ -1062,6 +1064,111 @@ impl GameplayWorld {
         Ok(Some(NavigationRouteComparison {
             current,
             alternatives,
+            recommendation,
+        }))
+    }
+    pub fn companion_operational_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<OperationalAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active || !self.entities.contains(player.entity_id) {
+            return Ok(None);
+        }
+        let ship = self.navigation().ship_id();
+        let Some(ship) = ship else {
+            return Ok(None);
+        };
+        let Some(integrity) = self.ship_integrity(ship) else {
+            return Ok(None);
+        };
+        let Some(fuel) = self.ship_fuel(ship) else {
+            return Ok(None);
+        };
+        let navigation = self.companion_navigation_assessment(entity)?;
+        let route_comparison = self.companion_navigation_comparison(entity)?;
+        let current_integrity = integrity.current();
+        let maximum_integrity = integrity.maximum();
+        let hull = if integrity.is_destroyed() {
+            HullCondition::Destroyed
+        } else if integrity.is_critical() {
+            HullCondition::Critical
+        } else if current_integrity < maximum_integrity {
+            HullCondition::Reduced
+        } else {
+            HullCondition::Normal
+        };
+        let fuel_required = route_comparison
+            .as_ref()
+            .map(|comparison| comparison.current.fuel_required)
+            .or_else(|| navigation.as_ref().and_then(|assessment| assessment.fuel_required));
+        let fuel_available = fuel.current();
+        let fuel_condition = match fuel_required {
+            Some(required) if fuel_available < required => FuelCondition::Insufficient,
+            Some(required) if fuel_available == required => FuelCondition::Tight,
+            Some(_) => FuelCondition::Sufficient,
+            None => FuelCondition::Unknown,
+        };
+        let recommendation = if hull == HullCondition::Destroyed {
+            Some(MaintenanceRecommendation::AvoidShipActivity { ship })
+        } else if fuel_condition == FuelCondition::Insufficient {
+            Some(MaintenanceRecommendation::ManageFuel {
+                ship,
+                required: fuel_required.unwrap_or_default(),
+                available: fuel_available,
+            })
+        } else if hull == HullCondition::Critical {
+            Some(MaintenanceRecommendation::RepairShip { ship })
+        } else if hull == HullCondition::Reduced
+            && route_comparison
+                .as_ref()
+                .is_some_and(|comparison| comparison.current.critical_risks > 0)
+        {
+            Some(MaintenanceRecommendation::RepairShip { ship })
+        } else if fuel_condition == FuelCondition::Tight {
+            Some(MaintenanceRecommendation::ManageFuel {
+                ship,
+                required: fuel_required.unwrap_or_default(),
+                available: fuel_available,
+            })
+        } else {
+            None
+        };
+        let priority = if hull == HullCondition::Destroyed
+            || fuel_condition == FuelCondition::Insufficient
+            || hull == HullCondition::Critical
+        {
+            MaintenancePriority::Critical
+        } else if recommendation.is_some() {
+            MaintenancePriority::High
+        } else {
+            MaintenancePriority::Normal
+        };
+        Ok(Some(OperationalAssessment {
+            companion: entity,
+            player: companion.followed_player,
+            ship,
+            hull,
+            integrity: current_integrity,
+            maximum_integrity,
+            critical_threshold: integrity.critical_threshold(),
+            fuel: fuel_condition,
+            fuel_available: Some(fuel_available),
+            fuel_required,
+            navigation,
+            route_comparison,
+            priority,
             recommendation,
         }))
     }

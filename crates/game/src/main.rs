@@ -6711,6 +6711,328 @@ fn run_erick_route_comparison_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_erick_operational_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let engineering = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Engineering)
+        .map_err(|error| format!("crear estación de ingeniería de ERICK: {error:?}"))?;
+    let piloting = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación de pilotaje de ERICK: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK para evaluar mantenimiento",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para evaluar mantenimiento".to_owned())?;
+    let initial = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("evaluar estado operativo inicial: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación operativa inicial".to_owned())?;
+    if initial.hull != gameplay::HullCondition::Normal
+        || initial.fuel != gameplay::FuelCondition::Unknown
+        || initial.priority != gameplay::MaintenancePriority::Normal
+        || initial.recommendation.is_some()
+    {
+        return Err(format!("estado operativo inicial inesperado: {initial:?}"));
+    }
+    let initial_state = session.save_state();
+    let repeated_initial = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("repetir estado operativo inicial: {error:?}"))?;
+    if repeated_initial != Some(initial)
+        || session.save_state().serialize() != initial_state.serialize()
+    {
+        return Err("consultar el estado operativo inicial produjo mutaciones".to_owned());
+    }
+    let origin = DestinationId::new(6_501);
+    let destination = DestinationId::new(6_502);
+    for value in [
+        Destination {
+            id: origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(10),
+            fuel_cost: 10,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(10),
+            fuel_cost: 10,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino para evaluación operativa",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar ruta para evaluación operativa",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: origin,
+                to: destination,
+                distance: 10.0,
+                duration: Duration(10),
+                fuel_cost: 10,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estación de pilotaje para ERICK",
+        GameplayCommand::Interact {
+            player,
+            target: piloting,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar ruta para ERICK",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: piloting,
+            origin,
+            destination,
+        },
+    )?;
+    let hazard = HazardId::new(6_501);
+    run_command(
+        &mut session,
+        "registrar peligro conocido para ERICK",
+        GameplayCommand::RegisterEnvironmentalHazard {
+            hazard: EnvironmentalHazard::new(
+                hazard,
+                gameplay::EnvironmentalHazardType::SpaceStorm,
+                Vec3 { x: 5.0, y: 0.0, z: 0.0 },
+                1.0,
+                1,
+                Duration(10_000),
+                true,
+            ),
+        },
+    )?;
+    let planned = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("evaluar ruta y riesgo de ERICK: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación operativa planificada".to_owned())?;
+    if planned.fuel != gameplay::FuelCondition::Sufficient
+        || planned.fuel_available != Some(60)
+        || planned.fuel_required != Some(10)
+        || planned.priority != gameplay::MaintenancePriority::Normal
+        || planned.recommendation.is_some()
+        || planned.navigation.as_ref().and_then(|value| value.recommendation)
+            != Some(gameplay::NavigationAdvice::InspectHazard(hazard))
+    {
+        return Err(format!("evaluación planificada inesperada: {planned:?}"));
+    }
+    run_command(
+        &mut session,
+        "dañar nave para probar estado crítico",
+        GameplayCommand::DamageShip { ship, amount: 80 },
+    )?;
+    let damaged = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("evaluar integridad reducida: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación tras daño".to_owned())?;
+    if damaged.integrity != 20
+        || damaged.hull != gameplay::HullCondition::Critical
+        || damaged.priority != gameplay::MaintenancePriority::Critical
+        || damaged.recommendation != Some(gameplay::MaintenanceRecommendation::RepairShip { ship })
+    {
+        return Err(format!("estado tras daño inesperado: {damaged:?}"));
+    }
+    run_command(
+        &mut session,
+        "añadir materiales reales de reparación",
+        GameplayCommand::AddInventoryItem {
+            player,
+            item: ItemId(1),
+            amount: 4,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estación de ingeniería para reparar",
+        GameplayCommand::Interact {
+            player,
+            target: engineering,
+        },
+    )?;
+    for _ in 0..4 {
+        run_command(
+            &mut session,
+            "reparar nave mediante estación real",
+            GameplayCommand::RepairShipAtStation {
+                player,
+                ship,
+                station: engineering,
+            },
+        )?;
+    }
+    let repaired = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("evaluar nave reparada: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación tras reparar".to_owned())?;
+    let repaired_material = session
+        .world()
+        .inventory(player)
+        .map(|inventory| inventory.quantity(ItemId(1)))
+        .unwrap_or_default();
+    if repaired.integrity != 100
+        || repaired.hull != gameplay::HullCondition::Normal
+        || repaired.recommendation.is_some()
+        || repaired_material != 0
+    {
+        return Err(format!(
+            "reparación o consumo de material inesperado: assessment={repaired:?}, material={repaired_material}"
+        ));
+    }
+    run_command(
+        &mut session,
+        "retirar combustible para margen ajustado",
+        GameplayCommand::RemoveShipFuel { ship, amount: 50 },
+    )?;
+    let tight = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("evaluar margen ajustado: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación con margen ajustado".to_owned())?;
+    if tight.fuel != gameplay::FuelCondition::Tight
+        || tight.priority != gameplay::MaintenancePriority::High
+        || tight.recommendation
+            != Some(gameplay::MaintenanceRecommendation::ManageFuel {
+                ship,
+                required: 10,
+                available: 10,
+            })
+    {
+        return Err(format!("margen de combustible inesperado: {tight:?}"));
+    }
+    run_command(
+        &mut session,
+        "añadir combustible para recuperar margen",
+        GameplayCommand::AddShipFuel { ship, amount: 1 },
+    )?;
+    let sufficient = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("evaluar combustible suficiente: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación con combustible suficiente".to_owned())?;
+    if sufficient.fuel != gameplay::FuelCondition::Sufficient
+        || sufficient.recommendation.is_some()
+    {
+        return Err(format!("combustible suficiente produjo alerta: {sufficient:?}"));
+    }
+    let saved = session.save_state();
+    run_command(
+        &mut session,
+        "agotar combustible para invalidar ruta",
+        GameplayCommand::RemoveShipFuel { ship, amount: 11 },
+    )?;
+    let insufficient = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("evaluar combustible insuficiente: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación sin combustible".to_owned())?;
+    if insufficient.fuel != gameplay::FuelCondition::Insufficient
+        || insufficient.priority != gameplay::MaintenancePriority::Critical
+        || insufficient.recommendation
+            != Some(gameplay::MaintenanceRecommendation::ManageFuel {
+                ship,
+                required: 10,
+                available: 0,
+            })
+        || insufficient
+            .route_comparison
+            .as_ref()
+            .is_some_and(|comparison| comparison.current.viable)
+    {
+        return Err(format!("combustible insuficiente inesperado: {insufficient:?}"));
+    }
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(saved)
+        .map_err(|error| format!("restaurar estado operativo de ERICK: {error}"))?;
+    let restored_assessment = restored
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("evaluar estado restaurado de ERICK: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación restaurada".to_owned())?;
+    if restored_assessment != sufficient {
+        return Err("la evaluación restaurada no conservó el estado operativo".to_owned());
+    }
+    run_command(
+        &mut restored,
+        "deshabilitar ERICK para validar disponibilidad",
+        GameplayCommand::SetCompanionBehavior {
+            companion: erick.entity,
+            behavior: gameplay::CompanionBehavior::Unavailable,
+        },
+    )?;
+    if restored
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("consultar ERICK no disponible: {error:?}"))?
+        .is_some()
+    {
+        return Err("ERICK no disponible mantuvo evaluación operativa".to_owned());
+    }
+    run_command(
+        &mut restored,
+        "reactivar ERICK para validar jugador inactivo",
+        GameplayCommand::SetCompanionBehavior {
+            companion: erick.entity,
+            behavior: gameplay::CompanionBehavior::Accompany,
+        },
+    )?;
+    run_command(
+        &mut restored,
+        "desactivar jugador para bloquear asistencia",
+        GameplayCommand::SetPlayerActive {
+            player,
+            active: false,
+        },
+    )?;
+    if restored
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("consultar ERICK con jugador inactivo: {error:?}"))?
+        .is_some()
+    {
+        return Err("ERICK mantuvo evaluación con jugador inactivo".to_owned());
+    }
+    println!(
+        "MANTENIMIENTO DE ERICK COMPLETADO: integridad={}, combustible_final={}, prioridad_riesgo={:?}, reparacion_jugador=true, restaurado=true",
+        sufficient.integrity,
+        sufficient.fuel_available.unwrap_or_default(),
+        insufficient.priority
+    );
+    Ok(())
+}
+
 fn run_scenario() -> Result<(), String> {
     run_atomicity_regressions()?;
     let mut session = ProjectEchoSession::new();
@@ -6917,5 +7239,6 @@ fn run_scenario() -> Result<(), String> {
     run_erick_navigation_scenario()?;
     run_erick_route_risk_scenario()?;
     run_erick_route_comparison_scenario()?;
+    run_erick_operational_scenario()?;
     Ok(())
 }

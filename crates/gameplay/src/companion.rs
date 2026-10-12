@@ -136,6 +136,58 @@ pub struct NavigationRouteComparison {
     pub recommendation: Option<NavigationAlternativeRecommendation>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HullCondition {
+    Normal,
+    Reduced,
+    Critical,
+    Destroyed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FuelCondition {
+    Unknown,
+    Insufficient,
+    Tight,
+    Sufficient,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MaintenancePriority {
+    Critical,
+    High,
+    Normal,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MaintenanceRecommendation {
+    AvoidShipActivity { ship: EntityId },
+    ManageFuel {
+        ship: EntityId,
+        required: u32,
+        available: u32,
+    },
+    RepairShip { ship: EntityId },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OperationalAssessment {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub ship: EntityId,
+    pub hull: HullCondition,
+    pub integrity: u32,
+    pub maximum_integrity: u32,
+    pub critical_threshold: u32,
+    pub fuel: FuelCondition,
+    pub fuel_available: Option<u32>,
+    pub fuel_required: Option<u32>,
+    pub navigation: Option<NavigationAssessment>,
+    pub route_comparison: Option<NavigationRouteComparison>,
+    pub priority: MaintenancePriority,
+    pub recommendation: Option<MaintenanceRecommendation>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavigationAssessment {
     pub companion: EntityId,
