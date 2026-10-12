@@ -1908,6 +1908,9 @@ impl NavigationSystem {
             Err(crate::navigation::NavigationSelectionError::TravelActive) => {
                 CommandResult::rejected(crate::commands::CommandRejection::TravelActive)
             }
+            Err(crate::navigation::NavigationSelectionError::AutopilotActive) => {
+                CommandResult::rejected(crate::commands::CommandRejection::AutopilotAlreadyPlanned)
+            }
             Err(crate::navigation::NavigationSelectionError::DestinationNotFound) => {
                 CommandResult::rejected(crate::commands::CommandRejection::DestinationNotFound)
             }
@@ -1952,6 +1955,9 @@ impl NavigationSystem {
             Err(crate::navigation::NavigationStartError::TravelActive) => {
                 CommandResult::rejected(crate::commands::CommandRejection::TravelActive)
             }
+            Err(crate::navigation::NavigationStartError::AutopilotActive) => {
+                CommandResult::rejected(crate::commands::CommandRejection::AutopilotAlreadyPlanned)
+            }
             Err(crate::navigation::NavigationStartError::DestinationNotSelected) => {
                 CommandResult::rejected(crate::commands::CommandRejection::DestinationNotSelected)
             }
@@ -1975,6 +1981,121 @@ impl NavigationSystem {
             Err(crate::navigation::NavigationStartError::InsufficientFuel) => {
                 CommandResult::rejected(crate::commands::CommandRejection::InsufficientFuel)
             }
+        }
+    }
+
+    fn plan_autopilot(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        pilot_station: engine::EntityId,
+        origin: crate::navigation::DestinationId,
+        destination: crate::navigation::DestinationId,
+    ) -> CommandResult {
+        if let Err(result) = self.validate_pilot_access(world, player, pilot_station) {
+            return result;
+        }
+        match world.plan_autopilot(origin, destination) {
+            Ok(eta) => {
+                world.publish(crate::events::GameplayEvent::AutopilotPlanned {
+                    origin,
+                    destination,
+                    eta,
+                });
+                CommandResult::success(true)
+            }
+            Err(crate::navigation::AutopilotError::SameDestination) => {
+                CommandResult::rejected(crate::commands::CommandRejection::AutopilotSameDestination)
+            }
+            Err(crate::navigation::AutopilotError::DestinationNotFound) => {
+                CommandResult::rejected(crate::commands::CommandRejection::NavigationRouteNotFound)
+            }
+            Err(crate::navigation::AutopilotError::TravelActive) => {
+                CommandResult::rejected(crate::commands::CommandRejection::TravelActive)
+            }
+            Err(crate::navigation::AutopilotError::AlreadyPlanned) => {
+                CommandResult::rejected(crate::commands::CommandRejection::AutopilotAlreadyPlanned)
+            }
+            Err(crate::navigation::AutopilotError::NoRoute) => {
+                CommandResult::rejected(crate::commands::CommandRejection::AutopilotNoRoute)
+            }
+            Err(crate::navigation::AutopilotError::OriginMismatch) => {
+                CommandResult::rejected(crate::commands::CommandRejection::AutopilotOriginMismatch)
+            }
+            Err(_) => CommandResult::rejected(
+                crate::commands::CommandRejection::AutopilotNoRoute,
+            ),
+        }
+    }
+
+    fn start_autopilot(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        pilot_station: engine::EntityId,
+    ) -> CommandResult {
+        if let Err(result) = self.validate_pilot_access(world, player, pilot_station) {
+            return result;
+        }
+        let Some(ship) = world.navigation().ship_id() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        };
+        match world.start_autopilot(world.time().elapsed, player, pilot_station) {
+            Ok((destination, started_at, duration, fuel_cost, remaining)) => {
+                world.publish(crate::events::GameplayEvent::FuelConsumed {
+                    ship,
+                    destination,
+                    amount: fuel_cost,
+                    remaining,
+                });
+                world.publish(crate::events::GameplayEvent::TravelStarted {
+                    player,
+                    pilot_station,
+                    destination,
+                    started_at,
+                    duration,
+                    fuel_cost,
+                });
+                world.publish(crate::events::GameplayEvent::AutopilotStarted {
+                    destination,
+                    duration,
+                    fuel_cost,
+                });
+                CommandResult::success(true)
+            }
+            Err(crate::navigation::AutopilotError::NotPlanned) => {
+                CommandResult::rejected(crate::commands::CommandRejection::AutopilotNotPlanned)
+            }
+            Err(crate::navigation::AutopilotError::TravelActive) => {
+                CommandResult::rejected(crate::commands::CommandRejection::TravelActive)
+            }
+            Err(crate::navigation::AutopilotError::InsufficientFuel) => {
+                CommandResult::rejected(crate::commands::CommandRejection::InsufficientFuel)
+            }
+            Err(crate::navigation::AutopilotError::OriginMismatch) => {
+                CommandResult::rejected(crate::commands::CommandRejection::AutopilotOriginMismatch)
+            }
+            Err(_) => CommandResult::rejected(
+                crate::commands::CommandRejection::AutopilotNoRoute,
+            ),
+        }
+    }
+
+    fn cancel_autopilot(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        pilot_station: engine::EntityId,
+    ) -> CommandResult {
+        if let Err(result) = self.validate_pilot_access(world, player, pilot_station) {
+            return result;
+        }
+        match world.navigation_mut().cancel_autopilot() {
+            Some(destination) => {
+                world.publish(crate::events::GameplayEvent::AutopilotInterrupted { destination });
+                CommandResult::success(true)
+            }
+            None => CommandResult::rejected(crate::commands::CommandRejection::AutopilotNotPlanned),
         }
     }
 
@@ -2022,6 +2143,49 @@ impl NavigationSystem {
             {
                 world.publish(crate::events::GameplayEvent::PlanetDiscovered { destination });
             }
+            let was_autopilot = matches!(
+                world.autopilot_state(),
+                crate::navigation::AutopilotState::InTransit { .. }
+            );
+            if was_autopilot {
+                match world.advance_autopilot_leg(to.elapsed) {
+                    Ok(Some((player, pilot_station, next_destination, duration, fuel_cost, _))) => {
+                        let Some(ship) = world.navigation().ship_id() else {
+                            continue;
+                        };
+                        let remaining = world.ship_fuel(ship).map_or(0, |fuel| fuel.current());
+                        world.publish(crate::events::GameplayEvent::FuelConsumed {
+                            ship,
+                            destination: next_destination,
+                            amount: fuel_cost,
+                            remaining,
+                        });
+                        world.publish(crate::events::GameplayEvent::TravelStarted {
+                            player,
+                            pilot_station,
+                            destination: next_destination,
+                            started_at: to.elapsed,
+                            duration,
+                            fuel_cost,
+                        });
+                        world.publish(crate::events::GameplayEvent::AutopilotStarted {
+                            destination: next_destination,
+                            duration,
+                            fuel_cost,
+                        });
+                    }
+                    Ok(None) => {
+                        if let crate::navigation::AutopilotState::Completed { destination } =
+                            world.autopilot_state()
+                        {
+                            world.publish(crate::events::GameplayEvent::AutopilotCompleted {
+                                destination: *destination,
+                            });
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
         }
     }
 }
@@ -2061,6 +2225,45 @@ impl GameplaySystem for NavigationSystem {
                 player,
                 pilot_station,
             } => self.start_travel(world, player, pilot_station),
+            GameplayCommand::RegisterNavigationRoute { route } => {
+                match world.register_navigation_route(route) {
+                    Ok(()) => {
+                        world.publish(crate::events::GameplayEvent::NavigationRouteRegistered {
+                            from: route.from,
+                            to: route.to,
+                        });
+                        CommandResult::success(true)
+                    }
+                    Err(crate::navigation::NavigationRouteError::DuplicateRoute) => {
+                        CommandResult::rejected(
+                            crate::commands::CommandRejection::NavigationRouteAlreadyRegistered,
+                        )
+                    }
+                    Err(crate::navigation::NavigationRouteError::DestinationNotFound) => {
+                        CommandResult::rejected(crate::commands::CommandRejection::NavigationRouteNotFound)
+                    }
+                    Err(crate::navigation::NavigationRouteError::DestinationNotDiscovered) => {
+                        CommandResult::rejected(crate::commands::CommandRejection::NavigationRouteNotDiscovered)
+                    }
+                    Err(_) => CommandResult::invalid(
+                        crate::commands::CommandInvalidity::InvalidNavigationRouteConfiguration,
+                    ),
+                }
+            }
+            GameplayCommand::PlanAutopilot {
+                player,
+                pilot_station,
+                origin,
+                destination,
+            } => self.plan_autopilot(world, player, pilot_station, origin, destination),
+            GameplayCommand::StartAutopilot {
+                player,
+                pilot_station,
+            } => self.start_autopilot(world, player, pilot_station),
+            GameplayCommand::CancelAutopilot {
+                player,
+                pilot_station,
+            } => self.cancel_autopilot(world, player, pilot_station),
             _ => return None,
         };
         Some(result)

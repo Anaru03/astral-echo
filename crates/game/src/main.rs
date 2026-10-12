@@ -12,7 +12,8 @@ use gameplay::{
     CommandStatus, EncounterId, GameplayCommand, GameplayEvent, LifeSupportConfiguration,
     LifeSupportRegistrationError, MissionProgress, OxygenCompartmentConfiguration,
     RewardDistributionPolicy, ShipRepairConfiguration, SignalKnowledge, StationState,
-    SpatialEncounter, SpatialEncounterKind, SpatialEncounterState, StationType, TravelState,
+    AutopilotState, NavigationRoute, NavigationRouteState, SpatialEncounter,
+    SpatialEncounterKind, SpatialEncounterState, StationType, TravelState,
     WeaponAmmunition, WeaponConfiguration,
 };
 
@@ -1178,6 +1179,366 @@ fn run_spatial_encounter_scenario() -> Result<(), String> {
     println!(
         "ENCUENTROS ESPACIALES COMPLETADOS: integridad={}→{}, hallazgo_recogido=true, señal=Resuelta",
         integrity_before, integrity_after
+    );
+    Ok(())
+}
+
+fn run_autopilot_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación de autopilot: {error:?}"))?;
+    run_command(
+        &mut session,
+        "ocupar estación de autopilot",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    let home = DestinationId::new(1001);
+    let first = DestinationId::new(1002);
+    let second = DestinationId::new(1003);
+    let undiscovered = DestinationId::new(1004);
+    for destination in [
+        Destination {
+            id: home,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: first,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(10),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Known,
+        },
+        Destination {
+            id: second,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 20.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(10),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Known,
+        },
+        Destination {
+            id: undiscovered,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 30.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(10),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Known,
+        },
+    ] {
+        session
+            .register_destination(destination)
+            .map_err(|error| format!("registrar destino de autopilot: {error:?}"))?;
+    }
+    run_command(
+        &mut session,
+        "seleccionar primer planeta",
+        GameplayCommand::SelectDestination {
+            player,
+            pilot_station: station,
+            destination: first,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar descubrimiento del primer planeta",
+        GameplayCommand::StartTravel {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "llegar al primer planeta",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(10),
+        },
+    )?;
+    if session.world().destination(first).map(|value| value.discovery)
+        != Some(DiscoveryState::Discovered)
+    {
+        return Err("el primer planeta no se descubrió físicamente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "seleccionar segundo planeta",
+        GameplayCommand::SelectDestination {
+            player,
+            pilot_station: station,
+            destination: second,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar descubrimiento del segundo planeta",
+        GameplayCommand::StartTravel {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "llegar al segundo planeta",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(10),
+        },
+    )?;
+    if session.world().destination(second).map(|value| value.discovery)
+        != Some(DiscoveryState::Discovered)
+    {
+        return Err("el segundo planeta no se descubrió físicamente".to_owned());
+    }
+    let route = |from, to, distance, duration, fuel_cost| NavigationRoute {
+        from,
+        to,
+        distance,
+        duration: Duration(duration),
+        fuel_cost,
+        state: NavigationRouteState::Available,
+    };
+    for value in [
+        route(home, first, 10.0, 4, 2),
+        route(first, second, 10.0, 4, 2),
+        route(second, first, 10.0, 4, 2),
+        route(first, home, 10.0, 4, 2),
+        route(second, home, 20.0, 12, 5),
+    ] {
+        run_command(
+            &mut session,
+            "registrar ruta descubierta",
+            GameplayCommand::RegisterNavigationRoute { route: value },
+        )?;
+    }
+    let duplicate = session
+        .update([GameplayCommand::RegisterNavigationRoute {
+            route: route(second, first, 10.0, 4, 2),
+        }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| "ruta duplicada sin resultado".to_owned())?;
+    if duplicate.status
+        != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::NavigationRouteAlreadyRegistered,
+        })
+    {
+        return Err(format!("ruta duplicada no rechazada: {:?}", duplicate.status));
+    }
+    let unknown_route = session
+        .update([GameplayCommand::RegisterNavigationRoute {
+            route: route(second, undiscovered, 10.0, 4, 2),
+        }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| "ruta no descubierta sin resultado".to_owned())?;
+    if unknown_route.status
+        != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::NavigationRouteNotDiscovered,
+        })
+    {
+        return Err(format!("ruta no descubierta no rechazada: {:?}", unknown_route.status));
+    }
+    let inaccessible = session
+        .update([GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin: second,
+            destination: undiscovered,
+        }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| "plan inaccesible sin resultado".to_owned())?;
+    if inaccessible.status
+        != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::AutopilotNoRoute,
+        })
+    {
+        return Err(format!("destino inaccesible no rechazado: {:?}", inaccessible.status));
+    }
+    run_command(
+        &mut session,
+        "planificar autopilot por rutas conocidas",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin: second,
+            destination: home,
+        },
+    )?;
+    match session.world().autopilot_state() {
+        AutopilotState::Planned { eta, route, .. } if *eta == Duration(8) && route.as_slice() == [second, first, home] => {}
+        state => return Err(format!("plan determinista inesperado: {state:?}")),
+    }
+    let fuel_before = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "faltan recursos del autopilot".to_owned())?
+        .current();
+    run_command(
+        &mut session,
+        "iniciar autopilot",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let fuel_after_start = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "faltan recursos después de iniciar autopilot".to_owned())?
+        .current();
+    if fuel_before - fuel_after_start != 2 {
+        return Err("el primer tramo no consumió el combustible configurado".to_owned());
+    }
+    run_command(
+        &mut session,
+        "avanzar primer tramo del autopilot",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(4),
+        },
+    )?;
+    if !matches!(session.world().autopilot_state(), AutopilotState::InTransit { .. })
+        || session.world().ship_position() != Some(Vec3 { x: 10.0, y: 0.0, z: 0.0 })
+    {
+        return Err("el autopilot no encadenó el segundo tramo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "avanzar tramo final del autopilot",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(4),
+        },
+    )?;
+    if !matches!(
+        session.world().autopilot_state(),
+        AutopilotState::Completed { destination } if *destination == home
+    ) || session.world().ship_position() != Some(Vec3::ZERO)
+    {
+        return Err("el autopilot no completó en el destino final".to_owned());
+    }
+    let fuel_after = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "faltan recursos al finalizar autopilot".to_owned())?
+        .current();
+    if fuel_before - fuel_after != 4 {
+        return Err("el autopilot consumió combustible incorrectamente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "retirar combustible para validar rechazo",
+        GameplayCommand::RemoveShipFuel { ship, amount: 53 },
+    )?;
+    run_command(
+        &mut session,
+        "planificar ruta con combustible insuficiente",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin: home,
+            destination: first,
+        },
+    )?;
+    let insufficient = session
+        .update([GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| "rechazo por combustible sin resultado".to_owned())?;
+    if insufficient.status
+        != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::InsufficientFuel,
+        })
+        || session.world().ship_fuel(ship).map(|fuel| fuel.current()) != Some(1)
+    {
+        return Err(format!("combustible insuficiente no fue atómico: {:?}", insufficient.status));
+    }
+    run_command(
+        &mut session,
+        "cancelar plan sin combustible",
+        GameplayCommand::CancelAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let hostile_encounter = EncounterId::new(1005);
+    run_command(
+        &mut session,
+        "registrar contacto hostil",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                hostile_encounter,
+                SpatialEncounterKind::Hostile {
+                    configuration: EnemyConfiguration::for_archetype(
+                        EnemyArchetype::Shooter,
+                        Vec3::ZERO,
+                    ),
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar contacto hostil",
+        GameplayCommand::ActivateSpatialEncounter {
+            encounter: hostile_encounter,
+        },
+    )?;
+    let hostile = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, archetype, .. }
+                if *archetype == EnemyArchetype::Shooter => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "el contacto hostil no creó enemigo".to_owned())?;
+    run_command(
+        &mut session,
+        "equipar arma del contacto hostil",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::new(AttackType::Energy, 60, 20, Duration(1)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "derrotar enemigo del contacto hostil",
+        GameplayCommand::AttackEnemy {
+            player,
+            enemy: hostile,
+        },
+    )?;
+    if !session
+        .world()
+        .combatant(hostile)
+        .is_some_and(|combatant| combatant.is_defeated())
+        || session.world().spatial_encounter(hostile_encounter).map(|value| value.state)
+            != Some(SpatialEncounterState::Resolved)
+    {
+        return Err("el contacto hostil no se resolvió con la derrota real".to_owned());
+    }
+    let isolated = ProjectEchoSession::new();
+    if isolated.world().navigation_routes().next().is_some() {
+        return Err("las rutas se filtraron entre sesiones".to_owned());
+    }
+    println!(
+        "AUTOPILOT COMPLETADO: ruta={:?}, eta=8, combustible={}→{}, destino_final={:?}, hostil_resuelto=true",
+        [second, first, home], fuel_before, fuel_after, home
     );
     Ok(())
 }
@@ -3398,5 +3759,6 @@ fn run_scenario() -> Result<(), String> {
     run_reward_distribution_scenario()?;
     run_autonomous_enemy_scenario()?;
     run_spatial_encounter_scenario()?;
+    run_autopilot_scenario()?;
     Ok(())
 }

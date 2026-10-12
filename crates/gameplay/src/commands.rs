@@ -5,7 +5,7 @@ use crate::encounter::{EncounterId, SpatialEncounter};
 use crate::knowledge::KnowledgeTarget;
 use crate::life_support::{CompartmentId, LifeSupportConfiguration};
 use crate::navigation::ShipMovementParameters;
-use crate::navigation::{Destination, DestinationId};
+use crate::navigation::{Destination, DestinationId, NavigationRoute};
 use crate::reward::EnemyReward;
 use crate::types::{MissionId, ObjectiveId};
 use engine::{Duration, EntityId, Vec3};
@@ -58,6 +58,23 @@ pub enum GameplayCommand {
     },
     RegisterDestination {
         destination: Destination,
+    },
+    RegisterNavigationRoute {
+        route: NavigationRoute,
+    },
+    PlanAutopilot {
+        player: EntityId,
+        pilot_station: EntityId,
+        origin: DestinationId,
+        destination: DestinationId,
+    },
+    StartAutopilot {
+        player: EntityId,
+        pilot_station: EntityId,
+    },
+    CancelAutopilot {
+        player: EntityId,
+        pilot_station: EntityId,
     },
     SelectDestination {
         player: EntityId,
@@ -370,6 +387,15 @@ pub enum CommandRejection {
     SpatialEncounterRequiresScanner,
     SpatialEncounterRequiresActivePlayer,
     SpatialEncounterResolutionFailed,
+    NavigationRouteAlreadyRegistered,
+    NavigationRouteNotFound,
+    NavigationRouteNotDiscovered,
+    AutopilotNotPlanned,
+    AutopilotAlreadyPlanned,
+    AutopilotNoRoute,
+    AutopilotSameDestination,
+    AutopilotOriginMismatch,
+    AutopilotInterrupted,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -394,6 +420,7 @@ pub enum CommandInvalidity {
     InvalidHealingConfiguration,
     InvalidRevivalConfiguration,
     InvalidSpatialEncounterConfiguration,
+    InvalidNavigationRouteConfiguration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

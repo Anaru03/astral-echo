@@ -360,6 +360,19 @@ impl GameplayWorld {
     pub fn destinations(&self) -> impl Iterator<Item = &Destination> {
         self.navigation.destinations()
     }
+    pub fn navigation_routes(&self) -> impl Iterator<Item = &crate::navigation::NavigationRoute> {
+        self.navigation.routes()
+    }
+    pub fn navigation_route(
+        &self,
+        from: DestinationId,
+        to: DestinationId,
+    ) -> Option<&crate::navigation::NavigationRoute> {
+        self.navigation.route(from, to)
+    }
+    pub fn autopilot_state(&self) -> &crate::navigation::AutopilotState {
+        self.navigation.autopilot_state()
+    }
     pub fn travel_progress(&self) -> Option<TravelProgress> {
         self.navigation.travel_progress(self.time().elapsed)
     }
@@ -613,6 +626,12 @@ impl GameplayWorld {
         destination: Destination,
     ) -> Result<(), NavigationRegistrationError> {
         self.navigation.register_destination(destination)
+    }
+    pub fn register_navigation_route(
+        &mut self,
+        route: crate::navigation::NavigationRoute,
+    ) -> Result<(), crate::navigation::NavigationRouteError> {
+        self.navigation.register_route(route)
     }
     pub fn ship_resources(&self, ship: EntityId) -> Option<ShipResources> {
         self.ship_resources.get(&ship).copied()
@@ -1656,6 +1675,47 @@ impl GameplayWorld {
             return Err(crate::navigation::NavigationStartError::ResourcesNotInitialized);
         };
         self.navigation.start_travel(now, resources.fuel_mut())
+    }
+    pub(crate) fn plan_autopilot(
+        &mut self,
+        origin: DestinationId,
+        destination: DestinationId,
+    ) -> Result<engine::Duration, crate::navigation::AutopilotError> {
+        self.navigation.plan_autopilot(origin, destination)
+    }
+    pub(crate) fn start_autopilot(
+        &mut self,
+        now: engine::Duration,
+        player: EntityId,
+        pilot_station: EntityId,
+    ) -> Result<
+        (DestinationId, engine::Duration, engine::Duration, u32, u32),
+        crate::navigation::AutopilotError,
+    > {
+        let Some(ship) = self.navigation.ship_id() else {
+            return Err(crate::navigation::AutopilotError::DestinationNotFound);
+        };
+        let Some(resources) = self.ship_resources.get_mut(&ship) else {
+            return Err(crate::navigation::AutopilotError::DestinationNotFound);
+        };
+        self.navigation
+            .start_autopilot(now, resources.fuel_mut(), player, pilot_station)
+    }
+    pub(crate) fn advance_autopilot_leg(
+        &mut self,
+        now: engine::Duration,
+    ) -> Result<
+        Option<(EntityId, EntityId, DestinationId, engine::Duration, u32, u32)>,
+        crate::navigation::AutopilotError,
+    > {
+        let Some(ship) = self.navigation.ship_id() else {
+            return Err(crate::navigation::AutopilotError::DestinationNotFound);
+        };
+        let Some(resources) = self.ship_resources.get_mut(&ship) else {
+            return Err(crate::navigation::AutopilotError::DestinationNotFound);
+        };
+        self.navigation
+            .advance_autopilot_leg(now, resources.fuel_mut())
     }
     pub(crate) fn ship_resources_mut(&mut self, ship: EntityId) -> Option<&mut ShipResources> {
         self.ship_resources.get_mut(&ship)

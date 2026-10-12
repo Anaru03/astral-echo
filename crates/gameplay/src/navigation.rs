@@ -1,6 +1,7 @@
-use crate::resources::FuelTank;
 use engine::{Duration, EntityId, Vec3};
 use std::collections::BTreeMap;
+
+use crate::resources::FuelTank;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DestinationId(u32);
@@ -19,6 +20,70 @@ impl DestinationId {
 pub enum DestinationType {
     Planet,
     SpacePoint,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NavigationRouteState {
+    Available,
+    Blocked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NavigationRoute {
+    pub from: DestinationId,
+    pub to: DestinationId,
+    pub distance: f32,
+    pub duration: Duration,
+    pub fuel_cost: u32,
+    pub state: NavigationRouteState,
+}
+
+impl NavigationRoute {
+    pub fn validate(self) -> Result<(), NavigationRouteError> {
+        if self.from.value() == 0 || self.to.value() == 0 || self.from == self.to {
+            return Err(NavigationRouteError::InvalidEndpoints);
+        }
+        if !self.distance.is_finite() || self.distance <= 0.0 {
+            return Err(NavigationRouteError::InvalidDistance);
+        }
+        if self.duration.0 == 0 || self.fuel_cost == 0 {
+            return Err(NavigationRouteError::InvalidTravelParameters);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NavigationRouteError {
+    InvalidEndpoints,
+    InvalidDistance,
+    InvalidTravelParameters,
+    DuplicateRoute,
+    DestinationNotFound,
+    DestinationNotDiscovered,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AutopilotState {
+    Inactive,
+    Planned {
+        origin: DestinationId,
+        destination: DestinationId,
+        route: Vec<DestinationId>,
+        eta: Duration,
+    },
+    InTransit {
+        origin: DestinationId,
+        destination: DestinationId,
+        route: Vec<DestinationId>,
+        next_leg: usize,
+        eta: Duration,
+        player: EntityId,
+        pilot_station: EntityId,
+    },
+    Completed { destination: DestinationId },
+    Interrupted { destination: DestinationId },
+    Failed { destination: DestinationId },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -213,6 +278,8 @@ pub struct NavigationState {
     scanner: SignalScanner,
     signal_knowledge: BTreeMap<DestinationId, SignalKnowledge>,
     last_scan_results: Vec<SignalDetection>,
+    routes: BTreeMap<(DestinationId, DestinationId), NavigationRoute>,
+    autopilot: AutopilotState,
 }
 
 impl Default for NavigationState {
@@ -232,6 +299,8 @@ impl Default for NavigationState {
             scanner: SignalScanner::default(),
             signal_knowledge: BTreeMap::new(),
             last_scan_results: Vec::new(),
+            routes: BTreeMap::new(),
+            autopilot: AutopilotState::Inactive,
         }
     }
 }
@@ -421,6 +490,31 @@ impl NavigationState {
         self.destinations.values()
     }
 
+    pub fn routes(&self) -> impl Iterator<Item = &NavigationRoute> {
+        self.routes.values()
+    }
+
+    pub fn route(
+        &self,
+        from: DestinationId,
+        to: DestinationId,
+    ) -> Option<&NavigationRoute> {
+        self.routes.get(&(from, to))
+    }
+
+    pub fn available_routes_from(
+        &self,
+        from: DestinationId,
+    ) -> impl Iterator<Item = &NavigationRoute> {
+        self.routes
+            .values()
+            .filter(move |route| route.from == from && route.state == NavigationRouteState::Available)
+    }
+
+    pub fn autopilot_state(&self) -> &AutopilotState {
+        &self.autopilot
+    }
+
     pub fn destination(&self, id: DestinationId) -> Option<&Destination> {
         self.destinations.get(&id)
     }
@@ -596,6 +690,12 @@ impl NavigationState {
         if self.has_active_travel() {
             return Err(NavigationSelectionError::TravelActive);
         }
+        if matches!(
+            self.autopilot,
+            AutopilotState::Planned { .. } | AutopilotState::InTransit { .. }
+        ) {
+            return Err(NavigationSelectionError::AutopilotActive);
+        }
         let Some(destination_data) = self.destinations.get(&destination) else {
             return Err(NavigationSelectionError::DestinationNotFound);
         };
@@ -606,6 +706,247 @@ impl NavigationState {
         Ok(())
     }
 
+    pub(crate) fn register_route(
+        &mut self,
+        route: NavigationRoute,
+    ) -> Result<(), NavigationRouteError> {
+        route.validate()?;
+        if self.destination(route.from).is_none() || self.destination(route.to).is_none() {
+            return Err(NavigationRouteError::DestinationNotFound);
+        }
+        if self
+            .destination(route.from)
+            .is_none_or(|destination| destination.discovery != DiscoveryState::Discovered)
+            || self
+                .destination(route.to)
+                .is_none_or(|destination| destination.discovery != DiscoveryState::Discovered)
+        {
+            return Err(NavigationRouteError::DestinationNotDiscovered);
+        }
+        if self.routes.contains_key(&(route.from, route.to)) {
+            return Err(NavigationRouteError::DuplicateRoute);
+        }
+        self.routes.insert((route.from, route.to), route);
+        Ok(())
+    }
+
+    pub(crate) fn plan_autopilot(
+        &mut self,
+        origin: DestinationId,
+        destination: DestinationId,
+    ) -> Result<Duration, AutopilotError> {
+        if origin == destination {
+            return Err(AutopilotError::SameDestination);
+        }
+        if !self.destinations.contains_key(&origin) || !self.destinations.contains_key(&destination) {
+            return Err(AutopilotError::DestinationNotFound);
+        }
+        if self.has_active_travel() {
+            return Err(AutopilotError::TravelActive);
+        }
+        let Some(origin_position) = self.destination(origin).map(|value| value.position) else {
+            return Err(AutopilotError::DestinationNotFound);
+        };
+        if self.current_position != origin_position {
+            return Err(AutopilotError::OriginMismatch);
+        }
+        if !matches!(self.autopilot, AutopilotState::Inactive | AutopilotState::Completed { .. } | AutopilotState::Interrupted { .. } | AutopilotState::Failed { .. }) {
+            return Err(AutopilotError::AlreadyPlanned);
+        }
+        let Some((route, distance, duration)) = self.find_route(origin, destination) else {
+            return Err(AutopilotError::NoRoute);
+        };
+        let eta = Duration(duration);
+        self.autopilot = AutopilotState::Planned {
+            origin,
+            destination,
+            route,
+            eta,
+        };
+        let _ = distance;
+        Ok(eta)
+    }
+
+    pub(crate) fn start_autopilot(
+        &mut self,
+        now: Duration,
+        fuel: &mut FuelTank,
+        player: EntityId,
+        pilot_station: EntityId,
+    ) -> Result<(DestinationId, Duration, Duration, u32, u32), AutopilotError> {
+        let AutopilotState::Planned {
+            origin,
+            destination,
+            route,
+            ..
+        } = self.autopilot.clone()
+        else {
+            return Err(AutopilotError::NotPlanned);
+        };
+        if self.has_active_travel() {
+            return Err(AutopilotError::TravelActive);
+        }
+        if route.len() < 2 || route[0] != origin {
+            return Err(AutopilotError::OriginMismatch);
+        }
+        let total_fuel = route
+            .windows(2)
+            .try_fold(0_u32, |total, pair| {
+                total.checked_add(self.route(pair[0], pair[1])?.fuel_cost)
+            })
+            .ok_or(AutopilotError::InsufficientFuel)?;
+        if !fuel.can_consume(total_fuel) {
+            return Err(AutopilotError::InsufficientFuel);
+        }
+        let leg = self
+            .route(route[0], route[1])
+            .copied()
+            .ok_or(AutopilotError::NoRoute)?;
+        if leg.state != NavigationRouteState::Available || !fuel.can_consume(leg.fuel_cost) {
+            return Err(AutopilotError::InsufficientFuel);
+        }
+        fuel.consume(leg.fuel_cost).map_err(|_| AutopilotError::InsufficientFuel)?;
+        self.travel_state = TravelState::InProgress {
+            destination: leg.to,
+            started_at: now,
+            duration: leg.duration,
+            fuel_cost: leg.fuel_cost,
+        };
+        let eta = self.route_duration(&route, 0).unwrap_or(leg.duration);
+        self.autopilot = AutopilotState::InTransit {
+            origin,
+            destination,
+            route,
+            next_leg: 1,
+            eta,
+            player,
+            pilot_station,
+        };
+        Ok((leg.to, now, leg.duration, leg.fuel_cost, fuel.current()))
+    }
+
+    pub(crate) fn advance_autopilot_leg(
+        &mut self,
+        now: Duration,
+        fuel: &mut FuelTank,
+    ) -> Result<Option<(EntityId, EntityId, DestinationId, Duration, u32, u32)>, AutopilotError> {
+        let AutopilotState::InTransit {
+            origin,
+            destination,
+            route,
+            next_leg,
+            player,
+            pilot_station,
+            ..
+        } = self.autopilot.clone()
+        else {
+            return Ok(None);
+        };
+        if next_leg + 1 >= route.len() {
+            self.autopilot = AutopilotState::Completed { destination };
+            return Ok(None);
+        }
+        let leg = self
+            .route(route[next_leg], route[next_leg + 1])
+            .copied()
+            .ok_or(AutopilotError::NoRoute)?;
+        if leg.state != NavigationRouteState::Available || !fuel.can_consume(leg.fuel_cost) {
+            self.autopilot = AutopilotState::Failed { destination };
+            return Err(AutopilotError::InsufficientFuel);
+        }
+        fuel.consume(leg.fuel_cost).map_err(|_| AutopilotError::InsufficientFuel)?;
+        self.travel_state = TravelState::InProgress {
+            destination: leg.to,
+            started_at: now,
+            duration: leg.duration,
+            fuel_cost: leg.fuel_cost,
+        };
+        let remaining = self
+            .route_duration(&route, next_leg)
+            .unwrap_or(leg.duration);
+        self.autopilot = AutopilotState::InTransit {
+            origin,
+            destination,
+            route,
+            next_leg: next_leg + 1,
+            eta: remaining,
+            player,
+            pilot_station,
+        };
+        Ok(Some((
+            player,
+            pilot_station,
+            leg.to,
+            leg.duration,
+            leg.fuel_cost,
+            fuel.current(),
+        )))
+    }
+
+    pub(crate) fn cancel_autopilot(&mut self) -> Option<DestinationId> {
+        let destination = match self.autopilot {
+            AutopilotState::Planned { destination, .. }
+            | AutopilotState::InTransit { destination, .. } => destination,
+            _ => return None,
+        };
+        if matches!(self.autopilot, AutopilotState::InTransit { .. }) {
+            self.travel_state = TravelState::Cancelled { destination };
+        }
+        self.autopilot = AutopilotState::Interrupted { destination };
+        Some(destination)
+    }
+
+    fn route_duration(&self, route: &[DestinationId], start: usize) -> Option<Duration> {
+        let total = route
+            .windows(2)
+            .skip(start)
+            .try_fold(0_u64, |total, pair| {
+                total.checked_add(self.route(pair[0], pair[1])?.duration.0)
+            })?;
+        Some(Duration(total))
+    }
+
+    fn find_route(
+        &self,
+        origin: DestinationId,
+        destination: DestinationId,
+    ) -> Option<(Vec<DestinationId>, f64, u64)> {
+        let mut best: BTreeMap<DestinationId, (f64, u64, Vec<DestinationId>)> = BTreeMap::new();
+        let mut pending = vec![(0.0_f64, 0_u64, vec![origin])];
+        best.insert(origin, (0.0, 0, vec![origin]));
+        while !pending.is_empty() {
+            pending.sort_by(|left, right| {
+                left.0
+                    .total_cmp(&right.0)
+                    .then_with(|| left.1.cmp(&right.1))
+                    .then_with(|| left.2.cmp(&right.2))
+            });
+            let (distance, duration, path) = pending.remove(0);
+            let current = *path.last()?;
+            if current == destination {
+                return Some((path, distance, duration));
+            }
+            for route in self.available_routes_from(current) {
+                if path.contains(&route.to) {
+                    continue;
+                }
+                let next_distance = distance + f64::from(route.distance);
+                let next_duration = duration.checked_add(route.duration.0)?;
+                let mut next_path = path.clone();
+                next_path.push(route.to);
+                let replace = best.get(&route.to).is_none_or(|existing| {
+                    (next_distance, next_duration, &next_path)
+                        < (existing.0, existing.1, &existing.2)
+                });
+                if replace {
+                    best.insert(route.to, (next_distance, next_duration, next_path.clone()));
+                    pending.push((next_distance, next_duration, next_path));
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) fn start_travel(
         &mut self,
         now: Duration,
@@ -613,6 +954,12 @@ impl NavigationState {
     ) -> Result<(DestinationId, Duration, Duration, u32, u32), NavigationStartError> {
         if self.has_active_travel() {
             return Err(NavigationStartError::TravelActive);
+        }
+        if matches!(
+            self.autopilot,
+            AutopilotState::Planned { .. } | AutopilotState::InTransit { .. }
+        ) {
+            return Err(NavigationStartError::AutopilotActive);
         }
         let Some(destination) = self.selected_destination else {
             return Err(NavigationStartError::DestinationNotSelected);
@@ -675,6 +1022,7 @@ impl NavigationState {
             return None;
         };
         self.travel_state = TravelState::Cancelled { destination };
+        let _ = self.cancel_autopilot();
         Some(destination)
     }
 
@@ -693,8 +1041,21 @@ impl NavigationState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutopilotError {
+    SameDestination,
+    DestinationNotFound,
+    TravelActive,
+    AlreadyPlanned,
+    NoRoute,
+    NotPlanned,
+    OriginMismatch,
+    InsufficientFuel,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NavigationSelectionError {
     TravelActive,
+    AutopilotActive,
     DestinationNotFound,
     DestinationUnknown,
 }
@@ -702,6 +1063,7 @@ pub enum NavigationSelectionError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NavigationStartError {
     TravelActive,
+    AutopilotActive,
     DestinationNotSelected,
     DestinationNotFound,
     DestinationUnknown,

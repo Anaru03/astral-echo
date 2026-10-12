@@ -75,8 +75,9 @@ pub use life_support::{
 pub use mission::{Mission, MissionDefinitionError, MissionProgress, MissionRegistrationError};
 pub use mission_system::MissionSystem;
 pub use navigation::{
-    Destination, DestinationId, DestinationType, DiscoveryState, NavigationInitializationError,
-    NavigationMovementError, NavigationRegistrationError, NavigationState, ScannerError,
+    AutopilotError, AutopilotState, Destination, DestinationId, DestinationType, DiscoveryState,
+    NavigationInitializationError, NavigationMovementError, NavigationRegistrationError,
+    NavigationRoute, NavigationRouteError, NavigationRouteState, NavigationState, ScannerError,
     ShipMovementParameters, ShipOrientation, SignalDetection, SignalKnowledge, SignalScanner,
     TravelProgress, TravelState,
 };

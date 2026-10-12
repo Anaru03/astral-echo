@@ -67,6 +67,26 @@ pub enum GameplayEvent {
     DestinationRegistered {
         destination: crate::navigation::DestinationId,
     },
+    NavigationRouteRegistered {
+        from: crate::navigation::DestinationId,
+        to: crate::navigation::DestinationId,
+    },
+    AutopilotPlanned {
+        origin: crate::navigation::DestinationId,
+        destination: crate::navigation::DestinationId,
+        eta: Duration,
+    },
+    AutopilotStarted {
+        destination: crate::navigation::DestinationId,
+        duration: Duration,
+        fuel_cost: u32,
+    },
+    AutopilotCompleted {
+        destination: crate::navigation::DestinationId,
+    },
+    AutopilotInterrupted {
+        destination: crate::navigation::DestinationId,
+    },
     DestinationSelected {
         player: EntityId,
         pilot_station: EntityId,
