@@ -73,6 +73,69 @@ pub enum NavigationAdvice {
     AddressEncounter(EncounterId),
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum NavigationRouteRiskSource {
+    Hazard(HazardId),
+    Encounter(EncounterId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NavigationRouteRiskClassification {
+    NearSegment { segment: usize, distance: f64 },
+    OutsideMargin { segment: usize, distance: f64 },
+    NotEvaluable,
+    Resolved,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NavigationRouteRisk {
+    pub source: NavigationRouteRiskSource,
+    pub classification: NavigationRouteRiskClassification,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavigationRouteOption {
+    pub route: Vec<DestinationId>,
+    pub distance: f64,
+    pub eta: Duration,
+    pub fuel_required: u32,
+    pub risks: Vec<NavigationRouteRisk>,
+    pub critical_risks: u32,
+    pub active_risks: u32,
+    pub unevaluable_risks: u32,
+    pub viable: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NavigationRecommendationReason {
+    AvoidsKnownRisk(NavigationRouteRiskSource),
+    FewerKnownRisks,
+    LowerEta,
+    LowerFuel,
+    ShorterDistance,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavigationAlternativeRecommendation {
+    pub current: Vec<DestinationId>,
+    pub alternative: Vec<DestinationId>,
+    pub reason: NavigationRecommendationReason,
+    pub avoided_risk: Option<NavigationRouteRiskSource>,
+    pub current_eta: Duration,
+    pub alternative_eta: Duration,
+    pub current_fuel: u32,
+    pub alternative_fuel: u32,
+    pub current_distance: f64,
+    pub alternative_distance: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavigationRouteComparison {
+    pub current: NavigationRouteOption,
+    pub alternatives: Vec<NavigationRouteOption>,
+    pub recommendation: Option<NavigationAlternativeRecommendation>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavigationAssessment {
     pub companion: EntityId,
@@ -85,6 +148,8 @@ pub struct NavigationAssessment {
     pub fuel_available: Option<u32>,
     pub fuel_required: Option<u32>,
     pub risks: Vec<NavigationRisk>,
+    pub route_risks: Vec<NavigationRouteRisk>,
+    pub recommendation_segment: Option<usize>,
     pub recommendation: Option<NavigationAdvice>,
 }
 

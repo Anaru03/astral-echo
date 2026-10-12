@@ -42,8 +42,11 @@ pub use collectible::{
 };
 pub use companion::{
     Companion, CompanionActionMode, CompanionBehavior, CompanionError, CompanionRecommendation,
-    NavigationAdvice, NavigationAssessment, NavigationRisk, TacticalAction, TacticalPriority,
-    TacticalRecommendation, ERICK_NAME, FOLLOW_DISTANCE, FOLLOW_SPEED,
+    NavigationAdvice, NavigationAlternativeRecommendation, NavigationAssessment, NavigationRisk,
+    NavigationRecommendationReason, NavigationRouteOption, NavigationRouteRisk,
+    NavigationRouteRiskClassification, NavigationRouteRiskSource, NavigationRouteComparison,
+    TacticalAction, TacticalPriority, TacticalRecommendation, ERICK_NAME, FOLLOW_DISTANCE,
+    FOLLOW_SPEED,
 };
 pub use combat::{
     AttackType, CombatConfigurationError, Combatant, EnemyArchetype, EnemyConfiguration, Shield,

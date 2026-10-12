@@ -6078,6 +6078,639 @@ fn run_erick_navigation_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_erick_route_risk_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estaciÃ³n para riesgos de ruta: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK para riesgos de ruta",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedÃ³ registrado para riesgos de ruta".to_owned())?;
+    let origin = DestinationId::new(6_301);
+    let destination = DestinationId::new(6_302);
+    for value in [
+        Destination {
+            id: origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(5),
+            fuel_cost: 2,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino para evaluar segmentos",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar segmento para evaluar riesgos",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: origin,
+                to: destination,
+                distance: 10.0,
+                duration: Duration(5),
+                fuel_cost: 2,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    let hazards = [
+        EnvironmentalHazard::new(
+            HazardId::new(6_301),
+            gameplay::EnvironmentalHazardType::SpaceStorm,
+            Vec3 { x: 5.0, y: 1.0, z: 0.0 },
+            1.0,
+            1,
+            Duration(10_000),
+            true,
+        ),
+        EnvironmentalHazard::new(
+            HazardId::new(6_302),
+            gameplay::EnvironmentalHazardType::DebrisField,
+            Vec3 { x: 5.0, y: 4.0, z: 0.0 },
+            1.0,
+            1,
+            Duration(10_000),
+            true,
+        ),
+        EnvironmentalHazard::new(
+            HazardId::new(6_303),
+            gameplay::EnvironmentalHazardType::GravitationalAnomaly,
+            Vec3 { x: -3.0, y: 0.0, z: 0.0 },
+            1.0,
+            1,
+            Duration(10_000),
+            true,
+        ),
+        EnvironmentalHazard::new(
+            HazardId::new(6_304),
+            gameplay::EnvironmentalHazardType::SpaceStorm,
+            Vec3 { x: 5.0, y: 0.0, z: 0.0 },
+            1.0,
+            1,
+            Duration(10_000),
+            false,
+        ),
+    ];
+    for hazard in hazards {
+        run_command(
+            &mut session,
+            "registrar peligro conocido de ruta",
+            GameplayCommand::RegisterEnvironmentalHazard { hazard },
+        )?;
+    }
+    let resolved_encounter = EncounterId::new(6_301);
+    run_command(
+        &mut session,
+        "registrar encuentro resuelto de ruta",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                resolved_encounter,
+                SpatialEncounterKind::Resource {
+                    item: ItemId(1),
+                    amount: 1,
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro resuelto de ruta",
+        GameplayCommand::ActivateSpatialEncounter {
+            encounter: resolved_encounter,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "resolver encuentro resuelto de ruta",
+        GameplayCommand::ResolveSpatialEncounter {
+            player,
+            encounter: resolved_encounter,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estaciÃ³n para evaluar riesgos",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar ruta con riesgos conocidos",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    let assessment = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar riesgos geomÃ©tricos: {error:?}"))?
+        .ok_or_else(|| "ERICK no produjo evaluaciÃ³n geomÃ©trica".to_owned())?;
+    let near = assessment.route_risks.iter().find(|risk| {
+        risk.source == gameplay::NavigationRouteRiskSource::Hazard(HazardId::new(6_301))
+    });
+    let far = assessment.route_risks.iter().find(|risk| {
+        risk.source == gameplay::NavigationRouteRiskSource::Hazard(HazardId::new(6_302))
+    });
+    let beyond_start = assessment.route_risks.iter().find(|risk| {
+        risk.source == gameplay::NavigationRouteRiskSource::Hazard(HazardId::new(6_303))
+    });
+    let inactive = assessment.route_risks.iter().find(|risk| {
+        risk.source == gameplay::NavigationRouteRiskSource::Hazard(HazardId::new(6_304))
+    });
+    let resolved = assessment.route_risks.iter().find(|risk| {
+        risk.source == gameplay::NavigationRouteRiskSource::Encounter(resolved_encounter)
+    });
+    let is_near = |risk: Option<&gameplay::NavigationRouteRisk>, distance: f64| {
+        risk.is_some_and(|value| {
+            matches!(
+                value.classification,
+                gameplay::NavigationRouteRiskClassification::NearSegment { segment: 0, distance: actual }
+                    if (actual - distance).abs() < 0.000_001
+            )
+        })
+    };
+    let is_outside = |risk: Option<&gameplay::NavigationRouteRisk>, distance: f64| {
+        risk.is_some_and(|value| {
+            matches!(
+                value.classification,
+                gameplay::NavigationRouteRiskClassification::OutsideMargin { segment: 0, distance: actual }
+                    if (actual - distance).abs() < 0.000_001
+            )
+        })
+    };
+    if !is_near(near, 1.0)
+        || !is_outside(far, 4.0)
+        || !is_outside(beyond_start, 3.0)
+        || inactive.is_none_or(|risk| {
+            risk.classification != gameplay::NavigationRouteRiskClassification::Resolved
+        })
+        || resolved.is_none_or(|risk| {
+            risk.classification != gameplay::NavigationRouteRiskClassification::Resolved
+        })
+        || assessment.risks != vec![gameplay::NavigationRisk::KnownHazard(HazardId::new(6_301))]
+        || assessment.recommendation
+            != Some(gameplay::NavigationAdvice::InspectHazard(HazardId::new(6_301)))
+        || assessment.recommendation_segment != Some(0)
+    {
+        return Err(format!("clasificaciÃ³n de riesgos inesperada: {assessment:?}"));
+    }
+    let before_repeat = session.world().save_state().serialize();
+    let repeated = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("repetir evaluaciÃ³n geomÃ©trica: {error:?}"))?;
+    if repeated != Some(assessment.clone()) || session.world().save_state().serialize() != before_repeat {
+        return Err("la evaluaciÃ³n geomÃ©trica no fue determinista o mutÃ³ el mundo".to_owned());
+    }
+    let saved = session.save_state();
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(saved)
+        .map_err(|error| format!("restaurar riesgos de ruta: {error}"))?;
+    if restored
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("evaluar riesgos restaurados: {error:?}"))?
+        != Some(assessment)
+    {
+        return Err("la evaluaciÃ³n restaurada no fue equivalente".to_owned());
+    }
+    let mut degenerate = ProjectEchoSession::new();
+    let degenerate_player = degenerate.ids.first_player;
+    let degenerate_station = degenerate
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estaciÃ³n degenerada: {error:?}"))?;
+    run_command(
+        &mut degenerate,
+        "crear ERICK para segmento degenerado",
+        GameplayCommand::CreateCompanion {
+            followed_player: degenerate_player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let degenerate_erick = degenerate
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK degenerado no quedÃ³ registrado".to_owned())?;
+    for value in [
+        Destination {
+            id: DestinationId::new(6_311),
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: DestinationId::new(6_312),
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut degenerate,
+            "registrar destino degenerado",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    run_command(
+        &mut degenerate,
+        "registrar segmento degenerado",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: DestinationId::new(6_311),
+                to: DestinationId::new(6_312),
+                distance: 1.0,
+                duration: Duration(1),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    run_command(
+        &mut degenerate,
+        "ocupar estaciÃ³n degenerada",
+        GameplayCommand::Interact {
+            player: degenerate_player,
+            target: degenerate_station,
+        },
+    )?;
+    run_command(
+        &mut degenerate,
+        "planificar segmento degenerado",
+        GameplayCommand::PlanAutopilot {
+            player: degenerate_player,
+            pilot_station: degenerate_station,
+            origin: DestinationId::new(6_311),
+            destination: DestinationId::new(6_312),
+        },
+    )?;
+    run_command(
+        &mut degenerate,
+        "registrar peligro no evaluable",
+        GameplayCommand::RegisterEnvironmentalHazard {
+            hazard: EnvironmentalHazard::new(
+                HazardId::new(6_313),
+                gameplay::EnvironmentalHazardType::SpaceStorm,
+                Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+                1.0,
+                1,
+                Duration(10_000),
+                true,
+            ),
+        },
+    )?;
+    let degenerate_assessment = degenerate
+        .world()
+        .companion_navigation_assessment(degenerate_erick.entity)
+        .map_err(|error| format!("evaluar segmento degenerado: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluaciÃ³n del segmento degenerado".to_owned())?;
+    if !degenerate_assessment.route_risks.iter().any(|risk| {
+        risk.source == gameplay::NavigationRouteRiskSource::Hazard(HazardId::new(6_313))
+            && risk.classification == gameplay::NavigationRouteRiskClassification::NotEvaluable
+    }) {
+        return Err("el segmento degenerado produjo una clasificaciÃ³n engaÃ±osa".to_owned());
+    }
+    println!(
+        "RIESGOS DE RUTA DE ERICK COMPLETADOS: cercano=segmento0, alejados=2, resueltos=2, restaurado=true, degenerado=no_evaluable"
+    );
+    Ok(())
+}
+
+fn run_erick_route_comparison_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estaciÃ³n para comparar rutas: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK para comparar rutas",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedÃ³ registrado para comparar rutas".to_owned())?;
+    let origin = DestinationId::new(6_401);
+    let destination = DestinationId::new(6_402);
+    let safe_a = DestinationId::new(6_403);
+    let safe_b = DestinationId::new(6_404);
+    for value in [
+        Destination {
+            id: origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: safe_a,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 5.0, y: 10.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: safe_b,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 5.0, y: -10.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de ruta alternativa",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    let route = |from, to, distance, duration, fuel_cost| NavigationRoute {
+        from,
+        to,
+        distance,
+        duration: Duration(duration),
+        fuel_cost,
+        state: NavigationRouteState::Available,
+    };
+    for value in [
+        route(origin, destination, 10.0, 4, 4),
+        route(origin, safe_a, 6.0, 4, 2),
+        route(safe_a, destination, 6.0, 4, 2),
+        route(origin, safe_b, 6.0, 4, 2),
+        route(safe_b, destination, 6.0, 4, 2),
+    ] {
+        run_command(
+            &mut session,
+            "registrar conexiÃ³n de ruta alternativa",
+            GameplayCommand::RegisterNavigationRoute { route: value },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "ocupar estaciÃ³n para comparar rutas",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar ruta actual con riesgo",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    let hazard = HazardId::new(6_401);
+    run_command(
+        &mut session,
+        "registrar peligro sobre ruta actual",
+        GameplayCommand::RegisterEnvironmentalHazard {
+            hazard: EnvironmentalHazard::new(
+                hazard,
+                gameplay::EnvironmentalHazardType::SpaceStorm,
+                Vec3 { x: 5.0, y: 1.0, z: 0.0 },
+                1.0,
+                1,
+                Duration(10_000),
+                true,
+            ),
+        },
+    )?;
+    let encounter = EncounterId::new(6_402);
+    run_command(
+        &mut session,
+        "registrar encuentro compartido por las rutas",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                encounter,
+                SpatialEncounterKind::Resource {
+                    item: ItemId(1),
+                    amount: 1,
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro compartido por las rutas",
+        GameplayCommand::ActivateSpatialEncounter { encounter },
+    )?;
+    let saved_before_queries = session.save_state();
+    let comparison = session
+        .world()
+        .companion_navigation_comparison(erick.entity)
+        .map_err(|error| format!("comparar rutas de ERICK: {error:?}"))?
+        .ok_or_else(|| "ERICK no produjo comparaciÃ³n de rutas".to_owned())?;
+    let recommendation = comparison
+        .recommendation
+        .as_ref()
+        .ok_or_else(|| "no se recomendÃ³ una alternativa viable al riesgo conocido".to_owned())?;
+    if comparison.current.route != vec![origin, destination]
+        || comparison.current.distance != 10.0
+        || comparison.current.eta != Duration(4)
+        || comparison.current.fuel_required != 4
+        || recommendation.current != vec![origin, destination]
+        || recommendation.alternative != vec![origin, safe_a, destination]
+        || recommendation.reason
+            != gameplay::NavigationRecommendationReason::AvoidsKnownRisk(
+                gameplay::NavigationRouteRiskSource::Hazard(hazard),
+            )
+        || recommendation.avoided_risk
+            != Some(gameplay::NavigationRouteRiskSource::Hazard(hazard))
+        || recommendation.alternative_eta != Duration(8)
+        || recommendation.alternative_fuel != 4
+        || comparison.alternatives.len() != 2
+    {
+        return Err(format!("comparaciÃ³n de rutas inesperada: {comparison:?}"));
+    }
+    let repeated = session
+        .world()
+        .companion_navigation_comparison(erick.entity)
+        .map_err(|error| format!("repetir comparaciÃ³n de rutas: {error:?}"))?;
+    if repeated != Some(comparison.clone())
+        || session.save_state().serialize() != saved_before_queries.serialize()
+    {
+        return Err("comparar rutas produjo resultados no deterministas o mutaciones".to_owned());
+    }
+    run_command(
+        &mut session,
+        "resolver encuentro compartido por las rutas",
+        GameplayCommand::ResolveSpatialEncounter { player, encounter },
+    )?;
+    let after_resolve = session
+        .world()
+        .companion_navigation_comparison(erick.entity)
+        .map_err(|error| format!("actualizar comparaciÃ³n tras resolver riesgo: {error:?}"))?
+        .ok_or_else(|| "la comparaciÃ³n desapareciÃ³ tras resolver un riesgo".to_owned())?;
+    if after_resolve
+        .current
+        .risks
+        .iter()
+        .filter(|risk| risk.source == gameplay::NavigationRouteRiskSource::Encounter(encounter))
+        .any(|risk| risk.classification != gameplay::NavigationRouteRiskClassification::Resolved)
+        || after_resolve.recommendation != comparison.recommendation
+    {
+        return Err("la resoluciÃ³n no actualizÃ³ correctamente la comparaciÃ³n".to_owned());
+    }
+    run_command(
+        &mut session,
+        "deshabilitar ERICK para validar bloqueo de asistencia",
+        GameplayCommand::SetCompanionBehavior {
+            companion: erick.entity,
+            behavior: gameplay::CompanionBehavior::Unavailable,
+        },
+    )?;
+    if session
+        .world()
+        .companion_navigation_comparison(erick.entity)
+        .map_err(|error| format!("consultar ERICK no disponible: {error:?}"))?
+        .is_some()
+    {
+        return Err("ERICK no disponible mantuvo una recomendaciÃ³n de ruta".to_owned());
+    }
+    run_command(
+        &mut session,
+        "reactivar ERICK para continuar comparaciÃ³n",
+        GameplayCommand::SetCompanionBehavior {
+            companion: erick.entity,
+            behavior: gameplay::CompanionBehavior::Accompany,
+        },
+    )?;
+    let ship = session.ids.first_ship;
+    let fuel_to_remove = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "faltan recursos para invalidar alternativas".to_owned())?
+        .current();
+    run_command(
+        &mut session,
+        "agotar combustible para invalidar alternativas",
+        GameplayCommand::RemoveShipFuel {
+            ship,
+            amount: fuel_to_remove,
+        },
+    )?;
+    let no_viable_alternative = session
+        .world()
+        .companion_navigation_comparison(erick.entity)
+        .map_err(|error| format!("evaluar alternativa inviable: {error:?}"))?
+        .ok_or_else(|| "la comparaciÃ³n no estuvo disponible con ruta planificada".to_owned())?;
+    if no_viable_alternative.recommendation.is_some()
+        || no_viable_alternative.alternatives.iter().any(|route| route.viable)
+    {
+        return Err("se recomendÃ³ una ruta sin combustible suficiente".to_owned());
+    }
+    let restored_state = saved_before_queries;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(restored_state)
+        .map_err(|error| format!("restaurar comparaciÃ³n de rutas: {error}"))?;
+    if restored
+        .world()
+        .companion_navigation_comparison(erick.entity)
+        .map_err(|error| format!("comparar rutas restauradas: {error:?}"))?
+        != Some(comparison.clone())
+    {
+        return Err("la comparaciÃ³n restaurada no fue equivalente".to_owned());
+    }
+    run_command(
+        &mut restored,
+        "iniciar autopilot para comprobar estado en trÃ¡nsito",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let in_transit = restored
+        .world()
+        .companion_navigation_comparison(erick.entity)
+        .map_err(|error| format!("comparar ruta en trÃ¡nsito: {error:?}"))?
+        .ok_or_else(|| "no se pudo comparar la ruta en trÃ¡nsito".to_owned())?;
+    if in_transit.recommendation.is_some() {
+        return Err("ERICK intentÃ³ cambiar una ruta ya iniciada".to_owned());
+    }
+    run_command(
+        &mut restored,
+        "desactivar jugador para bloquear asistencia de rutas",
+        GameplayCommand::SetPlayerActive {
+            player,
+            active: false,
+        },
+    )?;
+    if restored
+        .world()
+        .companion_navigation_comparison(erick.entity)
+        .map_err(|error| format!("consultar ERICK con jugador inactivo: {error:?}"))?
+        .is_some()
+    {
+        return Err("ERICK mantuvo asistencia accionable con jugador inactivo".to_owned());
+    }
+    println!(
+        "COMPARACION DE RUTAS DE ERICK COMPLETADA: actual={:?}, alternativa={:?}, riesgo_evitado={:?}, empate_determinista=true",
+        recommendation.current, recommendation.alternative, recommendation.avoided_risk
+    );
+    Ok(())
+}
+
 fn run_scenario() -> Result<(), String> {
     run_atomicity_regressions()?;
     let mut session = ProjectEchoSession::new();
@@ -6282,5 +6915,7 @@ fn run_scenario() -> Result<(), String> {
     run_erick_interaction_scenario()?;
     run_erick_tactical_scenario()?;
     run_erick_navigation_scenario()?;
+    run_erick_route_risk_scenario()?;
+    run_erick_route_comparison_scenario()?;
     Ok(())
 }

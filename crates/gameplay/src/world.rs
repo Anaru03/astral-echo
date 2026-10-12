@@ -4,8 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     companion::{
         Companion, CompanionActionMode, CompanionBehavior, CompanionError, CompanionRecommendation,
-        NavigationAdvice, NavigationAssessment, NavigationRisk, TacticalAction, TacticalPriority,
-        TacticalRecommendation,
+        NavigationAdvice, NavigationAlternativeRecommendation, NavigationAssessment,
+        NavigationRecommendationReason, NavigationRisk, NavigationRouteComparison,
+        NavigationRouteOption, NavigationRouteRisk, NavigationRouteRiskClassification,
+        NavigationRouteRiskSource, TacticalAction, TacticalPriority, TacticalRecommendation,
     },
     collectible::{Collectible, CollectibleError, ItemDefinition, ItemDefinitionError},
     combat::{Combatant, EnemyConfiguration},
@@ -882,6 +884,59 @@ impl GameplayWorld {
                 );
             }
         }
+        let mut route_risks = Vec::new();
+        if !route.is_empty() {
+            for hazard in self.environmental_hazards() {
+                route_risks.push(classify_hazard_on_route(self, &route, hazard));
+            }
+            for encounter in self.spatial_encounters() {
+                route_risks.push(classify_encounter_on_route(self, &route, encounter));
+            }
+        }
+        route_risks.sort_by_key(navigation_route_risk_sort_key);
+        for route_risk in &route_risks {
+            let is_near = matches!(
+                route_risk.classification,
+                NavigationRouteRiskClassification::NearSegment { .. }
+            );
+            if !is_near {
+                continue;
+            }
+            match route_risk.source {
+                NavigationRouteRiskSource::Hazard(id)
+                    if !risks.iter().any(|risk| *risk == NavigationRisk::KnownHazard(id)) =>
+                {
+                    risks.push(NavigationRisk::KnownHazard(id));
+                }
+                NavigationRouteRiskSource::Encounter(id)
+                    if !risks.iter().any(|risk| *risk == NavigationRisk::KnownEncounter(id)) =>
+                {
+                    risks.push(NavigationRisk::KnownEncounter(id));
+                }
+                _ => {}
+            }
+        }
+        risks.sort_by_key(|risk| match risk {
+            NavigationRisk::InsufficientFuel { .. } => (0_u8, 0_u64),
+            NavigationRisk::KnownHazard(id) => (1_u8, u64::from(id.value())),
+            NavigationRisk::KnownEncounter(id) => (2_u8, u64::from(id.value())),
+        });
+        let recommendation_segment = risks.first().and_then(|risk| {
+            let source = match risk {
+                NavigationRisk::KnownHazard(id) => NavigationRouteRiskSource::Hazard(*id),
+                NavigationRisk::KnownEncounter(id) => NavigationRouteRiskSource::Encounter(*id),
+                NavigationRisk::InsufficientFuel { .. } => return None,
+            };
+            route_risks.iter().find_map(|value| {
+                if value.source != source {
+                    return None;
+                }
+                match value.classification {
+                    NavigationRouteRiskClassification::NearSegment { segment, .. } => Some(segment),
+                    _ => None,
+                }
+            })
+        });
         let recommendation = match autopilot {
             crate::navigation::AutopilotState::Planned { destination, .. } => {
                 if fuel_required.zip(fuel_available).is_some_and(|(required, available)| required > available) {
@@ -925,6 +980,88 @@ impl GameplayWorld {
             fuel_available,
             fuel_required,
             risks,
+            route_risks,
+            recommendation_segment,
+            recommendation,
+        }))
+    }
+    pub fn companion_navigation_comparison(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<NavigationRouteComparison>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active || !self.entities.contains(player.entity_id) {
+            return Ok(None);
+        }
+        let (origin, destination, current_route, in_transit) = match self.autopilot_state() {
+            crate::navigation::AutopilotState::Planned {
+                origin,
+                destination,
+                route,
+                ..
+            } => (*origin, *destination, route.clone(), false),
+            crate::navigation::AutopilotState::InTransit {
+                origin,
+                destination,
+                route,
+                ..
+            } => (*origin, *destination, route.clone(), true),
+            crate::navigation::AutopilotState::Inactive
+            | crate::navigation::AutopilotState::Completed { .. }
+            | crate::navigation::AutopilotState::Interrupted { .. }
+            | crate::navigation::AutopilotState::Failed { .. } => return Ok(None),
+        };
+        let fuel_available = self
+            .navigation()
+            .ship_id()
+            .and_then(|ship| self.ship_fuel(ship))
+            .map(|fuel| fuel.current());
+        let ship_operational = self
+            .navigation()
+            .ship_id()
+            .and_then(|ship| self.ship_is_operational(ship))
+            .unwrap_or(false);
+        let current = summarize_route(self, &current_route, fuel_available, ship_operational)
+            .ok_or(CompanionError::GuidanceUnavailable)?;
+        let mut paths = Vec::new();
+        let mut path = vec![origin];
+        let mut visited = BTreeSet::from([origin]);
+        enumerate_navigation_paths(
+            self,
+            destination,
+            &mut path,
+            &mut visited,
+            self.destinations().count(),
+            &mut paths,
+        );
+        let mut alternatives = paths
+            .into_iter()
+            .filter(|route| route.as_slice() != current_route.as_slice())
+            .filter_map(|route| summarize_route(self, &route, fuel_available, ship_operational))
+            .collect::<Vec<_>>();
+        alternatives.sort_by(compare_route_options);
+        let recommendation = if in_transit || current.active_risks == 0 || !current.viable {
+            None
+        } else {
+            alternatives
+                .iter()
+                .find(|candidate| candidate.viable && route_is_better(candidate, &current))
+                .and_then(|alternative| build_alternative_recommendation(&current, alternative))
+        };
+        Ok(Some(NavigationRouteComparison {
+            current,
+            alternatives,
             recommendation,
         }))
     }
@@ -3317,6 +3454,318 @@ fn route_fuel_requirement(
 fn within_radius(a: engine::Vec3, b: engine::Vec3, radius: f32) -> bool {
     crate::encounter::distance_squared(a, b)
         .is_some_and(|distance| distance <= f64::from(radius) * f64::from(radius))
+}
+
+fn classify_hazard_on_route(
+    world: &GameplayWorld,
+    route: &[DestinationId],
+    hazard: &EnvironmentalHazard,
+) -> NavigationRouteRisk {
+    let source = NavigationRouteRiskSource::Hazard(hazard.id);
+    if !hazard.active {
+        return NavigationRouteRisk {
+            source,
+            classification: NavigationRouteRiskClassification::Resolved,
+        };
+    }
+    classify_position_on_route(world, route, hazard.position, hazard.radius, source)
+}
+
+fn classify_encounter_on_route(
+    world: &GameplayWorld,
+    route: &[DestinationId],
+    encounter: &SpatialEncounter,
+) -> NavigationRouteRisk {
+    let source = NavigationRouteRiskSource::Encounter(encounter.id);
+    if encounter.state == crate::encounter::SpatialEncounterState::Resolved {
+        return NavigationRouteRisk {
+            source,
+            classification: NavigationRouteRiskClassification::Resolved,
+        };
+    }
+    classify_position_on_route(
+        world,
+        route,
+        encounter.position,
+        encounter.activation_radius,
+        source,
+    )
+}
+
+fn classify_position_on_route(
+    world: &GameplayWorld,
+    route: &[DestinationId],
+    position: engine::Vec3,
+    margin: f32,
+    source: NavigationRouteRiskSource,
+) -> NavigationRouteRisk {
+    if route.len() < 2 || !finite_vec3(position) || !margin.is_finite() || margin < 0.0 {
+        return NavigationRouteRisk {
+            source,
+            classification: NavigationRouteRiskClassification::NotEvaluable,
+        };
+    }
+    let mut nearest: Option<(usize, f64)> = None;
+    for segment in 0..route.len() - 1 {
+        let Some(from) = world.destination(route[segment]).map(|value| value.position) else {
+            return NavigationRouteRisk {
+                source,
+                classification: NavigationRouteRiskClassification::NotEvaluable,
+            };
+        };
+        let Some(to) = world.destination(route[segment + 1]).map(|value| value.position) else {
+            return NavigationRouteRisk {
+                source,
+                classification: NavigationRouteRiskClassification::NotEvaluable,
+            };
+        };
+        let Some(distance_squared) = point_segment_distance_squared(position, from, to) else {
+            return NavigationRouteRisk {
+                source,
+                classification: NavigationRouteRiskClassification::NotEvaluable,
+            };
+        };
+        if nearest.is_none_or(|(_, current)| distance_squared < current) {
+            nearest = Some((segment, distance_squared));
+        }
+    }
+    let Some((segment, distance_squared)) = nearest else {
+        return NavigationRouteRisk {
+            source,
+            classification: NavigationRouteRiskClassification::NotEvaluable,
+        };
+    };
+    let distance = distance_squared.sqrt();
+    if !distance.is_finite() {
+        return NavigationRouteRisk {
+            source,
+            classification: NavigationRouteRiskClassification::NotEvaluable,
+        };
+    }
+    let margin = f64::from(margin);
+    let classification = if distance_squared <= margin * margin {
+        NavigationRouteRiskClassification::NearSegment { segment, distance }
+    } else {
+        NavigationRouteRiskClassification::OutsideMargin { segment, distance }
+    };
+    NavigationRouteRisk { source, classification }
+}
+
+fn point_segment_distance_squared(
+    point: engine::Vec3,
+    from: engine::Vec3,
+    to: engine::Vec3,
+) -> Option<f64> {
+    if !finite_vec3(point) || !finite_vec3(from) || !finite_vec3(to) {
+        return None;
+    }
+    let px = f64::from(point.x) - f64::from(from.x);
+    let py = f64::from(point.y) - f64::from(from.y);
+    let pz = f64::from(point.z) - f64::from(from.z);
+    let dx = f64::from(to.x) - f64::from(from.x);
+    let dy = f64::from(to.y) - f64::from(from.y);
+    let dz = f64::from(to.z) - f64::from(from.z);
+    let length_squared = dx * dx + dy * dy + dz * dz;
+    if !length_squared.is_finite() || length_squared <= f64::EPSILON {
+        return None;
+    }
+    let projection = (px * dx + py * dy + pz * dz) / length_squared;
+    if !projection.is_finite() {
+        return None;
+    }
+    let clamped = projection.clamp(0.0, 1.0);
+    let offset_x = px - clamped * dx;
+    let offset_y = py - clamped * dy;
+    let offset_z = pz - clamped * dz;
+    let distance_squared = offset_x * offset_x + offset_y * offset_y + offset_z * offset_z;
+    distance_squared.is_finite().then_some(distance_squared)
+}
+
+fn navigation_route_risk_sort_key(
+    risk: &NavigationRouteRisk,
+) -> (u8, u64, u8, usize) {
+    let (source_kind, source_id) = match risk.source {
+        NavigationRouteRiskSource::Hazard(id) => (0_u8, u64::from(id.value())),
+        NavigationRouteRiskSource::Encounter(id) => (1_u8, u64::from(id.value())),
+    };
+    let classification_kind = match risk.classification {
+        NavigationRouteRiskClassification::NearSegment { segment, .. } => (0_u8, segment),
+        NavigationRouteRiskClassification::OutsideMargin { segment, .. } => (1_u8, segment),
+        NavigationRouteRiskClassification::NotEvaluable => (2_u8, usize::MAX),
+        NavigationRouteRiskClassification::Resolved => (3_u8, usize::MAX),
+    };
+    (source_kind, source_id, classification_kind.0, classification_kind.1)
+}
+
+fn summarize_route(
+    world: &GameplayWorld,
+    route: &[DestinationId],
+    fuel_available: Option<u32>,
+    ship_operational: bool,
+) -> Option<NavigationRouteOption> {
+    if route.len() < 2 {
+        return None;
+    }
+    let mut distance = 0.0_f64;
+    let mut duration = 0_u64;
+    let mut fuel_required = 0_u32;
+    for pair in route.windows(2) {
+        let leg = world.navigation_route(pair[0], pair[1])?;
+        if leg.state != crate::navigation::NavigationRouteState::Available
+            || !leg.distance.is_finite()
+            || leg.distance <= 0.0
+        {
+            return None;
+        }
+        distance += f64::from(leg.distance);
+        if !distance.is_finite() {
+            return None;
+        }
+        duration = duration.checked_add(leg.duration.0)?;
+        fuel_required = fuel_required.checked_add(leg.fuel_cost)?;
+    }
+    let mut risks = Vec::new();
+    for hazard in world.environmental_hazards() {
+        risks.push(classify_hazard_on_route(world, route, hazard));
+    }
+    for encounter in world.spatial_encounters() {
+        risks.push(classify_encounter_on_route(world, route, encounter));
+    }
+    risks.sort_by_key(navigation_route_risk_sort_key);
+    let mut critical_risks = 0;
+    let mut active_risks = 0;
+    let mut unevaluable_risks = 0;
+    for risk in &risks {
+        match risk.classification {
+            NavigationRouteRiskClassification::NearSegment { .. } => {
+                active_risks += 1;
+                if route_risk_is_critical(world, risk.source) {
+                    critical_risks += 1;
+                }
+            }
+            NavigationRouteRiskClassification::NotEvaluable => unevaluable_risks += 1,
+            NavigationRouteRiskClassification::OutsideMargin { .. }
+            | NavigationRouteRiskClassification::Resolved => {}
+        }
+    }
+    Some(NavigationRouteOption {
+        route: route.to_vec(),
+        distance,
+        eta: Duration(duration),
+        fuel_required,
+        risks,
+        critical_risks,
+        active_risks,
+        unevaluable_risks,
+        viable: ship_operational && fuel_available.is_some_and(|available| available >= fuel_required),
+    })
+}
+
+fn enumerate_navigation_paths(
+    world: &GameplayWorld,
+    destination: DestinationId,
+    path: &mut Vec<DestinationId>,
+    visited: &mut BTreeSet<DestinationId>,
+    maximum_depth: usize,
+    output: &mut Vec<Vec<DestinationId>>,
+) {
+    let Some(&current) = path.last() else {
+        return;
+    };
+    if current == destination {
+        output.push(path.clone());
+        return;
+    }
+    if path.len() >= maximum_depth {
+        return;
+    }
+    let next_destinations = world
+        .navigation_routes()
+        .filter(|route| route.from == current && route.state == crate::navigation::NavigationRouteState::Available)
+        .map(|route| route.to)
+        .collect::<Vec<_>>();
+    for next in next_destinations {
+        if !visited.insert(next) {
+            continue;
+        }
+        path.push(next);
+        enumerate_navigation_paths(world, destination, path, visited, maximum_depth, output);
+        path.pop();
+        visited.remove(&next);
+    }
+}
+
+fn route_risk_is_critical(world: &GameplayWorld, source: NavigationRouteRiskSource) -> bool {
+    match source {
+        NavigationRouteRiskSource::Hazard(_) => true,
+        NavigationRouteRiskSource::Encounter(id) => world
+            .spatial_encounter(id)
+            .is_some_and(|encounter| matches!(encounter.kind, SpatialEncounterKind::Hostile { .. })),
+    }
+}
+
+fn compare_route_options(left: &NavigationRouteOption, right: &NavigationRouteOption) -> std::cmp::Ordering {
+    left.critical_risks
+        .cmp(&right.critical_risks)
+        .then_with(|| left.active_risks.cmp(&right.active_risks))
+        .then_with(|| left.unevaluable_risks.cmp(&right.unevaluable_risks))
+        .then_with(|| left.eta.0.cmp(&right.eta.0))
+        .then_with(|| left.fuel_required.cmp(&right.fuel_required))
+        .then_with(|| left.distance.total_cmp(&right.distance))
+        .then_with(|| left.route.cmp(&right.route))
+}
+
+fn route_is_better(candidate: &NavigationRouteOption, current: &NavigationRouteOption) -> bool {
+    compare_route_options(candidate, current) == std::cmp::Ordering::Less
+}
+
+fn build_alternative_recommendation(
+    current: &NavigationRouteOption,
+    alternative: &NavigationRouteOption,
+) -> Option<NavigationAlternativeRecommendation> {
+    let mut current_sources = current.risks.iter().filter_map(|risk| {
+        if matches!(risk.classification, NavigationRouteRiskClassification::NearSegment { .. }) {
+            Some(risk.source)
+        } else {
+            None
+        }
+    });
+    let alternative_sources = alternative.risks.iter().filter_map(|risk| {
+        if matches!(risk.classification, NavigationRouteRiskClassification::NearSegment { .. }) {
+            Some(risk.source)
+        } else {
+            None
+        }
+    });
+    let alternative_sources = alternative_sources.collect::<BTreeSet<_>>();
+    let avoided_risk = current_sources
+        .find(|source| !alternative_sources.contains(source));
+    let reason = if let Some(source) = avoided_risk {
+        NavigationRecommendationReason::AvoidsKnownRisk(source)
+    } else if alternative.critical_risks < current.critical_risks
+        || alternative.active_risks < current.active_risks
+        || alternative.unevaluable_risks < current.unevaluable_risks
+    {
+        NavigationRecommendationReason::FewerKnownRisks
+    } else if alternative.eta < current.eta {
+        NavigationRecommendationReason::LowerEta
+    } else if alternative.fuel_required < current.fuel_required {
+        NavigationRecommendationReason::LowerFuel
+    } else {
+        NavigationRecommendationReason::ShorterDistance
+    };
+    Some(NavigationAlternativeRecommendation {
+        current: current.route.clone(),
+        alternative: alternative.route.clone(),
+        reason,
+        avoided_risk,
+        current_eta: current.eta,
+        alternative_eta: alternative.eta,
+        current_fuel: current.fuel_required,
+        alternative_fuel: alternative.fuel_required,
+        current_distance: current.distance,
+        alternative_distance: alternative.distance,
+    })
 }
 
 fn tactical_priority_rank(priority: crate::companion::TacticalPriority) -> u8 {
