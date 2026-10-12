@@ -4846,6 +4846,720 @@ fn required_completed(session: &ProjectEchoSession) -> Result<MissionProgress, S
     Ok(progress)
 }
 
+fn run_erick_cooperative_support_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let needy = session.ids.first_player;
+    let provider_a = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear proveedor A: {error:?}"))?;
+    let provider_b = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear proveedor B: {error:?}"))?;
+    for provider in [provider_a, provider_b] {
+        session
+            .world_mut()
+            .initialize_inventory(provider, 20)
+            .map_err(|error| format!("inicializar inventario de proveedor: {error:?}"))?;
+    }
+    run_command(
+        &mut session,
+        "crear ERICK para apoyo cooperativo",
+        GameplayCommand::CreateCompanion {
+            followed_player: needy,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK de apoyo no quedo registrado".to_owned())?;
+    run_command(
+        &mut session,
+        "equipar arma con bloqueo de municion",
+        GameplayCommand::EquipPlayerWeapon {
+            player: needy,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                20,
+                20,
+                Duration(1),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 2,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "entregar municion al primer proveedor",
+        GameplayCommand::AddInventoryItem {
+            player: provider_a,
+            item: ItemId(2),
+            amount: 5,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "entregar municion al segundo proveedor",
+        GameplayCommand::AddInventoryItem {
+            player: provider_b,
+            item: ItemId(2),
+            amount: 5,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "crear amenaza para bloqueo de preparacion",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let enemy = session
+        .world()
+        .enemies()
+        .next()
+        .map(|enemy| enemy.entity)
+        .ok_or_else(|| "amenaza de apoyo no quedo registrada".to_owned())?;
+    let before_queries = session.world().save_state().serialize();
+    let support = session
+        .world()
+        .companion_cooperative_support_assessment(erick.entity)
+        .map_err(|error| format!("evaluar apoyo cooperativo: {error:?}"))?
+        .ok_or_else(|| "la evaluacion de apoyo no estuvo disponible".to_owned())?;
+    let recommendation = support
+        .recommendations
+        .first()
+        .ok_or_else(|| "no se detecto el bloqueo de municion".to_owned())?;
+    if support.status != gameplay::SupportRecommendationStatus::Actionable
+        || recommendation.needy_player != needy
+        || recommendation.provider != Some(provider_a)
+        || recommendation.item != Some(ItemId(2))
+        || recommendation.amount != 2
+        || recommendation.status != gameplay::SupportRecommendationStatus::Actionable
+        || recommendation.blocked_action != Some(gameplay::TacticalAction::DefeatEnemy(enemy))
+    {
+        return Err(format!("recomendacion de apoyo inesperada: {support:?}"));
+    }
+    let repeated = session
+        .world()
+        .companion_cooperative_support_assessment(erick.entity)
+        .map_err(|error| format!("repetir evaluacion de apoyo: {error:?}"))?;
+    if repeated != Some(support.clone()) || session.world().save_state().serialize() != before_queries {
+        return Err("consultar apoyo produjo mutaciones o un orden no determinista".to_owned());
+    }
+    let encoded = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&encoded)
+        .map_err(|error| format!("serializar evaluacion de apoyo: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar evaluacion de apoyo: {error}"))?;
+    if restored
+        .world()
+        .companion_cooperative_support_assessment(erick.entity)
+        .map_err(|error| format!("evaluar apoyo restaurado: {error:?}"))?
+        != Some(support.clone())
+    {
+        return Err("la evaluacion restaurada no fue equivalente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "ejecutar transferencia recomendada",
+        GameplayCommand::TransferInventoryItem {
+            from: provider_a,
+            to: needy,
+            item: ItemId(2),
+            amount: recommendation.amount,
+        },
+    )?;
+    if session.world().inventory(provider_a).map_or(0, |inventory| inventory.quantity(ItemId(2))) != 3
+        || session.world().inventory(needy).map_or(0, |inventory| inventory.quantity(ItemId(2))) != 2
+    {
+        return Err("la transferencia recomendada no conservo las cantidades".to_owned());
+    }
+    let resolved = session
+        .world()
+        .companion_cooperative_support_assessment(erick.entity)
+        .map_err(|error| format!("reevaluar apoyo resuelto: {error:?}"))?
+        .ok_or_else(|| "la reevaluacion de apoyo desaparecio".to_owned())?;
+    if !resolved.recommendations.is_empty()
+        || resolved.status != gameplay::SupportRecommendationStatus::Informational
+    {
+        return Err(format!("el bloqueo de municion no se resolvio: {resolved:?}"));
+    }
+    run_command(
+        &mut session,
+        "ejecutar ataque tras recibir apoyo",
+        GameplayCommand::AttackEnemy { player: needy, enemy },
+    )?;
+
+    let mut insufficient = ProjectEchoSession::new();
+    let insufficient_needy = insufficient.ids.first_player;
+    let insufficient_provider = insufficient
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear proveedor insuficiente: {error:?}"))?;
+    insufficient
+        .world_mut()
+        .initialize_inventory(insufficient_provider, 20)
+        .map_err(|error| format!("inicializar proveedor insuficiente: {error:?}"))?;
+    run_command(
+        &mut insufficient,
+        "crear ERICK sin cantidad suficiente",
+        GameplayCommand::CreateCompanion {
+            followed_player: insufficient_needy,
+            position: Vec3::ZERO,
+        },
+    )?;
+    run_command(
+        &mut insufficient,
+        "equipar arma sin cantidad suficiente",
+        GameplayCommand::EquipPlayerWeapon {
+            player: insufficient_needy,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                20,
+                20,
+                Duration(1),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 2,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut insufficient,
+        "agregar cantidad insuficiente",
+        GameplayCommand::AddInventoryItem {
+            player: insufficient_provider,
+            item: ItemId(2),
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut insufficient,
+        "crear amenaza con proveedor insuficiente",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let insufficient_erick = insufficient
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK insuficiente no quedo registrado".to_owned())?;
+    let insufficient_assessment = insufficient
+        .world()
+        .companion_cooperative_support_assessment(insufficient_erick.entity)
+        .map_err(|error| format!("evaluar proveedor insuficiente: {error:?}"))?
+        .ok_or_else(|| "proveedor insuficiente no fue evaluable".to_owned())?;
+    if insufficient_assessment.status != gameplay::SupportRecommendationStatus::Blocked
+        || insufficient_assessment.recommendations.first().is_none_or(|recommendation| {
+            recommendation.reason != gameplay::SupportRecommendationReason::ProviderInsufficientQuantity
+        })
+    {
+        return Err(format!("no se diagnostico cantidad insuficiente: {insufficient_assessment:?}"));
+    }
+
+    let mut capacity = ProjectEchoSession::new();
+    let capacity_provider = capacity.ids.first_player;
+    let capacity_needy = capacity
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear receptor sin capacidad: {error:?}"))?;
+    capacity
+        .world_mut()
+        .initialize_inventory(capacity_needy, 1)
+        .map_err(|error| format!("inicializar receptor sin capacidad: {error:?}"))?;
+    run_command(
+        &mut capacity,
+        "crear ERICK para receptor sin capacidad",
+        GameplayCommand::CreateCompanion {
+            followed_player: capacity_needy,
+            position: Vec3::ZERO,
+        },
+    )?;
+    run_command(
+        &mut capacity,
+        "equipar arma del receptor sin capacidad",
+        GameplayCommand::EquipPlayerWeapon {
+            player: capacity_needy,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                20,
+                20,
+                Duration(1),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 2,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut capacity,
+        "agregar municion al proveedor de capacidad",
+        GameplayCommand::AddInventoryItem {
+            player: capacity_provider,
+            item: ItemId(2),
+            amount: 3,
+        },
+    )?;
+    run_command(
+        &mut capacity,
+        "crear amenaza para receptor sin capacidad",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let capacity_erick = capacity
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK de capacidad no quedo registrado".to_owned())?;
+    let capacity_assessment = capacity
+        .world()
+        .companion_cooperative_support_assessment(capacity_erick.entity)
+        .map_err(|error| format!("evaluar receptor sin capacidad: {error:?}"))?
+        .ok_or_else(|| "receptor sin capacidad no fue evaluable".to_owned())?;
+    if capacity_assessment.status != gameplay::SupportRecommendationStatus::Blocked
+        || capacity_assessment.recommendations.first().is_none_or(|recommendation| {
+            recommendation.reason != gameplay::SupportRecommendationReason::ReceiverCapacityExceeded
+        })
+    {
+        return Err(format!("no se diagnostico capacidad insuficiente: {capacity_assessment:?}"));
+    }
+
+    let mut defeated_provider_session = ProjectEchoSession::new();
+    let defeated_needy = defeated_provider_session.ids.first_player;
+    let defeated_provider = defeated_provider_session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear proveedor derrotado: {error:?}"))?;
+    defeated_provider_session
+        .world_mut()
+        .initialize_inventory(defeated_provider, 20)
+        .map_err(|error| format!("inicializar proveedor derrotado: {error:?}"))?;
+    run_command(
+        &mut defeated_provider_session,
+        "agregar municion al proveedor derrotado",
+        GameplayCommand::AddInventoryItem {
+            player: defeated_provider,
+            item: ItemId(2),
+            amount: 3,
+        },
+    )?;
+    run_command(
+        &mut defeated_provider_session,
+        "crear ERICK para proveedor derrotado",
+        GameplayCommand::CreateCompanion {
+            followed_player: defeated_needy,
+            position: Vec3::ZERO,
+        },
+    )?;
+    run_command(
+        &mut defeated_provider_session,
+        "equipar arma del jugador con proveedor derrotado",
+        GameplayCommand::EquipPlayerWeapon {
+            player: defeated_needy,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                20,
+                20,
+                Duration(1),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 2,
+                },
+            ),
+        },
+    )?;
+    let mut defeat_configuration = EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO);
+    defeat_configuration.weapon = WeaponConfiguration::new(AttackType::Kinetic, 100, 20, Duration(1));
+    run_command(
+        &mut defeated_provider_session,
+        "crear atacante del proveedor derrotado",
+        GameplayCommand::CreateEnemy {
+            configuration: defeat_configuration,
+        },
+    )?;
+    let defeat_enemy = defeated_provider_session
+        .world()
+        .enemies()
+        .next()
+        .map(|enemy| enemy.entity)
+        .ok_or_else(|| "no se creo el atacante del proveedor derrotado".to_owned())?;
+    run_command(
+        &mut defeated_provider_session,
+        "derrotar proveedor mediante combate real",
+        GameplayCommand::EnemyAttackPlayer {
+            enemy: defeat_enemy,
+            player: defeated_provider,
+        },
+    )?;
+    let defeated_erick = defeated_provider_session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK del proveedor derrotado no quedo registrado".to_owned())?;
+    let defeated_assessment = defeated_provider_session
+        .world()
+        .companion_cooperative_support_assessment(defeated_erick.entity)
+        .map_err(|error| format!("evaluar proveedor derrotado: {error:?}"))?
+        .ok_or_else(|| "proveedor derrotado no fue evaluable".to_owned())?;
+    if defeated_assessment.status != gameplay::SupportRecommendationStatus::Blocked
+        || defeated_assessment
+            .recommendations
+            .first()
+            .is_none_or(|recommendation| {
+                recommendation.reason != gameplay::SupportRecommendationReason::NoProvider
+                    || recommendation.provider.is_some()
+            })
+        || defeated_assessment.active_players.contains(&defeated_provider)
+        || defeated_provider_session
+            .world()
+            .inventory(defeated_provider)
+            .map_or(0, |inventory| inventory.quantity(ItemId(2)))
+            != 3
+    {
+        return Err(format!("el proveedor derrotado fue considerado viable: {defeated_assessment:?}"));
+    }
+    let defeated_before = defeated_provider_session.world().save_state().serialize();
+    let defeated_repeat = defeated_provider_session
+        .world()
+        .companion_cooperative_support_assessment(defeated_erick.entity)
+        .map_err(|error| format!("repetir evaluacion del proveedor derrotado: {error:?}"))?;
+    if defeated_repeat != Some(defeated_assessment)
+        || defeated_provider_session.world().save_state().serialize() != defeated_before
+    {
+        return Err("la consulta del proveedor derrotado no fue inmutable".to_owned());
+    }
+
+    let inactive_result = session.update([GameplayCommand::SetPlayerActive {
+        player: provider_a,
+        active: false,
+    }]);
+    if inactive_result.first().is_none_or(|result| {
+        !matches!(result.status, CommandStatus::Success { .. })
+    }) {
+        return Err("no se pudo desactivar el proveedor para la regresion".to_owned());
+    }
+    run_command(
+        &mut session,
+        "crear amenaza para excluir proveedor inactivo",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let inactive_assessment = session
+        .world()
+        .companion_cooperative_support_assessment(erick.entity)
+        .map_err(|error| format!("evaluar proveedor inactivo: {error:?}"))?
+        .ok_or_else(|| "la evaluacion con proveedor inactivo no estuvo disponible".to_owned())?;
+    if inactive_assessment.status != gameplay::SupportRecommendationStatus::Actionable
+        || !inactive_assessment.active_players.contains(&needy)
+        || inactive_assessment.active_players.contains(&provider_a)
+        || inactive_assessment
+            .recommendations
+            .first()
+            .and_then(|recommendation| recommendation.provider)
+            != Some(provider_b)
+    {
+        return Err(format!("el proveedor inactivo fue considerado valido: {inactive_assessment:?}"));
+    }
+
+    let invalid_before = session.world().save_state().serialize();
+    let invalid_result = session.update([GameplayCommand::TransferInventoryItem {
+        from: provider_b,
+        to: needy,
+        item: ItemId(99_999),
+        amount: 1,
+    }]);
+    if invalid_result.first().is_none_or(|result| {
+        !matches!(result.status, CommandStatus::Rejected { .. } | CommandStatus::Invalid { .. })
+    }) || session.world().save_state().serialize() != invalid_before
+    {
+        return Err("la transferencia de objeto indefinido no fue rechazada atomicamente".to_owned());
+    }
+    println!(
+        "APOYO COOPERATIVO DE ERICK COMPLETADO: necesitaba={}, proveedor={}, municion=2, reevaluado=true, insuficiente=true, capacidad=true, restaurada=true",
+        needy, provider_a
+    );
+    Ok(())
+}
+
+fn run_erick_cooperative_readiness_scenario() -> Result<(), String> {
+    let mut prepared = ProjectEchoSession::new();
+    let prepared_player = prepared.ids.first_player;
+    run_command(
+        &mut prepared,
+        "crear ERICK para equipo preparado",
+        GameplayCommand::CreateCompanion {
+            followed_player: prepared_player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let prepared_erick = prepared
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK preparado no quedo registrado".to_owned())?;
+    run_command(
+        &mut prepared,
+        "equipar arma lista para encuentro",
+        GameplayCommand::EquipPlayerWeapon {
+            player: prepared_player,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1)),
+        },
+    )?;
+    run_command(
+        &mut prepared,
+        "crear amenaza para equipo preparado",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let prepared_enemy = prepared
+        .world()
+        .enemies()
+        .next()
+        .map(|enemy| enemy.entity)
+        .ok_or_else(|| "amenaza preparada no quedo registrada".to_owned())?;
+    let prepared_before = prepared.world().save_state().serialize();
+    let prepared_assessment = prepared
+        .world()
+        .companion_cooperative_encounter_readiness(prepared_erick.entity)
+        .map_err(|error| format!("evaluar equipo preparado: {error:?}"))?
+        .ok_or_else(|| "equipo preparado no fue evaluable".to_owned())?;
+    let prepared_repeat = prepared
+        .world()
+        .companion_cooperative_encounter_readiness(prepared_erick.entity)
+        .map_err(|error| format!("repetir equipo preparado: {error:?}"))?;
+    if prepared_assessment.status != gameplay::CooperativeEncounterReadinessStatus::Prepared
+        || prepared_assessment.threats != vec![prepared_enemy]
+        || !prepared_assessment.blockers.is_empty()
+        || prepared_assessment.support_opportunities.len() != 0
+        || prepared_repeat != Some(prepared_assessment.clone())
+        || prepared.world().save_state().serialize() != prepared_before
+    {
+        return Err(format!("evaluacion de equipo preparado inesperada: {prepared_assessment:?}"));
+    }
+
+    let mut blocked = ProjectEchoSession::new();
+    let blocked_player = blocked.ids.first_player;
+    let provider = blocked
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear proveedor de preparacion: {error:?}"))?;
+    let inactive = blocked
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador inactivo de preparacion: {error:?}"))?;
+    blocked
+        .world_mut()
+        .initialize_inventory(provider, 20)
+        .map_err(|error| format!("inicializar inventario de preparacion: {error:?}"))?;
+    blocked
+        .world_mut()
+        .initialize_inventory(inactive, 20)
+        .map_err(|error| format!("inicializar inventario inactivo: {error:?}"))?;
+    run_command(
+        &mut blocked,
+        "crear ERICK para equipo bloqueado",
+        GameplayCommand::CreateCompanion {
+            followed_player: blocked_player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let blocked_erick = blocked
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK bloqueado no quedo registrado".to_owned())?;
+    run_command(
+        &mut blocked,
+        "equipar arma que requiere municion",
+        GameplayCommand::EquipPlayerWeapon {
+            player: blocked_player,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                100,
+                20,
+                Duration(1),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 2,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut blocked,
+        "preparar municion del proveedor",
+        GameplayCommand::AddInventoryItem {
+            player: provider,
+            item: ItemId(2),
+            amount: 2,
+        },
+    )?;
+    run_command(
+        &mut blocked,
+        "crear amenaza de preparacion",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let blocked_enemy = blocked
+        .world()
+        .enemies()
+        .next()
+        .map(|enemy| enemy.entity)
+        .ok_or_else(|| "amenaza bloqueada no quedo registrada".to_owned())?;
+    run_command(
+        &mut blocked,
+        "excluir jugador inactivo de preparacion",
+        GameplayCommand::SetPlayerActive {
+            player: inactive,
+            active: false,
+        },
+    )?;
+    let blocked_before = blocked.world().save_state().serialize();
+    let blocked_assessment = blocked
+        .world()
+        .companion_cooperative_encounter_readiness(blocked_erick.entity)
+        .map_err(|error| format!("evaluar equipo bloqueado: {error:?}"))?
+        .ok_or_else(|| "equipo bloqueado no fue evaluable".to_owned())?;
+    if blocked_assessment.status != gameplay::CooperativeEncounterReadinessStatus::Blocked
+        || blocked_assessment.threats != vec![blocked_enemy]
+        || blocked_assessment.blockers.is_empty()
+        || blocked_assessment.active_players.contains(&inactive)
+        || blocked_assessment.support_opportunities.len() != 1
+        || blocked_assessment.support_opportunities[0].provider != Some(provider)
+        || !blocked_assessment.actions.iter().any(|action| {
+            matches!(
+                action,
+                gameplay::CooperativePreparationAction::TransferInventory {
+                    from,
+                    to,
+                    item: ItemId(2),
+                    amount: 2,
+                } if *from == provider && *to == blocked_player
+            )
+        })
+    {
+        return Err(format!("evaluacion de equipo bloqueado inesperada: {blocked_assessment:?}"));
+    }
+    let blocked_repeat = blocked
+        .world()
+        .companion_cooperative_encounter_readiness(blocked_erick.entity)
+        .map_err(|error| format!("repetir equipo bloqueado: {error:?}"))?;
+    if blocked_repeat != Some(blocked_assessment.clone())
+        || blocked.world().save_state().serialize() != blocked_before
+    {
+        return Err("la evaluacion bloqueada no fue determinista o mutó el mundo".to_owned());
+    }
+    let encoded = blocked.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&encoded)
+        .map_err(|error| format!("serializar preparacion cooperativa: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar preparacion cooperativa: {error}"))?;
+    if restored
+        .world()
+        .companion_cooperative_encounter_readiness(blocked_erick.entity)
+        .map_err(|error| format!("evaluar preparacion restaurada: {error:?}"))?
+        != Some(blocked_assessment.clone())
+    {
+        return Err("la preparacion restaurada no fue equivalente".to_owned());
+    }
+    run_command(
+        &mut blocked,
+        "ejecutar apoyo de preparacion",
+        GameplayCommand::TransferInventoryItem {
+            from: provider,
+            to: blocked_player,
+            item: ItemId(2),
+            amount: 2,
+        },
+    )?;
+    let after_support = blocked
+        .world()
+        .companion_cooperative_encounter_readiness(blocked_erick.entity)
+        .map_err(|error| format!("reevaluar preparacion tras apoyo: {error:?}"))?
+        .ok_or_else(|| "la preparacion desaparecio tras el apoyo".to_owned())?;
+    if after_support.status
+            != gameplay::CooperativeEncounterReadinessStatus::PreparedWithReservations
+        || !after_support.blockers.is_empty()
+        || !after_support.support_opportunities.is_empty()
+    {
+        return Err(format!("el bloqueo no se resolvio tras el apoyo: {after_support:?}"));
+    }
+    run_command(
+        &mut blocked,
+        "ejecutar accion tactica preparada",
+        GameplayCommand::AttackEnemy {
+            player: blocked_player,
+            enemy: blocked_enemy,
+        },
+    )?;
+    let after_defeat = blocked
+        .world()
+        .companion_cooperative_encounter_readiness(blocked_erick.entity)
+        .map_err(|error| format!("evaluar amenaza derrotada: {error:?}"))?
+        .ok_or_else(|| "la evaluacion tras derrota no estuvo disponible".to_owned())?;
+    if after_defeat.status != gameplay::CooperativeEncounterReadinessStatus::NotEvaluable
+        || !after_defeat.threats.is_empty()
+    {
+        return Err(format!("la amenaza derrotada siguio pendiente: {after_defeat:?}"));
+    }
+
+    let mut no_threat = ProjectEchoSession::new();
+    let no_threat_player = no_threat.ids.first_player;
+    run_command(
+        &mut no_threat,
+        "crear ERICK sin amenaza para preparacion",
+        GameplayCommand::CreateCompanion {
+            followed_player: no_threat_player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let no_threat_erick = no_threat
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK sin amenaza no quedo registrado".to_owned())?;
+    let no_threat_before = no_threat.world().save_state().serialize();
+    let no_threat_assessment = no_threat
+        .world()
+        .companion_cooperative_encounter_readiness(no_threat_erick.entity)
+        .map_err(|error| format!("evaluar ausencia de amenaza: {error:?}"))?
+        .ok_or_else(|| "ausencia de amenaza no fue evaluable".to_owned())?;
+    if no_threat_assessment.status != gameplay::CooperativeEncounterReadinessStatus::NotEvaluable
+        || no_threat_assessment.conclusive
+        || !no_threat_assessment.threats.is_empty()
+        || no_threat.world().save_state().serialize() != no_threat_before
+    {
+        return Err(format!("se invento preparacion sin amenaza: {no_threat_assessment:?}"));
+    }
+    println!(
+        "PREPARACION COOPERATIVA DE ERICK COMPLETADA: preparado=true, bloqueo=true, apoyo=true, reevaluado=true, amenaza_derrotada=true, sin_evidencia=no_evaluable, restaurada=true"
+    );
+    Ok(())
+}
+
 fn main() {
     if let Err(error) = run_scenario() {
         eprintln!("ESCENARIO FALLIDO: {error}");
@@ -5811,6 +6525,346 @@ fn run_erick_tactical_scenario() -> Result<(), String> {
     println!(
         "TACTICA DE ERICK COMPLETADA: amenaza={:?}, prioridad_inicial={:?}, prioridad_posterior={:?}, restaurada_sin_accion=true",
         enemy, first.priority, after_defeat.priority
+    );
+    Ok(())
+}
+
+fn run_erick_cooperative_tactical_scenario() -> Result<(), String> {
+    let mut solo = ProjectEchoSession::new();
+    let solo_player = solo.ids.first_player;
+    run_command(
+        &mut solo,
+        "crear ERICK para tactica individual",
+        GameplayCommand::CreateCompanion {
+            followed_player: solo_player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let solo_erick = solo
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK individual no quedo registrado".to_owned())?;
+    run_command(
+        &mut solo,
+        "equipar jugador individual",
+        GameplayCommand::EquipPlayerWeapon {
+            player: solo_player,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 100, 20, Duration(1)),
+        },
+    )?;
+    run_command(
+        &mut solo,
+        "crear amenaza individual",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let solo_enemy = solo
+        .world()
+        .enemies()
+        .next()
+        .map(|enemy| enemy.entity)
+        .ok_or_else(|| "amenaza individual no registrada".to_owned())?;
+    let solo_assessment = solo
+        .world()
+        .companion_cooperative_tactical_assessment(solo_erick.entity)
+        .map_err(|error| format!("evaluar tactica individual: {error:?}"))?
+        .ok_or_else(|| "tactica individual no disponible".to_owned())?;
+    let solo_recommendation = solo_assessment
+        .recommendations
+        .iter()
+        .find(|recommendation| recommendation.player == solo_player)
+        .ok_or_else(|| "no hubo recomendacion individual".to_owned())?;
+    if solo_assessment.active_players != vec![solo_player]
+        || solo_assessment.threats != vec![solo_enemy]
+        || solo_recommendation.status != gameplay::TacticalAssignmentStatus::Actionable
+        || !solo_recommendation.preferred
+        || solo_recommendation.action != Some(gameplay::TacticalAction::DefeatEnemy(solo_enemy))
+    {
+        return Err(format!("tactica individual inesperada: {solo_assessment:?}"));
+    }
+    run_command(
+        &mut solo,
+        "ejecutar recomendacion tactica individual",
+        GameplayCommand::AttackEnemy {
+            player: solo_player,
+            enemy: solo_enemy,
+        },
+    )?;
+    let solo_after = solo
+        .world()
+        .companion_cooperative_tactical_assessment(solo_erick.entity)
+        .map_err(|error| format!("recalcular tactica tras derrota: {error:?}"))?
+        .ok_or_else(|| "tactica individual desaparecio tras la derrota".to_owned())?;
+    if !solo_after.threats.is_empty() || solo_after.conclusive {
+        return Err(format!("enemigo derrotado siguio siendo objetivo: {solo_after:?}"));
+    }
+
+    let mut duo = ProjectEchoSession::new();
+    let duo_a = duo.ids.first_player;
+    let duo_b = duo
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador tactico B: {error:?}"))?;
+    run_command(
+        &mut duo,
+        "crear ERICK para tactica de duo",
+        GameplayCommand::CreateCompanion {
+            followed_player: duo_a,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let duo_erick = duo
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK de duo no quedo registrado".to_owned())?;
+    run_command(
+        &mut duo,
+        "equipar jugador tactico A",
+        GameplayCommand::EquipPlayerWeapon {
+            player: duo_a,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1)),
+        },
+    )?;
+    run_command(
+        &mut duo,
+        "crear amenaza de duo",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Charger, Vec3::ZERO),
+        },
+    )?;
+    let duo_enemy = duo
+        .world()
+        .enemies()
+        .next()
+        .map(|enemy| enemy.entity)
+        .ok_or_else(|| "amenaza de duo no registrada".to_owned())?;
+    let duo_assessment = duo
+        .world()
+        .companion_cooperative_tactical_assessment(duo_erick.entity)
+        .map_err(|error| format!("evaluar tactica de duo: {error:?}"))?
+        .ok_or_else(|| "tactica de duo no disponible".to_owned())?;
+    let duo_preferred = duo_assessment
+        .recommendations
+        .iter()
+        .filter(|recommendation| recommendation.preferred)
+        .collect::<Vec<_>>();
+    if duo_assessment.active_players != vec![duo_a, duo_b]
+        || duo_assessment.threats != vec![duo_enemy]
+        || duo_preferred.len() != 1
+        || duo_preferred[0].player != duo_a
+        || duo_preferred[0].threat != Some(duo_enemy)
+    {
+        return Err(format!("tactica de duo duplicada o inestable: {duo_assessment:?}"));
+    }
+
+    let mut trio = ProjectEchoSession::new();
+    let trio_a = trio.ids.first_player;
+    let trio_b = trio
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador tactico trio B: {error:?}"))?;
+    let trio_c = trio
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador tactico trio C: {error:?}"))?;
+    run_command(
+        &mut trio,
+        "crear ERICK para tactica de trio",
+        GameplayCommand::CreateCompanion {
+            followed_player: trio_a,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let trio_erick = trio
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK de trio no quedo registrado".to_owned())?;
+    for player in [trio_a, trio_b] {
+        run_command(
+            &mut trio,
+            "equipar jugador tactico de trio",
+            GameplayCommand::EquipPlayerWeapon {
+                player,
+                weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1)),
+            },
+        )?;
+    }
+    for _ in 0..2 {
+        run_command(
+            &mut trio,
+            "crear amenaza de trio",
+            GameplayCommand::CreateEnemy {
+                configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Charger, Vec3::ZERO),
+            },
+        )?;
+    }
+    let trio_threats = trio
+        .world()
+        .enemies()
+        .map(|enemy| enemy.entity)
+        .collect::<Vec<_>>();
+    if trio_threats.len() != 2 {
+        return Err(format!("no se registraron las dos amenazas de trio: {trio_threats:?}"));
+    }
+    let trio_before = trio.world().save_state().serialize();
+    let trio_assessment = trio
+        .world()
+        .companion_cooperative_tactical_assessment(trio_erick.entity)
+        .map_err(|error| format!("evaluar tactica de trio: {error:?}"))?
+        .ok_or_else(|| "tactica de trio no disponible".to_owned())?;
+    let trio_repeat = trio
+        .world()
+        .companion_cooperative_tactical_assessment(trio_erick.entity)
+        .map_err(|error| format!("repetir tactica de trio: {error:?}"))?;
+    let preferred_targets = trio_assessment
+        .recommendations
+        .iter()
+        .filter(|recommendation| recommendation.preferred)
+        .map(|recommendation| (recommendation.player, recommendation.threat))
+        .collect::<Vec<_>>();
+    if trio_assessment.active_players != vec![trio_a, trio_b, trio_c]
+        || trio_assessment.threats != trio_threats
+        || preferred_targets.len() != 2
+        || preferred_targets[0].0 == preferred_targets[1].0
+        || preferred_targets[0].1 == preferred_targets[1].1
+        || trio_repeat != Some(trio_assessment.clone())
+        || trio.world().save_state().serialize() != trio_before
+    {
+        return Err(format!("tactica de trio no fue determinista: {trio_assessment:?}"));
+    }
+    let encoded = trio.world().save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&encoded)
+        .map_err(|error| format!("serializar tactica cooperativa: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar tactica cooperativa: {error}"))?;
+    if restored
+        .world()
+        .companion_cooperative_tactical_assessment(trio_erick.entity)
+        .map_err(|error| format!("consultar tactica restaurada: {error:?}"))?
+        != Some(trio_assessment.clone())
+    {
+        return Err("la tactica cooperativa restaurada no fue equivalente".to_owned());
+    }
+
+    let mut ammunition_missing = ProjectEchoSession::new();
+    let ammunition_player = ammunition_missing.ids.first_player;
+    run_command(
+        &mut ammunition_missing,
+        "crear ERICK para tactica sin municion",
+        GameplayCommand::CreateCompanion {
+            followed_player: ammunition_player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let ammunition_erick = ammunition_missing
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK sin municion no quedo registrado".to_owned())?;
+    run_command(
+        &mut ammunition_missing,
+        "equipar arma que requiere municion",
+        GameplayCommand::EquipPlayerWeapon {
+            player: ammunition_player,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                20,
+                20,
+                Duration(1),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 1,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut ammunition_missing,
+        "crear amenaza sin municion",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Charger, Vec3::ZERO),
+        },
+    )?;
+    let ammunition_enemy = ammunition_missing
+        .world()
+        .enemies()
+        .next()
+        .map(|enemy| enemy.entity)
+        .ok_or_else(|| "amenaza sin municion no registrada".to_owned())?;
+    let ammunition_assessment = ammunition_missing
+        .world()
+        .companion_cooperative_tactical_assessment(ammunition_erick.entity)
+        .map_err(|error| format!("evaluar falta de municion: {error:?}"))?
+        .ok_or_else(|| "falta de municion no evaluable".to_owned())?;
+    if ammunition_assessment.recommendations.len() != 1
+        || ammunition_assessment.recommendations[0].status
+            != gameplay::TacticalAssignmentStatus::Blocked
+        || ammunition_assessment.recommendations[0].reason
+            != gameplay::TacticalAssignmentReason::MissingAmmunition
+        || ammunition_assessment.unassigned_threats != vec![ammunition_enemy]
+        || ammunition_assessment.conclusive
+    {
+        return Err(format!("falta de municion no fue diagnosticada: {ammunition_assessment:?}"));
+    }
+
+    run_command(
+        &mut ammunition_missing,
+        "desactivar jugador para bloquear tactica cooperativa",
+        GameplayCommand::SetPlayerActive {
+            player: ammunition_player,
+            active: false,
+        },
+    )?;
+    if ammunition_missing
+        .world()
+        .companion_cooperative_tactical_assessment(ammunition_erick.entity)
+        .map_err(|error| format!("consultar jugador tactico inactivo: {error:?}"))?
+        .is_some()
+    {
+        return Err("ERICK ofrecio tactica a un jugador inactivo".to_owned());
+    }
+    let mut no_threat = ProjectEchoSession::new();
+    let no_threat_player = no_threat.ids.first_player;
+    run_command(
+        &mut no_threat,
+        "crear ERICK sin amenazas",
+        GameplayCommand::CreateCompanion {
+            followed_player: no_threat_player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let no_threat_erick = no_threat
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK sin amenazas no quedo registrado".to_owned())?;
+    let no_threat_assessment = no_threat
+        .world()
+        .companion_cooperative_tactical_assessment(no_threat_erick.entity)
+        .map_err(|error| format!("evaluar falta de informacion tactica: {error:?}"))?
+        .ok_or_else(|| "la falta de informacion no fue evaluable".to_owned())?;
+    if no_threat_assessment.conclusive
+        || !no_threat_assessment.threats.is_empty()
+        || no_threat_assessment.recommendations.iter().any(|recommendation| {
+            recommendation.status != gameplay::TacticalAssignmentStatus::NotEvaluable
+                || recommendation.action.is_some()
+        })
+    {
+        return Err(format!("ERICK invento una asignacion sin amenazas: {no_threat_assessment:?}"));
+    }
+    println!(
+        "TACTICA COOPERATIVA DE ERICK COMPLETADA: solo=1 amenaza, duo=1 amenaza/1 asignacion, trio=2 amenazas/2 asignaciones, sin_municion= bloqueado, sin_informacion=no_evaluable, restaurada=true"
     );
     Ok(())
 }
@@ -8157,6 +9211,28 @@ fn run_erick_coordination_scenario() -> Result<(), String> {
     {
         return Err(format!("ERICK mantuvo objetivo completado: {after_completion:?}"));
     }
+    let completion_explanation = session
+        .world()
+        .companion_recommendation_explanation(erick.entity)
+        .map_err(|error| format!("explicar objetivo completado: {error:?}"))?
+        .ok_or_else(|| "no hubo explicacion tras completar objetivo".to_owned())?;
+    if completion_explanation.objective == Some(objective)
+        || completion_explanation.status == gameplay::ExplanationStatus::Blocked
+    {
+        return Err(format!("explicacion mantuvo objetivo completado: {completion_explanation:?}"));
+    }
+    let completion_consistency = session
+        .world()
+        .companion_consistency_assessment(erick.entity)
+        .map_err(|error| format!("auditar objetivo completado: {error:?}"))?
+        .ok_or_else(|| "no hubo auditoria tras completar objetivo".to_owned())?;
+    if completion_consistency.state == gameplay::ConsistencyAuditState::Contradictory
+        || completion_consistency.contradictions.iter().any(|value| {
+            value.reason == gameplay::ContradictionReason::CompletedObjectiveStillRecommended
+        })
+    {
+        return Err(format!("auditoria mantuvo objetivo completado: {completion_consistency:?}"));
+    }
     run_command(
         &mut session,
         "marcar ERICK no disponible",
@@ -8314,6 +9390,40 @@ fn run_erick_recovery_scenario() -> Result<(), String> {
     {
         return Err(format!("diagnostico de combustible inesperado: {fuel_block:?}"));
     }
+    let fuel_explanation = session
+        .world()
+        .companion_recommendation_explanation(erick.entity)
+        .map_err(|error| format!("explicar bloqueo de combustible: {error:?}"))?
+        .ok_or_else(|| "no hubo explicacion de combustible".to_owned())?;
+    if fuel_explanation.status != gameplay::ExplanationStatus::Blocked
+        || fuel_explanation.reason != gameplay::ExplanationReason::FuelInsufficient
+        || !fuel_explanation
+            .evidence
+            .iter()
+            .any(|value| value.kind == gameplay::ExplanationEvidenceKind::Fuel && !value.satisfied)
+    {
+        return Err(format!("explicacion de combustible inesperada: {fuel_explanation:?}"));
+    }
+    let fuel_consistency = session
+        .world()
+        .companion_consistency_assessment(erick.entity)
+        .map_err(|error| format!("auditar consistencia de combustible: {error:?}"))?
+        .ok_or_else(|| "no hubo auditoria de consistencia de combustible".to_owned())?;
+    if fuel_consistency.state != gameplay::ConsistencyAuditState::Consistent
+        || !fuel_consistency.contradictions.is_empty()
+    {
+        return Err(format!("consistencia de combustible inesperada: {fuel_consistency:?}"));
+    }
+    let consistency_snapshot = session.save_state().serialize();
+    let repeated_consistency = session
+        .world()
+        .companion_consistency_assessment(erick.entity)
+        .map_err(|error| format!("repetir auditoria de combustible: {error:?}"))?;
+    if repeated_consistency != Some(fuel_consistency.clone())
+        || session.save_state().serialize() != consistency_snapshot
+    {
+        return Err("la auditoria de consistencia no fue determinista o mutó el mundo".to_owned());
+    }
     let saved_block = session.save_state();
     let repeated_block = session
         .world()
@@ -8341,6 +9451,37 @@ fn run_erick_recovery_scenario() -> Result<(), String> {
         })
     {
         return Err(format!("ruta recuperada inesperada: {route_ready:?}"));
+    }
+    let route_explanation = session
+        .world()
+        .companion_recommendation_explanation(erick.entity)
+        .map_err(|error| format!("explicar recomendacion de ruta: {error:?}"))?
+        .ok_or_else(|| "no hubo explicacion de ruta".to_owned())?;
+    if route_explanation.status != gameplay::ExplanationStatus::Actionable
+        || route_explanation.reason != gameplay::ExplanationReason::ObjectiveAction
+        || !route_explanation
+            .evidence
+            .iter()
+            .any(|value| value.kind == gameplay::ExplanationEvidenceKind::Route && value.satisfied)
+    {
+        return Err(format!("explicacion de ruta inesperada: {route_explanation:?}"));
+    }
+    let route_consistency = session
+        .world()
+        .companion_consistency_assessment(erick.entity)
+        .map_err(|error| format!("auditar consistencia de ruta: {error:?}"))?
+        .ok_or_else(|| "no hubo auditoria de consistencia de ruta".to_owned())?;
+    if route_consistency.state == gameplay::ConsistencyAuditState::Contradictory
+        || !route_consistency.contradictions.is_empty()
+    {
+        return Err(format!("consistencia de ruta inesperada: {route_consistency:?}"));
+    }
+    let route_change = gameplay::RecommendationExplanation::compare(
+        &fuel_explanation,
+        &route_explanation,
+    );
+    if route_change.reason != gameplay::ExplanationChangeReason::PreparationResolved {
+        return Err(format!("comparacion de preparacion inesperada: {route_change:?}"));
     }
     run_command(
         &mut session,
@@ -8394,6 +9535,30 @@ fn run_erick_recovery_scenario() -> Result<(), String> {
     {
         return Err(format!("diagnostico de amenaza inesperado: {threat:?}"));
     }
+    let threat_explanation = session
+        .world()
+        .companion_recommendation_explanation(erick.entity)
+        .map_err(|error| format!("explicar amenaza activa: {error:?}"))?
+        .ok_or_else(|| "no hubo explicacion de amenaza".to_owned())?;
+    if threat_explanation.reason != gameplay::ExplanationReason::ActiveThreat
+        || threat_explanation.status != gameplay::ExplanationStatus::Recoverable
+        || !threat_explanation
+            .evidence
+            .iter()
+            .any(|value| value.kind == gameplay::ExplanationEvidenceKind::Threat && !value.satisfied)
+    {
+        return Err(format!("explicacion de amenaza inesperada: {threat_explanation:?}"));
+    }
+    let threat_consistency = session
+        .world()
+        .companion_consistency_assessment(erick.entity)
+        .map_err(|error| format!("auditar consistencia de amenaza: {error:?}"))?
+        .ok_or_else(|| "no hubo auditoria de consistencia de amenaza".to_owned())?;
+    if threat_consistency.state == gameplay::ConsistencyAuditState::Contradictory
+        || !threat_consistency.contradictions.is_empty()
+    {
+        return Err(format!("consistencia de amenaza inesperada: {threat_consistency:?}"));
+    }
     run_command(
         &mut session,
         "derrotar amenaza para actualizar diagnostico",
@@ -8419,6 +9584,28 @@ fn run_erick_recovery_scenario() -> Result<(), String> {
     if after_enemy.blocker.as_ref().is_some_and(|value| value.entity == Some(enemy)) {
         return Err("la amenaza derrotada siguio bloqueando la recuperacion".to_owned());
     }
+    let after_enemy_explanation = session
+        .world()
+        .companion_recommendation_explanation(erick.entity)
+        .map_err(|error| format!("explicar estado tras amenaza: {error:?}"))?
+        .ok_or_else(|| "no hubo explicacion tras amenaza".to_owned())?;
+    let threat_change = gameplay::RecommendationExplanation::compare(
+        &threat_explanation,
+        &after_enemy_explanation,
+    );
+    if threat_change.reason != gameplay::ExplanationChangeReason::ThreatResolved {
+        return Err(format!("comparacion de amenaza inesperada: {threat_change:?}"));
+    }
+    let after_enemy_consistency = session
+        .world()
+        .companion_consistency_assessment(erick.entity)
+        .map_err(|error| format!("auditar consistencia tras amenaza: {error:?}"))?
+        .ok_or_else(|| "no hubo auditoria tras amenaza".to_owned())?;
+    if after_enemy_consistency.state == gameplay::ConsistencyAuditState::Contradictory
+        || !after_enemy_consistency.contradictions.is_empty()
+    {
+        return Err(format!("consistencia tras amenaza inesperada: {after_enemy_consistency:?}"));
+    }
     let saved_ready = session.save_state();
     let mut restored = ProjectEchoSession::new();
     restored
@@ -8430,6 +9617,20 @@ fn run_erick_recovery_scenario() -> Result<(), String> {
         .map_err(|error| format!("consultar diagnostico restaurado: {error:?}"))?;
     if restored_assessment != Some(after_enemy.clone()) {
         return Err("el diagnostico restaurado no fue equivalente".to_owned());
+    }
+    let restored_explanation = restored
+        .world()
+        .companion_recommendation_explanation(erick.entity)
+        .map_err(|error| format!("explicar estado restaurado: {error:?}"))?;
+    if restored_explanation != Some(after_enemy_explanation.clone()) {
+        return Err("la explicacion restaurada no fue equivalente".to_owned());
+    }
+    let restored_consistency = restored
+        .world()
+        .companion_consistency_assessment(erick.entity)
+        .map_err(|error| format!("auditar consistencia restaurada: {error:?}"))?;
+    if restored_consistency != Some(after_enemy_consistency.clone()) {
+        return Err("la consistencia restaurada no fue equivalente".to_owned());
     }
     run_command(
         &mut restored,
@@ -8447,9 +9648,28 @@ fn run_erick_recovery_scenario() -> Result<(), String> {
     {
         return Err("el jugador inactivo conservo diagnostico accionable".to_owned());
     }
+    if restored
+        .world()
+        .companion_recommendation_explanation(erick.entity)
+        .map_err(|error| format!("consultar explicacion con jugador inactivo: {error:?}"))?
+        .is_some()
+    {
+        return Err("el jugador inactivo conservo explicacion accionable".to_owned());
+    }
+    if restored
+        .world()
+        .companion_consistency_assessment(erick.entity)
+        .map_err(|error| format!("consultar consistencia con jugador inactivo: {error:?}"))?
+        .is_some()
+    {
+        return Err("el jugador inactivo conservo auditoria accionable".to_owned());
+    }
     println!(
-        "DIAGNOSTICO DE RECUPERACION DE ERICK COMPLETADO: combustible= bloqueado→recuperado, amenaza={enemy:?}, alternativas_sin_ruta={}, restaurado=true",
-        fuel_block.alternatives.len()
+        "DIAGNOSTICO DE RECUPERACION DE ERICK COMPLETADO: combustible={:?}, ruta={:?}, amenaza={:?}, resuelta={:?}, no_reproducibles=bloqueo-explicacion/ruta-inviable, no_evaluable=disponibilidad, restaurado=true",
+        fuel_consistency.state,
+        route_consistency.state,
+        threat_consistency.state,
+        after_enemy_consistency.state
     );
     Ok(())
 }
@@ -8657,6 +9877,9 @@ fn run_scenario() -> Result<(), String> {
     run_erick_companion_scenario()?;
     run_erick_interaction_scenario()?;
     run_erick_tactical_scenario()?;
+    run_erick_cooperative_tactical_scenario()?;
+    run_erick_cooperative_support_scenario()?;
+    run_erick_cooperative_readiness_scenario()?;
     run_erick_navigation_scenario()?;
     run_erick_route_risk_scenario()?;
     run_erick_route_comparison_scenario()?;

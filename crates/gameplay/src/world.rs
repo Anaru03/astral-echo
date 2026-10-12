@@ -12,11 +12,22 @@ use crate::{
         NavigationRouteOption, NavigationRouteRisk, NavigationRouteRiskClassification,
         NavigationRouteRiskSource, OperationalAssessment, PreparationAction,
         PreparationAssessment, PreparationCategory, PreparationPriority, PreparationReason,
-        PreparationRequirement, TacticalAction, TacticalPriority, TacticalRecommendation,
+        PreparationRequirement, CooperativeTacticalAssessment,
+        PlayerTacticalRecommendation, TacticalAction, TacticalAssignmentEvidence,
+        TacticalAssignmentReason, TacticalAssignmentStatus, TacticalPriority,
+        TacticalRecommendation,
+        CooperativeEncounterReadinessAssessment, CooperativeEncounterReadinessStatus,
+        CooperativePreparationAction, ReadinessBlocker, ReadinessRequirement,
+        CooperativeSupportAssessment, PlayerSupportRecommendation, SupportEvidence,
+        SupportRecommendationReason, SupportRecommendationStatus,
         CoordinationAction, CoordinationAssessment, CoordinationCategory, CoordinationPriority,
         CoordinationReason, CoordinationStep, CoordinationStepStatus,
         RecoveryAction, RecoveryAlternative, RecoveryAssessment, RecoveryBlocker,
         RecoveryCategory, RecoveryReason, RecoveryStatus,
+        ConsistencyAuditState, ConsistencyEvidence, Contradiction,
+        ContradictionCategory, ContradictionReason, ContradictionSeverity,
+        ExplainedAlternative, ExplanationEvidence, ExplanationEvidenceKind, ExplanationReason,
+        ExplanationStatus, RecommendationExplanation,
     },
     collectible::{Collectible, CollectibleError, ItemDefinition, ItemDefinitionError},
     combat::{Combatant, EnemyConfiguration},
@@ -800,6 +811,790 @@ impl GameplayWorld {
         }
         candidates.sort_by_key(|(priority, category, target, _)| (*priority, *category, *target));
         Ok(candidates.into_iter().next().map(|(_, _, _, recommendation)| recommendation))
+    }
+    pub fn companion_cooperative_tactical_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<CooperativeTacticalAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(followed_player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !followed_player.is_active
+            || !self.entities.contains(followed_player.entity_id)
+            || !self
+                .combatant(followed_player.entity_id)
+                .is_some_and(|combatant| combatant.active && !combatant.is_defeated())
+        {
+            return Ok(None);
+        }
+        let mut active_players = self
+            .players()
+            .filter(|player| {
+                player.is_active
+                    && self.entities.contains(player.entity_id)
+                    && finite_vec3(player.position)
+                    && self.combatant(player.entity_id).is_some_and(|combatant| {
+                        combatant.is_player && combatant.active && !combatant.is_defeated()
+                    })
+            })
+            .map(|player| player.entity_id)
+            .collect::<Vec<_>>();
+        active_players.sort_by_key(|player| player.value());
+        let scaling = self.current_group_scaling();
+        let mut threats = self
+            .enemies()
+            .filter(|enemy| enemy.active && !enemy.is_defeated() && finite_vec3(enemy.position))
+            .map(|enemy| enemy.entity)
+            .collect::<Vec<_>>();
+        threats.sort_by_key(|enemy| enemy.value());
+        let mut assigned_players = BTreeSet::new();
+        let mut assignments = BTreeMap::new();
+        let mut unassigned_threats = Vec::new();
+        for threat in &threats {
+            let Some(enemy) = self.combatant(*threat) else {
+                unassigned_threats.push(*threat);
+                continue;
+            };
+            let mut candidates = Vec::new();
+            for player in &active_players {
+                if assigned_players.contains(player) {
+                    continue;
+                }
+                let Some(player_state) = self.player(*player) else {
+                    continue;
+                };
+                let distance = crate::encounter::distance_squared(player_state.position, enemy.position);
+                let Some(weapon) = self.equipped_weapon(*player) else {
+                    candidates.push((
+                        false,
+                        distance.unwrap_or(f64::INFINITY),
+                        *player,
+                        TacticalAssignmentStatus::Blocked,
+                        TacticalAssignmentReason::MissingWeapon,
+                        vec!["Arma equipada requerida".to_string()],
+                        vec![TacticalAssignmentEvidence {
+                            description: "El jugador no tiene un arma equipada".to_string(),
+                            confirmed: true,
+                        }],
+                    ));
+                    continue;
+                };
+                if weapon.validate().is_err() {
+                    candidates.push((
+                        false,
+                        distance.unwrap_or(f64::INFINITY),
+                        *player,
+                        TacticalAssignmentStatus::Blocked,
+                        TacticalAssignmentReason::MissingWeapon,
+                        vec!["Configuracion de arma valida requerida".to_string()],
+                        vec![TacticalAssignmentEvidence {
+                            description: "La configuracion del arma no es valida".to_string(),
+                            confirmed: true,
+                        }],
+                    ));
+                    continue;
+                }
+                let Some(distance) = distance else {
+                    candidates.push((
+                        false,
+                        f64::INFINITY,
+                        *player,
+                        TacticalAssignmentStatus::Blocked,
+                        TacticalAssignmentReason::InvalidPosition,
+                        vec!["Posiciones finitas requeridas".to_string()],
+                        vec![TacticalAssignmentEvidence {
+                            description: "No se pudo calcular una distancia segura".to_string(),
+                            confirmed: true,
+                        }],
+                    ));
+                    continue;
+                };
+                if distance > f64::from(weapon.range) * f64::from(weapon.range) {
+                    candidates.push((
+                        false,
+                        distance,
+                        *player,
+                        TacticalAssignmentStatus::Blocked,
+                        TacticalAssignmentReason::OutOfRange,
+                        vec!["Alcance del arma requerido".to_string()],
+                        vec![TacticalAssignmentEvidence {
+                            description: format!("Distancia cuadrada {distance} fuera del alcance"),
+                            confirmed: true,
+                        }],
+                    ));
+                    continue;
+                }
+                if let Some(ammunition) = weapon.ammunition {
+                    let available = self
+                        .inventory(*player)
+                        .map_or(0, |inventory| inventory.quantity(ammunition.item));
+                    if available < ammunition.amount_per_attack {
+                        candidates.push((
+                            false,
+                            distance,
+                            *player,
+                            TacticalAssignmentStatus::Blocked,
+                            TacticalAssignmentReason::MissingAmmunition,
+                            vec![format!(
+                                "Municion {:?}: requiere {}, disponible {}",
+                                ammunition.item, ammunition.amount_per_attack, available
+                            )],
+                            vec![TacticalAssignmentEvidence {
+                                description: "La municion disponible no alcanza para un ataque".to_string(),
+                                confirmed: true,
+                            }],
+                        ));
+                        continue;
+                    }
+                }
+                if self.combatant(*player).is_some_and(|combatant| {
+                    combatant.last_attack_at.is_some_and(|last| {
+                        self.time().elapsed.0.saturating_sub(last.0) < weapon.cooldown.0
+                    })
+                }) {
+                    candidates.push((
+                        false,
+                        distance,
+                        *player,
+                        TacticalAssignmentStatus::Blocked,
+                        TacticalAssignmentReason::AttackCooldown,
+                        vec!["Enfriamiento de ataque pendiente".to_string()],
+                        vec![TacticalAssignmentEvidence {
+                            description: "El comando de ataque rechazaria la accion por cooldown".to_string(),
+                            confirmed: true,
+                        }],
+                    ));
+                    continue;
+                }
+                if !self.player_weapon_ready(*player) {
+                    candidates.push((
+                        false,
+                        distance,
+                        *player,
+                        TacticalAssignmentStatus::Blocked,
+                        TacticalAssignmentReason::MissingAmmunition,
+                        vec!["El arma no esta lista para atacar".to_string()],
+                        vec![TacticalAssignmentEvidence {
+                            description: "La validacion publica de preparacion de arma rechazo la accion".to_string(),
+                            confirmed: true,
+                        }],
+                    ));
+                    continue;
+                }
+                candidates.push((
+                    self.player_weapon_ready(*player),
+                    distance,
+                    *player,
+                    TacticalAssignmentStatus::Actionable,
+                    TacticalAssignmentReason::AssignedByDistance,
+                    Vec::new(),
+                    vec![TacticalAssignmentEvidence {
+                        description: "Jugador activo, armado, dentro de alcance y con municion valida".to_string(),
+                        confirmed: true,
+                    }],
+                ));
+            }
+            let Some((best_index, best)) = candidates.iter().enumerate().max_by(
+                |(_, left), (_, right)| {
+                    left.0
+                        .cmp(&right.0)
+                        .then_with(|| {
+                            right.1.partial_cmp(&left.1).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .then_with(|| right.2.value().cmp(&left.2.value()))
+                },
+            ) else {
+                unassigned_threats.push(*threat);
+                continue;
+            };
+            let tie_break_used = best.0
+                && candidates.iter().enumerate().any(|(index, candidate)| {
+                    index != best_index && candidate.0 && candidate.1 == best.1
+                });
+            let (actionable, _distance, player, status, mut reason, missing, evidence) =
+                candidates.remove(best_index);
+            if tie_break_used {
+                reason = TacticalAssignmentReason::AssignedByStableTieBreak;
+            }
+            assigned_players.insert(player);
+            assignments.insert(
+                player,
+                PlayerTacticalRecommendation {
+                    player,
+                    threat: Some(*threat),
+                    action: Some(TacticalAction::DefeatEnemy(*threat)),
+                    status,
+                    reason,
+                    preferred: actionable,
+                    evidence,
+                    missing_requirements: missing,
+                },
+            );
+            if !actionable {
+                unassigned_threats.push(*threat);
+            }
+        }
+        let recommendations = active_players
+            .iter()
+            .map(|player| {
+                assignments.remove(player).unwrap_or_else(|| PlayerTacticalRecommendation {
+                    player: *player,
+                    threat: None,
+                    action: None,
+                    status: if threats.is_empty() {
+                        TacticalAssignmentStatus::NotEvaluable
+                    } else {
+                        TacticalAssignmentStatus::NotEvaluable
+                    },
+                    reason: if threats.is_empty() {
+                        TacticalAssignmentReason::NoThreatAvailable
+                    } else {
+                        TacticalAssignmentReason::NoAvailablePlayer
+                    },
+                    preferred: false,
+                    evidence: vec![TacticalAssignmentEvidence {
+                        description: "No hay una tarea tactica adicional asignada a este jugador".to_string(),
+                        confirmed: !threats.is_empty(),
+                    }],
+                    missing_requirements: Vec::new(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let conclusive = !threats.is_empty() && unassigned_threats.is_empty();
+        Ok(Some(CooperativeTacticalAssessment {
+            companion: entity,
+            followed_player: companion.followed_player,
+            active_players,
+            scaling,
+            threats,
+            conclusive,
+            recommendations,
+            unassigned_threats,
+        }))
+    }
+    pub fn companion_cooperative_support_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<CooperativeSupportAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(followed_player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !followed_player.is_active
+            || !self.entities.contains(followed_player.entity_id)
+            || !self
+                .combatant(followed_player.entity_id)
+                .is_some_and(|combatant| combatant.is_player && combatant.active && !combatant.is_defeated())
+        {
+            return Ok(None);
+        }
+
+        let mut active_players = self
+            .players()
+            .filter(|player| {
+                player.is_active
+                    && self.entities.contains(player.entity_id)
+                    && finite_vec3(player.position)
+                    && self.combatant(player.entity_id).is_some_and(|combatant| {
+                        combatant.is_player && combatant.active && !combatant.is_defeated()
+                    })
+            })
+            .map(|player| player.entity_id)
+            .collect::<Vec<_>>();
+        active_players.sort_by_key(|player| player.value());
+
+        let mut threats = self
+            .enemies()
+            .filter(|enemy| enemy.active && !enemy.is_defeated() && finite_vec3(enemy.position))
+            .map(|enemy| enemy.entity)
+            .collect::<Vec<_>>();
+        threats.sort_by_key(|enemy| enemy.value());
+        if threats.is_empty() {
+            return Ok(Some(CooperativeSupportAssessment {
+                companion: entity,
+                followed_player: companion.followed_player,
+                active_players,
+                threats,
+                status: SupportRecommendationStatus::NotEvaluable,
+                recommendations: Vec::new(),
+                conclusive: false,
+            }));
+        }
+
+        let mut recommendations = Vec::new();
+        for needy_player in &active_players {
+            let Some(weapon) = self.equipped_weapon(*needy_player) else {
+                continue;
+            };
+            let Some(ammunition) = weapon.ammunition else {
+                continue;
+            };
+            let Some(available) = self
+                .inventory(*needy_player)
+                .map(|inventory| inventory.quantity(ammunition.item))
+            else {
+                recommendations.push(PlayerSupportRecommendation {
+                    needy_player: *needy_player,
+                    provider: None,
+                    item: Some(ammunition.item),
+                    amount: ammunition.amount_per_attack,
+                    blocked_action: Some(TacticalAction::DefeatEnemy(threats[0])),
+                    status: SupportRecommendationStatus::Blocked,
+                    reason: SupportRecommendationReason::ReceiverUnavailable,
+                    evidence: vec![SupportEvidence {
+                        description: "El inventario del jugador no esta inicializado".to_string(),
+                        confirmed: true,
+                    }],
+                    missing_requirements: vec!["Inventario inicializado".to_string()],
+                });
+                continue;
+            };
+            if available >= ammunition.amount_per_attack {
+                continue;
+            }
+            if weapon.validate().is_err() {
+                continue;
+            }
+            let Some(player_state) = self.player(*needy_player) else {
+                continue;
+            };
+            let in_range = threats.iter().any(|threat| {
+                self.combatant(*threat).is_some_and(|enemy| {
+                    crate::encounter::distance_squared(player_state.position, enemy.position)
+                        .is_some_and(|distance| {
+                            distance <= f64::from(weapon.range) * f64::from(weapon.range)
+                        })
+                })
+            });
+            if !in_range {
+                continue;
+            }
+            let needed = ammunition.amount_per_attack - available;
+            let threat = threats[0];
+            let Some(definition) = self.item_definition(ammunition.item) else {
+                recommendations.push(PlayerSupportRecommendation {
+                    needy_player: *needy_player,
+                    provider: None,
+                    item: Some(ammunition.item),
+                    amount: needed,
+                    blocked_action: Some(TacticalAction::DefeatEnemy(threat)),
+                    status: SupportRecommendationStatus::Blocked,
+                    reason: SupportRecommendationReason::ItemDefinitionMissing,
+                    evidence: vec![SupportEvidence {
+                        description: "La municion equipada no tiene una definicion registrada".to_string(),
+                        confirmed: true,
+                    }],
+                    missing_requirements: vec!["Definicion de objeto valida".to_string()],
+                });
+                continue;
+            };
+            let Some(receiver) = self.inventory(*needy_player) else {
+                continue;
+            };
+            if needed > definition.max_stack
+                || receiver.quantity(ammunition.item).checked_add(needed).is_none_or(|quantity| quantity > definition.max_stack)
+            {
+                recommendations.push(PlayerSupportRecommendation {
+                    needy_player: *needy_player,
+                    provider: None,
+                    item: Some(ammunition.item),
+                    amount: needed,
+                    blocked_action: Some(TacticalAction::DefeatEnemy(threat)),
+                    status: SupportRecommendationStatus::Blocked,
+                    reason: SupportRecommendationReason::StackExceeded,
+                    evidence: vec![SupportEvidence {
+                        description: "La cantidad requerida excede el limite de pila del objeto".to_string(),
+                        confirmed: true,
+                    }],
+                    missing_requirements: vec!["Espacio de pila suficiente".to_string()],
+                });
+                continue;
+            }
+            if receiver.remaining_capacity() < needed {
+                recommendations.push(PlayerSupportRecommendation {
+                    needy_player: *needy_player,
+                    provider: None,
+                    item: Some(ammunition.item),
+                    amount: needed,
+                    blocked_action: Some(TacticalAction::DefeatEnemy(threat)),
+                    status: SupportRecommendationStatus::Blocked,
+                    reason: SupportRecommendationReason::ReceiverCapacityExceeded,
+                    evidence: vec![SupportEvidence {
+                        description: "La capacidad libre del receptor no alcanza la transferencia".to_string(),
+                        confirmed: true,
+                    }],
+                    missing_requirements: vec!["Capacidad libre en el inventario receptor".to_string()],
+                });
+                continue;
+            }
+
+            let mut providers = active_players
+                .iter()
+                .filter(|provider| **provider != *needy_player)
+                .filter_map(|provider| {
+                    let inventory = self.inventory(*provider)?;
+                    let quantity = inventory.quantity(ammunition.item);
+                    if quantity < needed || needed > definition.max_stack {
+                        return None;
+                    }
+                    let provider_can_remain_ready = self
+                        .equipped_weapon(*provider)
+                        .and_then(|weapon| weapon.ammunition)
+                        .is_none_or(|provider_ammunition| {
+                            provider_ammunition.item != ammunition.item
+                                || quantity - needed >= provider_ammunition.amount_per_attack
+                        });
+                    if !provider_can_remain_ready {
+                        return None;
+                    }
+                    Some((*provider, quantity))
+                })
+                .collect::<Vec<_>>();
+            providers.sort_by(|left, right| {
+                right.1.cmp(&left.1).then_with(|| left.0.value().cmp(&right.0.value()))
+            });
+            let Some((provider, quantity)) = providers.first().copied() else {
+                let has_quantity = active_players.iter().any(|candidate| {
+                    *candidate != *needy_player
+                        && self.inventory(*candidate).is_some_and(|inventory| {
+                            inventory.quantity(ammunition.item) > 0
+                        })
+                });
+                recommendations.push(PlayerSupportRecommendation {
+                    needy_player: *needy_player,
+                    provider: None,
+                    item: Some(ammunition.item),
+                    amount: needed,
+                    blocked_action: Some(TacticalAction::DefeatEnemy(threat)),
+                    status: SupportRecommendationStatus::Blocked,
+                    reason: if has_quantity {
+                        SupportRecommendationReason::ProviderInsufficientQuantity
+                    } else {
+                        SupportRecommendationReason::NoProvider
+                    },
+                    evidence: vec![SupportEvidence {
+                        description: if has_quantity {
+                            "Hay companeros activos, pero ninguno puede cubrir la cantidad requerida".to_string()
+                        } else {
+                            "No hay un companero activo con la municion requerida".to_string()
+                        },
+                        confirmed: true,
+                    }],
+                    missing_requirements: vec!["Transferencia completa de municion".to_string()],
+                });
+                continue;
+            };
+            recommendations.push(PlayerSupportRecommendation {
+                needy_player: *needy_player,
+                provider: Some(provider),
+                item: Some(ammunition.item),
+                amount: needed,
+                blocked_action: Some(TacticalAction::DefeatEnemy(threat)),
+                status: SupportRecommendationStatus::Actionable,
+                reason: SupportRecommendationReason::ProviderAvailable,
+                evidence: vec![
+                    SupportEvidence {
+                        description: format!("El proveedor tiene {quantity} unidades disponibles"),
+                        confirmed: true,
+                    },
+                    SupportEvidence {
+                        description: "La cantidad respeta capacidad, pila y definicion del objeto".to_string(),
+                        confirmed: true,
+                    },
+                ],
+                missing_requirements: Vec::new(),
+            });
+        }
+        let status = if recommendations
+            .iter()
+            .any(|recommendation| recommendation.status == SupportRecommendationStatus::Actionable)
+        {
+            SupportRecommendationStatus::Actionable
+        } else if recommendations.is_empty() {
+            SupportRecommendationStatus::Informational
+        } else {
+            SupportRecommendationStatus::Blocked
+        };
+        Ok(Some(CooperativeSupportAssessment {
+            companion: entity,
+            followed_player: companion.followed_player,
+            active_players,
+            threats,
+            status,
+            conclusive: true,
+            recommendations,
+        }))
+    }
+    pub fn companion_cooperative_encounter_readiness(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<CooperativeEncounterReadinessAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active
+            || !self.entities.contains(player.entity_id)
+            || !self
+                .combatant(player.entity_id)
+                .is_some_and(|combatant| combatant.is_player && combatant.active && !combatant.is_defeated())
+        {
+            return Ok(None);
+        }
+        let Some(tactical) = self.companion_cooperative_tactical_assessment(entity)? else {
+            return Ok(None);
+        };
+        if tactical.threats.is_empty() {
+            return Ok(Some(CooperativeEncounterReadinessAssessment {
+                companion: entity,
+                followed_player: companion.followed_player,
+                active_players: tactical.active_players,
+                threats: Vec::new(),
+                status: CooperativeEncounterReadinessStatus::NotEvaluable,
+                satisfied_requirements: Vec::new(),
+                missing_requirements: Vec::new(),
+                blockers: Vec::new(),
+                support_opportunities: Vec::new(),
+                actions: Vec::new(),
+                evidence: vec![SupportEvidence {
+                    description: "No hay amenazas activas que evaluar".to_string(),
+                    confirmed: true,
+                }],
+                conclusive: false,
+            }));
+        }
+
+        let preparation = self.companion_preparation_assessment(entity)?;
+        let support = self.companion_cooperative_support_assessment(entity)?;
+        let mut satisfied_requirements = Vec::new();
+        let mut missing_requirements = Vec::new();
+        let mut blockers = Vec::new();
+        let mut support_opportunities = Vec::new();
+        let mut actions = Vec::new();
+        let mut evidence = Vec::new();
+        if let Some(preparation) = preparation {
+            let mut has_real_missing_requirement = false;
+            for requirement in preparation.satisfied_requirements {
+                satisfied_requirements.push(ReadinessRequirement {
+                    player: preparation.player,
+                    requirement,
+                    satisfied: true,
+                });
+            }
+            for requirement in preparation.missing_requirements {
+                if matches!(
+                    requirement,
+                    PreparationRequirement::Ammunition { item: None, .. }
+                ) {
+                    continue;
+                }
+                has_real_missing_requirement = true;
+                missing_requirements.push(ReadinessRequirement {
+                    player: preparation.player,
+                    requirement,
+                    satisfied: false,
+                });
+                blockers.push(ReadinessBlocker {
+                    player: preparation.player,
+                    threat: match preparation.action {
+                        Some(PreparationAction::PrepareCombat(enemy)) => Some(enemy),
+                        _ => None,
+                    },
+                    requirement: Some(requirement),
+                    description: format!("Requisito de preparacion faltante: {requirement:?}"),
+                    support: None,
+                    evidence: vec![SupportEvidence {
+                        description: format!("La evaluacion de preparacion informo {:?}", preparation.reason),
+                        confirmed: true,
+                    }],
+                });
+            }
+            if has_real_missing_requirement {
+                if let Some(action) = preparation.action {
+                    actions.push(CooperativePreparationAction::Prepare(action));
+                }
+            }
+        }
+
+        for recommendation in &tactical.recommendations {
+            match recommendation.status {
+                TacticalAssignmentStatus::Actionable => {
+                    if let Some(action) = recommendation.action {
+                        actions.push(CooperativePreparationAction::ExecuteTactical(action));
+                    }
+                    evidence.push(SupportEvidence {
+                        description: format!(
+                            "El jugador {:?} puede ejecutar la tarea tactica {:?}",
+                            recommendation.player, recommendation.action
+                        ),
+                        confirmed: true,
+                    });
+                }
+                TacticalAssignmentStatus::Blocked => {
+                    let requirement = if recommendation.reason == TacticalAssignmentReason::MissingAmmunition {
+                        self.equipped_weapon(recommendation.player)
+                            .and_then(|weapon| weapon.ammunition)
+                            .map(|ammunition| PreparationRequirement::Ammunition {
+                                item: Some(ammunition.item),
+                                required: ammunition.amount_per_attack,
+                                available: self
+                                    .inventory(recommendation.player)
+                                    .map_or(0, |inventory| inventory.quantity(ammunition.item)),
+                            })
+                    } else {
+                        None
+                    };
+                    blockers.push(ReadinessBlocker {
+                        player: recommendation.player,
+                        threat: recommendation.threat,
+                        requirement,
+                        description: format!("La tarea tactica esta bloqueada por {:?}", recommendation.reason),
+                        support: None,
+                        evidence: recommendation
+                            .evidence
+                            .iter()
+                            .map(|item| SupportEvidence {
+                                description: item.description.clone(),
+                                confirmed: item.confirmed,
+                            })
+                            .collect(),
+                    });
+                    if let Some(requirement) = requirement {
+                        missing_requirements.push(ReadinessRequirement {
+                            player: recommendation.player,
+                            requirement,
+                            satisfied: false,
+                        });
+                    }
+                }
+                TacticalAssignmentStatus::NotEvaluable => {
+                    evidence.push(SupportEvidence {
+                        description: format!(
+                            "No se asigno una tarea adicional a {:?}: {:?}",
+                            recommendation.player, recommendation.reason
+                        ),
+                        confirmed: false,
+                    });
+                }
+            }
+        }
+
+        if let Some(support) = support {
+            for recommendation in support.recommendations {
+                if recommendation.status == SupportRecommendationStatus::Actionable {
+                    if let (Some(provider), Some(item)) = (recommendation.provider, recommendation.item) {
+                        actions.push(CooperativePreparationAction::TransferInventory {
+                            from: provider,
+                            to: recommendation.needy_player,
+                            item,
+                            amount: recommendation.amount,
+                        });
+                    }
+                    support_opportunities.push(recommendation.clone());
+                    if let Some(blocker) = blockers.iter_mut().find(|blocker| {
+                        blocker.player == recommendation.needy_player
+                            && blocker.threat == recommendation.blocked_action.and_then(|action| match action {
+                                TacticalAction::DefeatEnemy(enemy) => Some(enemy),
+                                _ => None,
+                            })
+                    }) {
+                        blocker.support = Some(recommendation);
+                    }
+                } else if recommendation.status == SupportRecommendationStatus::Blocked {
+                    if !blockers.iter().any(|blocker| {
+                        blocker.player == recommendation.needy_player
+                            && blocker.requirement.is_some_and(|requirement| {
+                                requirement == PreparationRequirement::Ammunition {
+                                    item: recommendation.item,
+                                    required: recommendation.amount,
+                                    available: self
+                                        .inventory(recommendation.needy_player)
+                                        .map_or(0, |inventory| {
+                                            recommendation.item.map_or(0, |item| inventory.quantity(item))
+                                        }),
+                                }
+                            })
+                    }) {
+                        blockers.push(ReadinessBlocker {
+                            player: recommendation.needy_player,
+                            threat: recommendation.blocked_action.and_then(|action| match action {
+                                TacticalAction::DefeatEnemy(enemy) => Some(enemy),
+                                _ => None,
+                            }),
+                            requirement: recommendation.item.map(|item| PreparationRequirement::Ammunition {
+                                item: Some(item),
+                                required: recommendation.amount,
+                                available: self
+                                    .inventory(recommendation.needy_player)
+                                    .map_or(0, |inventory| inventory.quantity(item)),
+                            }),
+                            description: format!("El apoyo no puede cubrir el bloqueo: {:?}", recommendation.reason),
+                            support: None,
+                            evidence: recommendation
+                                .evidence
+                                .iter()
+                                .map(|item| SupportEvidence {
+                                    description: item.description.clone(),
+                                    confirmed: item.confirmed,
+                                })
+                                .collect(),
+                        });
+                    }
+                }
+            }
+        }
+        let status = if blockers.is_empty() {
+            if tactical
+                .recommendations
+                .iter()
+                .any(|recommendation| recommendation.status == TacticalAssignmentStatus::NotEvaluable)
+            {
+                CooperativeEncounterReadinessStatus::PreparedWithReservations
+            } else {
+                CooperativeEncounterReadinessStatus::Prepared
+            }
+        } else {
+            CooperativeEncounterReadinessStatus::Blocked
+        };
+        Ok(Some(CooperativeEncounterReadinessAssessment {
+            companion: entity,
+            followed_player: companion.followed_player,
+            active_players: tactical.active_players,
+            threats: tactical.threats,
+            status,
+            satisfied_requirements,
+            missing_requirements,
+            blockers,
+            support_opportunities,
+            actions,
+            evidence,
+            conclusive: true,
+        }))
     }
     pub fn companion_navigation_assessment(
         &self,
@@ -2175,6 +2970,438 @@ impl GameplayWorld {
             missing_requirements,
             actionable,
             explanation,
+        }))
+    }
+    pub fn companion_recommendation_explanation(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<RecommendationExplanation>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active || !self.entities.contains(player.entity_id) {
+            return Ok(None);
+        }
+        let coordination = self.companion_coordination_assessment(entity)?;
+        let recovery = self.companion_recovery_assessment(entity)?;
+        let preparation = self.companion_preparation_assessment(entity)?;
+        let operational = self.companion_operational_assessment(entity)?;
+        let exploration = self.companion_exploration_assessment(entity)?;
+        let Some(coordination) = coordination else {
+            return Ok(None);
+        };
+        let Some(recovery) = recovery else {
+            return Ok(None);
+        };
+        let status = match recovery.status {
+            RecoveryStatus::Actionable => ExplanationStatus::Actionable,
+            RecoveryStatus::Recoverable => ExplanationStatus::Recoverable,
+            RecoveryStatus::Blocked => ExplanationStatus::Blocked,
+            RecoveryStatus::Satisfied => ExplanationStatus::Satisfied,
+        };
+        let reason = match recovery.blocker.as_ref().map(|value| value.reason) {
+            Some(RecoveryReason::FuelInsufficient) => ExplanationReason::FuelInsufficient,
+            Some(RecoveryReason::ShipDestroyed) => ExplanationReason::ShipDestroyed,
+            Some(RecoveryReason::ActiveThreat) => ExplanationReason::ActiveThreat,
+            Some(RecoveryReason::KnowledgeMissing) => ExplanationReason::KnowledgeMissing,
+            Some(RecoveryReason::PreparationRequired)
+            | Some(RecoveryReason::InventoryCapacity)
+            | Some(RecoveryReason::ShipNotOperational)
+            | Some(RecoveryReason::ActiveEncounter)
+            | Some(RecoveryReason::NoKnownRoute)
+            | Some(RecoveryReason::PlayerDecisionRequired) => ExplanationReason::PreparationRequired,
+            Some(RecoveryReason::ObjectiveSatisfied) => ExplanationReason::ObjectiveCompleted,
+            None if status == ExplanationStatus::Satisfied => ExplanationReason::ObjectiveCompleted,
+            None => ExplanationReason::ObjectiveAction,
+        };
+        let action = recovery
+            .blocker
+            .as_ref()
+            .and_then(|value| value.action)
+            .or_else(|| {
+                coordination
+                    .next_step
+                    .as_ref()
+                    .map(|step| RecoveryAction::Coordination(step.action))
+            });
+        let mut evidence = Vec::new();
+        if let Some(objective) = coordination.objective {
+            evidence.push(ExplanationEvidence {
+                kind: ExplanationEvidenceKind::Objective,
+                description: "Existe un objetivo real asociado a la recomendacion".to_string(),
+                objective: Some(objective),
+                destination: coordination.next_step.as_ref().and_then(|step| step.destination),
+                entity: coordination.next_step.as_ref().and_then(|step| step.entity),
+                satisfied: status == ExplanationStatus::Satisfied,
+            });
+        }
+        if let Some(preparation) = preparation.as_ref() {
+            for requirement in &preparation.satisfied_requirements {
+                evidence.push(ExplanationEvidence {
+                    kind: if matches!(requirement, PreparationRequirement::Fuel { .. }) {
+                        ExplanationEvidenceKind::Fuel
+                    } else {
+                        ExplanationEvidenceKind::Preparation
+                    },
+                    description: format!("Requisito satisfecho: {requirement:?}"),
+                    objective: coordination.objective,
+                    destination: None,
+                    entity: None,
+                    satisfied: true,
+                });
+            }
+            for requirement in &preparation.missing_requirements {
+                evidence.push(ExplanationEvidence {
+                    kind: if matches!(requirement, PreparationRequirement::Fuel { .. }) {
+                        ExplanationEvidenceKind::Fuel
+                    } else {
+                        ExplanationEvidenceKind::Preparation
+                    },
+                    description: format!("Requisito faltante: {requirement:?}"),
+                    objective: coordination.objective,
+                    destination: None,
+                    entity: None,
+                    satisfied: false,
+                });
+            }
+        }
+        if let Some(target) = exploration.as_ref().and_then(|value| value.primary.as_ref()) {
+            if matches!(target.action, ExplorationAction::Guidance(GuidanceAction::TravelTo(_)))
+                && target.accessible
+            {
+                evidence.push(ExplanationEvidence {
+                    kind: ExplanationEvidenceKind::Route,
+                    description: "Existe una ruta registrada y accesible hacia el objetivo".to_string(),
+                    objective: target.objective,
+                    destination: target.destination,
+                    entity: target.entity,
+                    satisfied: true,
+                });
+            }
+        }
+        if let Some(operational) = operational.as_ref() {
+            if let Some(navigation) = operational.navigation.as_ref() {
+                if let Some(destination) = navigation.destination {
+                    evidence.push(ExplanationEvidence {
+                        kind: ExplanationEvidenceKind::Route,
+                        description: if navigation.route.is_empty() {
+                            "El destino existe, pero no hay una ruta activa en el autopilot".to_string()
+                        } else {
+                            "Existe una ruta registrada para el destino recomendado".to_string()
+                        },
+                        objective: coordination.objective,
+                        destination: Some(destination),
+                        entity: None,
+                        satisfied: !navigation.route.is_empty(),
+                    });
+                }
+                if let (Some(required), Some(available)) =
+                    (navigation.fuel_required, navigation.fuel_available)
+                {
+                    evidence.push(ExplanationEvidence {
+                        kind: ExplanationEvidenceKind::Fuel,
+                        description: format!("Combustible disponible {available}, requerido {required}"),
+                        objective: coordination.objective,
+                        destination: navigation.destination,
+                        entity: Some(operational.ship),
+                        satisfied: available >= required,
+                    });
+                }
+            }
+            evidence.push(ExplanationEvidence {
+                kind: ExplanationEvidenceKind::Integrity,
+                description: format!(
+                    "Integridad de nave {}/{}",
+                    operational.integrity, operational.maximum_integrity
+                ),
+                objective: coordination.objective,
+                destination: None,
+                entity: Some(operational.ship),
+                satisfied: operational.hull != HullCondition::Destroyed,
+            });
+        }
+        if let Some(blocker) = recovery.blocker.as_ref() {
+            let (kind, description) = match blocker.reason {
+                RecoveryReason::ActiveThreat => (
+                    ExplanationEvidenceKind::Threat,
+                    "Existe un enemigo activo que requiere atencion".to_string(),
+                ),
+                RecoveryReason::KnowledgeMissing => (
+                    ExplanationEvidenceKind::Knowledge,
+                    "Falta conocimiento requerido por el objetivo".to_string(),
+                ),
+                _ => (
+                    ExplanationEvidenceKind::StateChange,
+                    blocker.evidence.clone(),
+                ),
+            };
+            evidence.push(ExplanationEvidence {
+                kind,
+                description,
+                objective: blocker.objective,
+                destination: blocker.destination,
+                entity: blocker.entity,
+                satisfied: false,
+            });
+        }
+        if let Some(target) = exploration.as_ref().and_then(|value| value.primary.as_ref()) {
+            for requirement in &target.missing_requirements {
+                if matches!(requirement, GuidanceRequirement::KnowledgeAtLeast { .. }) {
+                    evidence.push(ExplanationEvidence {
+                        kind: ExplanationEvidenceKind::Knowledge,
+                        description: format!("Requisito de conocimiento: {requirement:?}"),
+                        objective: target.objective,
+                        destination: target.destination,
+                        entity: target.entity,
+                        satisfied: false,
+                    });
+                }
+            }
+        }
+        let alternatives = recovery
+            .alternatives
+            .iter()
+            .map(|alternative| ExplainedAlternative {
+                alternative: alternative.clone(),
+                selected: false,
+                explanation: if alternative.viable {
+                    format!(
+                        "Alternativa viable considerada; conserva prioridad {:?}",
+                        alternative.priority
+                    )
+                } else {
+                    "Alternativa descartada porque no es viable".to_string()
+                },
+            })
+            .collect::<Vec<_>>();
+        for alternative in &alternatives {
+            evidence.push(ExplanationEvidence {
+                kind: ExplanationEvidenceKind::Alternative,
+                description: alternative.explanation.clone(),
+                objective: coordination.objective,
+                destination: alternative.alternative.destination,
+                entity: alternative.alternative.entity,
+                satisfied: alternative.alternative.viable,
+            });
+        }
+        Ok(Some(RecommendationExplanation {
+            companion: entity,
+            player: companion.followed_player,
+            objective: coordination.objective,
+            mission: coordination.mission,
+            action,
+            status,
+            reason,
+            evidence,
+            satisfied_requirements: preparation
+                .as_ref()
+                .map_or_else(Vec::new, |value| value.satisfied_requirements.clone()),
+            missing_requirements: recovery.missing_requirements.clone(),
+            blocker: recovery.blocker.clone(),
+            alternatives,
+            explanation: recovery.explanation,
+        }))
+    }
+    pub fn companion_consistency_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<crate::companion::ConsistencyAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active || !self.entities.contains(player.entity_id) {
+            return Ok(None);
+        }
+        let coordination = self.companion_coordination_assessment(entity)?;
+        let recovery = self.companion_recovery_assessment(entity)?;
+        let explanation = self.companion_recommendation_explanation(entity)?;
+        let (Some(coordination), Some(recovery), Some(explanation)) =
+            (coordination, recovery, explanation)
+        else {
+            return Ok(None);
+        };
+        let mut contradictions = Vec::new();
+        let mut informational = Vec::new();
+        let travel_action = coordination.next_step.as_ref().and_then(|step| {
+            matches!(
+                step.action,
+                CoordinationAction::StartAutopilot(_) | CoordinationAction::MonitorAutopilot(_)
+            )
+            .then_some(step)
+        });
+        let fuel_blocked = recovery.blocker.as_ref().is_some_and(|blocker| {
+            matches!(blocker.reason, RecoveryReason::FuelInsufficient)
+        });
+        if fuel_blocked
+            && travel_action.is_some_and(|step| step.status == CoordinationStepStatus::Recommended)
+        {
+            if let Some(step) = travel_action {
+                contradictions.push(Contradiction {
+                    severity: ContradictionSeverity::Critical,
+                    category: ContradictionCategory::PreparationNavigation,
+                    reason: ContradictionReason::CriticalPreparationConflict,
+                    explanation: "La coordinacion recomienda viajar aunque la preparacion confirma combustible insuficiente".to_string(),
+                    evidence: vec![ConsistencyEvidence {
+                        category: ContradictionCategory::PreparationNavigation,
+                        description: "El bloqueo de combustible y la recomendacion de viaje se refieren al mismo estado".to_string(),
+                        objective: step.objective,
+                        destination: step.destination,
+                        entity: recovery.blocker.as_ref().and_then(|value| value.entity),
+                        confirmed: true,
+                    }],
+                });
+            }
+        }
+        if let Some(blocker) = recovery.blocker.as_ref() {
+            let threat_conflict = blocker.reason == RecoveryReason::ActiveThreat
+                && !matches!(
+                    coordination.next_step.as_ref().map(|step| step.action),
+                    Some(CoordinationAction::Tactical(TacticalAction::DefeatEnemy(enemy)))
+                        if Some(enemy) == blocker.entity
+                );
+            if threat_conflict {
+                contradictions.push(Contradiction {
+                    severity: ContradictionSeverity::Important,
+                    category: ContradictionCategory::TacticalCoordination,
+                    reason: ContradictionReason::ActiveThreatConflict,
+                    explanation: "La recuperacion confirma una amenaza activa, pero la coordinacion no recomienda resolverla".to_string(),
+                    evidence: vec![ConsistencyEvidence {
+                        category: ContradictionCategory::TacticalCoordination,
+                        description: blocker.evidence.clone(),
+                        objective: blocker.objective,
+                        destination: blocker.destination,
+                        entity: blocker.entity,
+                        confirmed: true,
+                    }],
+                });
+            }
+        }
+        if matches!(recovery.status, RecoveryStatus::Blocked | RecoveryStatus::Recoverable)
+            && matches!(
+                explanation.status,
+                ExplanationStatus::Actionable | ExplanationStatus::Satisfied
+            )
+            && explanation.blocker.is_none()
+        {
+            contradictions.push(Contradiction {
+                severity: ContradictionSeverity::Important,
+                category: ContradictionCategory::ExplanationRecovery,
+                reason: ContradictionReason::BlockerStateConflict,
+                explanation: "La explicacion presenta el estado como resuelto aunque la recuperacion conserva un bloqueo".to_string(),
+                evidence: vec![ConsistencyEvidence {
+                    category: ContradictionCategory::ExplanationRecovery,
+                    description: recovery.explanation.clone(),
+                    objective: recovery.objective,
+                    destination: recovery.blocker.as_ref().and_then(|value| value.destination),
+                    entity: recovery.blocker.as_ref().and_then(|value| value.entity),
+                    confirmed: true,
+                }],
+            });
+        }
+        if let Some(objective) = coordination.objective {
+            let completed_recommendation = self.objective(objective).is_some_and(|value| {
+                value.state() == crate::domains::objective::ObjectiveState::Completed
+            }) && coordination.next_step.as_ref().is_some_and(|step| {
+                step.objective == Some(objective)
+                    && step.status != CoordinationStepStatus::Satisfied
+            });
+            if completed_recommendation {
+                contradictions.push(Contradiction {
+                    severity: ContradictionSeverity::Important,
+                    category: ContradictionCategory::ObjectiveGuidance,
+                    reason: ContradictionReason::CompletedObjectiveStillRecommended,
+                    explanation: "La guia conserva como pendiente un objetivo que el mundo ya marca completado".to_string(),
+                    evidence: vec![ConsistencyEvidence {
+                        category: ContradictionCategory::ObjectiveGuidance,
+                        description: "El estado del objetivo y el siguiente paso no coinciden".to_string(),
+                        objective: Some(objective),
+                        destination: coordination.next_step.as_ref().and_then(|step| step.destination),
+                        entity: coordination.next_step.as_ref().and_then(|step| step.entity),
+                        confirmed: true,
+                    }],
+                });
+            }
+        }
+        if let Some(operational) = self.companion_operational_assessment(entity)? {
+            if let Some(comparison) = operational.route_comparison.as_ref() {
+                let route_conflict = !comparison.current.viable
+                    && travel_action
+                        .is_some_and(|step| step.status == CoordinationStepStatus::Recommended);
+                if route_conflict {
+                    if let Some(step) = travel_action {
+                        contradictions.push(Contradiction {
+                            severity: ContradictionSeverity::Important,
+                            category: ContradictionCategory::RouteViability,
+                            reason: ContradictionReason::InfeasibleRoutePresentedAsViable,
+                            explanation: "La evaluacion de ruta marca el trayecto como inviable, pero la coordinacion lo recomienda".to_string(),
+                            evidence: vec![ConsistencyEvidence {
+                                category: ContradictionCategory::RouteViability,
+                                description: "La comparacion de rutas no considera viable el trayecto actual".to_string(),
+                                objective: step.objective,
+                                destination: step.destination,
+                                entity: Some(operational.ship),
+                                confirmed: true,
+                            }],
+                        });
+                    }
+                }
+            }
+            if operational.route_comparison.is_none() && travel_action.is_some() {
+                informational.push(ConsistencyEvidence {
+                    category: ContradictionCategory::InsufficientEvidence,
+                    description: "No existe comparacion de rutas suficiente para evaluar alternativas".to_string(),
+                    objective: coordination.objective,
+                    destination: travel_action.and_then(|step| step.destination),
+                    entity: Some(operational.ship),
+                    confirmed: false,
+                });
+            }
+        } else {
+            informational.push(ConsistencyEvidence {
+                category: ContradictionCategory::InsufficientEvidence,
+                description: "No existe evaluacion operativa suficiente para contrastar navegacion".to_string(),
+                objective: coordination.objective,
+                destination: travel_action.and_then(|step| step.destination),
+                entity: None,
+                confirmed: false,
+            });
+        }
+        let state = if contradictions.iter().any(|value| {
+            value.severity != ContradictionSeverity::Informational
+        }) {
+            ConsistencyAuditState::Contradictory
+        } else if !contradictions.is_empty() || !informational.is_empty() {
+            ConsistencyAuditState::Informational
+        } else {
+            ConsistencyAuditState::Consistent
+        };
+        Ok(Some(crate::companion::ConsistencyAssessment {
+            companion: entity,
+            player: companion.followed_player,
+            state,
+            coordination: Some(coordination),
+            recovery: Some(recovery),
+            explanation: Some(explanation),
+            contradictions,
+            informational,
         }))
     }
     fn guidance_action_is_available(

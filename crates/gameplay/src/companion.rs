@@ -57,6 +57,163 @@ pub struct TacticalRecommendation {
     pub action: TacticalAction,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TacticalAssignmentStatus {
+    Actionable,
+    Blocked,
+    NotEvaluable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TacticalAssignmentReason {
+    AssignedByDistance,
+    AssignedByStableTieBreak,
+    MissingWeapon,
+    MissingAmmunition,
+    AttackCooldown,
+    OutOfRange,
+    NoThreatAvailable,
+    InvalidPosition,
+    NoAvailablePlayer,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TacticalAssignmentEvidence {
+    pub description: String,
+    pub confirmed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerTacticalRecommendation {
+    pub player: EntityId,
+    pub threat: Option<EntityId>,
+    pub action: Option<TacticalAction>,
+    pub status: TacticalAssignmentStatus,
+    pub reason: TacticalAssignmentReason,
+    pub preferred: bool,
+    pub evidence: Vec<TacticalAssignmentEvidence>,
+    pub missing_requirements: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeTacticalAssessment {
+    pub companion: EntityId,
+    pub followed_player: EntityId,
+    pub active_players: Vec<EntityId>,
+    pub scaling: crate::scaling::GameplayScaling,
+    pub threats: Vec<EntityId>,
+    pub recommendations: Vec<PlayerTacticalRecommendation>,
+    pub unassigned_threats: Vec<EntityId>,
+    pub conclusive: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SupportRecommendationStatus {
+    Actionable,
+    Blocked,
+    Informational,
+    NotEvaluable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SupportRecommendationReason {
+    MissingAmmunition,
+    ProviderAvailable,
+    ProviderInsufficientQuantity,
+    ReceiverCapacityExceeded,
+    StackExceeded,
+    ItemDefinitionMissing,
+    ReceiverUnavailable,
+    ProviderUnavailable,
+    NoProvider,
+    PartialTransfer,
+    NoSupportRequired,
+    InsufficientEvidence,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SupportEvidence {
+    pub description: String,
+    pub confirmed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerSupportRecommendation {
+    pub needy_player: EntityId,
+    pub provider: Option<EntityId>,
+    pub item: Option<crate::types::ItemId>,
+    pub amount: u32,
+    pub blocked_action: Option<TacticalAction>,
+    pub status: SupportRecommendationStatus,
+    pub reason: SupportRecommendationReason,
+    pub evidence: Vec<SupportEvidence>,
+    pub missing_requirements: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeSupportAssessment {
+    pub companion: EntityId,
+    pub followed_player: EntityId,
+    pub active_players: Vec<EntityId>,
+    pub threats: Vec<EntityId>,
+    pub status: SupportRecommendationStatus,
+    pub recommendations: Vec<PlayerSupportRecommendation>,
+    pub conclusive: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CooperativeEncounterReadinessStatus {
+    Prepared,
+    PreparedWithReservations,
+    Blocked,
+    NotEvaluable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadinessRequirement {
+    pub player: EntityId,
+    pub requirement: PreparationRequirement,
+    pub satisfied: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadinessBlocker {
+    pub player: EntityId,
+    pub threat: Option<EntityId>,
+    pub requirement: Option<PreparationRequirement>,
+    pub description: String,
+    pub support: Option<PlayerSupportRecommendation>,
+    pub evidence: Vec<SupportEvidence>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CooperativePreparationAction {
+    TransferInventory {
+        from: EntityId,
+        to: EntityId,
+        item: crate::types::ItemId,
+        amount: u32,
+    },
+    Prepare(PreparationAction),
+    ExecuteTactical(TacticalAction),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeEncounterReadinessAssessment {
+    pub companion: EntityId,
+    pub followed_player: EntityId,
+    pub active_players: Vec<EntityId>,
+    pub threats: Vec<EntityId>,
+    pub status: CooperativeEncounterReadinessStatus,
+    pub satisfied_requirements: Vec<ReadinessRequirement>,
+    pub missing_requirements: Vec<ReadinessRequirement>,
+    pub blockers: Vec<ReadinessBlocker>,
+    pub support_opportunities: Vec<PlayerSupportRecommendation>,
+    pub actions: Vec<CooperativePreparationAction>,
+    pub evidence: Vec<SupportEvidence>,
+    pub conclusive: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NavigationRisk {
     InsufficientFuel { required: u32, available: u32 },
@@ -476,6 +633,236 @@ pub struct RecoveryAssessment {
     pub missing_requirements: Vec<PreparationRequirement>,
     pub actionable: bool,
     pub explanation: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExplanationStatus {
+    Actionable,
+    Recoverable,
+    Blocked,
+    Satisfied,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExplanationEvidenceKind {
+    Objective,
+    Route,
+    Fuel,
+    Integrity,
+    Threat,
+    Preparation,
+    Knowledge,
+    Alternative,
+    StateChange,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExplanationEvidence {
+    pub kind: ExplanationEvidenceKind,
+    pub description: String,
+    pub objective: Option<crate::types::ObjectiveId>,
+    pub destination: Option<DestinationId>,
+    pub entity: Option<EntityId>,
+    pub satisfied: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExplanationReason {
+    ObjectiveAction,
+    FuelInsufficient,
+    ShipDestroyed,
+    ActiveThreat,
+    PreparationRequired,
+    KnowledgeMissing,
+    AlternativeAvailable,
+    ObjectiveCompleted,
+    NoKnownCause,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExplainedAlternative {
+    pub alternative: RecoveryAlternative,
+    pub selected: bool,
+    pub explanation: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecommendationExplanation {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub objective: Option<crate::types::ObjectiveId>,
+    pub mission: Option<crate::types::MissionId>,
+    pub action: Option<RecoveryAction>,
+    pub status: ExplanationStatus,
+    pub reason: ExplanationReason,
+    pub evidence: Vec<ExplanationEvidence>,
+    pub satisfied_requirements: Vec<PreparationRequirement>,
+    pub missing_requirements: Vec<PreparationRequirement>,
+    pub blocker: Option<RecoveryBlocker>,
+    pub alternatives: Vec<ExplainedAlternative>,
+    pub explanation: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExplanationChangeReason {
+    PreparationResolved,
+    ThreatResolved,
+    ObjectiveCompleted,
+    RecommendationChanged,
+    NoIdentifiableCause,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecommendationExplanationComparison {
+    pub previous: Option<RecoveryAction>,
+    pub current: Option<RecoveryAction>,
+    pub previous_status: ExplanationStatus,
+    pub current_status: ExplanationStatus,
+    pub reason: ExplanationChangeReason,
+    pub evidence: Vec<ExplanationEvidence>,
+}
+
+impl RecommendationExplanation {
+    pub fn compare(
+        previous: &Self,
+        current: &Self,
+    ) -> RecommendationExplanationComparison {
+        let reason = if !previous.missing_requirements.is_empty()
+            && current.missing_requirements.is_empty()
+        {
+            ExplanationChangeReason::PreparationResolved
+        } else if previous.reason == ExplanationReason::ActiveThreat
+            && current.reason != ExplanationReason::ActiveThreat
+        {
+            ExplanationChangeReason::ThreatResolved
+        } else if previous.objective.is_some()
+            && previous.objective != current.objective
+        {
+            ExplanationChangeReason::ObjectiveCompleted
+        } else if previous.action != current.action || previous.status != current.status {
+            ExplanationChangeReason::RecommendationChanged
+        } else {
+            ExplanationChangeReason::NoIdentifiableCause
+        };
+        let mut evidence = Vec::new();
+        if reason == ExplanationChangeReason::PreparationResolved {
+            evidence.push(ExplanationEvidence {
+                kind: ExplanationEvidenceKind::StateChange,
+                description: "Los requisitos que bloqueaban la preparacion ya no faltan".to_string(),
+                objective: current.objective,
+                destination: None,
+                entity: None,
+                satisfied: true,
+            });
+        } else if reason == ExplanationChangeReason::ThreatResolved {
+            evidence.push(ExplanationEvidence {
+                kind: ExplanationEvidenceKind::StateChange,
+                description: "La amenaza que justificaba la prioridad critica ya no esta activa".to_string(),
+                objective: current.objective,
+                destination: None,
+                entity: previous.blocker.as_ref().and_then(|value| value.entity),
+                satisfied: true,
+            });
+        } else if reason == ExplanationChangeReason::ObjectiveCompleted {
+            evidence.push(ExplanationEvidence {
+                kind: ExplanationEvidenceKind::StateChange,
+                description: "El objetivo anterior dejo de ser el objetivo actual".to_string(),
+                objective: previous.objective,
+                destination: None,
+                entity: None,
+                satisfied: true,
+            });
+        } else if reason == ExplanationChangeReason::NoIdentifiableCause {
+            evidence.push(ExplanationEvidence {
+                kind: ExplanationEvidenceKind::StateChange,
+                description: "La causa exacta no puede determinarse con las evaluaciones suministradas".to_string(),
+                objective: current.objective,
+                destination: None,
+                entity: None,
+                satisfied: false,
+            });
+        }
+        RecommendationExplanationComparison {
+            previous: previous.action,
+            current: current.action,
+            previous_status: previous.status,
+            current_status: current.status,
+            reason,
+            evidence,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsistencyAuditState {
+    Consistent,
+    Informational,
+    Contradictory,
+    NotEvaluable,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContradictionSeverity {
+    Critical,
+    Important,
+    Informational,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContradictionCategory {
+    PreparationNavigation,
+    TacticalCoordination,
+    ExplanationRecovery,
+    ObjectiveGuidance,
+    Availability,
+    RouteViability,
+    Alternative,
+    InsufficientEvidence,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContradictionReason {
+    CriticalPreparationConflict,
+    ActiveThreatConflict,
+    BlockerStateConflict,
+    CompletedObjectiveStillRecommended,
+    UnavailableActorActionable,
+    InfeasibleRoutePresentedAsViable,
+    AlternativeWithoutRegisteredRoute,
+    InsufficientEvidence,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConsistencyEvidence {
+    pub category: ContradictionCategory,
+    pub description: String,
+    pub objective: Option<crate::types::ObjectiveId>,
+    pub destination: Option<DestinationId>,
+    pub entity: Option<EntityId>,
+    pub confirmed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Contradiction {
+    pub severity: ContradictionSeverity,
+    pub category: ContradictionCategory,
+    pub reason: ContradictionReason,
+    pub explanation: String,
+    pub evidence: Vec<ConsistencyEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConsistencyAssessment {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub state: ConsistencyAuditState,
+    pub coordination: Option<CoordinationAssessment>,
+    pub recovery: Option<RecoveryAssessment>,
+    pub explanation: Option<RecommendationExplanation>,
+    pub contradictions: Vec<Contradiction>,
+    pub informational: Vec<ConsistencyEvidence>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
