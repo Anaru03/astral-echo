@@ -318,6 +318,7 @@ pub enum CommandRejection {
     CollectibleNotFound,
     CollectibleUnavailable,
     CollectibleOutOfRange,
+    CollectibleNotOwned,
     ShipControlInactive,
     InvalidShipMovement,
     ScannerNotFound,

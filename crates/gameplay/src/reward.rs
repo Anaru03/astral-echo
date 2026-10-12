@@ -1,6 +1,12 @@
 use crate::{combat::EnemyArchetype, types::ItemId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RewardDistributionPolicy {
+    Shared,
+    Personal,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RewardEntry {
     pub item: ItemId,
     pub amount: u32,
@@ -10,6 +16,7 @@ pub struct RewardEntry {
 pub struct EnemyReward {
     pub archetype: EnemyArchetype,
     pub entries: Vec<RewardEntry>,
+    pub distribution: RewardDistributionPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,7 +28,16 @@ pub enum RewardConfigurationError {
 
 impl EnemyReward {
     pub fn new(archetype: EnemyArchetype, entries: Vec<RewardEntry>) -> Self {
-        Self { archetype, entries }
+        Self {
+            archetype,
+            entries,
+            distribution: RewardDistributionPolicy::Shared,
+        }
+    }
+
+    pub fn with_distribution(mut self, distribution: RewardDistributionPolicy) -> Self {
+        self.distribution = distribution;
+        self
     }
 
     pub fn validate(&self) -> Result<(), RewardConfigurationError> {
@@ -51,4 +67,5 @@ pub enum RewardError {
     InvalidPosition,
     EnemyNotFound,
     RewardAlreadyProcessed,
+    RewardNotRegistered,
 }

@@ -24,7 +24,7 @@ use crate::{
     player::Player,
     resources::{FuelError, FuelTank, ShipResources},
     revival::{RevivalError, ReviveResult},
-    reward::{EnemyReward, RewardError},
+    reward::{EnemyReward, RewardDistributionPolicy, RewardError},
     station::{Station, StationType},
     types::{GameplayState, SimulationPhase},
 };
@@ -307,6 +307,7 @@ impl GameplayWorld {
         };
         player_state.is_active
             && item.active
+            && item.owner.is_none_or(|owner| owner == player)
             && amount > 0
             && amount <= item.amount
             && self
@@ -989,6 +990,19 @@ impl GameplayWorld {
         self.enemy_rewards.insert(reward.archetype, reward);
         Ok(())
     }
+    pub fn configure_enemy_reward_distribution(
+        &mut self,
+        archetype: crate::combat::EnemyArchetype,
+        distribution: RewardDistributionPolicy,
+    ) -> Result<(), RewardError> {
+        let reward = self
+            .enemy_rewards
+            .get_mut(&archetype)
+            .ok_or(RewardError::RewardNotRegistered)?;
+        reward.distribution = distribution;
+        Ok(())
+    }
+
     pub fn create_collectible(
         &mut self,
         item: crate::types::ItemId,
@@ -1010,6 +1024,7 @@ impl GameplayWorld {
             amount,
             position,
             interaction_range,
+            owner: None,
             active: true,
         };
         if let Err(error) = collectible.validate() {
@@ -1396,19 +1411,34 @@ impl GameplayWorld {
                 return Err(RewardError::AmountExceedsStack);
             }
         }
-        let collectibles: Vec<_> = reward
+        let eligible_players: Vec<_> = match reward.distribution {
+            RewardDistributionPolicy::Shared => vec![None],
+            RewardDistributionPolicy::Personal => self
+                .players
+                .iter()
+                .filter(|(player, state)| self.entities.contains(**player) && state.is_active)
+                .map(|(player, _)| Some(*player))
+                .collect(),
+        };
+        let collectible_specs: Vec<_> = reward
             .entries
             .iter()
-            .map(|entry| {
-                let entity = self.entities.create();
-                Collectible {
-                    entity,
-                    item: entry.item,
-                    amount: entry.amount,
-                    position,
-                    interaction_range: 2.0,
-                    active: true,
-                }
+            .flat_map(|entry| {
+                eligible_players
+                    .iter()
+                    .map(move |owner| (entry.item, entry.amount, *owner))
+            })
+            .collect();
+        let collectibles: Vec<_> = collectible_specs
+            .into_iter()
+            .map(|(item, amount, owner)| Collectible {
+                entity: self.entities.create(),
+                item,
+                amount,
+                position,
+                interaction_range: 2.0,
+                owner,
+                active: true,
             })
             .collect();
         self.collectibles

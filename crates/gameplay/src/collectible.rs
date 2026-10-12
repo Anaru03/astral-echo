@@ -82,6 +82,7 @@ pub struct Collectible {
     pub amount: u32,
     pub position: Vec3,
     pub interaction_range: f32,
+    pub owner: Option<EntityId>,
     pub active: bool,
 }
 

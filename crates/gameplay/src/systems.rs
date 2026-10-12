@@ -2802,6 +2802,9 @@ impl InventorySystem {
                 crate::commands::CommandRejection::CollectibleUnavailable,
             );
         }
+        if item_state.owner.is_some_and(|owner| owner != player) {
+            return CommandResult::rejected(crate::commands::CommandRejection::CollectibleNotOwned);
+        }
         if amount == 0 || amount > item_state.amount {
             return CommandResult::invalid(
                 crate::commands::CommandInvalidity::InvalidInventoryConfiguration,

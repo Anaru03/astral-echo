@@ -81,7 +81,9 @@ pub use player::{MovementParameters, Orientation, Player};
 pub use resources::{FuelError, FuelTank, ShipResources};
 pub use revival::{RevivalError, ReviveEffect, ReviveResult};
 pub use revival_system::RevivalSystem;
-pub use reward::{EnemyReward, RewardConfigurationError, RewardEntry, RewardError};
+pub use reward::{
+    EnemyReward, RewardConfigurationError, RewardDistributionPolicy, RewardEntry, RewardError,
+};
 pub use reward_system::RewardSystem;
 pub use station::{Station, StationError, StationState, StationType};
 pub use systems::{

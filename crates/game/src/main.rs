@@ -11,8 +11,8 @@ use gameplay::{
     ElectricalPanelRegistrationError, EnemyArchetype, EnemyConfiguration, EnvironmentalHazard,
     CommandStatus, GameplayCommand, GameplayEvent, LifeSupportConfiguration,
     LifeSupportRegistrationError, MissionProgress, OxygenCompartmentConfiguration,
-    ShipRepairConfiguration, SignalKnowledge, StationState, StationType, TravelState,
-    WeaponAmmunition, WeaponConfiguration,
+    RewardDistributionPolicy, ShipRepairConfiguration, SignalKnowledge, StationState,
+    StationType, TravelState, WeaponAmmunition, WeaponConfiguration,
 };
 
 fn run_atomicity_regressions() -> Result<(), String> {
@@ -424,6 +424,305 @@ fn run_inventory_transfer_scenario() -> Result<(), String> {
             .world()
             .inventory(capacity_limited)
             .map_or(0, |value| value.quantity(item))
+    );
+    Ok(())
+}
+
+fn run_reward_distribution_scenario() -> Result<(), String> {
+    let item = gameplay::types::ItemId(3);
+    let weapon = WeaponConfiguration::with_ammunition(
+        AttackType::Kinetic,
+        100,
+        20,
+        Duration(1_000),
+        WeaponAmmunition {
+            item: gameplay::types::ItemId(2),
+            amount_per_attack: 1,
+        },
+    );
+
+    let mut shared_session = ProjectEchoSession::new();
+    let shared_player = shared_session.ids.first_player;
+    let shared_player_b = shared_session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador compartido B: {error:?}"))?;
+    let shared_player_c = shared_session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador compartido C: {error:?}"))?;
+    for player in [shared_player_b, shared_player_c] {
+        shared_session
+            .world_mut()
+            .initialize_inventory(player, 20)
+            .map_err(|error| format!("inicializar inventario compartido: {error:?}"))?;
+    }
+    run_command(
+        &mut shared_session,
+        "dar munición para recompensa compartida",
+        GameplayCommand::AddInventoryItem {
+            player: shared_player,
+            item: gameplay::types::ItemId(2),
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut shared_session,
+        "equipar arma para recompensa compartida",
+        GameplayCommand::EquipPlayerWeapon {
+            player: shared_player,
+            weapon,
+        },
+    )?;
+    run_command(
+        &mut shared_session,
+        "crear enemigo de recompensa compartida",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let shared_enemy = shared_session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "no se creó el enemigo de recompensa compartida".to_owned())?;
+    run_command(
+        &mut shared_session,
+        "derrotar enemigo de recompensa compartida",
+        GameplayCommand::AttackEnemy {
+            player: shared_player,
+            enemy: shared_enemy,
+        },
+    )?;
+    let shared_rewards: Vec<_> = shared_session
+        .world()
+        .collectibles()
+        .filter(|collectible| collectible.item == item)
+        .copied()
+        .collect();
+    if shared_rewards.len() != 1 || shared_rewards[0].owner.is_some() {
+        return Err("la recompensa compartida no generó un único objeto accesible".to_owned());
+    }
+    let shared_collectible = shared_rewards[0];
+    let shared_before_b = shared_session
+        .world()
+        .inventory(shared_player_b)
+        .map_or(0, |inventory| inventory.quantity(item));
+    let shared_before_c = shared_session
+        .world()
+        .inventory(shared_player_c)
+        .map_or(0, |inventory| inventory.quantity(item));
+    run_command(
+        &mut shared_session,
+        "recoger recompensa compartida",
+        GameplayCommand::CollectItem {
+            player: shared_player,
+            collectible: shared_collectible.entity,
+            amount: 1,
+        },
+    )?;
+    if shared_session
+        .world()
+        .inventory(shared_player)
+        .map_or(0, |inventory| inventory.quantity(item))
+        != 1
+        || shared_session
+            .world()
+            .inventory(shared_player_b)
+            .map_or(0, |inventory| inventory.quantity(item))
+            != shared_before_b
+        || shared_session
+            .world()
+            .inventory(shared_player_c)
+            .map_or(0, |inventory| inventory.quantity(item))
+            != shared_before_c
+        || shared_session
+            .world()
+            .collectible(shared_collectible.entity)
+            .is_none_or(|collectible| collectible.active || collectible.amount != 0)
+    {
+        return Err("la recompensa compartida no se recogió exactamente una vez".to_owned());
+    }
+    let shared_retry = shared_session.update([GameplayCommand::CollectItem {
+        player: shared_player,
+        collectible: shared_collectible.entity,
+        amount: 1,
+    }]);
+    if !matches!(
+        shared_retry.first().map(|result| result.status),
+        Some(gameplay::CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::CollectibleUnavailable,
+        })
+    ) {
+        return Err("la recompensa compartida pudo reclamarse dos veces".to_owned());
+    }
+
+    let mut personal_session = ProjectEchoSession::new();
+    personal_session
+        .world_mut()
+        .configure_enemy_reward_distribution(
+            EnemyArchetype::Shooter,
+            RewardDistributionPolicy::Personal,
+        )
+        .map_err(|error| format!("configurar recompensa personal: {error:?}"))?;
+    let personal_a = personal_session.ids.first_player;
+    let personal_b = personal_session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador personal B: {error:?}"))?;
+    let personal_c = personal_session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador personal C: {error:?}"))?;
+    for player in [personal_b, personal_c] {
+        personal_session
+            .world_mut()
+            .initialize_inventory(player, 20)
+            .map_err(|error| format!("inicializar inventario personal: {error:?}"))?;
+    }
+    run_command(
+        &mut personal_session,
+        "dar munición para recompensa personal",
+        GameplayCommand::AddInventoryItem {
+            player: personal_a,
+            item: gameplay::types::ItemId(2),
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut personal_session,
+        "equipar arma para recompensa personal",
+        GameplayCommand::EquipPlayerWeapon {
+            player: personal_a,
+            weapon,
+        },
+    )?;
+    run_command(
+        &mut personal_session,
+        "crear enemigo de recompensa personal",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let personal_enemy = personal_session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "no se creó el enemigo de recompensa personal".to_owned())?;
+    run_command(
+        &mut personal_session,
+        "derrotar enemigo de recompensa personal",
+        GameplayCommand::AttackEnemy {
+            player: personal_a,
+            enemy: personal_enemy,
+        },
+    )?;
+    let personal_rewards: Vec<_> = personal_session
+        .world()
+        .collectibles()
+        .filter(|collectible| collectible.item == item)
+        .copied()
+        .collect();
+    if personal_rewards.len() != 3
+        || ![personal_a, personal_b, personal_c]
+            .iter()
+            .all(|player| personal_rewards.iter().any(|reward| reward.owner == Some(*player)))
+    {
+        return Err("la recompensa personal no generó una concesión por jugador elegible".to_owned());
+    }
+    let reward_a = personal_rewards
+        .iter()
+        .find(|reward| reward.owner == Some(personal_a))
+        .copied()
+        .ok_or_else(|| "falta la recompensa personal de A".to_owned())?;
+    let before_personal_a = personal_session
+        .world()
+        .inventory(personal_a)
+        .cloned()
+        .ok_or_else(|| "falta inventario personal de A".to_owned())?;
+    let before_personal_b = personal_session
+        .world()
+        .inventory(personal_b)
+        .cloned()
+        .ok_or_else(|| "falta inventario personal de B".to_owned())?;
+    let rejected_personal = personal_session.update([GameplayCommand::CollectItem {
+        player: personal_b,
+        collectible: reward_a.entity,
+        amount: 1,
+    }]);
+    if !matches!(
+        rejected_personal.first().map(|result| result.status),
+        Some(gameplay::CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::CollectibleNotOwned,
+        })
+    ) || personal_session.world().inventory(personal_a) != Some(&before_personal_a)
+        || personal_session.world().inventory(personal_b) != Some(&before_personal_b)
+        || personal_session.world().collectible(reward_a.entity) != Some(&reward_a)
+        || !personal_session.world().events().is_empty()
+    {
+        return Err("la recogida ajena de una recompensa personal no fue atómica".to_owned());
+    }
+    for player in [personal_a, personal_b, personal_c] {
+        let reward = personal_rewards
+            .iter()
+            .find(|reward| reward.owner == Some(player))
+            .copied()
+            .ok_or_else(|| "falta una recompensa personal durante la recogida".to_owned())?;
+        run_command(
+            &mut personal_session,
+            "recoger recompensa personal propia",
+            GameplayCommand::CollectItem {
+                player,
+                collectible: reward.entity,
+                amount: 1,
+            },
+        )?;
+    }
+    let retry_personal = personal_session.update([GameplayCommand::CollectItem {
+        player: personal_a,
+        collectible: reward_a.entity,
+        amount: 1,
+    }]);
+    if !matches!(
+        retry_personal.first().map(|result| result.status),
+        Some(gameplay::CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::CollectibleUnavailable,
+        })
+    ) || [personal_a, personal_b, personal_c].iter().any(|player| {
+        personal_session
+            .world()
+            .inventory(*player)
+            .map_or(0, |inventory| inventory.quantity(item))
+            != 1
+    })
+    {
+        return Err("la recompensa personal no conservó cantidades o idempotencia".to_owned());
+    }
+    let repeated_attack = personal_session.update([GameplayCommand::AttackEnemy {
+        player: personal_a,
+        enemy: personal_enemy,
+    }]);
+    if !matches!(
+        repeated_attack.first().map(|result| result.status),
+        Some(gameplay::CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::CombatantInactive,
+        })
+    ) || personal_session.world().collectibles().count() != 3
+        || !personal_session.world().events().is_empty()
+    {
+        return Err("reprocesar una derrota generó recompensas duplicadas".to_owned());
+    }
+    println!(
+        "RECOMPENSAS COMPLETADAS: compartida=1, personales=3, propietarios={},{},{}",
+        personal_a, personal_b, personal_c
     );
     Ok(())
 }
@@ -2641,5 +2940,6 @@ fn run_scenario() -> Result<(), String> {
     run_player_count_scenario(2)?;
     run_player_count_scenario(3)?;
     run_inventory_transfer_scenario()?;
+    run_reward_distribution_scenario()?;
     Ok(())
 }
