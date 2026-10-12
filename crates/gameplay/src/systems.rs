@@ -2410,6 +2410,15 @@ impl CombatSystem {
         CommandResult::success(true)
     }
 
+    pub(crate) fn autonomous_attack(
+        &self,
+        world: &mut GameplayWorld,
+        enemy: engine::EntityId,
+        player: engine::EntityId,
+    ) -> CommandResult {
+        self.attack(world, enemy, player, false)
+    }
+
     fn attack_ship(
         &self,
         world: &mut GameplayWorld,
@@ -2509,6 +2518,148 @@ impl CombatSystem {
     }
 }
 
+pub struct EnemyAiSystem {
+    event_cursor: usize,
+}
+
+impl EnemyAiSystem {
+    pub const fn new() -> Self {
+        Self { event_cursor: 0 }
+    }
+
+    fn observe_time(&self, world: &mut GameplayWorld, delta: engine::Duration) {
+        if delta.0 == 0 {
+            return;
+        }
+        let enemies: Vec<_> = world.enemies().copied().collect();
+        for enemy in enemies {
+            if !enemy.active || enemy.is_defeated() {
+                continue;
+            }
+            let Some((target, target_position, distance_squared)) =
+                Self::select_target(world, enemy.position)
+            else {
+                continue;
+            };
+            let range_squared = f64::from(enemy.weapon.range) * f64::from(enemy.weapon.range);
+            if distance_squared <= range_squared {
+                let _ = CombatSystem.autonomous_attack(world, enemy.entity, target);
+            } else {
+                Self::move_towards(world, enemy, target_position, delta, distance_squared);
+            }
+        }
+    }
+
+    fn select_target(
+        world: &GameplayWorld,
+        enemy_position: engine::Vec3,
+    ) -> Option<(engine::EntityId, engine::Vec3, f64)> {
+        world
+            .players()
+            .filter_map(|player| {
+                let combatant = world.combatant(player.entity_id)?;
+                if !player.is_active
+                    || !world.entities().contains(player.entity_id)
+                    || !combatant.active
+                    || combatant.is_defeated()
+                    || !finite_position(player.position)
+                {
+                    return None;
+                }
+                let distance_squared = safe_distance_squared(enemy_position, player.position)?;
+                Some((player.entity_id, player.position, distance_squared))
+            })
+            .min_by(|left, right| {
+                left.2
+                    .total_cmp(&right.2)
+                    .then_with(|| left.0.cmp(&right.0))
+            })
+    }
+
+    fn move_towards(
+        world: &mut GameplayWorld,
+        enemy: crate::combat::Combatant,
+        target: engine::Vec3,
+        delta: engine::Duration,
+        distance_squared: f64,
+    ) {
+        if !finite_position(enemy.position) || !finite_position(target) {
+            return;
+        }
+        let distance = distance_squared.sqrt();
+        if !distance.is_finite() || distance == 0.0 {
+            return;
+        }
+        let seconds = delta.0 as f64 / 1_000.0;
+        let travel = f64::from(enemy.mobility) * seconds;
+        if !travel.is_finite() || travel <= 0.0 {
+            return;
+        }
+        let factor = (travel / distance).min(1.0);
+        let delta_x = f64::from(target.x) - f64::from(enemy.position.x);
+        let delta_y = f64::from(target.y) - f64::from(enemy.position.y);
+        let delta_z = f64::from(target.z) - f64::from(enemy.position.z);
+        let position = engine::Vec3 {
+            x: (f64::from(enemy.position.x) + delta_x * factor) as f32,
+            y: (f64::from(enemy.position.y) + delta_y * factor) as f32,
+            z: (f64::from(enemy.position.z) + delta_z * factor) as f32,
+        };
+        if !finite_position(position) {
+            return;
+        }
+        if let Some(updated) = world.combatant_mut(enemy.entity) {
+            updated.position = position;
+        }
+        world.publish(crate::events::GameplayEvent::EnemyMoved {
+            enemy: enemy.entity,
+            position,
+        });
+    }
+}
+
+impl Default for EnemyAiSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GameplaySystem for EnemyAiSystem {
+    fn process(
+        &mut self,
+        _world: &mut GameplayWorld,
+        _command: GameplayCommand,
+    ) -> Option<CommandResult> {
+        None
+    }
+
+    fn observes_events(&self) -> bool {
+        true
+    }
+
+    fn reset_event_cursor(&mut self) {
+        self.event_cursor = 0;
+    }
+
+    fn observe_events(&mut self, world: &mut GameplayWorld) {
+        let length = world.events().len();
+        if self.event_cursor > length {
+            self.event_cursor = 0;
+        }
+        let events: Vec<_> = world
+            .events()
+            .iter()
+            .skip(self.event_cursor)
+            .cloned()
+            .collect();
+        self.event_cursor = length;
+        for event in events {
+            if let crate::events::GameplayEvent::TimeAdvanced { from, to } = event {
+                self.observe_time(world, engine::Duration(to.elapsed.0.saturating_sub(from.elapsed.0)));
+            }
+        }
+    }
+}
+
 struct Vec3Distance;
 
 impl Vec3Distance {
@@ -2525,6 +2676,14 @@ impl Vec3Distance {
         }
         Some(squared.sqrt().ceil() as u32)
     }
+}
+
+fn safe_distance_squared(a: engine::Vec3, b: engine::Vec3) -> Option<f64> {
+    let dx = f64::from(a.x) - f64::from(b.x);
+    let dy = f64::from(a.y) - f64::from(b.y);
+    let dz = f64::from(a.z) - f64::from(b.z);
+    let squared = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
+    squared.is_finite().then_some(squared)
 }
 
 pub struct InventorySystem;

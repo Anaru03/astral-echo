@@ -8,9 +8,10 @@ use engine::EntityId;
 use gameplay::types::MissionId;
 use gameplay::{
     systems::{
-        CombatSystem, DoorSystem, ElectricalSystem, EnvironmentalHazardSystem, HullIntegritySystem,
-        InteractionSystem, InventorySystem, LifeSupportSystem, NavigationSystem, PilotSystem,
-        PlayerSystem, ResourceSystem, ScannerSystem, StationSystem,
+        CombatSystem, DoorSystem, ElectricalSystem, EnemyAiSystem,
+        EnvironmentalHazardSystem, HullIntegritySystem, InteractionSystem, InventorySystem,
+        LifeSupportSystem, NavigationSystem, PilotSystem, PlayerSystem, ResourceSystem,
+        ScannerSystem, StationSystem,
     },
     CommandResult, DoorAccessRequirement, GameplayCommand, GameplayProcessor, GameplayState,
     GameplayWorld,
@@ -160,6 +161,7 @@ impl ProjectEchoSession {
         let mut processor = GameplayProcessor::new();
         processor.add_system(PlayerSystem);
         processor.add_system(CombatSystem);
+        processor.add_system(EnemyAiSystem::new());
         processor.add_system(RewardSystem::new());
         processor.add_system(InventorySystem);
         processor.add_system(HealingSystem);

@@ -727,6 +727,240 @@ fn run_reward_distribution_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_autonomous_enemy_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player_a = session.ids.first_player;
+    let player_b = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador de IA B: {error:?}"))?;
+    session
+        .world_mut()
+        .initialize_inventory(player_b, 20)
+        .map_err(|error| format!("inicializar inventario de IA B: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear enemigo tirador autónomo",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let shooter = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "no se creó el tirador autónomo".to_owned())?;
+
+    run_command(
+        &mut session,
+        "avanzar para primer ataque autónomo",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(800),
+        },
+    )?;
+    let health_after_first = session
+        .world()
+        .player_health(player_a)
+        .map(|health| health.0)
+        .ok_or_else(|| "no se pudo leer la salud tras el primer ataque".to_owned())?;
+    if health_after_first != 92
+        || !session.world().events().iter().any(|event| {
+            matches!(
+                event,
+                GameplayEvent::AttackExecuted { attacker, target, .. }
+                    if *attacker == shooter && *target == player_a
+            )
+        })
+    {
+        return Err("el enemigo autónomo no adquirió al jugador A de forma determinista".to_owned());
+    }
+    run_command(
+        &mut session,
+        "avanzar dentro del cooldown autónomo",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        },
+    )?;
+    if session
+        .world()
+        .player_health(player_a)
+        .map(|health| health.0)
+        != Some(92)
+        || session.world().events().iter().any(|event| {
+            matches!(
+                event,
+                GameplayEvent::AttackExecuted { attacker, .. } if *attacker == shooter
+            )
+        })
+    {
+        return Err("el enemigo autónomo ignoró su cooldown".to_owned());
+    }
+    run_command(
+        &mut session,
+        "avanzar para segundo ataque autónomo",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(700),
+        },
+    )?;
+    if session
+        .world()
+        .player_health(player_a)
+        .map(|health| health.0)
+        != Some(84)
+    {
+        return Err("el segundo ataque autónomo no respetó el tiempo lógico".to_owned());
+    }
+    run_command(
+        &mut session,
+        "invalidar objetivo autónomo A",
+        GameplayCommand::SetPlayerActive {
+            player: player_a,
+            active: false,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "seleccionar nuevo objetivo autónomo",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(800),
+        },
+    )?;
+    if session
+        .world()
+        .player_health(player_b)
+        .map(|health| health.0)
+        != Some(92)
+        || session
+            .world()
+            .player_health(player_a)
+            .map(|health| health.0)
+            != Some(84)
+        || !session.world().events().iter().any(|event| {
+            matches!(
+                event,
+                GameplayEvent::AttackExecuted { attacker, target, .. }
+                    if *attacker == shooter && *target == player_b
+            )
+        })
+    {
+        return Err("la IA no re-seleccionó un objetivo válido tras la desactivación".to_owned());
+    }
+
+    run_command(
+        &mut session,
+        "dar munición para derrotar al tirador",
+        GameplayCommand::AddInventoryItem {
+            player: player_b,
+            item: gameplay::types::ItemId(2),
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "equipar arma contra el tirador",
+        GameplayCommand::EquipPlayerWeapon {
+            player: player_b,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                100,
+                20,
+                Duration(1_000),
+                WeaponAmmunition {
+                    item: gameplay::types::ItemId(2),
+                    amount_per_attack: 1,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "derrotar tirador después del encuentro autónomo",
+        GameplayCommand::AttackEnemy {
+            player: player_b,
+            enemy: shooter,
+        },
+    )?;
+    let reward_count = session.world().collectibles().count();
+    if session
+        .world()
+        .combatant(shooter)
+        .is_none_or(|combatant| combatant.active || !combatant.is_defeated())
+        || reward_count != 1
+    {
+        return Err("la derrota posterior a la IA no produjo el estado o recompensa esperados".to_owned());
+    }
+    run_command(
+        &mut session,
+        "avanzar con enemigo derrotado",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        },
+    )?;
+    if session.world().collectibles().count() != reward_count
+        || session.world().events().iter().any(|event| {
+            matches!(
+                event,
+                GameplayEvent::AttackExecuted { attacker, .. } if *attacker == shooter
+            )
+        })
+    {
+        return Err("el enemigo derrotado continuó ejecutando acciones autónomas".to_owned());
+    }
+
+    run_command(
+        &mut session,
+        "crear cargador autónomo",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(
+                EnemyArchetype::Charger,
+                Vec3 {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+        },
+    )?;
+    let charger = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, archetype, .. }
+                if *archetype == EnemyArchetype::Charger => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "no se creó el cargador autónomo".to_owned())?;
+    run_command(
+        &mut session,
+        "mover cargador autónomo",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        },
+    )?;
+    let charger_position = session
+        .world()
+        .combatant(charger)
+        .map(|combatant| combatant.position)
+        .ok_or_else(|| "desapareció el cargador autónomo".to_owned())?;
+    if charger_position.x >= 10.0
+        || !session.world().events().iter().any(|event| {
+            matches!(event, GameplayEvent::EnemyMoved { enemy, .. } if *enemy == charger)
+        })
+    {
+        return Err("el cargador no ejecutó movimiento táctico observable".to_owned());
+    }
+    println!(
+        "IA AUTÓNOMA COMPLETADA: tirador={}, objetivo_inicial={}, objetivo_reseleccionado={}, cargador={}, posicion_cargador={:.1}",
+        shooter, player_a, player_b, charger, charger_position.x
+    );
+    Ok(())
+}
+
 fn run_integrated_scenario() -> Result<(), String> {
     let mut session = ProjectEchoSession::new();
     let player = session.ids.first_player;
@@ -2941,5 +3175,6 @@ fn run_scenario() -> Result<(), String> {
     run_player_count_scenario(3)?;
     run_inventory_transfer_scenario()?;
     run_reward_distribution_scenario()?;
+    run_autonomous_enemy_scenario()?;
     Ok(())
 }

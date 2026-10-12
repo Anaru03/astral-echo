@@ -113,6 +113,10 @@ pub enum GameplayEvent {
         archetype: crate::combat::EnemyArchetype,
         position: Vec3,
     },
+    EnemyMoved {
+        enemy: EntityId,
+        position: Vec3,
+    },
     AttackExecuted {
         attacker: EntityId,
         target: EntityId,

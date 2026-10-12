@@ -87,9 +87,9 @@ pub use reward::{
 pub use reward_system::RewardSystem;
 pub use station::{Station, StationError, StationState, StationType};
 pub use systems::{
-    CombatSystem, DoorSystem, ElectricalSystem, EnvironmentalHazardSystem, HullIntegritySystem,
-    InteractionSystem, InventorySystem, LifeSupportSystem, NavigationSystem, PilotSystem,
-    ResourceSystem, ScannerSystem, StationSystem,
+    CombatSystem, DoorSystem, ElectricalSystem, EnemyAiSystem, EnvironmentalHazardSystem,
+    HullIntegritySystem, InteractionSystem, InventorySystem, LifeSupportSystem, NavigationSystem,
+    PilotSystem, ResourceSystem, ScannerSystem, StationSystem,
 };
 pub use types::{GameResult, GameplayState, SimulationPhase};
 pub use world::{GameplayWorld, InventoryTransferError, PlayerCreationError, MAX_LOCAL_PLAYERS};
