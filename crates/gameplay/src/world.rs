@@ -18,6 +18,18 @@ use crate::{
         TacticalRecommendation,
         CooperativeEncounterReadinessAssessment, CooperativeEncounterReadinessStatus,
         CooperativePreparationAction, ReadinessBlocker, ReadinessRequirement,
+        CooperativeNavigationAction, CooperativeNavigationRiskAssessment,
+        CooperativeNavigationRiskStatus,
+        CooperativeNavigationContingencyAction,
+        CooperativeNavigationContingencyAssessment,
+        CooperativeNavigationContingencyStatus,
+        CooperativeRecoveryAssignmentAssessment, CooperativeRecoveryAssignmentStatus,
+        CooperativeRecoveryPlanAssessment, CooperativeRecoveryPlanDependency,
+        CooperativeRecoveryPlanStatus, CooperativeRecoveryPlanTask,
+        CooperativeRecoveryPlanTaskStatus, CooperativeRecoveryTask, CooperativeRecoveryTaskAction,
+        CooperativeRecoveryTaskStatus,
+        CooperativeTaskCompatibility, CooperativeTaskCompatibilityAssessment,
+        CooperativeTaskCompatibilityReason, CooperativeTaskCompatibilityStatus,
         CooperativeSupportAssessment, PlayerSupportRecommendation, SupportEvidence,
         SupportRecommendationReason, SupportRecommendationStatus,
         CoordinationAction, CoordinationAssessment, CoordinationCategory, CoordinationPriority,
@@ -48,7 +60,7 @@ use crate::{
     life_support::{LifeSupportConfiguration, LifeSupportPanel, LifeSupportRegistrationError},
     mission::{Mission, MissionRegistrationError},
     navigation::{
-        Destination, DestinationId, NavigationInitializationError, NavigationRegistrationError,
+        AutopilotState, Destination, DestinationId, NavigationInitializationError, NavigationRegistrationError,
         NavigationState, TravelProgress, TravelState,
     },
     player::Player,
@@ -1788,6 +1800,1231 @@ impl GameplayWorld {
             route_risks,
             recommendation_segment,
             recommendation,
+        }))
+    }
+    pub fn companion_cooperative_navigation_risk_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<CooperativeNavigationRiskAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active
+            || !self.entities.contains(player.entity_id)
+            || !self
+                .combatant(player.entity_id)
+                .is_some_and(|combatant| combatant.is_player && combatant.active && !combatant.is_defeated())
+        {
+            return Ok(None);
+        }
+        let Some(navigation) = self.companion_navigation_assessment(entity)? else {
+            return Ok(None);
+        };
+        let ship = self.navigation().ship_id();
+        let (fuel_available, integrity, maximum_integrity, ship_operational) = match ship {
+            Some(ship) => (
+                self.ship_fuel(ship).map(|fuel| fuel.current()),
+                self.ship_integrity(ship).map(|value| value.current()),
+                self.ship_integrity(ship).map(|value| value.maximum()),
+                self.ship_is_operational(ship),
+            ),
+            None => (None, None, None, None),
+        };
+        if navigation.destination.is_none() || navigation.route.is_empty() {
+            let ship_blocked = ship_operational == Some(false);
+            let mut actions = Vec::new();
+            if ship_blocked {
+                if let Some(ship) = ship {
+                    actions.push(CooperativeNavigationAction::RepairShip(ship));
+                }
+            }
+            return Ok(Some(CooperativeNavigationRiskAssessment {
+                companion: entity,
+                player: companion.followed_player,
+                autopilot: navigation.autopilot,
+                travel: navigation.travel,
+                destination: navigation.destination,
+                route: navigation.route,
+                status: if ship_blocked {
+                    CooperativeNavigationRiskStatus::Blocked
+                } else {
+                    CooperativeNavigationRiskStatus::NotEvaluable
+                },
+                fuel_available,
+                fuel_required: navigation.fuel_required,
+                integrity,
+                maximum_integrity,
+                risks: navigation.risks,
+                route_risks: navigation.route_risks,
+                alternative: None,
+                preparation: None,
+                actions,
+                blockers: if ship_blocked {
+                    vec!["La nave no esta operativa para iniciar o continuar un viaje".to_string()]
+                } else {
+                    vec!["No hay un viaje o ruta activa que evaluar".to_string()]
+                },
+                evidence: vec![SupportEvidence {
+                    description: "La ausencia de viaje no permite evaluar el riesgo de un trayecto concreto".to_string(),
+                    confirmed: true,
+                }],
+                conclusive: ship_blocked,
+            }));
+        }
+
+        let comparison = self.companion_navigation_comparison(entity)?;
+        let alternative = comparison.as_ref().and_then(|value| value.recommendation.clone());
+        let in_transit = matches!(navigation.autopilot, AutopilotState::InTransit { .. });
+        let fuel_blocked = navigation.risks.iter().any(|risk| {
+            matches!(risk, NavigationRisk::InsufficientFuel { .. })
+        });
+        let operational_blocked = ship_operational != Some(true);
+        let active_route_risks = navigation
+            .route_risks
+            .iter()
+            .filter(|risk| {
+                matches!(risk.classification, NavigationRouteRiskClassification::NearSegment { .. })
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        let unknown_risks = navigation
+            .route_risks
+            .iter()
+            .filter(|risk| risk.classification == NavigationRouteRiskClassification::NotEvaluable)
+            .count();
+        let mut blockers = Vec::new();
+        let mut actions = Vec::new();
+        let mut evidence = Vec::new();
+        if fuel_blocked {
+            blockers.push("El combustible disponible no alcanza el coste de la ruta".to_string());
+            if let (Some(required), Some(available)) = (navigation.fuel_required, fuel_available) {
+                actions.push(CooperativeNavigationAction::ManageFuel { required, available });
+                evidence.push(SupportEvidence {
+                    description: format!("Combustible requerido {required}, disponible {available}"),
+                    confirmed: true,
+                });
+            }
+        } else if let (Some(required), Some(available)) = (navigation.fuel_required, fuel_available) {
+            evidence.push(SupportEvidence {
+                description: format!("Combustible suficiente: requerido {required}, disponible {available}"),
+                confirmed: true,
+            });
+        }
+        if operational_blocked {
+            blockers.push("La nave no esta operativa para continuar el viaje".to_string());
+            if let Some(ship) = ship {
+                actions.push(CooperativeNavigationAction::RepairShip(ship));
+            }
+            evidence.push(SupportEvidence {
+                description: "La validacion publica de operatividad de la nave rechazo la continuacion".to_string(),
+                confirmed: true,
+            });
+        } else if let (Some(current), Some(maximum)) = (integrity, maximum_integrity) {
+            evidence.push(SupportEvidence {
+                description: format!("Integridad de nave {current}/{maximum}"),
+                confirmed: true,
+            });
+        }
+        if !active_route_risks.is_empty() {
+            evidence.push(SupportEvidence {
+                description: format!("Se identificaron {} riesgos activos en segmentos de la ruta", active_route_risks.len()),
+                confirmed: true,
+            });
+        }
+        if unknown_risks > 0 {
+            evidence.push(SupportEvidence {
+                description: format!("{unknown_risks} riesgos de ruta no son evaluables con la evidencia actual"),
+                confirmed: false,
+            });
+        } else {
+            evidence.push(SupportEvidence {
+                description: "La ausencia de riesgos conocidos no garantiza ausencia de encuentros desconocidos".to_string(),
+                confirmed: false,
+            });
+        }
+
+        let preparation = if navigation.risks.iter().any(|risk| {
+            matches!(risk, NavigationRisk::KnownEncounter(_))
+        }) || self.enemies().any(|enemy| enemy.active && !enemy.is_defeated()) {
+            self.companion_cooperative_encounter_readiness(entity)?
+        } else {
+            None
+        };
+        if let Some(preparation) = preparation.as_ref() {
+            if preparation.status == CooperativeEncounterReadinessStatus::Blocked {
+                blockers.extend(
+                    preparation
+                        .blockers
+                        .iter()
+                        .map(|blocker| format!("Preparacion de {:?} bloqueada: {}", blocker.player, blocker.description)),
+                );
+                actions.push(CooperativeNavigationAction::PrepareEncounter);
+            }
+            if !preparation.support_opportunities.is_empty() {
+                evidence.push(SupportEvidence {
+                    description: format!(
+                        "Hay {} oportunidades de apoyo cooperativo para la amenaza",
+                        preparation.support_opportunities.len()
+                    ),
+                    confirmed: true,
+                });
+            }
+        }
+
+        let status = if fuel_blocked || operational_blocked {
+            CooperativeNavigationRiskStatus::Blocked
+        } else if !active_route_risks.is_empty() {
+            CooperativeNavigationRiskStatus::KnownRisk
+        } else {
+            CooperativeNavigationRiskStatus::ViableWithKnownEvidence
+        };
+        let advice = match navigation.recommendation {
+            Some(NavigationAdvice::StartPlannedAutopilot { destination }) => {
+                (!in_transit).then_some(CooperativeNavigationAction::StartAutopilot(destination))
+            }
+            Some(NavigationAdvice::MonitorAutopilot { destination }) => {
+                Some(CooperativeNavigationAction::MonitorAutopilot(destination))
+            }
+            Some(NavigationAdvice::InspectHazard(hazard)) => {
+                Some(CooperativeNavigationAction::InspectHazard(hazard))
+            }
+            Some(NavigationAdvice::AddressEncounter(encounter)) => {
+                Some(CooperativeNavigationAction::AddressEncounter(encounter))
+            }
+            Some(NavigationAdvice::ReplanAutopilot { destination }) if in_transit => {
+                evidence.push(SupportEvidence {
+                    description: format!(
+                        "El piloto automatico ya esta en transito hacia {destination:?}; no se recomienda cambiar su ruta"
+                    ),
+                    confirmed: true,
+                });
+                None
+            }
+            Some(NavigationAdvice::ReplanAutopilot { .. }) | None => None,
+        };
+        if let Some(action) = advice {
+            actions.push(action);
+        } else if in_transit && !fuel_blocked && !operational_blocked {
+            if let Some(destination) = navigation.destination {
+                actions.push(CooperativeNavigationAction::MonitorAutopilot(destination));
+            }
+        }
+        if let Some(alternative) = alternative.as_ref() {
+            evidence.push(SupportEvidence {
+                description: format!(
+                    "Existe una alternativa registrada con motivo {:?}",
+                    alternative.reason
+                ),
+                confirmed: true,
+            });
+        }
+        Ok(Some(CooperativeNavigationRiskAssessment {
+            companion: entity,
+            player: companion.followed_player,
+            autopilot: navigation.autopilot,
+            travel: navigation.travel,
+            destination: navigation.destination,
+            route: navigation.route,
+            status,
+            fuel_available,
+            fuel_required: navigation.fuel_required,
+            integrity,
+            maximum_integrity,
+            risks: navigation.risks,
+            route_risks: navigation.route_risks,
+            alternative,
+            preparation,
+            actions,
+            blockers,
+            evidence,
+            conclusive: true,
+        }))
+    }
+    pub fn companion_cooperative_navigation_contingency_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<CooperativeNavigationContingencyAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active
+            || !self.entities.contains(player.entity_id)
+            || !self
+                .combatant(player.entity_id)
+                .is_some_and(|combatant| combatant.is_player && combatant.active && !combatant.is_defeated())
+        {
+            return Ok(None);
+        }
+        let Some(navigation) = self.companion_navigation_assessment(entity)? else {
+            return Ok(None);
+        };
+        let risk = self.companion_cooperative_navigation_risk_assessment(entity)?;
+        let recovery = self.companion_recovery_assessment(entity)?;
+        let current_position = self.ship_position();
+        let current_origin = self
+            .destinations()
+            .find(|destination| Some(destination.position) == current_position)
+            .map(|destination| destination.id);
+        let interrupted = matches!(
+            navigation.autopilot,
+            AutopilotState::Interrupted { .. } | AutopilotState::Failed { .. }
+        );
+        let in_transit = matches!(navigation.autopilot, AutopilotState::InTransit { .. });
+        let destination = navigation.destination;
+        let ship = self.navigation().ship_id();
+        let fuel_available = ship
+            .and_then(|value| self.ship_fuel(value))
+            .map(|fuel| fuel.current());
+        let ship_operational = ship.and_then(|value| self.ship_is_operational(value));
+        let mut alternatives = Vec::new();
+        if interrupted {
+            if let (Some(origin), Some(destination)) = (current_origin, destination) {
+                let mut paths = Vec::new();
+                let mut path = vec![origin];
+                let mut visited = BTreeSet::from([origin]);
+                enumerate_navigation_paths(
+                    self,
+                    destination,
+                    &mut path,
+                    &mut visited,
+                    self.destinations().count(),
+                    &mut paths,
+                );
+                alternatives = paths
+                    .into_iter()
+                    .filter_map(|route| {
+                        summarize_route(
+                            self,
+                            &route,
+                            fuel_available,
+                            ship_operational.unwrap_or(false),
+                        )
+                    })
+                    .collect();
+                alternatives.sort_by(compare_route_options);
+            }
+        } else if let Some(comparison) = self.companion_navigation_comparison(entity)? {
+            alternatives = comparison.alternatives;
+        }
+        let viable_alternative = alternatives.iter().find(|alternative| alternative.viable);
+        let recommended_route = if interrupted {
+            viable_alternative.map(|alternative| alternative.route.clone())
+        } else {
+            risk.as_ref()
+                .and_then(|assessment| assessment.alternative.as_ref())
+                .map(|alternative| alternative.alternative.clone())
+        };
+        let mut blockers = Vec::new();
+        let mut actions = Vec::new();
+        let mut evidence = Vec::new();
+        let mut reason = None;
+        if let Some(assessment) = risk.as_ref() {
+            evidence.extend(assessment.evidence.clone());
+            if assessment.status == CooperativeNavigationRiskStatus::Blocked {
+                if assessment.actions.iter().any(|action| {
+                    matches!(action, CooperativeNavigationAction::ManageFuel { .. })
+                }) {
+                    reason = Some(RecoveryReason::FuelInsufficient);
+                    blockers.push("El combustible impide continuar o reiniciar el viaje".to_string());
+                }
+                if assessment.actions.iter().any(|action| {
+                    matches!(action, CooperativeNavigationAction::RepairShip(_))
+                }) {
+                    let destroyed = assessment.integrity == Some(0);
+                    reason = Some(if destroyed {
+                        RecoveryReason::ShipDestroyed
+                    } else {
+                        RecoveryReason::ShipNotOperational
+                    });
+                    blockers.push("La nave no puede continuar hasta recuperar su operatividad".to_string());
+                }
+            }
+        }
+        if let Some(recovery) = recovery.as_ref() {
+            if let Some(step) = recovery.attempted.as_ref() {
+                match step.action {
+                    CoordinationAction::Exploration(ExplorationAction::ResolveEncounter(encounter))
+                    | CoordinationAction::Tactical(TacticalAction::AddressEncounter(encounter)) => {
+                        reason = Some(RecoveryReason::ActiveEncounter);
+                        actions.push(CooperativeNavigationContingencyAction::AddressEncounter(encounter));
+                        evidence.push(SupportEvidence {
+                            description: "El encuentro activo requiere atencion antes de continuar".to_string(),
+                            confirmed: true,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(required) = navigation.fuel_required {
+            if let Some(available) = fuel_available {
+                if required > available {
+                    reason = Some(RecoveryReason::FuelInsufficient);
+                    blockers.push(format!(
+                        "Combustible insuficiente: requerido {required}, disponible {available}"
+                    ));
+                    actions.push(CooperativeNavigationContingencyAction::ManageFuel {
+                        required,
+                        available,
+                    });
+                }
+            }
+        }
+        if ship_operational == Some(false) {
+            let destroyed = ship
+                .and_then(|value| self.ship_integrity(value))
+                .is_some_and(|integrity| integrity.current() == 0);
+            reason = Some(if destroyed {
+                RecoveryReason::ShipDestroyed
+            } else {
+                RecoveryReason::ShipNotOperational
+            });
+            if let Some(ship) = ship {
+                actions.push(CooperativeNavigationContingencyAction::RepairShip(ship));
+            }
+            blockers.push("La nave esta destruida o no operativa para la navegacion".to_string());
+        }
+        if interrupted {
+            if current_origin.is_none() || destination.is_none() {
+                reason = Some(RecoveryReason::NoKnownRoute);
+                blockers.push("La posicion actual o el destino no permiten calcular una ruta fiable".to_string());
+                evidence.push(SupportEvidence {
+                    description: "No existe evidencia suficiente para identificar el origen de una contingencia".to_string(),
+                    confirmed: false,
+                });
+            } else if alternatives.is_empty() {
+                reason = Some(RecoveryReason::NoKnownRoute);
+                blockers.push("No hay rutas registradas conocidas desde la posicion actual al destino".to_string());
+                evidence.push(SupportEvidence {
+                    description: "La ausencia de una ruta registrada no demuestra que no existan rutas desconocidas".to_string(),
+                    confirmed: true,
+                });
+            } else if viable_alternative.is_none() {
+                if let (Some(available), Some(required)) = (
+                    fuel_available,
+                    alternatives.iter().map(|alternative| alternative.fuel_required).min(),
+                ) {
+                    if available < required {
+                        reason = Some(RecoveryReason::FuelInsufficient);
+                        blockers.push(format!(
+                            "Las rutas registradas requieren al menos {required} de combustible y hay {available}"
+                        ));
+                        actions.push(CooperativeNavigationContingencyAction::ManageFuel {
+                            required,
+                            available,
+                        });
+                    }
+                }
+                if reason.is_none() {
+                    reason = Some(RecoveryReason::NoKnownRoute);
+                    blockers.push("Las rutas registradas al destino no son viables con el estado actual".to_string());
+                }
+            } else if let Some(route) = recommended_route.as_ref() {
+                if let Some(destination) = route.last().copied() {
+                    actions.push(CooperativeNavigationContingencyAction::StartAlternative {
+                        destination,
+                        route: route.clone(),
+                    });
+                }
+                evidence.push(SupportEvidence {
+                    description: "Existe una ruta registrada para recuperar el destino del viaje interrumpido".to_string(),
+                    confirmed: true,
+                });
+            }
+        } else if in_transit {
+            if reason.is_none() {
+                if let Some(destination) = destination {
+                    actions.push(CooperativeNavigationContingencyAction::MonitorAutopilot(destination));
+                }
+                evidence.push(SupportEvidence {
+                    description: "El viaje ya esta en transito y no admite una replanificacion incompatible".to_string(),
+                    confirmed: true,
+                });
+            }
+        } else if let Some(assessment) = risk.as_ref() {
+            if let Some(alternative) = assessment.alternative.as_ref() {
+                if let Some(destination) = alternative.alternative.last().copied() {
+                    actions.push(CooperativeNavigationContingencyAction::StartAlternative {
+                        destination,
+                        route: alternative.alternative.clone(),
+                    });
+                }
+            }
+            if assessment.actions.iter().any(|action| {
+                matches!(action, CooperativeNavigationAction::InspectHazard(_))
+            }) {
+                if let Some(NavigationAdvice::InspectHazard(hazard)) = navigation.recommendation {
+                    actions.push(CooperativeNavigationContingencyAction::InspectHazard(hazard));
+                }
+            }
+            if assessment.actions.iter().any(|action| {
+                matches!(action, CooperativeNavigationAction::AddressEncounter(_))
+            }) {
+                if let Some(NavigationAdvice::AddressEncounter(encounter)) = navigation.recommendation {
+                    actions.push(CooperativeNavigationContingencyAction::AddressEncounter(encounter));
+                }
+            }
+        }
+        let status = if reason.is_some() {
+            CooperativeNavigationContingencyStatus::Blocked
+        } else if interrupted && viable_alternative.is_some() {
+            if viable_alternative.is_some_and(|value| value.active_risks > 0 || value.unevaluable_risks > 0) {
+                CooperativeNavigationContingencyStatus::RestrictedRecovery
+            } else {
+                CooperativeNavigationContingencyStatus::KnownRecovery
+            }
+        } else if in_transit {
+            CooperativeNavigationContingencyStatus::KnownRecovery
+        } else if risk.as_ref().is_some_and(|value| {
+            value.status == CooperativeNavigationRiskStatus::KnownRisk
+        }) {
+            CooperativeNavigationContingencyStatus::RestrictedRecovery
+        } else if risk.as_ref().is_some_and(|value| {
+            value.status == CooperativeNavigationRiskStatus::NotEvaluable
+        }) {
+            CooperativeNavigationContingencyStatus::NotEvaluable
+        } else {
+            CooperativeNavigationContingencyStatus::KnownRecovery
+        };
+        if status == CooperativeNavigationContingencyStatus::NotEvaluable && actions.is_empty() {
+            actions.push(CooperativeNavigationContingencyAction::PlayerRequired);
+        }
+        evidence.extend(alternatives.iter().map(|alternative| SupportEvidence {
+            description: format!(
+                "Ruta registrada {:?}: viable={}, riesgos_activos={}, riesgos_no_evaluables={}",
+                alternative.route,
+                alternative.viable,
+                alternative.active_risks,
+                alternative.unevaluable_risks
+            ),
+            confirmed: alternative.viable && alternative.active_risks == 0,
+        }));
+        Ok(Some(CooperativeNavigationContingencyAssessment {
+            companion: entity,
+            player: companion.followed_player,
+            autopilot: navigation.autopilot,
+            travel: navigation.travel,
+            destination,
+            current_position,
+            current_origin,
+            status,
+            reason,
+            risk,
+            recovery,
+            alternatives,
+            recommended_route,
+            actions,
+            blockers,
+            evidence,
+            conclusive: !matches!(status, CooperativeNavigationContingencyStatus::NotEvaluable),
+        }))
+    }
+    pub fn companion_cooperative_recovery_assignment_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<CooperativeRecoveryAssignmentAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active
+            || !self.entities.contains(player.entity_id)
+            || !self
+                .combatant(player.entity_id)
+                .is_some_and(|combatant| combatant.is_player && combatant.active && !combatant.is_defeated())
+        {
+            return Ok(None);
+        }
+        let contingency = self.companion_cooperative_navigation_contingency_assessment(entity)?;
+        let support = self.companion_cooperative_support_assessment(entity)?;
+        let tactical = self.companion_cooperative_tactical_assessment(entity)?;
+        let active_players = self
+            .players()
+            .filter(|value| {
+                value.is_active
+                    && self.entities.contains(value.entity_id)
+                    && self.combatant(value.entity_id).is_some_and(|combatant| {
+                        combatant.is_player && combatant.active && !combatant.is_defeated()
+                    })
+            })
+            .map(|value| value.entity_id)
+            .collect::<BTreeSet<_>>();
+        let mut tasks = Vec::new();
+        let mut evidence = Vec::new();
+        if let Some(contingency) = contingency.as_ref() {
+            evidence.extend(contingency.evidence.clone());
+            for action in &contingency.actions {
+                let (category, priority, assigned_player, status, missing_requirements, task_evidence) =
+                    match action {
+                        CooperativeNavigationContingencyAction::ResumeAutopilot(_)
+                        | CooperativeNavigationContingencyAction::StartAlternative { .. }
+                        | CooperativeNavigationContingencyAction::MonitorAutopilot(_) => (
+                            RecoveryCategory::Navigation,
+                            CoordinationPriority::High,
+                            active_players.contains(&companion.followed_player).then_some(companion.followed_player),
+                            if active_players.contains(&companion.followed_player) {
+                                CooperativeRecoveryTaskStatus::Actionable
+                            } else {
+                                CooperativeRecoveryTaskStatus::Blocked
+                            },
+                            Vec::new(),
+                            vec![SupportEvidence {
+                                description: "El jugador seguido esta activo y puede ejecutar la accion de navegacion".to_string(),
+                                confirmed: active_players.contains(&companion.followed_player),
+                            }],
+                        ),
+                        CooperativeNavigationContingencyAction::AddressEncounter(_) => (
+                            RecoveryCategory::Encounter,
+                            CoordinationPriority::Critical,
+                            active_players.contains(&companion.followed_player).then_some(companion.followed_player),
+                            if active_players.contains(&companion.followed_player) {
+                                CooperativeRecoveryTaskStatus::Actionable
+                            } else {
+                                CooperativeRecoveryTaskStatus::Blocked
+                            },
+                            Vec::new(),
+                            vec![SupportEvidence {
+                                description: "La resolucion del encuentro requiere un jugador activo".to_string(),
+                                confirmed: active_players.contains(&companion.followed_player),
+                            }],
+                        ),
+                        CooperativeNavigationContingencyAction::ManageFuel { .. } => (
+                            RecoveryCategory::Preparation,
+                            CoordinationPriority::Critical,
+                            None,
+                            CooperativeRecoveryTaskStatus::NotEvaluable,
+                            vec!["La API de combustible no identifica un jugador ejecutor".to_string()],
+                            vec![SupportEvidence {
+                                description: "El combustible puede gestionarse mediante una API de recursos, pero no se puede asignar un responsable individual con evidencia publica".to_string(),
+                                confirmed: true,
+                            }],
+                        ),
+                        CooperativeNavigationContingencyAction::RepairShip(_) => (
+                            RecoveryCategory::Preparation,
+                            CoordinationPriority::Critical,
+                            None,
+                            CooperativeRecoveryTaskStatus::NotEvaluable,
+                            vec!["La reparacion exige una estacion y condiciones que esta evaluacion no puede asignar".to_string()],
+                            vec![SupportEvidence {
+                                description: "La nave requiere reparacion, pero no se inventa un jugador elegible sin validar la estacion real".to_string(),
+                                confirmed: true,
+                            }],
+                        ),
+                        CooperativeNavigationContingencyAction::InspectHazard(_) => (
+                            RecoveryCategory::Navigation,
+                            CoordinationPriority::High,
+                            None,
+                            CooperativeRecoveryTaskStatus::NotEvaluable,
+                            vec!["No existe un comando publico de inspeccion de peligros asignable".to_string()],
+                            vec![SupportEvidence {
+                                description: "El peligro es conocido, pero la API existente solo expone la recomendacion".to_string(),
+                                confirmed: true,
+                            }],
+                        ),
+                        CooperativeNavigationContingencyAction::PlayerRequired => (
+                            RecoveryCategory::Preparation,
+                            CoordinationPriority::Critical,
+                            None,
+                            CooperativeRecoveryTaskStatus::NotEvaluable,
+                            vec!["Intervencion del jugador requerida".to_string()],
+                            vec![SupportEvidence {
+                                description: "No hay suficiente evidencia para asignar la accion a un jugador concreto".to_string(),
+                                confirmed: false,
+                            }],
+                        ),
+                        CooperativeNavigationContingencyAction::PrepareEncounter => (
+                            RecoveryCategory::Encounter,
+                            CoordinationPriority::High,
+                            active_players.contains(&companion.followed_player).then_some(companion.followed_player),
+                            if active_players.contains(&companion.followed_player) {
+                                CooperativeRecoveryTaskStatus::Actionable
+                            } else {
+                                CooperativeRecoveryTaskStatus::Blocked
+                            },
+                            Vec::new(),
+                            vec![SupportEvidence {
+                                description: "La preparacion del encuentro requiere un jugador activo".to_string(),
+                                confirmed: active_players.contains(&companion.followed_player),
+                            }],
+                        ),
+                    };
+                tasks.push(CooperativeRecoveryTask {
+                    order: 0,
+                    category,
+                    action: CooperativeRecoveryTaskAction::Navigation(action.clone()),
+                    assigned_player,
+                    candidates: active_players.iter().copied().collect(),
+                    status,
+                    priority,
+                    requirements: Vec::new(),
+                    missing_requirements,
+                    evidence: task_evidence,
+                });
+            }
+        }
+        if let Some(support) = support.as_ref() {
+            for recommendation in &support.recommendations {
+                let Some(provider) = recommendation.provider else {
+                    continue;
+                };
+                let Some(item) = recommendation.item else {
+                    continue;
+                };
+                let status = if recommendation.status == SupportRecommendationStatus::Actionable
+                    && active_players.contains(&provider)
+                    && active_players.contains(&recommendation.needy_player)
+                {
+                    CooperativeRecoveryTaskStatus::Actionable
+                } else {
+                    CooperativeRecoveryTaskStatus::Blocked
+                };
+                tasks.push(CooperativeRecoveryTask {
+                    order: 0,
+                    category: RecoveryCategory::Inventory,
+                    action: CooperativeRecoveryTaskAction::TransferInventory {
+                        from: provider,
+                        to: recommendation.needy_player,
+                        item,
+                        amount: recommendation.amount,
+                    },
+                    assigned_player: Some(provider).filter(|value| active_players.contains(value)),
+                    candidates: vec![provider, recommendation.needy_player],
+                    status,
+                    priority: CoordinationPriority::High,
+                    requirements: Vec::new(),
+                    missing_requirements: recommendation.missing_requirements.clone(),
+                    evidence: recommendation.evidence.clone(),
+                });
+            }
+        }
+        if let Some(tactical) = tactical.as_ref() {
+            for recommendation in &tactical.recommendations {
+                let Some(TacticalAction::DefeatEnemy(enemy)) = recommendation.action else {
+                    continue;
+                };
+                let status = match recommendation.status {
+                    TacticalAssignmentStatus::Actionable
+                        if active_players.contains(&recommendation.player) => {
+                            CooperativeRecoveryTaskStatus::Actionable
+                        }
+                    TacticalAssignmentStatus::Blocked => CooperativeRecoveryTaskStatus::Blocked,
+                    _ => CooperativeRecoveryTaskStatus::NotEvaluable,
+                };
+                tasks.push(CooperativeRecoveryTask {
+                    order: 0,
+                    category: RecoveryCategory::Combat,
+                    action: CooperativeRecoveryTaskAction::DefeatEnemy(enemy),
+                    assigned_player: (status == CooperativeRecoveryTaskStatus::Actionable)
+                        .then_some(recommendation.player),
+                    candidates: vec![recommendation.player],
+                    status,
+                    priority: CoordinationPriority::Critical,
+                    requirements: Vec::new(),
+                    missing_requirements: recommendation.missing_requirements.clone(),
+                    evidence: recommendation
+                        .evidence
+                        .iter()
+                        .map(|value| SupportEvidence {
+                            description: value.description.clone(),
+                            confirmed: value.confirmed,
+                        })
+                        .collect(),
+                });
+            }
+        }
+        tasks.sort_by_key(|task| {
+            let priority = match task.priority {
+                CoordinationPriority::Critical => 0_u8,
+                CoordinationPriority::High => 1,
+                CoordinationPriority::Normal => 2,
+                CoordinationPriority::Low => 3,
+            };
+            (
+                priority,
+                task.category as u8,
+                task.assigned_player.map_or(0, EntityId::value),
+            )
+        });
+        tasks.dedup_by(|left, right| left.action == right.action);
+        for (index, task) in tasks.iter_mut().enumerate() {
+            task.order = (index + 1) as u32;
+            evidence.extend(task.evidence.clone());
+        }
+        let actionable = tasks
+            .iter()
+            .filter(|task| task.status == CooperativeRecoveryTaskStatus::Actionable)
+            .count();
+        let blocked = tasks
+            .iter()
+            .any(|task| task.status == CooperativeRecoveryTaskStatus::Blocked);
+        let unevaluable = tasks
+            .iter()
+            .any(|task| task.status == CooperativeRecoveryTaskStatus::NotEvaluable);
+        let status = if actionable > 0 && (blocked || unevaluable) {
+            CooperativeRecoveryAssignmentStatus::Partial
+        } else if actionable > 0 {
+            CooperativeRecoveryAssignmentStatus::Actionable
+        } else if blocked {
+            CooperativeRecoveryAssignmentStatus::Blocked
+        } else {
+            CooperativeRecoveryAssignmentStatus::NotEvaluable
+        };
+        let conclusive = contingency.is_some() && !tasks.is_empty() && !unevaluable;
+        Ok(Some(CooperativeRecoveryAssignmentAssessment {
+            companion: entity,
+            player: companion.followed_player,
+            contingency,
+            status,
+            tasks,
+            evidence,
+            conclusive,
+        }))
+    }
+    pub fn companion_cooperative_recovery_plan_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<CooperativeRecoveryPlanAssessment>, CompanionError> {
+        let Some(assignment) = self.companion_cooperative_recovery_assignment_assessment(entity)? else {
+            return Ok(None);
+        };
+        let mut dependencies = Vec::new();
+        for prerequisite in &assignment.tasks {
+            for dependent in &assignment.tasks {
+                if prerequisite.order == dependent.order {
+                    continue;
+                }
+                let prerequisite_encounter = matches!(
+                    &prerequisite.action,
+                    CooperativeRecoveryTaskAction::Navigation(
+                        CooperativeNavigationContingencyAction::AddressEncounter(_)
+                    )
+                );
+                let dependent_navigation = matches!(
+                    &dependent.action,
+                    CooperativeRecoveryTaskAction::Navigation(
+                        CooperativeNavigationContingencyAction::ResumeAutopilot(_)
+                            | CooperativeNavigationContingencyAction::StartAlternative { .. }
+                    )
+                );
+                let prerequisite_operational = matches!(
+                    &prerequisite.action,
+                    CooperativeRecoveryTaskAction::Navigation(
+                        CooperativeNavigationContingencyAction::ManageFuel { .. }
+                            | CooperativeNavigationContingencyAction::RepairShip(_)
+                    )
+                );
+                if (prerequisite_encounter || prerequisite_operational) && dependent_navigation {
+                    let reason = if prerequisite_encounter {
+                        "El encuentro activo debe resolverse antes de iniciar o reanudar la navegación".to_string()
+                    } else {
+                        "La nave debe recuperar su requisito operativo antes de iniciar o reanudar la navegación".to_string()
+                    };
+                    dependencies.push(CooperativeRecoveryPlanDependency {
+                        prerequisite: prerequisite.order,
+                        dependent: dependent.order,
+                        confirmed: true,
+                        reason,
+                        evidence: prerequisite.evidence.clone(),
+                    });
+                }
+            }
+        }
+        dependencies.sort_by_key(|dependency| (dependency.prerequisite, dependency.dependent));
+        dependencies.dedup_by(|left, right| {
+            left.prerequisite == right.prerequisite && left.dependent == right.dependent
+        });
+        let mut tasks = assignment
+            .tasks
+            .iter()
+            .map(|task| CooperativeRecoveryPlanTask {
+                task: task.clone(),
+                status: match task.status {
+                    CooperativeRecoveryTaskStatus::Actionable => {
+                        CooperativeRecoveryPlanTaskStatus::Ready
+                    }
+                    CooperativeRecoveryTaskStatus::Blocked => {
+                        CooperativeRecoveryPlanTaskStatus::Blocked
+                    }
+                    CooperativeRecoveryTaskStatus::NotEvaluable => {
+                        CooperativeRecoveryPlanTaskStatus::NotEvaluable
+                    }
+                },
+                dependency_orders: dependencies
+                    .iter()
+                    .filter(|dependency| dependency.dependent == task.order)
+                    .map(|dependency| dependency.prerequisite)
+                    .collect(),
+                parallel_candidate: false,
+            })
+            .collect::<Vec<_>>();
+        let task_statuses = tasks
+            .iter()
+            .map(|task| (task.task.order, task.status))
+            .collect::<Vec<_>>();
+        for task in &mut tasks {
+            if task.status != CooperativeRecoveryPlanTaskStatus::Ready {
+                continue;
+            }
+            for dependency in dependencies.iter().filter(|dependency| {
+                dependency.dependent == task.task.order
+            }) {
+                if let Some((_, prerequisite_status)) = task_statuses
+                    .iter()
+                    .find(|(order, _)| *order == dependency.prerequisite)
+                {
+                    task.status = match prerequisite_status {
+                        CooperativeRecoveryPlanTaskStatus::Ready => {
+                            CooperativeRecoveryPlanTaskStatus::Blocked
+                        }
+                        CooperativeRecoveryPlanTaskStatus::Blocked => {
+                            CooperativeRecoveryPlanTaskStatus::Blocked
+                        }
+                        CooperativeRecoveryPlanTaskStatus::NotEvaluable => {
+                            CooperativeRecoveryPlanTaskStatus::NotEvaluable
+                        }
+                        CooperativeRecoveryPlanTaskStatus::Satisfied => {
+                            CooperativeRecoveryPlanTaskStatus::Ready
+                        }
+                    };
+                }
+            }
+        }
+        let ready_orders = tasks
+            .iter()
+            .filter(|task| task.status == CooperativeRecoveryPlanTaskStatus::Ready)
+            .map(|task| task.task.order)
+            .collect::<Vec<_>>();
+        let parallel_orders = Vec::new();
+        let status = if tasks.is_empty() {
+            if assignment
+                .contingency
+                .as_ref()
+                .is_some_and(|contingency| contingency.actions.is_empty())
+            {
+                CooperativeRecoveryPlanStatus::Satisfied
+            } else {
+                CooperativeRecoveryPlanStatus::NotEvaluable
+            }
+        } else if tasks.iter().any(|task| {
+            task.status == CooperativeRecoveryPlanTaskStatus::Ready
+        }) && tasks.iter().any(|task| {
+            matches!(
+                task.status,
+                CooperativeRecoveryPlanTaskStatus::Blocked
+                    | CooperativeRecoveryPlanTaskStatus::NotEvaluable
+            )
+        }) {
+            CooperativeRecoveryPlanStatus::Partial
+        } else if tasks
+            .iter()
+            .any(|task| task.status == CooperativeRecoveryPlanTaskStatus::Ready)
+        {
+            CooperativeRecoveryPlanStatus::Actionable
+        } else if tasks.iter().any(|task| {
+            task.status == CooperativeRecoveryPlanTaskStatus::Blocked
+        }) {
+            CooperativeRecoveryPlanStatus::Blocked
+        } else {
+            CooperativeRecoveryPlanStatus::NotEvaluable
+        };
+        let mut evidence = assignment.evidence.clone();
+        evidence.extend(dependencies.iter().flat_map(|dependency| {
+            dependency.evidence.iter().cloned().chain(std::iter::once(
+                SupportEvidence {
+                    description: dependency.reason.clone(),
+                    confirmed: dependency.confirmed,
+                },
+            ))
+        }));
+        let conclusive = assignment.conclusive
+            && dependencies.iter().all(|dependency| dependency.confirmed)
+            && !tasks.iter().any(|task| {
+                task.status == CooperativeRecoveryPlanTaskStatus::NotEvaluable
+            });
+        Ok(Some(CooperativeRecoveryPlanAssessment {
+            companion: assignment.companion,
+            player: assignment.player,
+            assignment,
+            status,
+            tasks,
+            dependencies,
+            ready_orders,
+            parallel_orders,
+            evidence,
+            conclusive,
+        }))
+    }
+    pub fn companion_cooperative_task_compatibility_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<CooperativeTaskCompatibilityAssessment>, CompanionError> {
+        let Some(plan) = self.companion_cooperative_recovery_plan_assessment(entity)? else {
+            return Ok(None);
+        };
+        let mut relations = Vec::new();
+        for (index, first) in plan.tasks.iter().enumerate() {
+            for second in plan.tasks.iter().skip(index + 1) {
+                let pair = (first.task.order, second.task.order);
+                let mut shared_entities = Vec::new();
+                let mut shared_item = None;
+                let (status, reason, evidence) = if first.status
+                    != CooperativeRecoveryPlanTaskStatus::Ready
+                    || second.status != CooperativeRecoveryPlanTaskStatus::Ready
+                {
+                    (
+                        CooperativeTaskCompatibilityStatus::NotApplicable,
+                        CooperativeTaskCompatibilityReason::TaskNotActionable,
+                        vec![SupportEvidence {
+                            description: "Una de las tareas no esta lista para comenzar".to_string(),
+                            confirmed: true,
+                        }],
+                    )
+                } else if plan.dependencies.iter().any(|dependency| {
+                    dependency.confirmed
+                        && ((dependency.prerequisite == pair.0
+                            && dependency.dependent == pair.1)
+                            || (dependency.prerequisite == pair.1
+                                && dependency.dependent == pair.0))
+                }) {
+                    (
+                        CooperativeTaskCompatibilityStatus::Sequential,
+                        CooperativeTaskCompatibilityReason::ConfirmedDependency,
+                        vec![SupportEvidence {
+                            description: "El plan contiene una dependencia confirmada entre ambas tareas".to_string(),
+                            confirmed: true,
+                        }],
+                    )
+                } else if first.task.assigned_player.is_some()
+                    && first.task.assigned_player == second.task.assigned_player
+                {
+                    let player = first.task.assigned_player.unwrap_or(EntityId::new(0));
+                    shared_entities.push(player);
+                    (
+                        CooperativeTaskCompatibilityStatus::NotEvaluable,
+                        CooperativeTaskCompatibilityReason::SharedPlayer,
+                        vec![SupportEvidence {
+                            description: "Ambas tareas recaen en el mismo jugador y no existe ejecucion simultanea demostrada".to_string(),
+                            confirmed: true,
+                        }],
+                    )
+                } else {
+                    match (&first.task.action, &second.task.action) {
+                        (
+                            CooperativeRecoveryTaskAction::Navigation(
+                                CooperativeNavigationContingencyAction::MonitorAutopilot(_),
+                            ),
+                            CooperativeRecoveryTaskAction::Navigation(
+                                CooperativeNavigationContingencyAction::StartAlternative { .. }
+                                    | CooperativeNavigationContingencyAction::ResumeAutopilot(_),
+                            )
+                        )
+                        | (
+                            CooperativeRecoveryTaskAction::Navigation(
+                                CooperativeNavigationContingencyAction::StartAlternative { .. }
+                                    | CooperativeNavigationContingencyAction::ResumeAutopilot(_),
+                            ),
+                            CooperativeRecoveryTaskAction::Navigation(
+                                CooperativeNavigationContingencyAction::MonitorAutopilot(_),
+                            )
+                        ) => (
+                            CooperativeTaskCompatibilityStatus::ConflictConfirmed,
+                            CooperativeTaskCompatibilityReason::IncompatibleTravelState,
+                            vec![SupportEvidence {
+                                description: "Supervisar el viaje actual y comenzar otra ruta son acciones incompatibles".to_string(),
+                                confirmed: true,
+                            }],
+                        ),
+                        (
+                            CooperativeRecoveryTaskAction::TransferInventory {
+                                from: first_from,
+                                item: first_item,
+                                amount: first_amount,
+                                ..
+                            },
+                            CooperativeRecoveryTaskAction::TransferInventory {
+                                from: second_from,
+                                item: second_item,
+                                amount: second_amount,
+                                ..
+                            },
+                        ) if first_from == second_from && first_item == second_item => {
+                            shared_entities.push(*first_from);
+                            shared_item = Some(*first_item);
+                            let available = self
+                                .inventory(*first_from)
+                                .map_or(0, |inventory| inventory.quantity(*first_item));
+                            let required = first_amount.checked_add(*second_amount);
+                            if required.is_none_or(|quantity| quantity > available) {
+                                (
+                                    CooperativeTaskCompatibilityStatus::ConflictConfirmed,
+                                    CooperativeTaskCompatibilityReason::SharedInventory,
+                                    vec![SupportEvidence {
+                                        description: format!(
+                                            "Las transferencias requieren {} unidades y el inventario solo contiene {}",
+                                            required.unwrap_or(u32::MAX),
+                                            available
+                                        ),
+                                        confirmed: true,
+                                    }],
+                                )
+                            } else {
+                                (
+                                    CooperativeTaskCompatibilityStatus::NotEvaluable,
+                                    CooperativeTaskCompatibilityReason::SharedInventory,
+                                    vec![SupportEvidence {
+                                        description: "Las transferencias comparten inventario y no existe reserva concurrente".to_string(),
+                                        confirmed: true,
+                                    }],
+                                )
+                            }
+                        }
+                        (
+                            CooperativeRecoveryTaskAction::DefeatEnemy(first_enemy),
+                            CooperativeRecoveryTaskAction::DefeatEnemy(second_enemy),
+                        ) if first_enemy != second_enemy
+                            && first.task.assigned_player != second.task.assigned_player =>
+                        {
+                            (
+                                CooperativeTaskCompatibilityStatus::CompatibleKnown,
+                                CooperativeTaskCompatibilityReason::DistinctCombatTargets,
+                                vec![SupportEvidence {
+                                    description: "Los objetivos de combate son entidades distintas y tienen responsables distintos".to_string(),
+                                    confirmed: true,
+                                }],
+                            )
+                        }
+                        (
+                            CooperativeRecoveryTaskAction::TransferInventory {
+                                from: first_from,
+                                to: first_to,
+                                item: first_item,
+                                ..
+                            },
+                            CooperativeRecoveryTaskAction::TransferInventory {
+                                from: second_from,
+                                to: second_to,
+                                item: second_item,
+                                ..
+                            },
+                        ) if first_from != second_from
+                            && first_to != second_to
+                            && first_item != second_item => (
+                            CooperativeTaskCompatibilityStatus::CompatibleKnown,
+                            CooperativeTaskCompatibilityReason::DistinctTransfers,
+                            vec![SupportEvidence {
+                                description: "Las transferencias usan fuentes, receptores y objetos distintos".to_string(),
+                                confirmed: true,
+                            }],
+                        ),
+                        _ => (
+                            CooperativeTaskCompatibilityStatus::NotEvaluable,
+                            CooperativeTaskCompatibilityReason::InsufficientEvidence,
+                            vec![SupportEvidence {
+                                description: "Las APIs disponibles no permiten descartar todos los conflictos entre estas acciones".to_string(),
+                                confirmed: false,
+                            }],
+                        ),
+                    }
+                };
+                relations.push(CooperativeTaskCompatibility {
+                    first_task: pair.0,
+                    second_task: pair.1,
+                    status,
+                    reason,
+                    shared_entities,
+                    shared_item,
+                    evidence,
+                });
+            }
+        }
+        relations.sort_by_key(|relation| (relation.first_task, relation.second_task));
+        let compatible_pairs = relations
+            .iter()
+            .filter(|relation| {
+                relation.status == CooperativeTaskCompatibilityStatus::CompatibleKnown
+            })
+            .map(|relation| (relation.first_task, relation.second_task))
+            .collect::<Vec<_>>();
+        let sequential_pairs = relations
+            .iter()
+            .filter(|relation| relation.status == CooperativeTaskCompatibilityStatus::Sequential)
+            .map(|relation| (relation.first_task, relation.second_task))
+            .collect::<Vec<_>>();
+        let conflict_pairs = relations
+            .iter()
+            .filter(|relation| {
+                relation.status == CooperativeTaskCompatibilityStatus::ConflictConfirmed
+            })
+            .map(|relation| (relation.first_task, relation.second_task))
+            .collect::<Vec<_>>();
+        let unevaluable_pairs = relations
+            .iter()
+            .filter(|relation| {
+                relation.status == CooperativeTaskCompatibilityStatus::NotEvaluable
+            })
+            .map(|relation| (relation.first_task, relation.second_task))
+            .collect::<Vec<_>>();
+        let status = if relations.is_empty()
+            || relations.iter().all(|relation| {
+                relation.status == CooperativeTaskCompatibilityStatus::NotApplicable
+            })
+        {
+            CooperativeTaskCompatibilityStatus::NotApplicable
+        } else if !conflict_pairs.is_empty() {
+            CooperativeTaskCompatibilityStatus::ConflictConfirmed
+        } else if !unevaluable_pairs.is_empty() {
+            CooperativeTaskCompatibilityStatus::NotEvaluable
+        } else if !sequential_pairs.is_empty() {
+            CooperativeTaskCompatibilityStatus::Sequential
+        } else {
+            CooperativeTaskCompatibilityStatus::CompatibleKnown
+        };
+        let conclusive = plan.conclusive
+            && relations.iter().all(|relation| {
+                matches!(
+                    relation.status,
+                    CooperativeTaskCompatibilityStatus::CompatibleKnown
+                        | CooperativeTaskCompatibilityStatus::Sequential
+                        | CooperativeTaskCompatibilityStatus::ConflictConfirmed
+                )
+            });
+        Ok(Some(CooperativeTaskCompatibilityAssessment {
+            companion: plan.companion,
+            player: plan.player,
+            plan,
+            status,
+            relations,
+            compatible_pairs,
+            sequential_pairs,
+            conflict_pairs,
+            unevaluable_pairs,
+            conclusive,
         }))
     }
     pub fn companion_navigation_comparison(

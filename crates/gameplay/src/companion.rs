@@ -882,6 +882,239 @@ pub struct NavigationAssessment {
     pub recommendation: Option<NavigationAdvice>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CooperativeNavigationRiskStatus {
+    ViableWithKnownEvidence,
+    KnownRisk,
+    Blocked,
+    NotEvaluable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CooperativeNavigationAction {
+    StartAutopilot(DestinationId),
+    MonitorAutopilot(DestinationId),
+    InspectHazard(HazardId),
+    AddressEncounter(EncounterId),
+    ManageFuel { required: u32, available: u32 },
+    RepairShip(EntityId),
+    PrepareEncounter,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeNavigationRiskAssessment {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub autopilot: AutopilotState,
+    pub travel: TravelState,
+    pub destination: Option<DestinationId>,
+    pub route: Vec<DestinationId>,
+    pub status: CooperativeNavigationRiskStatus,
+    pub fuel_available: Option<u32>,
+    pub fuel_required: Option<u32>,
+    pub integrity: Option<u32>,
+    pub maximum_integrity: Option<u32>,
+    pub risks: Vec<NavigationRisk>,
+    pub route_risks: Vec<NavigationRouteRisk>,
+    pub alternative: Option<NavigationAlternativeRecommendation>,
+    pub preparation: Option<CooperativeEncounterReadinessAssessment>,
+    pub actions: Vec<CooperativeNavigationAction>,
+    pub blockers: Vec<String>,
+    pub evidence: Vec<SupportEvidence>,
+    pub conclusive: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CooperativeNavigationContingencyStatus {
+    KnownRecovery,
+    RestrictedRecovery,
+    Blocked,
+    NotEvaluable,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CooperativeNavigationContingencyAction {
+    ResumeAutopilot(DestinationId),
+    StartAlternative {
+        destination: DestinationId,
+        route: Vec<DestinationId>,
+    },
+    MonitorAutopilot(DestinationId),
+    InspectHazard(HazardId),
+    AddressEncounter(EncounterId),
+    ManageFuel { required: u32, available: u32 },
+    RepairShip(EntityId),
+    PrepareEncounter,
+    PlayerRequired,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeNavigationContingencyAssessment {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub autopilot: AutopilotState,
+    pub travel: TravelState,
+    pub destination: Option<DestinationId>,
+    pub current_position: Option<Vec3>,
+    pub current_origin: Option<DestinationId>,
+    pub status: CooperativeNavigationContingencyStatus,
+    pub reason: Option<RecoveryReason>,
+    pub risk: Option<CooperativeNavigationRiskAssessment>,
+    pub recovery: Option<RecoveryAssessment>,
+    pub alternatives: Vec<NavigationRouteOption>,
+    pub recommended_route: Option<Vec<DestinationId>>,
+    pub actions: Vec<CooperativeNavigationContingencyAction>,
+    pub blockers: Vec<String>,
+    pub evidence: Vec<SupportEvidence>,
+    pub conclusive: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CooperativeRecoveryAssignmentStatus {
+    Actionable,
+    Partial,
+    Blocked,
+    NotEvaluable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CooperativeRecoveryTaskStatus {
+    Actionable,
+    Blocked,
+    NotEvaluable,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CooperativeRecoveryTaskAction {
+    Navigation(CooperativeNavigationContingencyAction),
+    TransferInventory {
+        from: EntityId,
+        to: EntityId,
+        item: crate::types::ItemId,
+        amount: u32,
+    },
+    DefeatEnemy(EntityId),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeRecoveryTask {
+    pub order: u32,
+    pub category: RecoveryCategory,
+    pub action: CooperativeRecoveryTaskAction,
+    pub assigned_player: Option<EntityId>,
+    pub candidates: Vec<EntityId>,
+    pub status: CooperativeRecoveryTaskStatus,
+    pub priority: CoordinationPriority,
+    pub requirements: Vec<PreparationRequirement>,
+    pub missing_requirements: Vec<String>,
+    pub evidence: Vec<SupportEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeRecoveryAssignmentAssessment {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub contingency: Option<CooperativeNavigationContingencyAssessment>,
+    pub status: CooperativeRecoveryAssignmentStatus,
+    pub tasks: Vec<CooperativeRecoveryTask>,
+    pub evidence: Vec<SupportEvidence>,
+    pub conclusive: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CooperativeRecoveryPlanStatus {
+    Actionable,
+    Partial,
+    Blocked,
+    Satisfied,
+    NotEvaluable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CooperativeRecoveryPlanTaskStatus {
+    Ready,
+    Blocked,
+    Satisfied,
+    NotEvaluable,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeRecoveryPlanDependency {
+    pub prerequisite: u32,
+    pub dependent: u32,
+    pub confirmed: bool,
+    pub reason: String,
+    pub evidence: Vec<SupportEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeRecoveryPlanTask {
+    pub task: CooperativeRecoveryTask,
+    pub status: CooperativeRecoveryPlanTaskStatus,
+    pub dependency_orders: Vec<u32>,
+    pub parallel_candidate: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeRecoveryPlanAssessment {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub assignment: CooperativeRecoveryAssignmentAssessment,
+    pub status: CooperativeRecoveryPlanStatus,
+    pub tasks: Vec<CooperativeRecoveryPlanTask>,
+    pub dependencies: Vec<CooperativeRecoveryPlanDependency>,
+    pub ready_orders: Vec<u32>,
+    pub parallel_orders: Vec<u32>,
+    pub evidence: Vec<SupportEvidence>,
+    pub conclusive: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CooperativeTaskCompatibilityStatus {
+    CompatibleKnown,
+    ConflictConfirmed,
+    Sequential,
+    NotEvaluable,
+    NotApplicable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CooperativeTaskCompatibilityReason {
+    ConfirmedDependency,
+    SharedPlayer,
+    SharedInventory,
+    IncompatibleTravelState,
+    DistinctCombatTargets,
+    DistinctTransfers,
+    InsufficientEvidence,
+    TaskNotActionable,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeTaskCompatibility {
+    pub first_task: u32,
+    pub second_task: u32,
+    pub status: CooperativeTaskCompatibilityStatus,
+    pub reason: CooperativeTaskCompatibilityReason,
+    pub shared_entities: Vec<EntityId>,
+    pub shared_item: Option<crate::types::ItemId>,
+    pub evidence: Vec<SupportEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CooperativeTaskCompatibilityAssessment {
+    pub companion: EntityId,
+    pub player: EntityId,
+    pub plan: CooperativeRecoveryPlanAssessment,
+    pub status: CooperativeTaskCompatibilityStatus,
+    pub relations: Vec<CooperativeTaskCompatibility>,
+    pub compatible_pairs: Vec<(u32, u32)>,
+    pub sequential_pairs: Vec<(u32, u32)>,
+    pub conflict_pairs: Vec<(u32, u32)>,
+    pub unevaluable_pairs: Vec<(u32, u32)>,
+    pub conclusive: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Companion {
     pub entity: EntityId,

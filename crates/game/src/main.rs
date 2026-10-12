@@ -3319,6 +3319,419 @@ fn run_anomaly_mission_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_end_to_end_coherence_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let pilot_station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estacion del flujo integral: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK del flujo integral",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedo registrado en el flujo integral".to_owned())?;
+
+    session
+        .register_destination(Destination {
+            id: ecos_anomalia::PLANET_DESTINATION,
+            destination_type: DestinationType::Planet,
+            position: Vec3 {
+                x: 10.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            travel_duration: Duration(100),
+            fuel_cost: 5,
+            discovery: DiscoveryState::Known,
+        })
+        .map_err(|error| format!("registrar planeta del flujo integral: {error:?}"))?;
+    session
+        .register_destination(Destination {
+            id: ecos_anomalia::SIGNAL_DESTINATION,
+            destination_type: DestinationType::SpacePoint,
+            position: Vec3 {
+                x: 25.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            travel_duration: Duration(200),
+            fuel_cost: 8,
+            discovery: DiscoveryState::Unknown,
+        })
+        .map_err(|error| format!("registrar senal del flujo integral: {error:?}"))?;
+
+    let initial = session
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .ok_or_else(|| "no existe la mision del flujo integral".to_owned())?;
+    if initial.state != MissionState::Locked || initial.required_completed != 0 {
+        return Err(format!("estado inicial integral inesperado: {initial:?}"));
+    }
+    let before_premature_start = session.save_state().serialize();
+    let premature_start = session.update([GameplayCommand::StartMission {
+        mission: ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+    }]);
+    if !matches!(
+        premature_start.first().map(|result| &result.status),
+        Some(CommandStatus::Rejected { .. })
+    ) || session.save_state().serialize() != before_premature_start
+    {
+        return Err("el inicio prematuro integral no fue rechazado atomicamente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "desbloquear mision del flujo integral",
+        GameplayCommand::UnlockMission {
+            mission: ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar mision del flujo integral",
+        GameplayCommand::StartMission {
+            mission: ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar pilotaje del flujo integral",
+        GameplayCommand::Interact {
+            player,
+            target: pilot_station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "detectar senal del flujo integral",
+        GameplayCommand::ScanSignals { player, ship },
+    )?;
+    if session
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .is_none_or(|progress| progress.required_completed != 0)
+        || session.world().navigation().signal_knowledge(ecos_anomalia::SIGNAL_DESTINATION)
+            != SignalKnowledge::Detected
+    {
+        return Err("la deteccion integral avanzo indebidamente la mision".to_owned());
+    }
+    run_command(
+        &mut session,
+        "esperar cooldown del flujo integral",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "identificar senal del flujo integral",
+        GameplayCommand::ScanSignals { player, ship },
+    )?;
+    let after_identification = session
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .ok_or_else(|| "se perdio la mision tras identificar la senal".to_owned())?;
+    if after_identification.required_completed != 1
+        || session.world().navigation().signal_knowledge(ecos_anomalia::SIGNAL_DESTINATION)
+            != SignalKnowledge::Identified
+    {
+        return Err("la identificacion integral no completo el objetivo real".to_owned());
+    }
+    let guide_before = session.world().save_state().serialize();
+    let guide = session
+        .world()
+        .guidance_for_player(player)
+        .map_err(|error| format!("consultar guia del flujo integral: {error:?}"))?;
+    let guide_repeat = session
+        .world()
+        .guidance_for_player(player)
+        .map_err(|error| format!("repetir guia del flujo integral: {error:?}"))?;
+    if guide != guide_repeat
+        || session.world().save_state().serialize() != guide_before
+        || guide.recommended_action
+            != Some(gameplay::GuidanceAction::DiscoverDestination(
+                ecos_anomalia::PLANET_DESTINATION,
+            ))
+    {
+        return Err("la guia integral no reflejo el siguiente objetivo sin mutar el mundo".to_owned());
+    }
+
+    run_command(
+        &mut session,
+        "seleccionar planeta del flujo integral",
+        GameplayCommand::SelectDestination {
+            player,
+            pilot_station,
+            destination: ecos_anomalia::PLANET_DESTINATION,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar viaje del flujo integral",
+        GameplayCommand::StartTravel {
+            player,
+            pilot_station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "llegar al planeta del flujo integral",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        },
+    )?;
+    if session
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .is_none_or(|progress| progress.required_completed != 2)
+        || session.world().destination(ecos_anomalia::PLANET_DESTINATION)
+            .is_none_or(|destination| destination.discovery != DiscoveryState::Discovered)
+    {
+        return Err("el viaje integral no completo el descubrimiento real".to_owned());
+    }
+
+    let ammunition = ItemId(2);
+    run_command(
+        &mut session,
+        "preparar municion del flujo integral",
+        GameplayCommand::AddInventoryItem {
+            player,
+            item: ammunition,
+            amount: 2,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "equipar arma del flujo integral",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                60,
+                20,
+                Duration(1_000),
+                WeaponAmmunition {
+                    item: ammunition,
+                    amount_per_attack: 1,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "crear amenaza del flujo integral",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let enemy = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "la amenaza integral no fue creada".to_owned())?;
+    let tactical_before = session.world().save_state().serialize();
+    let tactical = session
+        .world()
+        .companion_tactical_recommendation(erick.entity)
+        .map_err(|error| format!("consultar tactica integral: {error:?}"))?
+        .ok_or_else(|| "ERICK no recomendo la amenaza integral".to_owned())?;
+    let tactical_repeat = session
+        .world()
+        .companion_tactical_recommendation(erick.entity)
+        .map_err(|error| format!("repetir tactica integral: {error:?}"))?;
+    if tactical_repeat != Some(tactical.clone())
+        || session.world().save_state().serialize() != tactical_before
+        || !matches!(
+            tactical.action,
+            gameplay::TacticalAction::DefeatEnemy(target) if target == enemy
+        )
+    {
+        return Err("la recomendacion tactica integral no fue coherente o mutante".to_owned());
+    }
+    run_command(
+        &mut session,
+        "derrotar amenaza del flujo integral",
+        GameplayCommand::AttackEnemy { player, enemy },
+    )?;
+    let reward_count = session
+        .world()
+        .collectibles()
+        .filter(|collectible| collectible.item == ItemId(3) && collectible.active)
+        .count();
+    let processed = session.world().save_state().processed_enemy_rewards;
+    if reward_count != 1
+        || !processed.contains(&enemy)
+        || session
+            .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+            .is_none_or(|progress| progress.required_completed != 3)
+    {
+        return Err("la derrota integral no genero una recompensa unica o progreso real".to_owned());
+    }
+    let reward = session
+        .world()
+        .collectibles()
+        .find(|collectible| collectible.item == ItemId(3) && collectible.active)
+        .copied()
+        .ok_or_else(|| "no existe recompensa activa del flujo integral".to_owned())?;
+    run_command(
+        &mut session,
+        "recoger recompensa del flujo integral",
+        GameplayCommand::CollectItem {
+            player,
+            collectible: reward.entity,
+            amount: 1,
+        },
+    )?;
+    let completed = session
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .ok_or_else(|| "se perdio el progreso final integral".to_owned())?;
+    if completed.state != MissionState::Completed
+        || completed.required_completed != 4
+        || session.world().inventory(player).is_none_or(|inventory| inventory.quantity(ItemId(3)) != 1)
+        || session.world().collectible(reward.entity).is_none_or(|item| item.active || item.amount != 0)
+    {
+        return Err(format!("la recompensa integral no completo la mision: {completed:?}"));
+    }
+    let before_repeat = session.save_state().serialize();
+    let repeated = session.update([GameplayCommand::CollectItem {
+        player,
+        collectible: reward.entity,
+        amount: 1,
+    }]);
+    if !matches!(repeated.first().map(|result| &result.status), Some(CommandStatus::Rejected { .. }))
+        || session.save_state().serialize() != before_repeat
+    {
+        return Err("la recogida integral repetida no fue idempotente".to_owned());
+    }
+
+    let route_origin = DestinationId::new(8_201);
+    let route_destination = DestinationId::new(8_202);
+    for destination in [
+        Destination {
+            id: route_origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: route_destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 20.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(5),
+            fuel_cost: 2,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino navegable integral",
+            GameplayCommand::RegisterDestination { destination },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar ruta navegable integral",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: route_origin,
+                to: route_destination,
+                distance: 10.0,
+                duration: Duration(5),
+                fuel_cost: 2,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar navegacion integral",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station,
+            origin: route_origin,
+            destination: route_destination,
+        },
+    )?;
+    let navigation_before = session.save_state().serialize();
+    let navigation = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("consultar navegacion integral: {error:?}"))?
+        .ok_or_else(|| "ERICK no evaluo la navegacion integral".to_owned())?;
+    if !matches!(navigation.autopilot, AutopilotState::Planned { .. })
+        || navigation.destination != Some(route_destination)
+        || navigation.route.as_slice() != [route_origin, route_destination]
+        || navigation.recommendation
+            != Some(gameplay::NavigationAdvice::StartPlannedAutopilot {
+                destination: route_destination,
+            })
+        || session.world().save_state().serialize() != navigation_before
+    {
+        return Err("la navegacion integral no fue viable o ERICK altero el autopilot".to_owned());
+    }
+    run_command(
+        &mut session,
+        "cancelar planificacion integral antes del guardado",
+        GameplayCommand::CancelAutopilot {
+            player,
+            pilot_station,
+        },
+    )?;
+
+    let encoded = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&encoded)
+        .map_err(|error| format!("deserializar flujo integral: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar flujo integral: {error}"))?;
+    if restored
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .is_none_or(|progress| progress.state != MissionState::Completed || progress.required_completed != 4)
+        || restored.world().inventory(player).is_none_or(|inventory| inventory.quantity(ItemId(3)) != 1)
+        || restored.world().collectible(reward.entity).is_none_or(|item| item.active || item.amount != 0)
+        || !restored.world().save_state().processed_enemy_rewards.contains(&enemy)
+        || !restored.world().navigation_routes().any(|route| {
+            route.from == route_origin && route.to == route_destination
+        })
+    {
+        return Err("la restauracion integral no conservo mision, recompensa o ruta".to_owned());
+    }
+    let restored_before_query = restored.save_state().serialize();
+    let restored_guidance = restored
+        .world()
+        .guidance_for_player(player)
+        .map_err(|error| format!("consultar guia restaurada integral: {error:?}"))?;
+    let restored_navigation = restored
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("consultar navegacion restaurada integral: {error:?}"))?;
+    if restored_guidance.objectives.iter().any(|objective| {
+        objective.mission == ecos_anomalia::ECOS_DE_LA_ANOMALIA
+            && objective.status != gameplay::GuidanceStatus::Completed
+    }) || restored_navigation.is_none()
+        || restored.save_state().serialize() != restored_before_query
+    {
+        return Err("las evaluaciones restauradas no fueron coherentes o mutaron el estado".to_owned());
+    }
+    println!(
+        "FLUJO END-TO-END COMPLETADO: mision=Ecos de la anomalia, jugador={}, enemigo={}, recompensa_unica=true, guia=true, ruta_planificada=true, autopilot_iniciado=false, restaurado=true",
+        player, enemy
+    );
+    Ok(())
+}
+
 fn run_gravitational_storm_scenario() -> Result<(), String> {
     let mut session = ProjectEchoSession::new();
     let player = session.ids.first_player;
@@ -4276,6 +4689,20 @@ fn run_cooperative_progression_scenario() -> Result<(), String> {
             discovery: DiscoveryState::Unknown,
         })
         .map_err(|error| format!("registrar senal cooperativa: {error:?}"))?;
+    for mission in [
+        el_despertar::EL_DESPERTAR,
+        ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+        tormenta_gravitacional::TORMENTA_GRAVITACIONAL,
+        la_defensa_imposible::LA_DEFENSA_IMPOSIBLE,
+        cooperacion::PROGRESION_COOPERATIVA,
+    ] {
+        if session
+            .mission_progress(mission)
+            .is_none_or(|value| value.state != MissionState::Locked)
+        {
+            return Err(format!("estado inicial inesperado para {mission:?}"));
+        }
+    }
     let station = session
         .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
         .map_err(|error| format!("crear estacion cooperativa: {error:?}"))?;
@@ -4310,10 +4737,27 @@ fn run_cooperative_progression_scenario() -> Result<(), String> {
     if initial.state != MissionState::Locked
         || initial.required_completed != 0
         || initial.required_total != 3
+        || objective_states(&session)
+            != Some((
+                ObjectiveState::Locked,
+                ObjectiveState::Locked,
+                ObjectiveState::Locked,
+            ))
     {
         return Err(format!(
             "estado inicial cooperativo inesperado: {initial:?}"
         ));
+    }
+    let before_premature_start = session.save_state().serialize();
+    let premature_start = session.update([GameplayCommand::StartMission {
+        mission: cooperacion::PROGRESION_COOPERATIVA,
+    }]);
+    if !matches!(
+        premature_start.first().map(|result| &result.status),
+        Some(CommandStatus::Rejected { .. })
+    ) || session.save_state().serialize() != before_premature_start
+    {
+        return Err("iniciar prematuramente la mision cooperativa no fue rechazado atomicamente".to_owned());
     }
     run_command(
         &mut session,
@@ -4409,6 +4853,38 @@ fn run_cooperative_progression_scenario() -> Result<(), String> {
     {
         return Err("el objetivo de identificacion no avanzo con el jugador A".to_owned());
     }
+
+    let checkpoint = session.save_state();
+    let checkpoint_text = checkpoint.serialize();
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .register_mission(
+            cooperacion::definition()
+                .map_err(|error| format!("definir mision cooperativa restaurada: {error:?}"))?,
+        )
+        .map_err(|error| format!("registrar mision cooperativa restaurada: {error:?}"))?;
+    restored
+        .restore_state(
+            gameplay::GameplaySaveState::deserialize(&checkpoint_text)
+                .map_err(|error| format!("deserializar checkpoint de mision: {error}"))?,
+        )
+        .map_err(|error| format!("restaurar checkpoint de mision: {error}"))?;
+    if restored.save_state().serialize() != checkpoint_text
+        || restored
+            .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+            .is_none_or(|progress| {
+                progress.state != MissionState::Active || progress.required_completed != 1
+            })
+        || objective_states(&restored)
+            != Some((
+                ObjectiveState::Completed,
+                ObjectiveState::Available,
+                ObjectiveState::Locked,
+            ))
+    {
+        return Err("el checkpoint de la mision no conservo su progreso intermedio".to_owned());
+    }
+    session = restored;
 
     let ammunition = gameplay::types::ItemId(2);
     run_command(
@@ -4549,6 +5025,45 @@ fn run_cooperative_progression_scenario() -> Result<(), String> {
         return Err(format!(
             "la mision cooperativa no completo su cadena: {final_progress:?}, recompensa_antes={reward_before}, despues={reward_after}"
         ));
+    }
+    let before_repeated_collection = session.save_state().serialize();
+    let repeated_collection = session.update([GameplayCommand::CollectItem {
+        player: player_a,
+        collectible: reward.entity,
+        amount: 1,
+    }]);
+    if !matches!(
+        repeated_collection.first().map(|result| &result.status),
+        Some(CommandStatus::Rejected { .. })
+    ) || session.save_state().serialize() != before_repeated_collection
+    {
+        return Err("recoger nuevamente la recompensa final no fue rechazado sin duplicacion".to_owned());
+    }
+    let before_repeated_completion = session.save_state().serialize();
+    let repeated_completion = session.update([GameplayCommand::CompleteMission {
+        mission: cooperacion::PROGRESION_COOPERATIVA,
+    }]);
+    if !matches!(
+        repeated_completion.first().map(|result| &result.status),
+        Some(CommandStatus::Rejected { .. })
+    ) || session.save_state().serialize() != before_repeated_completion
+    {
+        return Err("completar nuevamente la mision cooperativa no fue rechazado sin duplicacion".to_owned());
+    }
+    for mission in [
+        el_despertar::EL_DESPERTAR,
+        ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+        tormenta_gravitacional::TORMENTA_GRAVITACIONAL,
+        la_defensa_imposible::LA_DEFENSA_IMPOSIBLE,
+    ] {
+        if session
+            .mission_progress(mission)
+            .is_none_or(|value| value.state != MissionState::Locked)
+        {
+            return Err(format!(
+                "la finalizacion de la mision cooperativa altero {mission:?} sin dependencia real"
+            ));
+        }
     }
     println!(
         "PROGRESION COOPERATIVA COMPLETADA: mision={:?}, jugador_A={}, jugador_B={}, enemigo={}, progreso={}/{}, recompensa_recogida=1",
@@ -5556,6 +6071,1425 @@ fn run_erick_cooperative_readiness_scenario() -> Result<(), String> {
     }
     println!(
         "PREPARACION COOPERATIVA DE ERICK COMPLETADA: preparado=true, bloqueo=true, apoyo=true, reevaluado=true, amenaza_derrotada=true, sin_evidencia=no_evaluable, restaurada=true"
+    );
+    Ok(())
+}
+
+fn run_erick_cooperative_navigation_risk_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estaciÃ³n de riesgo cooperativo: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK para riesgo cooperativo",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedÃ³ registrado para riesgo cooperativo".to_owned())?;
+    let origin = DestinationId::new(7_501);
+    let destination = DestinationId::new(7_502);
+    let alternate = DestinationId::new(7_503);
+    for value in [
+        Destination {
+            id: origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: alternate,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 5.0, y: 10.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de riesgo cooperativo",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    for route in [
+        NavigationRoute {
+            from: origin,
+            to: destination,
+            distance: 10.0,
+            duration: Duration(4),
+            fuel_cost: 4,
+            state: NavigationRouteState::Available,
+        },
+        NavigationRoute {
+            from: origin,
+            to: alternate,
+            distance: 6.0,
+            duration: Duration(4),
+            fuel_cost: 2,
+            state: NavigationRouteState::Available,
+        },
+        NavigationRoute {
+            from: alternate,
+            to: destination,
+            distance: 6.0,
+            duration: Duration(4),
+            fuel_cost: 2,
+            state: NavigationRouteState::Available,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar segmento de riesgo cooperativo",
+            GameplayCommand::RegisterNavigationRoute { route },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "ocupar estaciÃ³n de riesgo cooperativo",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar ruta de riesgo cooperativo",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    let saved_before_queries = session.save_state();
+    let initial = session
+        .world()
+        .companion_cooperative_navigation_risk_assessment(erick.entity)
+        .map_err(|error| format!("evaluar ruta cooperativa inicial: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluaciÃ³n cooperativa inicial".to_owned())?;
+    if initial.status != gameplay::CooperativeNavigationRiskStatus::ViableWithKnownEvidence
+        || initial.destination != Some(destination)
+        || initial.route != vec![origin, destination]
+        || initial.actions
+            != vec![gameplay::CooperativeNavigationAction::StartAutopilot(destination)]
+        || initial.risks.iter().any(|risk| {
+            matches!(risk, gameplay::NavigationRisk::KnownEncounter(_))
+        })
+        || !initial.evidence.iter().any(|evidence| {
+            evidence.description.contains("no garantiza ausencia de encuentros desconocidos")
+        })
+    {
+        return Err(format!("evaluaciÃ³n inicial inesperada: {initial:?}"));
+    }
+    let repeated = session
+        .world()
+        .companion_cooperative_navigation_risk_assessment(erick.entity)
+        .map_err(|error| format!("repetir evaluaciÃ³n cooperativa: {error:?}"))?;
+    if repeated != Some(initial.clone())
+        || session.save_state().serialize() != saved_before_queries.serialize()
+    {
+        return Err("la evaluaciÃ³n cooperativa no fue determinista o mutÃ³ el mundo".to_owned());
+    }
+    let hazard = HazardId::new(7_501);
+    run_command(
+        &mut session,
+        "registrar riesgo geomÃ©trico cooperativo",
+        GameplayCommand::RegisterEnvironmentalHazard {
+            hazard: EnvironmentalHazard::new(
+                hazard,
+                gameplay::EnvironmentalHazardType::SpaceStorm,
+                Vec3 { x: 5.0, y: 1.0, z: 0.0 },
+                1.0,
+                1,
+                Duration(10_000),
+                true,
+            ),
+        },
+    )?;
+    let encounter = EncounterId::new(7_502);
+    run_command(
+        &mut session,
+        "registrar encuentro espacial cooperativo",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                encounter,
+                SpatialEncounterKind::Resource {
+                    item: ItemId(1),
+                    amount: 1,
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro espacial cooperativo",
+        GameplayCommand::ActivateSpatialEncounter { encounter },
+    )?;
+    let with_risk = session
+        .world()
+        .companion_cooperative_navigation_risk_assessment(erick.entity)
+        .map_err(|error| format!("evaluar riesgo de ruta: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluaciÃ³n con riesgo conocido".to_owned())?;
+    if with_risk.status != gameplay::CooperativeNavigationRiskStatus::KnownRisk
+        || !with_risk.route_risks.iter().any(|risk| {
+            risk.source == gameplay::NavigationRouteRiskSource::Hazard(hazard)
+                && matches!(
+                        risk.classification,
+                        gameplay::NavigationRouteRiskClassification::NearSegment { .. }
+                    )
+        })
+        || with_risk.alternative.is_none()
+    {
+        return Err(format!("riesgo cooperativo inesperado: {with_risk:?}"));
+    }
+    run_command(
+        &mut session,
+        "resolver encuentro espacial cooperativo",
+        GameplayCommand::ResolveSpatialEncounter { player, encounter },
+    )?;
+    let after_resolve = session
+        .world()
+        .companion_cooperative_navigation_risk_assessment(erick.entity)
+        .map_err(|error| format!("reevaluar riesgo resuelto: {error:?}"))?
+        .ok_or_else(|| "la evaluaciÃ³n desapareciÃ³ tras resolver el encuentro".to_owned())?;
+    if after_resolve
+        .risks
+        .iter()
+        .any(|risk| matches!(risk, gameplay::NavigationRisk::KnownEncounter(id) if *id == encounter))
+        || !after_resolve.route_risks.iter().any(|risk| {
+            risk.source == gameplay::NavigationRouteRiskSource::Hazard(hazard)
+                && matches!(
+                        risk.classification,
+                        gameplay::NavigationRouteRiskClassification::NearSegment { .. }
+                    )
+        })
+    {
+        return Err("resolver el encuentro no eliminÃ³ su riesgo activo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "retirar combustible para bloquear ruta cooperativa",
+        GameplayCommand::RemoveShipFuel { ship, amount: 57 },
+    )?;
+    let fuel_blocked = session
+        .world()
+        .companion_cooperative_navigation_risk_assessment(erick.entity)
+        .map_err(|error| format!("evaluar combustible insuficiente: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluaciÃ³n con combustible insuficiente".to_owned())?;
+    if fuel_blocked.status != gameplay::CooperativeNavigationRiskStatus::Blocked
+        || !fuel_blocked.actions.contains(&gameplay::CooperativeNavigationAction::ManageFuel {
+            required: 4,
+            available: 3,
+        })
+    {
+        return Err(format!("bloqueo de combustible inesperado: {fuel_blocked:?}"));
+    }
+    run_command(
+        &mut session,
+        "reponer combustible para preparar amenaza",
+        GameplayCommand::AddShipFuel { ship, amount: 57 },
+    )?;
+    run_command(
+        &mut session,
+        "crear amenaza para preparaciÃ³n cooperativa",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let _enemy = session
+        .world()
+        .enemies()
+        .next()
+        .map(|enemy| enemy.entity)
+        .ok_or_else(|| "la amenaza no quedÃ³ registrada".to_owned())?;
+    run_command(
+        &mut session,
+        "equipar arma sin municiÃ³n para evaluar preparaciÃ³n",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                15,
+                10,
+                Duration(1_000),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 1,
+                },
+            ),
+        },
+    )?;
+    let prepared = session
+        .world()
+        .companion_cooperative_navigation_risk_assessment(erick.entity)
+        .map_err(|error| format!("evaluar preparaciÃ³n de encuentro: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluaciÃ³n de preparaciÃ³n de encuentro".to_owned())?;
+    if prepared.status != gameplay::CooperativeNavigationRiskStatus::KnownRisk
+        || prepared.preparation.as_ref().is_none_or(|value| {
+            value.status != gameplay::CooperativeEncounterReadinessStatus::Blocked
+        })
+        || !prepared.actions.contains(&gameplay::CooperativeNavigationAction::PrepareEncounter)
+    {
+        return Err(format!("preparaciÃ³n de encuentro inesperada: {prepared:?}"));
+    }
+    run_command(
+        &mut session,
+        "iniciar autopilot antes de evaluar trÃ¡nsito",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let in_transit = session
+        .world()
+        .companion_cooperative_navigation_risk_assessment(erick.entity)
+        .map_err(|error| format!("evaluar autopilot en trÃ¡nsito: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluaciÃ³n durante el trÃ¡nsito".to_owned())?;
+    if !matches!(in_transit.autopilot, AutopilotState::InTransit { .. }) {
+        return Err(format!("el autopilot no quedÃ³ en trÃ¡nsito: {in_transit:?}"));
+    }
+    if in_transit.actions.iter().any(|action| {
+        matches!(action, gameplay::CooperativeNavigationAction::StartAutopilot(_))
+    }) || in_transit.alternative.is_some()
+    {
+        return Err("ERICK recomendÃ³ cambiar una ruta ya iniciada".to_owned());
+    }
+    run_command(
+        &mut session,
+        "destruir nave para bloquear continuaciÃ³n",
+        GameplayCommand::DamageShip { ship, amount: 100 },
+    )?;
+    let destroyed = session
+        .world()
+        .companion_cooperative_navigation_risk_assessment(erick.entity)
+        .map_err(|error| format!("evaluar nave destruida: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluaciÃ³n con nave destruida".to_owned())?;
+    if destroyed.status != gameplay::CooperativeNavigationRiskStatus::Blocked
+        || !destroyed.actions.contains(&gameplay::CooperativeNavigationAction::RepairShip(ship))
+    {
+        return Err(format!("nave destruida no bloqueo la navegaciÃ³n: {destroyed:?}"));
+    }
+    println!(
+        "RIESGO DE NAVEGACION COOPERATIVO DE ERICK COMPLETADO: ruta={:?}, riesgo={:?}, alternativa={:?}, combustible=3/4, transito_controlado=true, nave_destruida=true",
+        initial.route, hazard, with_risk.alternative.as_ref().map(|value| &value.alternative)
+    );
+    Ok(())
+}
+
+fn run_erick_integrated_recovery_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let provider = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear proveedor del flujo integral: {error:?}"))?;
+    session
+        .world_mut()
+        .initialize_inventory(provider, 20)
+        .map_err(|error| format!("inicializar proveedor del flujo integral: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK para flujo integral",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para flujo integral".to_owned())?;
+    run_command(
+        &mut session,
+        "equipar jugador con bloqueo real de munición",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                20,
+                20,
+                Duration(1),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 2,
+                },
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "agregar munición transferible",
+        GameplayCommand::AddInventoryItem {
+            player: provider,
+            item: ItemId(2),
+            amount: 5,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "crear amenaza del flujo integral",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration {
+                archetype: EnemyArchetype::Shooter,
+                position: Vec3::ZERO,
+                maximum_health: 20,
+                weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)),
+                shield: None,
+                mobility: 1,
+            },
+        },
+    )?;
+    let enemy = session
+        .world()
+        .enemies()
+        .next()
+        .map(|value| value.entity)
+        .ok_or_else(|| "la amenaza integral no quedó registrada".to_owned())?;
+    let readiness = session
+        .world()
+        .companion_cooperative_encounter_readiness(erick.entity)
+        .map_err(|error| format!("evaluar preparación integral: {error:?}"))?
+        .ok_or_else(|| "la preparación integral no estuvo disponible".to_owned())?;
+    let tactical_before = session
+        .world()
+        .companion_cooperative_tactical_assessment(erick.entity)
+        .map_err(|error| format!("evaluar táctica integral: {error:?}"))?
+        .ok_or_else(|| "la táctica integral no estuvo disponible".to_owned())?;
+    let support_before = session
+        .world()
+        .companion_cooperative_support_assessment(erick.entity)
+        .map_err(|error| format!("evaluar apoyo integral: {error:?}"))?
+        .ok_or_else(|| "el apoyo integral no estuvo disponible".to_owned())?;
+    let assignment_before = session
+        .world()
+        .companion_cooperative_recovery_assignment_assessment(erick.entity)
+        .map_err(|error| format!("evaluar asignación integral: {error:?}"))?
+        .ok_or_else(|| "la asignación integral no estuvo disponible".to_owned())?;
+    let plan_before = session
+        .world()
+        .companion_cooperative_recovery_plan_assessment(erick.entity)
+        .map_err(|error| format!("evaluar plan integral: {error:?}"))?
+        .ok_or_else(|| "el plan integral no estuvo disponible".to_owned())?;
+    let support_recommendation = support_before
+        .recommendations
+        .first()
+        .ok_or_else(|| "no se detectó el bloqueo de munición integral".to_owned())?;
+    if readiness.followed_player != player
+        || tactical_before.threats != vec![enemy]
+        || support_recommendation.provider != Some(provider)
+        || support_recommendation.item != Some(ItemId(2))
+        || support_recommendation.amount != 2
+        || assignment_before.tasks.is_empty()
+        || plan_before.tasks.is_empty()
+    {
+        return Err("las evaluaciones iniciales no reflejaron la amenaza real".to_owned());
+    }
+    let before_queries = session.save_state().serialize();
+    if session
+        .world()
+        .companion_cooperative_tactical_assessment(erick.entity)
+        .map_err(|error| format!("repetir táctica integral: {error:?}"))?
+        != Some(tactical_before.clone())
+        || session
+            .world()
+            .companion_cooperative_support_assessment(erick.entity)
+            .map_err(|error| format!("repetir apoyo integral: {error:?}"))?
+            != Some(support_before.clone())
+        || session.save_state().serialize() != before_queries
+    {
+        return Err("las evaluaciones iniciales no fueron deterministas o mutaron el mundo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "ejecutar transferencia integral",
+        GameplayCommand::TransferInventoryItem {
+            from: provider,
+            to: player,
+            item: ItemId(2),
+            amount: support_recommendation.amount,
+        },
+    )?;
+    if session.world().inventory(provider).map_or(0, |value| value.quantity(ItemId(2))) != 3
+        || session.world().inventory(player).map_or(0, |value| value.quantity(ItemId(2))) != 2
+    {
+        return Err("la transferencia integral no actualizó los inventarios correctamente".to_owned());
+    }
+    let support_after = session
+        .world()
+        .companion_cooperative_support_assessment(erick.entity)
+        .map_err(|error| format!("reevaluar apoyo integral: {error:?}"))?
+        .ok_or_else(|| "el apoyo integral desapareció tras la transferencia".to_owned())?;
+    if !support_after.recommendations.is_empty() {
+        return Err(format!("la transferencia no resolvió el bloqueo: {support_after:?}"));
+    }
+    run_command(
+        &mut session,
+        "derrotar amenaza del flujo integral",
+        GameplayCommand::AttackEnemy { player, enemy },
+    )?;
+    let tactical_after = session
+        .world()
+        .companion_cooperative_tactical_assessment(erick.entity)
+        .map_err(|error| format!("reevaluar táctica tras derrota: {error:?}"))?
+        .ok_or_else(|| "la táctica integral desapareció tras la derrota".to_owned())?;
+    if tactical_after.threats.contains(&enemy) {
+        return Err("la amenaza derrotada siguió bloqueando la recuperación".to_owned());
+    }
+    let assignment_after = session
+        .world()
+        .companion_cooperative_recovery_assignment_assessment(erick.entity)
+        .map_err(|error| format!("reevaluar asignación tras derrota: {error:?}"))?
+        .ok_or_else(|| "la asignación integral desapareció tras la derrota".to_owned())?;
+    if assignment_after.tasks.iter().any(|task| {
+        matches!(task.action, gameplay::CooperativeRecoveryTaskAction::DefeatEnemy(value) if value == enemy)
+    }) {
+        return Err("la tarea de la amenaza derrotada siguió presente".to_owned());
+    }
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación del flujo integral: {error:?}"))?;
+    run_command(
+        &mut session,
+        "ocupar estación del flujo integral",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    let origin = DestinationId::new(8_001);
+    let destination = DestinationId::new(8_002);
+    for value in [
+        Destination {
+            id: origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino del flujo integral",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "registrar ruta del flujo integral",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: origin,
+                to: destination,
+                distance: 10.0,
+                duration: Duration(4),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar navegación integral",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    let navigation = session
+        .world()
+        .companion_cooperative_navigation_risk_assessment(erick.entity)
+        .map_err(|error| format!("evaluar navegación integral: {error:?}"))?
+        .ok_or_else(|| "la navegación integral no estuvo disponible".to_owned())?;
+    if !navigation
+        .actions
+        .contains(&gameplay::CooperativeNavigationAction::StartAutopilot(destination))
+    {
+        return Err(format!("ERICK no recomendó la navegación viable: {navigation:?}"));
+    }
+    let assignment_final = session
+        .world()
+        .companion_cooperative_recovery_assignment_assessment(erick.entity)
+        .map_err(|error| format!("evaluar asignación final integral: {error:?}"))?
+        .ok_or_else(|| "la asignación final integral no estuvo disponible".to_owned())?;
+    let saved = session.save_state();
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(saved)
+        .map_err(|error| format!("restaurar flujo integral: {error}"))?;
+    if restored
+        .world()
+        .companion_cooperative_navigation_risk_assessment(erick.entity)
+        .map_err(|error| format!("evaluar navegación restaurada: {error:?}"))?
+        != Some(navigation.clone())
+        || restored
+            .world()
+            .companion_cooperative_recovery_assignment_assessment(erick.entity)
+            .map_err(|error| format!("evaluar asignación restaurada integral: {error:?}"))?
+            != Some(assignment_final)
+    {
+        return Err("el flujo integral restaurado no fue equivalente".to_owned());
+    }
+    println!(
+        "RECUPERACION COOPERATIVA INTEGRAL DE ERICK COMPLETADA: jugador={}, proveedor={}, enemigo_derrotado={}, municion_receptor=2, navegacion_recomendada=true, autopilot_ejecutado=false",
+        player, provider, enemy
+    );
+    Ok(())
+}
+
+fn run_erick_task_compatibility_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player_a = session.ids.first_player;
+    let player_b = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador para compatibilidad: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK para compatibilidad de tareas",
+        GameplayCommand::CreateCompanion {
+            followed_player: player_a,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para compatibilidad".to_owned())?;
+    for player in [player_a, player_b] {
+        run_command(
+            &mut session,
+            "equipar jugador para compatibilidad",
+            GameplayCommand::EquipPlayerWeapon {
+                player,
+                weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1)),
+            },
+        )?;
+    }
+    for _ in 0..2 {
+        run_command(
+            &mut session,
+            "crear objetivo de combate para compatibilidad",
+            GameplayCommand::CreateEnemy {
+                configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Charger, Vec3::ZERO),
+            },
+        )?;
+    }
+    let assignment = session
+        .world()
+        .companion_cooperative_recovery_assignment_assessment(erick.entity)
+        .map_err(|error| format!("evaluar asignación para compatibilidad: {error:?}"))?
+        .ok_or_else(|| "no hubo asignación para compatibilidad".to_owned())?;
+    let before = session.save_state().serialize();
+    let compatibility = session
+        .world()
+        .companion_cooperative_task_compatibility_assessment(erick.entity)
+        .map_err(|error| format!("evaluar compatibilidad real: {error:?}"))?
+        .ok_or_else(|| "no hubo compatibilidad real".to_owned())?;
+    let compatible = compatibility
+        .relations
+        .iter()
+        .filter(|relation| {
+            relation.status == gameplay::CooperativeTaskCompatibilityStatus::CompatibleKnown
+        })
+        .collect::<Vec<_>>();
+    if compatible.len() != 1
+        || compatibility.status != gameplay::CooperativeTaskCompatibilityStatus::CompatibleKnown
+        || compatible[0].first_task == compatible[0].second_task
+        || compatible[0].shared_entities.len() != 0
+        || compatibility.conflict_pairs.len() != 0
+        || compatibility.sequential_pairs.len() != 0
+    {
+        return Err(format!("compatibilidad de combate inesperada: {compatibility:?}"));
+    }
+    let repeated = session
+        .world()
+        .companion_cooperative_task_compatibility_assessment(erick.entity)
+        .map_err(|error| format!("repetir compatibilidad real: {error:?}"))?;
+    if repeated != Some(compatibility.clone()) || session.save_state().serialize() != before {
+        return Err("la compatibilidad real no fue determinista o mutó el mundo".to_owned());
+    }
+    let encoded = session.save_state();
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(encoded)
+        .map_err(|error| format!("restaurar compatibilidad real: {error}"))?;
+    if restored
+        .world()
+        .companion_cooperative_task_compatibility_assessment(erick.entity)
+        .map_err(|error| format!("evaluar compatibilidad restaurada: {error:?}"))?
+        != Some(compatibility.clone())
+    {
+        return Err("la compatibilidad real restaurada no fue equivalente".to_owned());
+    }
+    let mut solo = ProjectEchoSession::new();
+    let solo_player = solo.ids.first_player;
+    run_command(
+        &mut solo,
+        "crear ERICK para compatibilidad no evaluable",
+        GameplayCommand::CreateCompanion {
+            followed_player: solo_player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let solo_erick = solo
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para compatibilidad no evaluable".to_owned())?;
+    run_command(
+        &mut solo,
+        "equipar jugador único para compatibilidad no evaluable",
+        GameplayCommand::EquipPlayerWeapon {
+            player: solo_player,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1)),
+        },
+    )?;
+    for _ in 0..2 {
+        run_command(
+            &mut solo,
+            "crear amenaza para compatibilidad no evaluable",
+            GameplayCommand::CreateEnemy {
+                configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Charger, Vec3::ZERO),
+            },
+        )?;
+    }
+    let solo_compatibility = solo
+        .world()
+        .companion_cooperative_task_compatibility_assessment(solo_erick.entity)
+        .map_err(|error| format!("evaluar compatibilidad no evaluable: {error:?}"))?
+        .ok_or_else(|| "no hubo compatibilidad no evaluable".to_owned())?;
+    let solo_before = solo.save_state().serialize();
+    if solo_compatibility.status != gameplay::CooperativeTaskCompatibilityStatus::NotApplicable
+        || solo_compatibility.relations.len() != 1
+        || solo_compatibility.relations[0].reason
+            != gameplay::CooperativeTaskCompatibilityReason::TaskNotActionable
+        || solo
+            .world()
+            .companion_cooperative_task_compatibility_assessment(solo_erick.entity)
+            .map_err(|error| format!("repetir compatibilidad no evaluable: {error:?}"))?
+            != Some(solo_compatibility.clone())
+        || solo.save_state().serialize() != solo_before
+    {
+        return Err(format!("compatibilidad no evaluable inesperada: {solo_compatibility:?}"));
+    }
+    println!(
+        "COMPATIBILIDAD DE TAREAS DE ERICK COMPLETADA: tareas={}, par_compatible={:?}, no_aplicable=TaskNotActionable, conflicto=0, secuencial=0, determinista=true",
+        assignment.tasks.len(),
+        (compatible[0].first_task, compatible[0].second_task)
+    );
+    Ok(())
+}
+
+fn run_erick_navigation_contingency_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estaciÃ³n de contingencia: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK para contingencias",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedÃ³ registrado para contingencias".to_owned())?;
+    let origin = DestinationId::new(7_601);
+    let destination = DestinationId::new(7_602);
+    let alternate = DestinationId::new(7_603);
+    for value in [
+        Destination {
+            id: origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: alternate,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 5.0, y: 10.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de contingencia",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    for route in [
+        NavigationRoute {
+            from: origin,
+            to: destination,
+            distance: 10.0,
+            duration: Duration(4),
+            fuel_cost: 4,
+            state: NavigationRouteState::Available,
+        },
+        NavigationRoute {
+            from: origin,
+            to: alternate,
+            distance: 6.0,
+            duration: Duration(4),
+            fuel_cost: 2,
+            state: NavigationRouteState::Available,
+        },
+        NavigationRoute {
+            from: alternate,
+            to: destination,
+            distance: 6.0,
+            duration: Duration(4),
+            fuel_cost: 2,
+            state: NavigationRouteState::Available,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar ruta de contingencia",
+            GameplayCommand::RegisterNavigationRoute { route },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "ocupar estaciÃ³n para contingencia",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    let hazard = HazardId::new(7_601);
+    run_command(
+        &mut session,
+        "registrar peligro de contingencia",
+        GameplayCommand::RegisterEnvironmentalHazard {
+            hazard: EnvironmentalHazard::new(
+                hazard,
+                gameplay::EnvironmentalHazardType::SpaceStorm,
+                Vec3 { x: 5.0, y: 1.0, z: 0.0 },
+                1.0,
+                1,
+                Duration(10_000),
+                true,
+            ),
+        },
+    )?;
+    let encounter = EncounterId::new(7_602);
+    run_command(
+        &mut session,
+        "registrar encuentro de contingencia",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                encounter,
+                SpatialEncounterKind::Resource {
+                    item: ItemId(1),
+                    amount: 1,
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro de contingencia",
+        GameplayCommand::ActivateSpatialEncounter { encounter },
+    )?;
+    run_command(
+        &mut session,
+        "planificar viaje para contingencia",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    let planned = session
+        .world()
+        .companion_cooperative_navigation_contingency_assessment(erick.entity)
+        .map_err(|error| format!("evaluar contingencia planificada: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluaciÃ³n planificada de contingencia".to_owned())?;
+    if planned.status != gameplay::CooperativeNavigationContingencyStatus::Blocked
+        || planned.recommended_route.is_none()
+        || !planned.actions.iter().any(|action| {
+            matches!(
+                action,
+                gameplay::CooperativeNavigationContingencyAction::StartAlternative { .. }
+            )
+        })
+        || !planned.actions.iter().any(|action| {
+            matches!(
+                action,
+                gameplay::CooperativeNavigationContingencyAction::AddressEncounter(value)
+                    if *value == encounter
+            )
+        })
+        || !planned.evidence.iter().any(|evidence| evidence.confirmed)
+    {
+        return Err(format!("contingencia planificada inesperada: {planned:?}"));
+    }
+    let saved_before_queries = session.save_state().serialize();
+    let repeated = session
+        .world()
+        .companion_cooperative_navigation_contingency_assessment(erick.entity)
+        .map_err(|error| format!("repetir contingencia planificada: {error:?}"))?;
+    if repeated != Some(planned.clone()) || session.save_state().serialize() != saved_before_queries {
+        return Err("la contingencia planificada no fue determinista o mutÃ³ el mundo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "resolver encuentro antes de continuar el viaje",
+        GameplayCommand::ResolveSpatialEncounter { player, encounter },
+    )?;
+    let transit_state = session.save_state();
+    run_command(
+        &mut session,
+        "iniciar viaje para producir interrupciÃ³n real",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "cancelar viaje para activar contingencia",
+        GameplayCommand::CancelAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let interrupted = session
+        .world()
+        .companion_cooperative_navigation_contingency_assessment(erick.entity)
+        .map_err(|error| format!("evaluar viaje interrumpido: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluaciÃ³n de viaje interrumpido".to_owned())?;
+    let expected_route = vec![origin, alternate, destination];
+    if !matches!(interrupted.autopilot, AutopilotState::Interrupted { .. })
+        || interrupted.current_origin != Some(origin)
+        || interrupted.recommended_route != Some(expected_route.clone())
+        || interrupted.status
+            != gameplay::CooperativeNavigationContingencyStatus::KnownRecovery
+        || !interrupted.actions.iter().any(|action| {
+            matches!(
+                action,
+                gameplay::CooperativeNavigationContingencyAction::StartAlternative {
+                    destination: value,
+                    ..
+                } if *value == destination
+            )
+        })
+    {
+        return Err(format!("contingencia interrumpida inesperada: {interrupted:?}"));
+    }
+    let saved_interrupted = session.save_state();
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(saved_interrupted)
+        .map_err(|error| format!("restaurar contingencia interrumpida: {error}"))?;
+    let restored_assessment = restored
+        .world()
+        .companion_cooperative_navigation_contingency_assessment(erick.entity)
+        .map_err(|error| format!("consultar contingencia restaurada: {error:?}"))?;
+    if restored_assessment != Some(interrupted.clone()) {
+        return Err("la contingencia restaurada no fue equivalente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "agotar combustible para contingencia bloqueada",
+        GameplayCommand::RemoveShipFuel { ship, amount: 56 },
+    )?;
+    let fuel_blocked = session
+        .world()
+        .companion_cooperative_navigation_contingency_assessment(erick.entity)
+        .map_err(|error| format!("evaluar combustible para contingencia: {error:?}"))?
+        .ok_or_else(|| "no hubo contingencia de combustible".to_owned())?;
+    if fuel_blocked.status != gameplay::CooperativeNavigationContingencyStatus::Blocked
+        || fuel_blocked.reason != Some(gameplay::RecoveryReason::FuelInsufficient)
+        || !fuel_blocked.actions.iter().any(|action| {
+            matches!(
+                action,
+                gameplay::CooperativeNavigationContingencyAction::ManageFuel { .. }
+            )
+        })
+    {
+        return Err(format!("bloqueo de combustible inesperado: {fuel_blocked:?}"));
+    }
+    let mut transit = ProjectEchoSession::new();
+    transit
+        .restore_state(transit_state)
+        .map_err(|error| format!("restaurar viaje planificado: {error}"))?;
+    run_command(
+        &mut transit,
+        "iniciar autopilot para evaluar transito",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let in_transit = transit
+        .world()
+        .companion_cooperative_navigation_contingency_assessment(erick.entity)
+        .map_err(|error| format!("evaluar contingencia en transito: {error:?}"))?
+        .ok_or_else(|| "no hubo contingencia durante el transito".to_owned())?;
+    if !matches!(in_transit.autopilot, AutopilotState::InTransit { .. })
+        || in_transit.actions.iter().any(|action| {
+            matches!(
+                action,
+                gameplay::CooperativeNavigationContingencyAction::StartAlternative { .. }
+            )
+        })
+        || !in_transit.actions.iter().any(|action| {
+            matches!(
+                action,
+                gameplay::CooperativeNavigationContingencyAction::MonitorAutopilot(_)
+            )
+        })
+    {
+        return Err(format!("contingencia en transito incompatible: {in_transit:?}"));
+    }
+    run_command(
+        &mut transit,
+        "destruir nave para probar bloqueo de contingencia",
+        GameplayCommand::DamageShip { ship, amount: 100 },
+    )?;
+    let destroyed = transit
+        .world()
+        .companion_cooperative_navigation_contingency_assessment(erick.entity)
+        .map_err(|error| format!("evaluar contingencia de nave destruida: {error:?}"))?
+        .ok_or_else(|| "no hubo contingencia con nave destruida".to_owned())?;
+    if destroyed.status != gameplay::CooperativeNavigationContingencyStatus::Blocked
+        || destroyed.reason != Some(gameplay::RecoveryReason::ShipDestroyed)
+        || !destroyed.actions.iter().any(|action| {
+            matches!(
+                action,
+                gameplay::CooperativeNavigationContingencyAction::RepairShip(_)
+            )
+        })
+    {
+        return Err(format!("contingencia de nave destruida inesperada: {destroyed:?}"));
+    }
+    let mut no_route = ProjectEchoSession::new();
+    let no_route_player = no_route.ids.first_player;
+    run_command(
+        &mut no_route,
+        "crear ERICK sin viaje para evaluar incertidumbre",
+        GameplayCommand::CreateCompanion {
+            followed_player: no_route_player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let no_route_erick = no_route
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK sin viaje no quedÃ³ registrado".to_owned())?;
+    let no_route_assessment = no_route
+        .world()
+        .companion_cooperative_navigation_contingency_assessment(no_route_erick.entity)
+        .map_err(|error| format!("evaluar ausencia de datos: {error:?}"))?
+        .ok_or_else(|| "la ausencia de viaje no produjo evaluaciÃ³n".to_owned())?;
+    if no_route_assessment.status
+        != gameplay::CooperativeNavigationContingencyStatus::NotEvaluable
+        || no_route_assessment.conclusive
+    {
+        return Err(format!("ausencia de datos mal clasificada: {no_route_assessment:?}"));
+    }
+    run_command(
+        &mut no_route,
+        "deshabilitar ERICK para contingencia no disponible",
+        GameplayCommand::SetCompanionBehavior {
+            companion: no_route_erick.entity,
+            behavior: gameplay::CompanionBehavior::Unavailable,
+        },
+    )?;
+    if no_route
+        .world()
+        .companion_cooperative_navigation_contingency_assessment(no_route_erick.entity)
+        .map_err(|error| format!("consultar ERICK no disponible: {error:?}"))?
+        .is_some()
+    {
+        return Err("ERICK no disponible mantuvo contingencia accionable".to_owned());
+    }
+    println!(
+        "CONTINGENCIAS DE NAVEGACION DE ERICK COMPLETADAS: interrumpido={:?}, alternativa={:?}, combustible=bloqueado, transito=monitorizado, nave_destruida=bloqueada, no_evaluable=true",
+        interrupted.status,
+        interrupted.recommended_route
+    );
+    Ok(())
+}
+
+fn run_erick_cooperative_recovery_assignment_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación de asignación: {error:?}"))?;
+    let second_player = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador cooperativo: {error:?}"))?;
+    session
+        .world_mut()
+        .initialize_inventory(second_player, 20)
+        .map_err(|error| format!("inicializar inventario cooperativo: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK para asignación de recuperación",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para asignación".to_owned())?;
+    let origin = DestinationId::new(7_701);
+    let destination = DestinationId::new(7_702);
+    let alternate = DestinationId::new(7_703);
+    for value in [
+        Destination {
+            id: origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: alternate,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 5.0, y: 5.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de asignación",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    for route in [
+        NavigationRoute {
+            from: origin,
+            to: destination,
+            distance: 10.0,
+            duration: Duration(4),
+            fuel_cost: 1,
+            state: NavigationRouteState::Available,
+        },
+        NavigationRoute {
+            from: origin,
+            to: alternate,
+            distance: 7.0,
+            duration: Duration(3),
+            fuel_cost: 1,
+            state: NavigationRouteState::Available,
+        },
+        NavigationRoute {
+            from: alternate,
+            to: destination,
+            distance: 7.0,
+            duration: Duration(3),
+            fuel_cost: 1,
+            state: NavigationRouteState::Available,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar ruta de asignación",
+            GameplayCommand::RegisterNavigationRoute { route },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "ocupar estación de asignación",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    let encounter = EncounterId::new(7_701);
+    run_command(
+        &mut session,
+        "registrar encuentro para asignación",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                encounter,
+                SpatialEncounterKind::Resource {
+                    item: ItemId(1),
+                    amount: 1,
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro para asignación",
+        GameplayCommand::ActivateSpatialEncounter { encounter },
+    )?;
+    run_command(
+        &mut session,
+        "planificar navegación para asignación",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    let assessment = session
+        .world()
+        .companion_cooperative_recovery_assignment_assessment(erick.entity)
+        .map_err(|error| format!("evaluar asignación de recuperación: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación de asignación de recuperación".to_owned())?;
+    let encounter_task = assessment.tasks.iter().find(|task| {
+        matches!(
+            task.action,
+            gameplay::CooperativeRecoveryTaskAction::Navigation(
+                gameplay::CooperativeNavigationContingencyAction::AddressEncounter(value)
+            ) if value == encounter
+        )
+    });
+    if encounter_task.is_none_or(|task| {
+        task.assigned_player != Some(player)
+            || task.status != gameplay::CooperativeRecoveryTaskStatus::Actionable
+    }) {
+        return Err(format!("la tarea de resolver el encuentro no fue asignable: {assessment:?}"));
+    }
+    let snapshot = session.save_state().serialize();
+    let repeated = session
+        .world()
+        .companion_cooperative_recovery_assignment_assessment(erick.entity)
+        .map_err(|error| format!("repetir asignación de recuperación: {error:?}"))?;
+    if repeated != Some(assessment.clone()) || session.save_state().serialize() != snapshot {
+        return Err("la asignación no fue determinista o mutó el mundo".to_owned());
+    }
+    let plan = session
+        .world()
+        .companion_cooperative_recovery_plan_assessment(erick.entity)
+        .map_err(|error| format!("planificar recuperación: {error:?}"))?
+        .ok_or_else(|| "no hubo plan de recuperación".to_owned())?;
+    let encounter_order = encounter_task
+        .map(|task| task.order)
+        .ok_or_else(|| "se perdió el orden de la tarea del encuentro".to_owned())?;
+    if plan.status != gameplay::CooperativeRecoveryPlanStatus::Actionable
+        || !plan.ready_orders.contains(&encounter_order)
+        || !plan.dependencies.is_empty()
+    {
+        return Err(format!("plan inicial inesperado: {plan:?}"));
+    }
+    if session.save_state().serialize() != snapshot {
+        return Err("planificar recuperación mutó el estado serializado".to_owned());
+    }
+    let compatibility = session
+        .world()
+        .companion_cooperative_task_compatibility_assessment(erick.entity)
+        .map_err(|error| format!("evaluar compatibilidad de tareas: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación de compatibilidad".to_owned())?;
+    if compatibility.status != gameplay::CooperativeTaskCompatibilityStatus::NotApplicable
+        || !compatibility.compatible_pairs.is_empty()
+        || !compatibility.conflict_pairs.is_empty()
+        || !compatibility.unevaluable_pairs.is_empty()
+    {
+        return Err(format!("compatibilidad inicial inesperada: {compatibility:?}"));
+    }
+    if session.save_state().serialize() != snapshot {
+        return Err("evaluar compatibilidad mutó el estado serializado".to_owned());
+    }
+    let saved_assignment = session.save_state();
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(saved_assignment)
+        .map_err(|error| format!("restaurar asignación de recuperación: {error}"))?;
+    let restored_assessment = restored
+        .world()
+        .companion_cooperative_recovery_assignment_assessment(erick.entity)
+        .map_err(|error| format!("evaluar asignación restaurada: {error:?}"))?;
+    if restored_assessment != Some(assessment.clone()) {
+        return Err("la asignación restaurada no fue equivalente".to_owned());
+    }
+    let restored_plan = restored
+        .world()
+        .companion_cooperative_recovery_plan_assessment(erick.entity)
+        .map_err(|error| format!("evaluar plan restaurado: {error:?}"))?;
+    if restored_plan != Some(plan.clone()) {
+        return Err("el plan restaurado no fue equivalente".to_owned());
+    }
+    let restored_compatibility = restored
+        .world()
+        .companion_cooperative_task_compatibility_assessment(erick.entity)
+        .map_err(|error| format!("evaluar compatibilidad restaurada: {error:?}"))?;
+    if restored_compatibility != Some(compatibility.clone()) {
+        return Err("la compatibilidad restaurada no fue equivalente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "desactivar jugador no elegible para asignación",
+        GameplayCommand::SetPlayerActive {
+            player: second_player,
+            active: false,
+        },
+    )?;
+    let inactive_assessment = session
+        .world()
+        .companion_cooperative_recovery_assignment_assessment(erick.entity)
+        .map_err(|error| format!("evaluar jugador inactivo: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación con jugador inactivo".to_owned())?;
+    if inactive_assessment.tasks.iter().any(|task| {
+        task.assigned_player == Some(second_player)
+            || task.candidates.contains(&second_player) && task.status == gameplay::CooperativeRecoveryTaskStatus::Actionable
+    }) {
+        return Err("se asignó una tarea accionable al jugador inactivo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "resolver encuentro asignado",
+        GameplayCommand::ResolveSpatialEncounter { player, encounter },
+    )?;
+    let resolved = session
+        .world()
+        .companion_cooperative_recovery_assignment_assessment(erick.entity)
+        .map_err(|error| format!("reevaluar después de resolver encuentro: {error:?}"))?
+        .ok_or_else(|| "no hubo reevaluación posterior".to_owned())?;
+    if resolved.tasks.iter().any(|task| {
+        matches!(
+            task.action,
+            gameplay::CooperativeRecoveryTaskAction::Navigation(
+                gameplay::CooperativeNavigationContingencyAction::AddressEncounter(value)
+            ) if value == encounter
+        )
+    }) {
+        return Err("el encuentro resuelto siguió asignado".to_owned());
+    }
+    let resolved_plan = session
+        .world()
+        .companion_cooperative_recovery_plan_assessment(erick.entity)
+        .map_err(|error| format!("planificar después de resolver encuentro: {error:?}"))?
+        .ok_or_else(|| "no hubo plan posterior a la resolución".to_owned())?;
+    if resolved_plan.status != gameplay::CooperativeRecoveryPlanStatus::Satisfied
+        || !resolved_plan.tasks.is_empty()
+    {
+        return Err(format!("el plan no reflejó la resolución: {resolved_plan:?}"));
+    }
+    run_command(
+        &mut session,
+        "iniciar viaje para asignar supervisión",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let monitoring = session
+        .world()
+        .companion_cooperative_recovery_assignment_assessment(erick.entity)
+        .map_err(|error| format!("evaluar supervisión de viaje: {error:?}"))?
+        .ok_or_else(|| "no hubo evaluación durante el viaje".to_owned())?;
+    if !monitoring.tasks.iter().any(|task| {
+        task.assigned_player == Some(player)
+            && task.status == gameplay::CooperativeRecoveryTaskStatus::Actionable
+            && matches!(
+                task.action,
+                gameplay::CooperativeRecoveryTaskAction::Navigation(
+                    gameplay::CooperativeNavigationContingencyAction::MonitorAutopilot(_)
+                )
+            )
+    }) {
+        return Err(format!("no se asignó la supervisión del viaje en tránsito: {monitoring:?}"));
+    }
+    let monitoring_plan = session
+        .world()
+        .companion_cooperative_recovery_plan_assessment(erick.entity)
+        .map_err(|error| format!("planificar supervisión de viaje: {error:?}"))?
+        .ok_or_else(|| "no hubo plan de supervisión".to_owned())?;
+    if monitoring_plan.ready_orders.len() != 1
+        || monitoring_plan.parallel_orders.len() != 0
+        || !monitoring_plan.tasks.iter().any(|task| {
+            task.status == gameplay::CooperativeRecoveryPlanTaskStatus::Ready
+                && task.task.order == monitoring_plan.ready_orders[0]
+        })
+    {
+        return Err(format!("plan de supervisión inesperado: {monitoring_plan:?}"));
+    }
+    println!(
+        "COMPATIBILIDAD Y PLAN DE RECUPERACION DE ERICK COMPLETADOS: jugador={}, tareas_iniciales={}, estado_inicial={:?}, compatibilidad={:?}, tareas_posteriores={}, supervision=true, jugador_inactivo_excluido=true",
+        player,
+        assessment.tasks.len(),
+        assessment.status,
+        compatibility.status,
+        resolved.tasks.len()
     );
     Ok(())
 }
@@ -9846,6 +11780,20 @@ fn run_scenario() -> Result<(), String> {
         return Err("la estación de pilotaje no quedó ocupada".to_owned());
     }
     let progress = required_completed(&session)?;
+    for mission in [
+        ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+        tormenta_gravitacional::TORMENTA_GRAVITACIONAL,
+        la_defensa_imposible::LA_DEFENSA_IMPOSIBLE,
+    ] {
+        if session
+            .mission_progress(mission)
+            .is_none_or(|value| value.state != MissionState::Locked)
+        {
+            return Err(format!(
+                "la mision {mission:?} se desbloqueo sin una dependencia entre misiones"
+            ));
+        }
+    }
     println!(
         "ESCENARIO COMPLETADO: misión={:?}, obligatorios={}/{}, jugador={}, nave={}",
         progress.state,
@@ -9856,6 +11804,7 @@ fn run_scenario() -> Result<(), String> {
     );
     run_integrated_scenario()?;
     run_anomaly_mission_scenario()?;
+    run_end_to_end_coherence_scenario()?;
     run_gravitational_storm_scenario()?;
     run_shielded_enemy_scenario()?;
     run_cooperative_revival_scenario()?;
@@ -9880,6 +11829,11 @@ fn run_scenario() -> Result<(), String> {
     run_erick_cooperative_tactical_scenario()?;
     run_erick_cooperative_support_scenario()?;
     run_erick_cooperative_readiness_scenario()?;
+    run_erick_cooperative_navigation_risk_scenario()?;
+    run_erick_integrated_recovery_scenario()?;
+    run_erick_task_compatibility_scenario()?;
+    run_erick_navigation_contingency_scenario()?;
+    run_erick_cooperative_recovery_assignment_scenario()?;
     run_erick_navigation_scenario()?;
     run_erick_route_risk_scenario()?;
     run_erick_route_comparison_scenario()?;
