@@ -340,6 +340,21 @@ impl NavigationState {
         Ok(())
     }
 
+    pub(crate) fn restore_signal_knowledge(
+        &mut self,
+        destination: DestinationId,
+        knowledge: SignalKnowledge,
+    ) {
+        if !self.destinations.contains_key(&destination) {
+            return;
+        }
+        if knowledge == SignalKnowledge::Unknown {
+            self.signal_knowledge.remove(&destination);
+        } else {
+            self.signal_knowledge.insert(destination, knowledge);
+        }
+    }
+
     pub(crate) fn restore_position(&mut self, position: Vec3) -> Result<(), NavigationMovementError> {
         if !finite_position(position) {
             return Err(NavigationMovementError::InvalidInput);

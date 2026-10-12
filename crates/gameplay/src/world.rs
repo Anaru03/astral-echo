@@ -555,6 +555,20 @@ impl GameplayWorld {
             }
         }
         self.knowledge = save.knowledge.into_iter().collect();
+        for (target, state) in &self.knowledge {
+            let KnowledgeTarget::Destination(destination) = target else {
+                continue;
+            };
+            let signal_knowledge = match state {
+                KnowledgeState::Unknown => crate::navigation::SignalKnowledge::Unknown,
+                KnowledgeState::Detected => crate::navigation::SignalKnowledge::Detected,
+                KnowledgeState::Identified => crate::navigation::SignalKnowledge::Identified,
+                KnowledgeState::Discovered | KnowledgeState::Studied => {
+                    crate::navigation::SignalKnowledge::Discovered
+                }
+            };
+            restored_navigation.restore_signal_knowledge(*destination, signal_knowledge);
+        }
         self.events = EventLog::default();
         self.navigation = restored_navigation;
         Ok(())

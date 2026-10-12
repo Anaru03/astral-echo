@@ -1045,6 +1045,320 @@ fn run_derelict_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_derelict_exploration_flow_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación del flujo de derelicto: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK del flujo de derelicto",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado en el flujo de derelicto".to_owned())?;
+    let destination = DestinationId::new(5_301);
+    let position = Vec3 { x: 10.0, y: 0.0, z: 0.0 };
+    run_command(
+        &mut session,
+        "registrar destino del derelicto",
+        GameplayCommand::RegisterDestination {
+            destination: Destination {
+                id: destination,
+                destination_type: DestinationType::Planet,
+                position,
+                travel_duration: Duration(5),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Known,
+            },
+        },
+    )?;
+    let enemy_configuration = EnemyConfiguration {
+        archetype: EnemyArchetype::Shooter,
+        position,
+        maximum_health: 20,
+        weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)),
+        shield: None,
+        mobility: 1,
+    };
+    let derelict = DerelictId::new(5_301);
+    run_command(
+        &mut session,
+        "registrar derelicto del destino",
+        GameplayCommand::RegisterDerelict {
+            derelict: Derelict::new(derelict, position, 2.0)
+                .with_enemy(enemy_configuration)
+                .with_rewards(
+                    vec![DerelictReward {
+                        item: ItemId(3),
+                        amount: 1,
+                    }],
+                    RewardDistributionPolicy::Shared,
+                ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar pilotaje del derelicto",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    let before_travel = session.world().derelict(derelict).cloned();
+    if before_travel.is_none_or(|value| value.state != DerelictState::Undiscovered) {
+        return Err("el derelicto no comenzó desconocido".to_owned());
+    }
+    let early_discovery = session.update([GameplayCommand::DiscoverDerelict {
+        player,
+        derelict,
+    }]);
+    if early_discovery.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::DerelictOutOfRange,
+            })
+    }) {
+        return Err("el descubrimiento prematuro no respetó el alcance real".to_owned());
+    }
+    run_command(
+        &mut session,
+        "seleccionar destino del derelicto",
+        GameplayCommand::SelectDestination {
+            player,
+            pilot_station: station,
+            destination,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar viaje al derelicto",
+        GameplayCommand::StartTravel {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "llegar al destino del derelicto",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(5),
+        },
+    )?;
+    if session.world().ship_position() != Some(position)
+        || session.world().destination(destination).map(|value| value.discovery)
+            != Some(DiscoveryState::Discovered)
+        || !matches!(session.world().travel_state(), TravelState::Completed { destination: value } if value == destination)
+    {
+        return Err("el viaje no llegó al destino del derelicto".to_owned());
+    }
+    run_command(
+        &mut session,
+        "acercar jugador al derelicto",
+        GameplayCommand::MovePlayer {
+            player,
+            direction: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+            delta: Duration(2_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "descubrir derelicto tras el viaje",
+        GameplayCommand::DiscoverDerelict { player, derelict },
+    )?;
+    if session.world().derelict(derelict).map(|value| value.state)
+        != Some(DerelictState::Discovered)
+    {
+        return Err("el descubrimiento del derelicto no fue real".to_owned());
+    }
+    let before_exploration = session.save_state().serialize();
+    run_command(
+        &mut session,
+        "explorar derelicto tras descubrirlo",
+        GameplayCommand::ExploreDerelict { player, derelict },
+    )?;
+    let spawned_enemy = session
+        .world()
+        .derelict(derelict)
+        .and_then(|value| value.spawned_enemy)
+        .ok_or_else(|| "la exploración no activó un enemigo real".to_owned())?;
+    if session.world().derelict(derelict).map(|value| value.state)
+        != Some(DerelictState::Exploring)
+        || !session
+            .world()
+            .combatant(spawned_enemy)
+            .is_some_and(|value| !value.is_defeated() && value.active)
+    {
+        return Err("el contenido hostil del derelicto no quedó activo".to_owned());
+    }
+    let exploration_before = session.save_state().serialize();
+    let exploration_one = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("evaluar exploración del derelicto: {error:?}"))?;
+    let exploration_two = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("repetir evaluación del derelicto: {error:?}"))?;
+    if exploration_one != exploration_two || session.save_state().serialize() != exploration_before {
+        return Err("ERICK no fue determinista o mutó el derelicto".to_owned());
+    }
+    let repeated_explore = session.update([GameplayCommand::ExploreDerelict { player, derelict }]);
+    if repeated_explore.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::DerelictAlreadyExploring,
+            })
+    }) || session.save_state().serialize() == before_exploration
+    {
+        return Err("la exploración repetida alteró el contenido".to_owned());
+    }
+    run_command(
+        &mut session,
+        "equipar arma para limpiar el derelicto",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1_000)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "derrotar enemigo del derelicto",
+        GameplayCommand::AttackEnemy {
+            player,
+            enemy: spawned_enemy,
+        },
+    )?;
+    let reward = session
+        .world()
+        .derelict(derelict)
+        .and_then(|value| value.reward_collectibles.first().copied())
+        .ok_or_else(|| "la derrota no generó el collectible del derelicto".to_owned())?;
+    if session
+        .world()
+        .derelict(derelict)
+        .is_none_or(|value| !value.enemy_defeated || !value.reward_generated)
+        || session.world().collectible(reward).is_none_or(|value| !value.active || value.amount != 1)
+    {
+        return Err("la derrota no generó una recompensa única".to_owned());
+    }
+    let premature_resolve = session.update([GameplayCommand::ResolveDerelict { player, derelict }]);
+    if premature_resolve.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::DerelictRewardNotCollected,
+            })
+    }) {
+        return Err("premature derelict resolution was not rejected".to_owned());
+    }
+    run_command(
+        &mut session,
+        "recoger recompensa del derelicto",
+        GameplayCommand::CollectItem {
+            player,
+            collectible: reward,
+            amount: 1,
+        },
+    )?;
+    if false {
+    let premature_resolve = session.update([GameplayCommand::ResolveDerelict { player, derelict }]);
+    if premature_resolve.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::DerelictRewardNotCollected,
+            })
+    }) {
+        return Err("la resolución prematura del derelicto no fue rechazada".to_owned());
+    }
+    }
+    if session
+        .world()
+        .inventory(player)
+        .is_none_or(|value| value.quantity(ItemId(3)) != 1)
+        || session.world().collectible(reward).is_none_or(|value| value.active || value.amount != 0)
+    {
+        return Err("la recompensa no actualizó el inventario exactamente una vez".to_owned());
+    }
+    run_command(
+        &mut session,
+        "resolver derelicto completado",
+        GameplayCommand::ResolveDerelict { player, derelict },
+    )?;
+    let final_exploration = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("evaluar derelicto resuelto: {error:?}"))?;
+    if session.world().derelict(derelict).map(|value| value.state)
+        != Some(DerelictState::Resolved)
+        || final_exploration != session.world().companion_exploration_assessment(erick.entity).map_err(|error| format!("repetir ERICK final: {error:?}"))?
+    {
+        return Err("el derelicto no quedó resuelto de forma determinista".to_owned());
+    }
+    let repeat_resolve = session.update([GameplayCommand::ResolveDerelict { player, derelict }]);
+    if repeat_resolve.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::DerelictAlreadyResolved,
+            })
+    }) {
+        return Err("la resolución repetida del derelicto no fue rechazada".to_owned());
+    }
+    let saved = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&saved)
+        .map_err(|error| format!("deserializar derelicto resuelto: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar derelicto resuelto: {error}"))?;
+    let restored_exploration = restored
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("evaluar ERICK restaurado: {error:?}"))?;
+    if restored.world().derelict(derelict).map(|value| value.state)
+        != Some(DerelictState::Resolved)
+        || !restored
+            .world()
+            .combatant(spawned_enemy)
+            .is_some_and(|value| value.is_defeated())
+        || !restored
+            .world()
+            .derelict(derelict)
+            .is_some_and(|value| value.reward_generated && value.reward_collectibles.contains(&reward))
+        || restored.world().collectible(reward).is_none_or(|value| value.active || value.amount != 0)
+        || restored
+            .world()
+            .inventory(player)
+            .is_none_or(|value| value.quantity(ItemId(3)) != 1)
+        || restored.world().ship_position() != Some(position)
+        || restored_exploration != restored.world().companion_exploration_assessment(erick.entity).map_err(|error| format!("repetir ERICK restaurado: {error:?}"))?
+    {
+        return Err("la persistencia no conservó el derelicto resuelto".to_owned());
+    }
+    let restored_repeat = restored.update([GameplayCommand::ResolveDerelict { player, derelict }]);
+    if restored_repeat.first().is_none_or(|result| {
+        result.status
+            != (CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::DerelictAlreadyResolved,
+            })
+    }) || restored.save_state().serialize() != saved
+    {
+        return Err("el derelicto restaurado pudo resolverse o recompensarse otra vez".to_owned());
+    }
+    println!(
+        "FLUJO DE DERELICTO COMPLETADO: destino={:?}, derelict={:?}, enemigo={}, recompensa=1, estado=Resolved, restaurado=true",
+        destination, derelict, spawned_enemy
+    );
+    Ok(())
+}
+
 fn run_functional_world_scenario() -> Result<(), String> {
     let mut session = ProjectEchoSession::new();
     let player_a = session.ids.first_player;
@@ -2467,6 +2781,689 @@ fn run_spatial_encounter_scenario() -> Result<(), String> {
     println!(
         "ENCUENTROS ESPACIALES COMPLETADOS: integridad={}→{}, hallazgo_recogido=true, señal=Resuelta",
         integrity_before, integrity_after
+    );
+    Ok(())
+}
+
+fn run_dynamic_spatial_event_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación del evento dinámico: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK del evento dinámico",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para el evento dinámico".to_owned())?;
+    let destination = DestinationId::new(5_101);
+    let position = Vec3 { x: 10.0, y: 0.0, z: 0.0 };
+    run_command(
+        &mut session,
+        "registrar destino del evento dinámico",
+        GameplayCommand::RegisterDestination {
+            destination: Destination {
+                id: destination,
+                destination_type: DestinationType::Planet,
+                position,
+                travel_duration: Duration(10),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Known,
+            },
+        },
+    )?;
+    let encounter = EncounterId::new(5_101);
+    let item = ShipRepairConfiguration::default().material;
+    run_command(
+        &mut session,
+        "registrar evento pendiente en la ruta",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                encounter,
+                SpatialEncounterKind::Resource { item, amount: 1 },
+                position,
+                1.0,
+            ),
+        },
+    )?;
+    if session.world().spatial_encounter(encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Pending)
+    {
+        return Err("el evento dinámico no comenzó pendiente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "ocupar pilotaje del evento dinámico",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "seleccionar destino del evento dinámico",
+        GameplayCommand::SelectDestination {
+            player,
+            pilot_station: station,
+            destination,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar viaje del evento dinámico",
+        GameplayCommand::StartTravel {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "llegar al evento dinámico",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(10),
+        },
+    )?;
+    if !session.world().events().iter().any(|event| {
+        matches!(
+            event,
+            GameplayEvent::SpatialEncounterActivated { encounter: value } if *value == encounter
+        )
+    }) || session.world().spatial_encounter(encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Active)
+        || session.world().collectibles().any(|value| value.active && value.item == item)
+    {
+        return Err("la llegada no activó exactamente el evento espacial pendiente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "acercar jugador al evento dinámico",
+        GameplayCommand::MovePlayer {
+            player,
+            direction: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+            delta: Duration(2_000),
+        },
+    )?;
+    let before_guidance = session.save_state().serialize();
+    let exploration = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("consultar exploración del evento dinámico: {error:?}"))?
+        .ok_or_else(|| "ERICK no evaluó el evento dinámico activo".to_owned())?;
+    let exploration_repeat = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("repetir exploración del evento dinámico: {error:?}"))?;
+    if exploration_repeat != Some(exploration.clone())
+        || session.save_state().serialize() != before_guidance
+        || !exploration
+            .primary
+            .is_some_and(|value| value.action == gameplay::ExplorationAction::ResolveEncounter(encounter))
+    {
+        return Err("ERICK no recomendó resolver el evento sin mutar el mundo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "resolver evento dinámico",
+        GameplayCommand::ResolveSpatialEncounter { player, encounter },
+    )?;
+    let collectible = session
+        .world()
+        .collectibles()
+        .find(|value| value.active && value.item == item)
+        .copied()
+        .ok_or_else(|| "el evento dinámico no produjo el hallazgo esperado".to_owned())?;
+    run_command(
+        &mut session,
+        "recoger hallazgo del evento dinámico",
+        GameplayCommand::CollectItem {
+            player,
+            collectible: collectible.entity,
+            amount: 1,
+        },
+    )?;
+    if session.world().spatial_encounter(encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Resolved)
+        || session.world().inventory(player).is_none_or(|value| value.quantity(item) != 1)
+        || session
+            .world()
+            .collectible(collectible.entity)
+            .is_none_or(|value| value.active || value.amount != 0)
+    {
+        return Err("la resolución dinámica no produjo una consecuencia única".to_owned());
+    }
+    let repeated = session.update([GameplayCommand::ResolveSpatialEncounter { player, encounter }]);
+    if !matches!(
+        repeated.first().map(|result| &result.status),
+        Some(CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::SpatialEncounterAlreadyResolved
+        })
+    ) {
+        return Err("la resolución dinámica repetida no fue rechazada".to_owned());
+    }
+    let encoded = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&encoded)
+        .map_err(|error| format!("deserializar evento dinámico: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar evento dinámico: {error}"))?;
+    if restored.world().spatial_encounter(encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Resolved)
+        || restored.world().inventory(player).is_none_or(|value| value.quantity(item) != 1)
+    {
+        return Err("la restauración no conservó el evento dinámico y su consecuencia".to_owned());
+    }
+    println!(
+        "EVENTO ESPACIAL DINÁMICO COMPLETADO: destino={:?}, encuentro={:?}, estado=Pending→Active→Resolved, recompensa=1, restaurado=true",
+        destination, encounter
+    );
+    Ok(())
+}
+
+fn run_spatial_encounter_consequence_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación de consecuencia: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK de consecuencia",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedó registrado para la consecuencia".to_owned())?;
+    for destination in [
+        Destination {
+            id: ecos_anomalia::PLANET_DESTINATION,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(10),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Known,
+        },
+        Destination {
+            id: ecos_anomalia::SIGNAL_DESTINATION,
+            destination_type: DestinationType::SpacePoint,
+            position: Vec3 { x: 25.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(20),
+            fuel_cost: 2,
+            discovery: DiscoveryState::Unknown,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de consecuencia",
+            GameplayCommand::RegisterDestination { destination },
+        )?;
+    }
+    let encounter = EncounterId::new(5_102);
+    run_command(
+        &mut session,
+        "registrar señal de consecuencia",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                encounter,
+                SpatialEncounterKind::Signal {
+                    destination: ecos_anomalia::SIGNAL_DESTINATION,
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "registrar conocimiento de consecuencia",
+        GameplayCommand::RegisterKnowledge {
+            target: gameplay::KnowledgeTarget::Destination(
+                ecos_anomalia::SIGNAL_DESTINATION,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "desbloquear misión de consecuencia",
+        GameplayCommand::UnlockMission {
+            mission: ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar misión de consecuencia",
+        GameplayCommand::StartMission {
+            mission: ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar señal de consecuencia",
+        GameplayCommand::ActivateSpatialEncounter { encounter },
+    )?;
+    let before = session
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .ok_or_else(|| "no existe misión para la consecuencia".to_owned())?;
+    if before.required_completed != 0
+        || session.world().navigation().signal_knowledge(ecos_anomalia::SIGNAL_DESTINATION)
+            != SignalKnowledge::Unknown
+        || session.world().spatial_encounter(encounter).map(|value| value.state)
+            != Some(SpatialEncounterState::Active)
+    {
+        return Err("la consecuencia existía antes de resolver el encuentro".to_owned());
+    }
+    run_command(
+        &mut session,
+        "ocupar estación de consecuencia",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "detectar señal de consecuencia",
+        GameplayCommand::ScanSignals { player, ship },
+    )?;
+    let detected = session
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .ok_or_else(|| "se perdió la misión tras detectar la señal".to_owned())?;
+    let guidance_before = session
+        .world()
+        .guidance_for_player(player)
+        .map_err(|error| format!("consultar guidance antes de consecuencia: {error:?}"))?;
+    if detected.required_completed != 0
+        || session.world().navigation().signal_knowledge(ecos_anomalia::SIGNAL_DESTINATION)
+            != SignalKnowledge::Detected
+        || session.world().spatial_encounter(encounter).map(|value| value.state)
+            != Some(SpatialEncounterState::Active)
+        || guidance_before.recommended_action
+            != Some(gameplay::GuidanceAction::IdentifySignal(Some(
+                ecos_anomalia::SIGNAL_DESTINATION,
+            )))
+    {
+        return Err("la detección no conservó el encuentro pendiente ni la siguiente acción".to_owned());
+    }
+    run_command(
+        &mut session,
+        "esperar identificación de consecuencia",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "identificar señal de consecuencia",
+        GameplayCommand::ScanSignals { player, ship },
+    )?;
+    let after = session
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .ok_or_else(|| "se perdió la misión después de la consecuencia".to_owned())?;
+    let guidance_after = session
+        .world()
+        .guidance_for_player(player)
+        .map_err(|error| format!("consultar guidance después de consecuencia: {error:?}"))?;
+    if after.required_completed != 1
+        || session.world().navigation().signal_knowledge(ecos_anomalia::SIGNAL_DESTINATION)
+            != SignalKnowledge::Identified
+        || session.world().spatial_encounter(encounter).map(|value| value.state)
+            != Some(SpatialEncounterState::Resolved)
+        || guidance_after.recommended_action
+            != Some(gameplay::GuidanceAction::DiscoverDestination(
+                ecos_anomalia::PLANET_DESTINATION,
+            ))
+    {
+        return Err("la señal no produjo conocimiento, progreso y contenido siguiente".to_owned());
+    }
+    let erick_before = session.save_state().serialize();
+    let exploration = session
+        .world()
+        .companion_exploration_assessment(erick.entity)
+        .map_err(|error| format!("consultar ERICK después de consecuencia: {error:?}"))?
+        .ok_or_else(|| "ERICK no evaluó el contenido revelado".to_owned())?;
+    if exploration.primary.as_ref().is_none_or(|value| {
+        value.action
+            != gameplay::ExplorationAction::Guidance(
+                gameplay::GuidanceAction::DiscoverDestination(ecos_anomalia::PLANET_DESTINATION),
+            )
+    }) || session.save_state().serialize() != erick_before
+    {
+        return Err("ERICK no reflejó la consecuencia sin mutar el mundo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "repetir escaneo de consecuencia",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "confirmar idempotencia de consecuencia",
+        GameplayCommand::ScanSignals { player, ship },
+    )?;
+    let repeated = session
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .ok_or_else(|| "se perdió el progreso al repetir la señal".to_owned())?;
+    if repeated.required_completed != 1
+        || session.world().spatial_encounter(encounter).map(|value| value.state)
+            != Some(SpatialEncounterState::Resolved)
+    {
+        return Err("la consecuencia de señal no fue idempotente".to_owned());
+    }
+    let encoded = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&encoded)
+        .map_err(|error| format!("deserializar consecuencia de señal: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar consecuencia de señal: {error}"))?;
+    let restored_guidance = restored
+        .world()
+        .guidance_for_player(player)
+        .map_err(|error| format!("consultar guidance restaurada: {error:?}"))?;
+    if restored.world().spatial_encounter(encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Resolved)
+        || restored
+            .world()
+            .navigation()
+            .signal_knowledge(ecos_anomalia::SIGNAL_DESTINATION)
+            != SignalKnowledge::Identified
+        || restored_guidance.recommended_action
+            != Some(gameplay::GuidanceAction::DiscoverDestination(
+                ecos_anomalia::PLANET_DESTINATION,
+            ))
+    {
+        return Err("la consecuencia no sobrevivió al round-trip textual".to_owned());
+    }
+    println!(
+        "CONSECUENCIA DE EXPLORACIÓN COMPLETADA: encuentro={:?}, conocimiento=Identified, mision=1/4, siguiente=DiscoverDestination, erick=true, restaurado=true",
+        encounter
+    );
+    run_consequence_continuation(&mut session, player, station, erick.entity, encounter)?;
+    Ok(())
+}
+
+fn run_consequence_continuation(
+    session: &mut ProjectEchoSession,
+    player: EntityId,
+    station: EntityId,
+    erick: EntityId,
+    encounter: EncounterId,
+) -> Result<(), String> {
+    run_command(
+        session,
+        "select revealed destination",
+        GameplayCommand::SelectDestination {
+            player,
+            pilot_station: station,
+            destination: ecos_anomalia::PLANET_DESTINATION,
+        },
+    )?;
+    run_command(
+        session,
+        "start revealed destination travel",
+        GameplayCommand::StartTravel {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    run_command(
+        session,
+        "arrive at revealed destination",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(10),
+        },
+    )?;
+    let progress = session
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .ok_or_else(|| "mission missing after destination discovery".to_owned())?;
+    if progress.required_completed != 2
+        || session
+            .world()
+            .destination(ecos_anomalia::PLANET_DESTINATION)
+            .map(|value| value.discovery)
+            != Some(DiscoveryState::Discovered)
+    {
+        return Err("real travel did not discover the recommended destination".to_owned());
+    }
+    let return_destination = DestinationId::new(5_103);
+    run_command(
+        session,
+        "register consequence return destination",
+        GameplayCommand::RegisterDestination {
+            destination: Destination {
+                id: return_destination,
+                destination_type: DestinationType::Planet,
+                position: Vec3::ZERO,
+                travel_duration: Duration(10),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            },
+        },
+    )?;
+    run_command(
+        session,
+        "register consequence route",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: ecos_anomalia::PLANET_DESTINATION,
+                to: return_destination,
+                distance: 10.0,
+                duration: Duration(4),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    run_command(
+        session,
+        "plan consequence route",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin: ecos_anomalia::PLANET_DESTINATION,
+            destination: return_destination,
+        },
+    )?;
+    let before_navigation_query = session.save_state().serialize();
+    let navigation = session
+        .world()
+        .companion_navigation_assessment(erick)
+        .map_err(|error| format!("assess consequence route: {error:?}"))?
+        .ok_or_else(|| "ERICK did not assess consequence route".to_owned())?;
+    if navigation.recommendation
+        != Some(gameplay::NavigationAdvice::StartPlannedAutopilot {
+            destination: return_destination,
+        })
+        || session.save_state().serialize() != before_navigation_query
+    {
+        return Err("navigation recommendation changed the autopilot state".to_owned());
+    }
+    let checkpoint = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&checkpoint)
+        .map_err(|error| format!("deserialize continuation checkpoint: {error}"))?;
+    let mut continued = ProjectEchoSession::new();
+    continued
+        .restore_state(decoded)
+        .map_err(|error| format!("restore continuation checkpoint: {error}"))?;
+    if continued.world().spatial_encounter(encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Resolved)
+        || continued
+            .world()
+            .navigation()
+            .signal_knowledge(ecos_anomalia::SIGNAL_DESTINATION)
+            != SignalKnowledge::Identified
+        || continued
+            .world()
+            .destination(ecos_anomalia::PLANET_DESTINATION)
+            .map(|value| value.discovery)
+            != Some(DiscoveryState::Discovered)
+        || continued
+            .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+            .is_none_or(|value| value.required_completed != 2)
+        || !continued.world().navigation_routes().any(|route| {
+            route.from == ecos_anomalia::PLANET_DESTINATION && route.to == return_destination
+        })
+    {
+        return Err("continuation checkpoint lost real gameplay state".to_owned());
+    }
+    let continued_guidance = continued
+        .world()
+        .guidance_for_player(player)
+        .map_err(|error| format!("continued guidance: {error:?}"))?;
+    if continued_guidance.recommended_action
+        == Some(gameplay::GuidanceAction::DiscoverDestination(
+            ecos_anomalia::PLANET_DESTINATION,
+        ))
+    {
+        return Err("guidance kept the completed discovery objective pending".to_owned());
+    }
+    run_command(
+        &mut continued,
+        "equip continuation weapon",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::new(AttackType::Energy, 60, 20, Duration(1)),
+        },
+    )?;
+    run_command(
+        &mut continued,
+        "create continuation enemy",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(
+                EnemyArchetype::Shooter,
+                Vec3::ZERO,
+            ),
+        },
+    )?;
+    let enemy = continued
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, archetype, .. }
+                if *archetype == EnemyArchetype::Shooter => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "continuation enemy event was not produced".to_owned())?;
+    run_command(
+        &mut continued,
+        "defeat continuation enemy",
+        GameplayCommand::AttackEnemy { player, enemy },
+    )?;
+    if continued
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .is_none_or(|value| value.required_completed != 3)
+        || !continued
+            .world()
+            .combatant(enemy)
+            .is_some_and(|value| value.is_defeated())
+    {
+        return Err("continuation combat did not advance the mission".to_owned());
+    }
+    let reward = continued
+        .world()
+        .collectibles()
+        .find(|value| value.item == ItemId(3) && value.active)
+        .copied()
+        .ok_or_else(|| "continuation combat produced no reward".to_owned())?;
+    run_command(
+        &mut continued,
+        "collect continuation reward",
+        GameplayCommand::CollectItem {
+            player,
+            collectible: reward.entity,
+            amount: 1,
+        },
+    )?;
+    let completed = continued
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .ok_or_else(|| "mission missing after continuation reward".to_owned())?;
+    if completed.state != MissionState::Completed
+        || completed.required_completed != 4
+        || continued
+            .world()
+            .inventory(player)
+            .is_none_or(|value| value.quantity(ItemId(3)) != 1)
+        || continued
+            .world()
+            .collectible(reward.entity)
+            .is_none_or(|value| value.active || value.amount != 0)
+    {
+        return Err("continuation reward did not complete the mission".to_owned());
+    }
+    let before_repeat = continued.save_state().serialize();
+    let repeated = continued.update([GameplayCommand::CollectItem {
+        player,
+        collectible: reward.entity,
+        amount: 1,
+    }]);
+    if !matches!(
+        repeated.first().map(|value| &value.status),
+        Some(CommandStatus::Rejected { .. })
+    ) || continued.save_state().serialize() != before_repeat
+    {
+        return Err("repeated continuation collection was not idempotent".to_owned());
+    }
+    let guidance = continued
+        .world()
+        .guidance_for_player(player)
+        .map_err(|error| format!("final continuation guidance: {error:?}"))?;
+    let erick_result = continued
+        .world()
+        .companion_exploration_assessment(erick)
+        .map_err(|error| format!("final continuation ERICK: {error:?}"))?;
+    if guidance.objectives.iter().any(|value| {
+        value.mission == ecos_anomalia::ECOS_DE_LA_ANOMALIA
+            && value.status != gameplay::GuidanceStatus::Completed
+    }) || erick_result.is_none()
+    {
+        return Err("final guidance or ERICK did not reflect completion".to_owned());
+    }
+    let final_text = continued.save_state().serialize();
+    let final_decoded = gameplay::GameplaySaveState::deserialize(&final_text)
+        .map_err(|error| format!("deserialize final continuation: {error}"))?;
+    let mut final_restored = ProjectEchoSession::new();
+    final_restored
+        .restore_state(final_decoded)
+        .map_err(|error| format!("restore final continuation: {error}"))?;
+    if final_restored
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .is_none_or(|value| value.state != MissionState::Completed || value.required_completed != 4)
+        || final_restored
+            .world()
+            .inventory(player)
+            .is_none_or(|value| value.quantity(ItemId(3)) != 1)
+        || final_restored
+            .world()
+            .collectible(reward.entity)
+            .is_none_or(|value| value.active || value.amount != 0)
+        || !final_restored.world().navigation_routes().any(|route| {
+            route.from == ecos_anomalia::PLANET_DESTINATION && route.to == return_destination
+        })
+    {
+        return Err("final continuation restoration was inconsistent".to_owned());
+    }
+    println!(
+        "CONSEQUENCE EXPLORATION COMPLETE: encounter={:?}, destination=Discovered, mission=Completed 4/4, enemy={}, reward_unique=true, route_recommended_without_autopilot=true, restored=true",
+        encounter, enemy
     );
     Ok(())
 }
@@ -11817,8 +12814,11 @@ fn run_scenario() -> Result<(), String> {
     run_reward_distribution_scenario()?;
     run_autonomous_enemy_scenario()?;
     run_spatial_encounter_scenario()?;
+    run_dynamic_spatial_event_scenario()?;
+    run_spatial_encounter_consequence_scenario()?;
     run_autopilot_scenario()?;
     run_derelict_scenario()?;
+    run_derelict_exploration_flow_scenario()?;
     run_functional_world_scenario()?;
     run_guidance_progression_scenario()?;
     run_group_scaling_scenario()?;
