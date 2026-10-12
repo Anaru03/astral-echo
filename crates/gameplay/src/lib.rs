@@ -5,6 +5,7 @@ pub mod components;
 pub mod domains;
 pub mod door;
 pub mod electrical;
+pub mod encounter;
 pub mod events;
 pub mod hazard;
 pub mod healing;
@@ -46,6 +47,10 @@ pub use electrical::{
     BreakerId, BreakerState, ElectricalBreaker, ElectricalBreakerConfiguration, ElectricalPanel,
     ElectricalPanelConfiguration, ElectricalPanelProgress, ElectricalPanelRegistrationError,
     ElectricalPuzzleState,
+};
+pub use encounter::{
+    EncounterId, SpatialEncounter, SpatialEncounterError, SpatialEncounterKind,
+    SpatialEncounterState,
 };
 pub use events::{EventLog, GameplayEvent};
 pub use hazard::{
@@ -89,7 +94,7 @@ pub use station::{Station, StationError, StationState, StationType};
 pub use systems::{
     CombatSystem, DoorSystem, ElectricalSystem, EnemyAiSystem, EnvironmentalHazardSystem,
     HullIntegritySystem, InteractionSystem, InventorySystem, LifeSupportSystem, NavigationSystem,
-    PilotSystem, ResourceSystem, ScannerSystem, StationSystem,
+    PilotSystem, ResourceSystem, ScannerSystem, SpatialEncounterSystem, StationSystem,
 };
 pub use types::{GameResult, GameplayState, SimulationPhase};
 pub use world::{GameplayWorld, InventoryTransferError, PlayerCreationError, MAX_LOCAL_PLAYERS};

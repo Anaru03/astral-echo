@@ -1337,6 +1337,311 @@ impl GameplaySystem for EnvironmentalHazardSystem {
 
 pub struct HullIntegritySystem;
 
+pub struct SpatialEncounterSystem {
+    event_cursor: usize,
+}
+
+impl SpatialEncounterSystem {
+    pub const fn new() -> Self {
+        Self { event_cursor: 0 }
+    }
+
+    fn within_range(world: &GameplayWorld, encounter: &crate::encounter::SpatialEncounter) -> bool {
+        let Some(position) = world.ship_position() else {
+            return false;
+        };
+        crate::encounter::distance_squared(position, encounter.position).is_some_and(|distance| {
+            distance <= f64::from(encounter.activation_radius) * f64::from(encounter.activation_radius)
+        })
+    }
+
+    fn activate(
+        &self,
+        world: &mut GameplayWorld,
+        id: crate::encounter::EncounterId,
+    ) -> CommandResult {
+        let Some(encounter) = world.spatial_encounter(id).copied() else {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SpatialEncounterNotFound,
+            );
+        };
+        if encounter.state == crate::encounter::SpatialEncounterState::Active {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SpatialEncounterAlreadyActive,
+            );
+        }
+        if encounter.state == crate::encounter::SpatialEncounterState::Resolved {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SpatialEncounterAlreadyResolved,
+            );
+        }
+        if !Self::within_range(world, &encounter) {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SpatialEncounterOutOfRange,
+            );
+        }
+        let spawned_enemy = match encounter.kind {
+            crate::encounter::SpatialEncounterKind::Hostile { configuration } => {
+                let Ok(enemy) = world.register_enemy(configuration) else {
+                    return CommandResult::rejected(
+                        crate::commands::CommandRejection::SpatialEncounterResolutionFailed,
+                    );
+                };
+                world.publish(crate::events::GameplayEvent::EnemyCreated {
+                    enemy,
+                    archetype: configuration.archetype,
+                    position: configuration.position,
+                });
+                Some(enemy)
+            }
+            _ => None,
+        };
+        let Some(updated) = world.spatial_encounter_mut(id) else {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SpatialEncounterNotFound,
+            );
+        };
+        updated.state = crate::encounter::SpatialEncounterState::Active;
+        updated.spawned_enemy = spawned_enemy;
+        world.publish(crate::events::GameplayEvent::SpatialEncounterActivated { encounter: id });
+        CommandResult::success(true)
+    }
+
+    fn resolve(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        id: crate::encounter::EncounterId,
+    ) -> CommandResult {
+        let Some(encounter) = world.spatial_encounter(id).copied() else {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SpatialEncounterNotFound,
+            );
+        };
+        if encounter.state == crate::encounter::SpatialEncounterState::Resolved {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SpatialEncounterAlreadyResolved,
+            );
+        }
+        if encounter.state != crate::encounter::SpatialEncounterState::Active {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SpatialEncounterRequiresScanner,
+            );
+        }
+        let Some(player_state) = world.player(player) else {
+            return CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound);
+        };
+        let Some(combatant) = world.combatant(player) else {
+            return CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound);
+        };
+        if !world.entities().contains(player)
+            || !player_state.is_active
+            || !combatant.is_player
+            || combatant.is_defeated()
+        {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SpatialEncounterRequiresActivePlayer,
+            );
+        }
+        if !Self::within_range(world, &encounter) {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SpatialEncounterOutOfRange,
+            );
+        }
+        match encounter.kind {
+            crate::encounter::SpatialEncounterKind::Signal { destination } => {
+                if !world
+                    .knowledge(crate::knowledge::KnowledgeTarget::Destination(destination))
+                    .is_identified()
+                {
+                    return CommandResult::rejected(
+                        crate::commands::CommandRejection::SpatialEncounterRequiresScanner,
+                    );
+                }
+            }
+            crate::encounter::SpatialEncounterKind::Hazard { hazard } => {
+                let Some(ship) = world.navigation().ship_id() else {
+                    return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+                };
+                let Some(hazard_data) = world.environmental_hazard(hazard) else {
+                    return CommandResult::rejected(
+                        crate::commands::CommandRejection::EnvironmentalHazardNotFound,
+                    );
+                };
+                if world.ship_is_destroyed(ship) == Some(true) || !hazard_data.active {
+                    return CommandResult::rejected(crate::commands::CommandRejection::ShipDestroyed);
+                }
+                if world.apply_ship_damage(ship, hazard_data.damage).is_err() {
+                    return CommandResult::rejected(
+                        crate::commands::CommandRejection::SpatialEncounterResolutionFailed,
+                    );
+                }
+            }
+            crate::encounter::SpatialEncounterKind::Resource { item, amount } => {
+                let Some(position) = world.ship_position() else {
+                    return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+                };
+                let Ok(collectible) = world.create_collectible(item, amount, position, 2.0) else {
+                    return CommandResult::rejected(
+                        crate::commands::CommandRejection::SpatialEncounterResolutionFailed,
+                    );
+                };
+                world.publish(crate::events::GameplayEvent::CollectibleCreated {
+                    collectible,
+                    item,
+                    amount,
+                    position,
+                });
+            }
+            crate::encounter::SpatialEncounterKind::Hostile { .. } => {
+                return CommandResult::rejected(
+                    crate::commands::CommandRejection::SpatialEncounterRequiresScanner,
+                )
+            }
+        }
+        let Some(updated) = world.spatial_encounter_mut(id) else {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::SpatialEncounterNotFound,
+            );
+        };
+        updated.state = crate::encounter::SpatialEncounterState::Resolved;
+        world.publish(crate::events::GameplayEvent::SpatialEncounterResolved { encounter: id });
+        CommandResult::success(true)
+    }
+
+    fn observe_new_events(&mut self, world: &mut GameplayWorld) {
+        let length = world.events().len();
+        if self.event_cursor > length {
+            self.event_cursor = 0;
+        }
+        let events: Vec<_> = world.events().iter().skip(self.event_cursor).cloned().collect();
+        self.event_cursor = length;
+        for event in events {
+            match event {
+                crate::events::GameplayEvent::TravelArrived { .. } => {
+                    let ids: Vec<_> = world
+                        .spatial_encounters()
+                        .filter(|encounter| {
+                            encounter.state == crate::encounter::SpatialEncounterState::Pending
+                                && Self::within_range(world, encounter)
+                        })
+                        .map(|encounter| encounter.id)
+                        .collect();
+                    for id in ids {
+                        let _ = self.activate(world, id);
+                    }
+                }
+                crate::events::GameplayEvent::DestinationIdentified { destination, .. }
+                | crate::events::GameplayEvent::KnowledgeIdentified {
+                    target: crate::knowledge::KnowledgeTarget::Destination(destination),
+                } => {
+                    let ids: Vec<_> = world
+                        .spatial_encounters()
+                        .filter(|encounter| {
+                            encounter.state == crate::encounter::SpatialEncounterState::Active
+                                && matches!(
+                                    encounter.kind,
+                                    crate::encounter::SpatialEncounterKind::Signal {
+                                        destination: expected
+                                    } if expected == destination
+                                )
+                        })
+                        .map(|encounter| encounter.id)
+                        .collect();
+                    for id in ids {
+                        if let Some(updated) = world.spatial_encounter_mut(id) {
+                            updated.state = crate::encounter::SpatialEncounterState::Resolved;
+                            world.publish(crate::events::GameplayEvent::SpatialEncounterResolved {
+                                encounter: id,
+                            });
+                        }
+                    }
+                }
+                crate::events::GameplayEvent::EnemyDefeated { enemy, .. } => {
+                    let ids: Vec<_> = world
+                        .spatial_encounters()
+                        .filter(|encounter| {
+                            encounter.state == crate::encounter::SpatialEncounterState::Active
+                                && encounter.spawned_enemy == Some(enemy)
+                        })
+                        .map(|encounter| encounter.id)
+                        .collect();
+                    for id in ids {
+                        if let Some(updated) = world.spatial_encounter_mut(id) {
+                            updated.state = crate::encounter::SpatialEncounterState::Resolved;
+                            world.publish(crate::events::GameplayEvent::SpatialEncounterResolved {
+                                encounter: id,
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Default for SpatialEncounterSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GameplaySystem for SpatialEncounterSystem {
+    fn process(
+        &mut self,
+        world: &mut GameplayWorld,
+        command: GameplayCommand,
+    ) -> Option<CommandResult> {
+        match command {
+            GameplayCommand::RegisterSpatialEncounter { encounter } => {
+                if world.phase() != crate::types::SimulationPhase::Running {
+                    return Some(CommandResult::rejected(
+                        crate::commands::CommandRejection::SimulationNotRunning,
+                    ));
+                }
+                Some(match world.register_spatial_encounter(encounter) {
+                    Ok(()) => CommandResult::success(true),
+                    Err(crate::encounter::SpatialEncounterError::DuplicateId) => {
+                        CommandResult::rejected(
+                            crate::commands::CommandRejection::SpatialEncounterAlreadyRegistered,
+                        )
+                    }
+                    Err(crate::encounter::SpatialEncounterError::DestinationNotFound)
+                    | Err(crate::encounter::SpatialEncounterError::HazardNotFound)
+                    | Err(crate::encounter::SpatialEncounterError::ItemDefinitionNotFound) => {
+                        CommandResult::rejected(
+                            crate::commands::CommandRejection::SpatialEncounterNotFound,
+                        )
+                    }
+                    Err(_) => CommandResult::invalid(
+                        crate::commands::CommandInvalidity::InvalidSpatialEncounterConfiguration,
+                    ),
+                })
+            }
+            GameplayCommand::ActivateSpatialEncounter { encounter } => {
+                Some(self.activate(world, encounter))
+            }
+            GameplayCommand::ResolveSpatialEncounter { player, encounter } => {
+                Some(self.resolve(world, player, encounter))
+            }
+            _ => None,
+        }
+    }
+
+    fn observes_events(&self) -> bool {
+        true
+    }
+
+    fn reset_event_cursor(&mut self) {
+        self.event_cursor = 0;
+    }
+
+    fn observe_events(&mut self, world: &mut GameplayWorld) {
+        self.observe_new_events(world);
+    }
+}
+
 impl GameplaySystem for HullIntegritySystem {
     fn process(
         &mut self,

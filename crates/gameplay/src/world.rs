@@ -7,6 +7,7 @@ use crate::{
     components::{Inventory, InventoryError},
     door::{Door, DoorAccessRequirement},
     electrical::{ElectricalPanel, ElectricalPanelConfiguration, ElectricalPanelRegistrationError},
+    encounter::{EncounterId, SpatialEncounter, SpatialEncounterError, SpatialEncounterKind},
     events::EventLog,
     hazard::{EnvironmentalHazard, EnvironmentalHazardError, HazardId},
     healing::{HealingError, HealingResult},
@@ -67,6 +68,7 @@ pub struct GameplayWorld {
     collectibles: BTreeMap<EntityId, Collectible>,
     ship_integrity: BTreeMap<EntityId, ShipIntegrity>,
     environmental_hazards: BTreeMap<HazardId, EnvironmentalHazard>,
+    spatial_encounters: BTreeMap<EncounterId, SpatialEncounter>,
     enemy_rewards: BTreeMap<crate::combat::EnemyArchetype, EnemyReward>,
     processed_enemy_rewards: BTreeSet<EntityId>,
     knowledge: BTreeMap<KnowledgeTarget, KnowledgeState>,
@@ -496,6 +498,43 @@ impl GameplayWorld {
     }
     pub fn environmental_hazards(&self) -> impl Iterator<Item = &EnvironmentalHazard> {
         self.environmental_hazards.values()
+    }
+    pub fn spatial_encounter(&self, encounter: EncounterId) -> Option<&SpatialEncounter> {
+        self.spatial_encounters.get(&encounter)
+    }
+    pub fn spatial_encounters(&self) -> impl Iterator<Item = &SpatialEncounter> {
+        self.spatial_encounters.values()
+    }
+    pub fn register_spatial_encounter(
+        &mut self,
+        encounter: SpatialEncounter,
+    ) -> Result<(), SpatialEncounterError> {
+        encounter.validate()?;
+        if self.spatial_encounters.contains_key(&encounter.id) {
+            return Err(SpatialEncounterError::DuplicateId);
+        }
+        match encounter.kind {
+            SpatialEncounterKind::Signal { destination }
+                if self.destination(destination).is_none() =>
+            {
+                return Err(SpatialEncounterError::DestinationNotFound)
+            }
+            SpatialEncounterKind::Hazard { hazard } if self.environmental_hazard(hazard).is_none() => {
+                return Err(SpatialEncounterError::HazardNotFound)
+            }
+            SpatialEncounterKind::Resource { item, .. }
+                if self.item_definition(item).is_none() =>
+            {
+                return Err(SpatialEncounterError::ItemDefinitionNotFound)
+            }
+            _ => {}
+        }
+        self.spatial_encounters.insert(encounter.id, encounter);
+        self.publish(crate::events::GameplayEvent::SpatialEncounterRegistered {
+            encounter: encounter.id,
+            kind: encounter.kind,
+        });
+        Ok(())
     }
     pub fn active_environmental_hazards(&self) -> impl Iterator<Item = &EnvironmentalHazard> {
         self.environmental_hazards
@@ -1463,6 +1502,12 @@ impl GameplayWorld {
     }
     pub(crate) fn navigation_mut(&mut self) -> &mut NavigationState {
         &mut self.navigation
+    }
+    pub(crate) fn spatial_encounter_mut(
+        &mut self,
+        encounter: EncounterId,
+    ) -> Option<&mut SpatialEncounter> {
+        self.spatial_encounters.get_mut(&encounter)
     }
     pub(crate) fn repair_ship_at_station(
         &mut self,

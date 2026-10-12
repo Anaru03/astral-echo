@@ -426,6 +426,16 @@ pub enum GameplayEvent {
         hazard_type: crate::hazard::EnvironmentalHazardType,
         position: Vec3,
     },
+    SpatialEncounterRegistered {
+        encounter: crate::encounter::EncounterId,
+        kind: crate::encounter::SpatialEncounterKind,
+    },
+    SpatialEncounterActivated {
+        encounter: crate::encounter::EncounterId,
+    },
+    SpatialEncounterResolved {
+        encounter: crate::encounter::EncounterId,
+    },
     ShipDamagedByHazard {
         hazard: crate::hazard::HazardId,
         hazard_type: crate::hazard::EnvironmentalHazardType,

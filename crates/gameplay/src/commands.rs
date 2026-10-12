@@ -1,6 +1,7 @@
 use crate::collectible::ItemDefinition;
 use crate::combat::{EnemyConfiguration, WeaponConfiguration};
 use crate::electrical::{BreakerId, BreakerState, ElectricalPanelConfiguration};
+use crate::encounter::{EncounterId, SpatialEncounter};
 use crate::knowledge::KnowledgeTarget;
 use crate::life_support::{CompartmentId, LifeSupportConfiguration};
 use crate::navigation::ShipMovementParameters;
@@ -220,6 +221,16 @@ pub enum GameplayCommand {
     RegisterEnvironmentalHazard {
         hazard: crate::hazard::EnvironmentalHazard,
     },
+    RegisterSpatialEncounter {
+        encounter: SpatialEncounter,
+    },
+    ActivateSpatialEncounter {
+        encounter: EncounterId,
+    },
+    ResolveSpatialEncounter {
+        player: EntityId,
+        encounter: EncounterId,
+    },
     LockDoor {
         door: EntityId,
     },
@@ -351,6 +362,14 @@ pub enum CommandRejection {
     ReviveTargetInvalid,
     ReviveOutOfRange,
     TransferToSelf,
+    SpatialEncounterNotFound,
+    SpatialEncounterAlreadyRegistered,
+    SpatialEncounterAlreadyActive,
+    SpatialEncounterAlreadyResolved,
+    SpatialEncounterOutOfRange,
+    SpatialEncounterRequiresScanner,
+    SpatialEncounterRequiresActivePlayer,
+    SpatialEncounterResolutionFailed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -374,6 +393,7 @@ pub enum CommandInvalidity {
     InvalidRewardConfiguration,
     InvalidHealingConfiguration,
     InvalidRevivalConfiguration,
+    InvalidSpatialEncounterConfiguration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

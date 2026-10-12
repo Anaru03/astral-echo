@@ -9,10 +9,11 @@ use gameplay::{
     AttackType, BreakerId, BreakerState, CollectibleError, Destination, DestinationId,
     DestinationType, DiscoveryState, ElectricalBreakerConfiguration, ElectricalPanelConfiguration,
     ElectricalPanelRegistrationError, EnemyArchetype, EnemyConfiguration, EnvironmentalHazard,
-    CommandStatus, GameplayCommand, GameplayEvent, LifeSupportConfiguration,
+    CommandStatus, EncounterId, GameplayCommand, GameplayEvent, LifeSupportConfiguration,
     LifeSupportRegistrationError, MissionProgress, OxygenCompartmentConfiguration,
     RewardDistributionPolicy, ShipRepairConfiguration, SignalKnowledge, StationState,
-    StationType, TravelState, WeaponAmmunition, WeaponConfiguration,
+    SpatialEncounter, SpatialEncounterKind, SpatialEncounterState, StationType, TravelState,
+    WeaponAmmunition, WeaponConfiguration,
 };
 
 fn run_atomicity_regressions() -> Result<(), String> {
@@ -957,6 +958,226 @@ fn run_autonomous_enemy_scenario() -> Result<(), String> {
     println!(
         "IA AUTÓNOMA COMPLETADA: tirador={}, objetivo_inicial={}, objetivo_reseleccionado={}, cargador={}, posicion_cargador={:.1}",
         shooter, player_a, player_b, charger, charger_position.x
+    );
+    Ok(())
+}
+
+fn run_spatial_encounter_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let position = Vec3::ZERO;
+    let hazard = gameplay::HazardId::new(901);
+    run_command(
+        &mut session,
+        "registrar peligro de encuentro",
+        GameplayCommand::RegisterEnvironmentalHazard {
+            hazard: EnvironmentalHazard::new(
+                hazard,
+                gameplay::EnvironmentalHazardType::SpaceStorm,
+                position,
+                2.0,
+                7,
+                Duration(10_000),
+                true,
+            ),
+        },
+    )?;
+    let hazard_encounter = EncounterId::new(901);
+    run_command(
+        &mut session,
+        "registrar encuentro de peligro",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                hazard_encounter,
+                SpatialEncounterKind::Hazard { hazard },
+                position,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro de peligro",
+        GameplayCommand::ActivateSpatialEncounter {
+            encounter: hazard_encounter,
+        },
+    )?;
+    let integrity_before = session
+        .world()
+        .ship_integrity(session.ids.first_ship)
+        .ok_or_else(|| "falta integridad para encuentro".to_owned())?
+        .current();
+    run_command(
+        &mut session,
+        "resolver encuentro de peligro",
+        GameplayCommand::ResolveSpatialEncounter {
+            player,
+            encounter: hazard_encounter,
+        },
+    )?;
+    let integrity_after = session
+        .world()
+        .ship_integrity(session.ids.first_ship)
+        .ok_or_else(|| "falta integridad después del encuentro".to_owned())?
+        .current();
+    if integrity_after >= integrity_before
+        || session.world().spatial_encounter(hazard_encounter).map(|value| value.state)
+            != Some(SpatialEncounterState::Resolved)
+    {
+        return Err("el peligro no produjo una resolución ni daño real".to_owned());
+    }
+    let repeated = session
+        .update([GameplayCommand::ResolveSpatialEncounter {
+            player,
+            encounter: hazard_encounter,
+        }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| "repetir peligro no devolvió resultado".to_owned())?;
+    if repeated.status
+        != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::SpatialEncounterAlreadyResolved,
+        })
+    {
+        return Err(format!("resolución repetida inesperada: {:?}", repeated.status));
+    }
+    if session
+        .world()
+        .ship_integrity(session.ids.first_ship)
+        .is_none_or(|value| value.current() != integrity_after)
+    {
+        return Err("el peligro repetido modificó la integridad".to_owned());
+    }
+
+    let item = ShipRepairConfiguration::default().material;
+    let resource_encounter = EncounterId::new(902);
+    run_command(
+        &mut session,
+        "registrar encuentro de recursos",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                resource_encounter,
+                SpatialEncounterKind::Resource { item, amount: 1 },
+                position,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro de recursos",
+        GameplayCommand::ActivateSpatialEncounter {
+            encounter: resource_encounter,
+        },
+    )?;
+    let collectibles_before = session.world().collectibles().count();
+    run_command(
+        &mut session,
+        "resolver encuentro de recursos",
+        GameplayCommand::ResolveSpatialEncounter {
+            player,
+            encounter: resource_encounter,
+        },
+    )?;
+    let collectible = session
+        .world()
+        .collectibles()
+        .find(|value| value.active)
+        .map(|value| value.entity)
+        .ok_or_else(|| "el hallazgo no creó un objeto recuperable".to_owned())?;
+    if session.world().collectibles().count() != collectibles_before + 1 {
+        return Err("el hallazgo creó una cantidad inesperada de objetos".to_owned());
+    }
+    run_command(
+        &mut session,
+        "recoger hallazgo de recursos",
+        GameplayCommand::CollectItem {
+            player,
+            collectible,
+            amount: 1,
+        },
+    )?;
+    if session.world().collectible(collectible).is_none_or(|value| value.active) {
+        return Err("el hallazgo no quedó agotado tras recogerlo".to_owned());
+    }
+    let repeated_resource = session
+        .update([GameplayCommand::ResolveSpatialEncounter {
+            player,
+            encounter: resource_encounter,
+        }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| "repetir hallazgo no devolvió resultado".to_owned())?;
+    if repeated_resource.status
+        != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::SpatialEncounterAlreadyResolved,
+        })
+    {
+        return Err(format!("hallazgo repetido inesperado: {:?}", repeated_resource.status));
+    }
+
+    let destination = DestinationId::new(903);
+    session
+        .register_destination(Destination {
+            id: destination,
+            destination_type: DestinationType::SpacePoint,
+            position,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Unknown,
+        })
+        .map_err(|error| format!("registrar destino de señal: {error:?}"))?;
+    run_command(
+        &mut session,
+        "registrar conocimiento de señal",
+        GameplayCommand::RegisterKnowledge {
+            target: gameplay::KnowledgeTarget::Destination(destination),
+        },
+    )?;
+    let signal_encounter = EncounterId::new(903);
+    run_command(
+        &mut session,
+        "registrar encuentro de señal",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                signal_encounter,
+                SpatialEncounterKind::Signal { destination },
+                position,
+                2.0,
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "activar encuentro de señal",
+        GameplayCommand::ActivateSpatialEncounter {
+            encounter: signal_encounter,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "detectar señal del encuentro",
+        GameplayCommand::ScanSignals {
+            player,
+            ship,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "identificar señal",
+        GameplayCommand::IdentifyKnowledge {
+            target: gameplay::KnowledgeTarget::Destination(destination),
+        },
+    )?;
+    if session.world().spatial_encounter(signal_encounter).map(|value| value.state)
+        != Some(SpatialEncounterState::Resolved)
+    {
+        return Err("la identificación no resolvió el encuentro de señal".to_owned());
+    }
+    println!(
+        "ENCUENTROS ESPACIALES COMPLETADOS: integridad={}→{}, hallazgo_recogido=true, señal=Resuelta",
+        integrity_before, integrity_after
     );
     Ok(())
 }
@@ -3176,5 +3397,6 @@ fn run_scenario() -> Result<(), String> {
     run_inventory_transfer_scenario()?;
     run_reward_distribution_scenario()?;
     run_autonomous_enemy_scenario()?;
+    run_spatial_encounter_scenario()?;
     Ok(())
 }

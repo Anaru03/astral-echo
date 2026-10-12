@@ -12,6 +12,7 @@ use gameplay::{
         EnvironmentalHazardSystem, HullIntegritySystem, InteractionSystem, InventorySystem,
         LifeSupportSystem, NavigationSystem, PilotSystem, PlayerSystem, ResourceSystem,
         ScannerSystem, StationSystem,
+        SpatialEncounterSystem,
     },
     CommandResult, DoorAccessRequirement, GameplayCommand, GameplayProcessor, GameplayState,
     GameplayWorld,
@@ -179,6 +180,7 @@ impl ProjectEchoSession {
         processor.add_system(StationSystem);
         processor.add_system(KnowledgeSystem::new());
         processor.add_system(MissionSystem::new());
+        processor.add_system(SpatialEncounterSystem::new());
         Self {
             ids: ProjectEchoIds {
                 first_player,
