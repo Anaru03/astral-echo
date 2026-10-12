@@ -25,8 +25,13 @@ use crate::{
     },
     player::Player,
     resources::{FuelError, FuelTank, ShipResources},
+    persistence::{
+        CombatantSaveState, CollectibleSaveState, GameplaySaveState, InventorySaveState,
+        MissionSaveState, PlayerSaveState, SaveError,
+    },
     revival::{RevivalError, ReviveResult},
     reward::{EnemyReward, RewardDistributionPolicy, RewardError},
+    scaling::{GameplayScaling, GroupSize, ScalingError},
     station::{Station, StationType},
     types::{GameplayState, SimulationPhase},
     world_activity::{
@@ -55,7 +60,7 @@ pub enum InventoryTransferError {
     ArithmeticOverflow,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct GameplayWorld {
     state: GameplayState,
     entities: EntityRegistry,
@@ -86,6 +91,296 @@ impl GameplayWorld {
     pub fn new() -> Self {
         Self::default()
     }
+
+    pub fn save_state(&self) -> GameplaySaveState {
+        let mut save = GameplaySaveState {
+            schema_version: crate::persistence::GAMEPLAY_SAVE_SCHEMA_VERSION,
+            phase: self.state.phase,
+            time: self.state.time,
+            registry: self.entities.snapshot(),
+            players: self
+                .players
+                .values()
+                .map(|player| PlayerSaveState {
+                    id: player.entity_id,
+                    position: player.position,
+                    yaw: player.orientation.yaw_degrees,
+                    pitch: player.orientation.pitch_degrees,
+                    velocity: player.velocity,
+                    active: player.is_active,
+                })
+                .collect(),
+            inventories: self
+                .inventories
+                .iter()
+                .map(|(owner, inventory)| InventorySaveState {
+                    owner: *owner,
+                    capacity: inventory.capacity(),
+                    entries: inventory.entries().collect(),
+                })
+                .collect(),
+            combatants: self
+                .combatants
+                .values()
+                .map(|combatant| CombatantSaveState {
+                    id: combatant.entity,
+                    is_player: combatant.is_player,
+                    active: combatant.active,
+                    maximum_health: combatant.maximum_health,
+                    current_health: combatant.current_health,
+                    position: combatant.position,
+                })
+                .collect(),
+            currencies: self.currencies.iter().map(|(id, value)| (*id, *value)).collect(),
+            missions: self
+                .missions
+                .values()
+                .map(|mission| MissionSaveState {
+                    id: mission.id,
+                    state: mission.state(),
+                    objectives: mission
+                        .objectives()
+                        .iter()
+                        .map(|objective| (objective.id, objective.state(), objective.progress()))
+                        .collect(),
+                })
+                .collect(),
+            knowledge: self.knowledge.iter().map(|(target, state)| (*target, *state)).collect(),
+            collectibles: self
+                .collectibles
+                .values()
+                .map(|item| CollectibleSaveState {
+                    entity: item.entity,
+                    item: item.item,
+                    amount: item.amount,
+                    position: item.position,
+                    interaction_range: item.interaction_range,
+                    owner: item.owner,
+                    active: item.active,
+                })
+                .collect(),
+            ship_fuel: self
+                .ship_resources
+                .values()
+                .map(|resources| {
+                    let fuel = resources.fuel();
+                    (resources.ship_id, fuel.current(), fuel.capacity())
+                })
+                .collect(),
+            ship_integrity: self
+                .ship_integrity
+                .values()
+                .map(|integrity| {
+                    (
+                        integrity.ship_id,
+                        integrity.current(),
+                        integrity.maximum(),
+                        integrity.critical_threshold(),
+                        integrity.current(),
+                    )
+                })
+                .collect(),
+            ship_position: self.navigation.ship_id().map(|_| self.navigation.current_position()),
+            destinations: self.navigation.destinations().cloned().collect(),
+            routes: self.navigation.routes().cloned().collect(),
+            world_snapshot: None,
+        };
+        save.world_snapshot = Some(Box::new(self.clone()));
+        save
+    }
+
+    pub fn load_state(&mut self, save: GameplaySaveState) -> Result<(), SaveError> {
+        if save.schema_version != crate::persistence::GAMEPLAY_SAVE_SCHEMA_VERSION {
+            return Err(SaveError::UnsupportedSchema);
+        }
+        if let Some(mut snapshot) = save.world_snapshot {
+            snapshot.events = EventLog::default();
+            *self = *snapshot;
+            return Ok(());
+        }
+        let registry = EntityRegistry::from_snapshot(save.registry.clone())
+            .map_err(|_| SaveError::InvalidRegistry)?;
+        let mut players = BTreeMap::new();
+        let mut player_ids = BTreeSet::new();
+        for saved in &save.players {
+            if !registry.snapshot().known.contains(&saved.id)
+                || !player_ids.insert(saved.id)
+                || !finite_vec3(saved.position)
+                || !finite_vec3(saved.velocity)
+                || !saved.yaw.is_finite()
+                || !saved.pitch.is_finite()
+            {
+                return Err(SaveError::InvalidState);
+            }
+            let mut player = self.players.get(&saved.id).copied().unwrap_or_else(|| Player::new(saved.id));
+            player.position = saved.position;
+            player.orientation.yaw_degrees = saved.yaw;
+            player.orientation.pitch_degrees = saved.pitch;
+            player.velocity = saved.velocity;
+            player.is_active = saved.active;
+            players.insert(saved.id, player);
+        }
+        let mut inventories = BTreeMap::new();
+        for saved in &save.inventories {
+            if !players.contains_key(&saved.owner) {
+                return Err(SaveError::InvalidReference);
+            }
+            for (item, _) in &saved.entries {
+                if !self.item_definitions.contains_key(item) {
+                    return Err(SaveError::InvalidReference);
+                }
+            }
+            let inventory = Inventory::from_entries(saved.capacity, saved.entries.clone())
+                .map_err(|_| SaveError::InvalidState)?;
+            inventories.insert(saved.owner, inventory);
+        }
+        if inventories.len() > players.len() {
+            return Err(SaveError::InvalidState);
+        }
+        let mut combatants = self.combatants.clone();
+        for saved in &save.combatants {
+            if !registry.snapshot().known.contains(&saved.id)
+                || saved.maximum_health == 0
+                || saved.current_health > saved.maximum_health
+                || !finite_vec3(saved.position)
+            {
+                return Err(SaveError::InvalidState);
+            }
+            if !combatants.contains_key(&saved.id) && !saved.is_player {
+                return Err(SaveError::InvalidReference);
+            }
+            let combatant = combatants
+                .entry(saved.id)
+                .or_insert_with(|| Combatant::player(saved.id));
+            if combatant.is_player != saved.is_player {
+                return Err(SaveError::InvalidState);
+            }
+            combatant.active = saved.active;
+            combatant.maximum_health = saved.maximum_health;
+            combatant.current_health = saved.current_health;
+            combatant.position = saved.position;
+        }
+        for saved in &save.collectibles {
+            if !registry.snapshot().known.contains(&saved.entity)
+                || !self.item_definitions.contains_key(&saved.item)
+                || saved.amount == 0
+                || saved.owner.is_some_and(|owner| !players.contains_key(&owner))
+                || !saved.position.x.is_finite()
+                || !saved.position.y.is_finite()
+                || !saved.position.z.is_finite()
+            {
+                return Err(SaveError::InvalidState);
+            }
+        }
+        let mut ship_resources = BTreeMap::new();
+        for (ship, current, capacity) in &save.ship_fuel {
+            ship_resources.insert(
+                *ship,
+                ShipResources::new(*ship, *capacity, *current).map_err(|_| SaveError::InvalidState)?,
+            );
+        }
+        let mut ship_integrity = BTreeMap::new();
+        for (ship, current, maximum, threshold, _) in &save.ship_integrity {
+            ship_integrity.insert(
+                *ship,
+                ShipIntegrity::new(*ship, *maximum, *current, *threshold)
+                    .map_err(|_| SaveError::InvalidState)?,
+            );
+        }
+        let mut restored_navigation = self.navigation.clone();
+        if let Some(position) = save.ship_position {
+            restored_navigation
+                .restore_position(position)
+                .map_err(|_| SaveError::InvalidState)?;
+        }
+        restored_navigation
+            .restore_destinations_and_routes(save.destinations.clone(), save.routes.clone())
+            .map_err(|_| SaveError::InvalidState)?;
+        for mission_save in &save.missions {
+            let mission = self
+                .missions
+                .get(&mission_save.id)
+                .ok_or(SaveError::InvalidReference)?;
+            let mut objective_ids = BTreeSet::new();
+            for (objective_id, _, progress) in &mission_save.objectives {
+                let objective = mission
+                    .objectives()
+                    .iter()
+                    .find(|objective| objective.id == *objective_id)
+                    .ok_or(SaveError::InvalidReference)?;
+                if !objective_ids.insert(*objective_id) || *progress > objective.required_progress() {
+                    return Err(SaveError::InvalidState);
+                }
+            }
+        }
+        for (target, _) in &save.knowledge {
+            let valid = match target {
+                KnowledgeTarget::Destination(destination) => restored_navigation.destination(*destination).is_some(),
+                KnowledgeTarget::Enemy(enemy) => combatants.get(enemy).is_some_and(|combatant| !combatant.is_player),
+                KnowledgeTarget::Item(item) => self.item_definitions.contains_key(item),
+            };
+            if !valid {
+                return Err(SaveError::InvalidReference);
+            }
+        }
+        if save.ship_fuel.len() != ship_resources.len()
+            || save.ship_integrity.len() != ship_integrity.len()
+            || save.currencies.len()
+                != save
+                    .currencies
+                    .iter()
+                    .map(|(entity, _)| *entity)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+        {
+            return Err(SaveError::DuplicateRecord);
+        }
+        self.entities = registry;
+        self.state.time = save.time;
+        self.state.phase = save.phase;
+        self.players = players;
+        self.inventories = inventories;
+        self.combatants = combatants;
+        self.currencies = save.currencies.into_iter().collect();
+        self.ship_resources = ship_resources;
+        self.ship_integrity = ship_integrity;
+        self.collectibles = save
+            .collectibles
+            .into_iter()
+            .map(|item| {
+                (
+                    item.entity,
+                    Collectible {
+                        entity: item.entity,
+                        item: item.item,
+                        amount: item.amount,
+                        position: item.position,
+                        interaction_range: item.interaction_range,
+                        owner: item.owner,
+                        active: item.active,
+                    },
+                )
+            })
+            .collect();
+        for mission_save in save.missions {
+            let mission = self.missions.get_mut(&mission_save.id).ok_or(SaveError::InvalidReference)?;
+            mission.restore_state(mission_save.state);
+            for (objective_id, state, progress) in mission_save.objectives {
+                let objective = mission
+                    .objectives_mut()
+                    .iter_mut()
+                    .find(|objective| objective.id == objective_id)
+                    .ok_or(SaveError::InvalidReference)?;
+                if !objective.restore_progress(state, progress) {
+                    return Err(SaveError::InvalidState);
+                }
+            }
+        }
+        self.knowledge = save.knowledge.into_iter().collect();
+        self.events = EventLog::default();
+        self.navigation = restored_navigation;
+        Ok(())
+    }
     pub fn state(&self) -> GameplayState {
         self.state
     }
@@ -115,6 +410,47 @@ impl GameplayWorld {
     }
     pub fn players(&self) -> impl Iterator<Item = &Player> {
         self.players.values()
+    }
+    pub fn group_size(&self) -> GroupSize {
+        let active_players = self
+            .players
+            .values()
+            .filter(|player| {
+                player.is_active
+                    && self.entities.contains(player.entity_id)
+                    && self
+                        .combatant(player.entity_id)
+                        .is_some_and(|combatant| combatant.active && !combatant.is_defeated())
+            })
+            .count();
+        GroupSize::from_active_players(active_players)
+    }
+    pub fn current_group_scaling(&self) -> GameplayScaling {
+        GameplayScaling::for_group_size(self.group_size())
+    }
+    pub fn scaling_for_player(
+        &self,
+        player: EntityId,
+    ) -> Result<GameplayScaling, ScalingError> {
+        let Some(player_state) = self.player(player) else {
+            return Err(ScalingError::PlayerNotFound);
+        };
+        if !player_state.is_active
+            || !self.entities.contains(player)
+            || !self
+                .combatant(player)
+                .is_some_and(|combatant| combatant.active && !combatant.is_defeated())
+        {
+            return Err(ScalingError::PlayerInactive);
+        }
+        Ok(self.current_group_scaling())
+    }
+    pub(crate) fn scaled_enemy_configuration(
+        &self,
+        configuration: EnemyConfiguration,
+    ) -> Result<EnemyConfiguration, ScalingError> {
+        self.current_group_scaling()
+            .scale_enemy_configuration(configuration)
     }
     pub fn combatant(&self, entity: EntityId) -> Option<&Combatant> {
         self.combatants.get(&entity)
@@ -1833,7 +2169,11 @@ impl GameplayWorld {
                 _ => None,
             })
             .ok_or(WorldActivityError::ActivityNotFound)?;
-        let amount = site.extraction_amount.min(site.available);
+        let scaling = self.current_group_scaling();
+        let scaled_extraction = scaling
+            .scale_amount(site.extraction_amount, scaling.resource_yield_percent)
+            .map_err(|_| WorldActivityError::InvalidQuantity)?;
+        let amount = scaled_extraction.min(site.available);
         if amount == 0 {
             return Err(WorldActivityError::ResourceUnavailable);
         }
@@ -1888,8 +2228,11 @@ impl GameplayWorld {
         if zone.active_enemy.is_some() {
             return Err(WorldActivityError::CombatAlreadyActivated);
         }
+        let configuration = self
+            .scaled_enemy_configuration(zone.configuration)
+            .map_err(|_| WorldActivityError::EnemyCreationFailed)?;
         let enemy = self
-            .register_enemy(zone.configuration)
+            .register_enemy(configuration)
             .map_err(|_| WorldActivityError::EnemyCreationFailed)?;
         let Some(world_mut) = self.functional_worlds.get_mut(&destination) else {
             return Err(WorldActivityError::WorldNotFound);
@@ -1904,8 +2247,8 @@ impl GameplayWorld {
         zone_mut.active_enemy = Some(enemy);
         self.publish(crate::events::GameplayEvent::EnemyCreated {
             enemy,
-            archetype: zone.configuration.archetype,
-            position: zone.configuration.position,
+            archetype: configuration.archetype,
+            position: configuration.position,
         });
         self.publish(crate::events::GameplayEvent::WorldCombatActivated {
             player,

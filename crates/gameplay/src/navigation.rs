@@ -306,6 +306,48 @@ impl Default for NavigationState {
 }
 
 impl NavigationState {
+    pub(crate) fn restore_destinations_and_routes(
+        &mut self,
+        destinations: Vec<Destination>,
+        routes: Vec<NavigationRoute>,
+    ) -> Result<(), NavigationRouteError> {
+        let mut next_destinations = BTreeMap::new();
+        for destination in destinations {
+            if destination.id.value() == 0
+                || !finite_position(destination.position)
+                || destination.travel_duration.0 == 0
+                || destination.fuel_cost == 0
+                || next_destinations.insert(destination.id, destination).is_some()
+            {
+                return Err(NavigationRouteError::InvalidEndpoints);
+            }
+        }
+        let mut next_routes = BTreeMap::new();
+        for route in routes {
+            route.validate()?;
+            if !next_destinations.contains_key(&route.from)
+                || !next_destinations.contains_key(&route.to)
+                || next_routes.insert((route.from, route.to), route).is_some()
+            {
+                return Err(NavigationRouteError::DestinationNotFound);
+            }
+        }
+        self.destinations = next_destinations;
+        self.routes = next_routes;
+        self.selected_destination = None;
+        self.travel_state = TravelState::Idle;
+        self.autopilot = AutopilotState::Inactive;
+        Ok(())
+    }
+
+    pub(crate) fn restore_position(&mut self, position: Vec3) -> Result<(), NavigationMovementError> {
+        if !finite_position(position) {
+            return Err(NavigationMovementError::InvalidInput);
+        }
+        self.current_position = position;
+        Ok(())
+    }
+
     pub fn register_destination(
         &mut self,
         destination: Destination,

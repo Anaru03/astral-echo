@@ -362,6 +362,19 @@ impl Objective {
     pub const fn progress(&self) -> u32 {
         self.progress
     }
+
+    pub(crate) fn restore_progress(
+        &mut self,
+        state: crate::domains::objective::ObjectiveState,
+        progress: u32,
+    ) -> bool {
+        if progress > self.required_progress() {
+            return false;
+        }
+        self.state = state;
+        self.progress = progress;
+        true
+    }
     pub fn required_progress(&self) -> u32 {
         self.trigger.required_progress()
     }

@@ -1521,6 +1521,9 @@ impl DerelictSystem {
             }
         }
         let spawned_enemy = if let Some(configuration) = derelict.enemy_configuration {
+            let Ok(configuration) = world.scaled_enemy_configuration(configuration) else {
+                return Self::result(crate::derelict::DerelictCommandError::EnemyRegistrationFailed);
+            };
             let Ok(enemy) = world.register_enemy(configuration) else {
                 return Self::result(crate::derelict::DerelictCommandError::EnemyRegistrationFailed);
             };
@@ -1900,6 +1903,11 @@ impl SpatialEncounterSystem {
         }
         let spawned_enemy = match encounter.kind {
             crate::encounter::SpatialEncounterKind::Hostile { configuration } => {
+                let Ok(configuration) = world.scaled_enemy_configuration(configuration) else {
+                    return CommandResult::rejected(
+                        crate::commands::CommandRejection::SpatialEncounterResolutionFailed,
+                    );
+                };
                 let Ok(enemy) = world.register_enemy(configuration) else {
                     return CommandResult::rejected(
                         crate::commands::CommandRejection::SpatialEncounterResolutionFailed,
