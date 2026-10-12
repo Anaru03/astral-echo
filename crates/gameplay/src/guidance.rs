@@ -3,6 +3,7 @@ use engine::EntityId;
 use crate::{
     domains::{mission::MissionState, objective::ObjectiveState},
     knowledge::{KnowledgeState, KnowledgeTarget},
+    interaction::InteractionBehavior,
     mission::Mission,
     navigation::DestinationId,
     objective::{Objective, ObjectiveTrigger},
@@ -272,6 +273,51 @@ impl GuidanceSystem {
             return GuidanceAction::StartMission(mission.id);
         }
         match objective.trigger {
+            ObjectiveTrigger::ShipStatusEvaluated { role } => world
+                .interactables()
+                .find_map(|interactable| match interactable.behavior {
+                    InteractionBehavior::Console { role: current, .. } if current == role => {
+                        Some(GuidanceAction::Interact(interactable.entity_id))
+                    }
+                    _ => None,
+                })
+                .unwrap_or(GuidanceAction::CompleteObjective(objective.id)),
+            ObjectiveTrigger::ElectricalSystemRepaired => world
+                .interactables()
+                .find(|interactable| {
+                    matches!(interactable.behavior, InteractionBehavior::ElectricalPanel)
+                })
+                .map_or(GuidanceAction::CompleteObjective(objective.id), |interactable| {
+                    GuidanceAction::Interact(interactable.entity_id)
+                }),
+            ObjectiveTrigger::OxygenSystemRepaired => world
+                .interactables()
+                .find(|interactable| {
+                    matches!(interactable.behavior, InteractionBehavior::LifeSupportPanel)
+                })
+                .map_or(GuidanceAction::CompleteObjective(objective.id), |interactable| {
+                    GuidanceAction::Interact(interactable.entity_id)
+                }),
+            ObjectiveTrigger::DoorRoleOpened { role } => world
+                .interactables()
+                .find_map(|interactable| match interactable.behavior {
+                    InteractionBehavior::Door { door } if door.role == role => {
+                        Some(GuidanceAction::Interact(interactable.entity_id))
+                    }
+                    _ => None,
+                })
+                .unwrap_or(GuidanceAction::CompleteObjective(objective.id)),
+            ObjectiveTrigger::StationTypeOccupied { station_type } => world
+                .interactables()
+                .find_map(|interactable| match interactable.behavior {
+                    InteractionBehavior::Station { station }
+                        if station.station_type == station_type =>
+                    {
+                        Some(GuidanceAction::Interact(interactable.entity_id))
+                    }
+                    _ => None,
+                })
+                .unwrap_or(GuidanceAction::CompleteObjective(objective.id)),
             ObjectiveTrigger::DestinationArrived { destination } => {
                 GuidanceAction::TravelTo(destination)
             }

@@ -1,4 +1,5 @@
 pub mod collectible;
+pub mod companion;
 pub mod combat;
 pub mod commands;
 pub mod components;
@@ -38,6 +39,11 @@ pub mod world_activity;
 
 pub use collectible::{
     Collectible, CollectibleError, ItemCategory, ItemDefinition, ItemDefinitionError,
+};
+pub use companion::{
+    Companion, CompanionActionMode, CompanionBehavior, CompanionError, CompanionRecommendation,
+    NavigationAdvice, NavigationAssessment, NavigationRisk, TacticalAction, TacticalPriority,
+    TacticalRecommendation, ERICK_NAME, FOLLOW_DISTANCE, FOLLOW_SPEED,
 };
 pub use combat::{
     AttackType, CombatConfigurationError, Combatant, EnemyArchetype, EnemyConfiguration, Shield,
@@ -105,7 +111,7 @@ pub use reward_system::RewardSystem;
 pub use scaling::{GameplayScaling, GroupSize, ScalingError};
 pub use station::{Station, StationError, StationState, StationType};
 pub use systems::{
-    CombatSystem, DoorSystem, ElectricalSystem, EnemyAiSystem, EnvironmentalHazardSystem,
+    CombatSystem, CompanionSystem, DoorSystem, ElectricalSystem, EnemyAiSystem, EnvironmentalHazardSystem,
     HullIntegritySystem, InteractionSystem, InventorySystem, LifeSupportSystem, NavigationSystem,
     PilotSystem, ResourceSystem, ScannerSystem, SpatialEncounterSystem, StationSystem,
     DerelictSystem, FunctionalWorldSystem,

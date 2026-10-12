@@ -1,4 +1,5 @@
 use crate::collectible::ItemDefinition;
+use crate::companion::CompanionBehavior;
 use crate::combat::{EnemyConfiguration, WeaponConfiguration};
 use crate::derelict::Derelict;
 use crate::world_activity::FunctionalWorld;
@@ -18,6 +19,14 @@ pub enum GameplayCommand {
         delta: Duration,
     },
     CreatePlayer,
+    CreateCompanion {
+        followed_player: EntityId,
+        position: Vec3,
+    },
+    SetCompanionBehavior {
+        companion: EntityId,
+        behavior: CompanionBehavior,
+    },
     MovePlayer {
         player: EntityId,
         direction: Vec3,
@@ -336,6 +345,11 @@ pub enum CommandRejection {
     PlayerNotFound,
     PlayerInactive,
     MaximumPlayersReached,
+    CompanionNotFound,
+    CompanionPlayerInvalid,
+    CompanionInactive,
+    CompanionKnowledgeUnavailable,
+    CompanionInvalidTarget,
     TargetNotFound,
     TargetDisabled,
     OutOfInteractionRange,

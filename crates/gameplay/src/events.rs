@@ -36,6 +36,18 @@ pub enum GameplayEvent {
     PlayerDeactivated {
         player: PlayerId,
     },
+    CompanionCreated {
+        companion: EntityId,
+        followed_player: EntityId,
+    },
+    CompanionBehaviorChanged {
+        companion: EntityId,
+        behavior: crate::companion::CompanionBehavior,
+    },
+    CompanionMoved {
+        companion: EntityId,
+        position: Vec3,
+    },
     InteractionSucceeded {
         player: PlayerId,
         target: EntityId,

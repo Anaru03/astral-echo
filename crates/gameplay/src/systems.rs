@@ -40,6 +40,75 @@ impl GameplaySystem for TimeSystem {
 
 pub struct PlayerSystem;
 
+pub struct CompanionSystem {
+    event_cursor: usize,
+}
+
+impl CompanionSystem {
+    pub const fn new() -> Self {
+        Self { event_cursor: 0 }
+    }
+}
+
+impl GameplaySystem for CompanionSystem {
+    fn process(
+        &mut self,
+        world: &mut GameplayWorld,
+        command: GameplayCommand,
+    ) -> Option<CommandResult> {
+        match command {
+            GameplayCommand::CreateCompanion { followed_player, position } => {
+                Some(match world.create_companion(followed_player, position) {
+                    Ok(_) => CommandResult::success(true),
+                    Err(crate::companion::CompanionError::PlayerNotFound) => CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound),
+                    Err(crate::companion::CompanionError::PlayerInactive) => CommandResult::rejected(crate::commands::CommandRejection::CompanionPlayerInvalid),
+                    Err(crate::companion::CompanionError::InvalidPosition) => CommandResult::invalid(crate::commands::CommandInvalidity::InvalidInteractionData),
+                    Err(_) => CommandResult::rejected(crate::commands::CommandRejection::CompanionInvalidTarget),
+                })
+            }
+            GameplayCommand::SetCompanionBehavior { companion, behavior } => {
+                Some(match world.set_companion_behavior(companion, behavior) {
+                    Ok(()) => CommandResult::success(true),
+                    Err(crate::companion::CompanionError::CompanionNotFound) => CommandResult::rejected(crate::commands::CommandRejection::CompanionNotFound),
+                    Err(crate::companion::CompanionError::CompanionInactive) => CommandResult::rejected(crate::commands::CommandRejection::CompanionInactive),
+                    Err(crate::companion::CompanionError::PlayerInactive) => CommandResult::rejected(crate::commands::CommandRejection::CompanionPlayerInvalid),
+                    Err(crate::companion::CompanionError::KnowledgeTargetUnavailable) => CommandResult::rejected(crate::commands::CommandRejection::CompanionKnowledgeUnavailable),
+                    Err(_) => CommandResult::rejected(crate::commands::CommandRejection::CompanionInvalidTarget),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn observes_events(&self) -> bool {
+        true
+    }
+
+    fn reset_event_cursor(&mut self) {
+        self.event_cursor = 0;
+    }
+
+    fn observe_events(&mut self, world: &mut GameplayWorld) {
+        let length = world.events().len();
+        if self.event_cursor > length {
+            self.event_cursor = 0;
+        }
+        let events: Vec<_> = world.events().iter().skip(self.event_cursor).cloned().collect();
+        self.event_cursor = length;
+        for event in events {
+            if let crate::events::GameplayEvent::TimeAdvanced { from, to } = event {
+                self.observe_time(world, engine::Duration(to.elapsed.0.saturating_sub(from.elapsed.0)));
+            }
+        }
+    }
+}
+
+impl CompanionSystem {
+    fn observe_time(&mut self, world: &mut GameplayWorld, delta: engine::Duration) {
+        world.update_companions(delta);
+    }
+}
+
 impl GameplaySystem for PlayerSystem {
     fn process(
         &mut self,

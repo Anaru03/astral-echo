@@ -1,7 +1,12 @@
-use engine::{EntityId, EntityRegistry, GameTime};
+use engine::{Duration, EntityId, EntityRegistry, GameTime};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
+    companion::{
+        Companion, CompanionActionMode, CompanionBehavior, CompanionError, CompanionRecommendation,
+        NavigationAdvice, NavigationAssessment, NavigationRisk, TacticalAction, TacticalPriority,
+        TacticalRecommendation,
+    },
     collectible::{Collectible, CollectibleError, ItemDefinition, ItemDefinitionError},
     combat::{Combatant, EnemyConfiguration},
     components::{Inventory, InventoryError},
@@ -65,6 +70,7 @@ pub struct GameplayWorld {
     state: GameplayState,
     entities: EntityRegistry,
     players: BTreeMap<EntityId, Player>,
+    companions: BTreeMap<EntityId, Companion>,
     interactables: BTreeMap<EntityId, Interactable>,
     missions: BTreeMap<crate::types::MissionId, Mission>,
     electrical_panels: BTreeMap<EntityId, ElectricalPanel>,
@@ -108,6 +114,17 @@ impl GameplayWorld {
                     pitch: player.orientation.pitch_degrees,
                     velocity: player.velocity,
                     active: player.is_active,
+                })
+                .collect(),
+            companions: self
+                .companions
+                .values()
+                .map(|companion| crate::persistence::CompanionSaveState {
+                    entity: companion.entity,
+                    followed_player: companion.followed_player,
+                    position: companion.position,
+                    behavior: companion.behavior,
+                    active: companion.active,
                 })
                 .collect(),
             inventories: self
@@ -324,6 +341,43 @@ impl GameplayWorld {
         restored_navigation
             .restore_destinations_and_routes(save.destinations.clone(), save.routes.clone())
             .map_err(|_| SaveError::InvalidState)?;
+        let mut companions = BTreeMap::new();
+        for saved in &save.companions {
+            if !registry.snapshot().known.contains(&saved.entity)
+                || players.contains_key(&saved.entity)
+                || combatants.contains_key(&saved.entity)
+                || !players.contains_key(&saved.followed_player)
+                || !saved.position.x.is_finite()
+                || !saved.position.y.is_finite()
+                || !saved.position.z.is_finite()
+                || saved.active != registry.contains(saved.entity)
+            {
+                return Err(SaveError::InvalidState);
+            }
+            if let crate::companion::CompanionBehavior::Investigate(target) = saved.behavior {
+                let known = match target {
+                    KnowledgeTarget::Destination(destination) => restored_navigation.destination(destination).is_some(),
+                    KnowledgeTarget::Enemy(enemy) => combatants.get(&enemy).is_some_and(|value| !value.is_player),
+                    KnowledgeTarget::Item(item) => item_definitions.contains_key(&item),
+                };
+                let discovered = save
+                    .knowledge
+                    .iter()
+                    .any(|(candidate, state)| *candidate == target && state.is_detected());
+                if !known || !discovered {
+                    return Err(SaveError::InvalidReference);
+                }
+            }
+            if companions.insert(saved.entity, Companion {
+                entity: saved.entity,
+                followed_player: saved.followed_player,
+                position: saved.position,
+                behavior: saved.behavior,
+                active: saved.active,
+            }).is_some() {
+                return Err(SaveError::DuplicateRecord);
+            }
+        }
         for mission_save in &save.missions {
             let mission = self
                 .missions
@@ -421,6 +475,7 @@ impl GameplayWorld {
         self.state.time = save.time;
         self.state.phase = save.phase;
         self.players = players;
+        self.companions = companions;
         self.inventories = inventories;
         self.combatants = combatants;
         self.enemy_rewards = enemy_rewards;
@@ -489,6 +544,568 @@ impl GameplayWorld {
     }
     pub fn player(&self, entity: EntityId) -> Option<&Player> {
         self.players.get(&entity)
+    }
+    pub fn companions(&self) -> impl Iterator<Item = &Companion> {
+        self.companions.values()
+    }
+    pub fn companion(&self, entity: EntityId) -> Option<&Companion> {
+        self.companions.get(&entity)
+    }
+    pub fn create_companion(
+        &mut self,
+        followed_player: EntityId,
+        position: engine::Vec3,
+    ) -> Result<EntityId, CompanionError> {
+        Companion::validate_position(position)?;
+        let Some(player) = self.players.get(&followed_player) else {
+            return Err(CompanionError::PlayerNotFound);
+        };
+        if !player.is_active || !self.entities.contains(followed_player) {
+            return Err(CompanionError::PlayerInactive);
+        }
+        let entity = self.entities.create();
+        self.companions.insert(entity, Companion::new(entity, followed_player, position));
+        self.publish(crate::events::GameplayEvent::CompanionCreated { companion: entity, followed_player });
+        Ok(entity)
+    }
+    pub fn set_companion_behavior(
+        &mut self,
+        entity: EntityId,
+        behavior: CompanionBehavior,
+    ) -> Result<(), CompanionError> {
+        let Some(companion) = self.companions.get(&entity).copied() else {
+            return Err(CompanionError::CompanionNotFound);
+        };
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        let player_active = self.players.get(&companion.followed_player).is_some_and(|player| {
+            player.is_active && self.entities.contains(companion.followed_player)
+        });
+        if !matches!(behavior, CompanionBehavior::Unavailable)
+            && !player_active
+        {
+            return Err(CompanionError::PlayerInactive);
+        }
+        if let CompanionBehavior::Investigate(target) = behavior {
+            if !self.knowledge(target).is_detected() {
+                return Err(CompanionError::KnowledgeTargetUnavailable);
+            }
+        }
+        if let Some(stored) = self.companions.get_mut(&entity) {
+            stored.behavior = behavior;
+        }
+        self.publish(crate::events::GameplayEvent::CompanionBehaviorChanged {
+            companion: entity,
+            behavior,
+        });
+        Ok(())
+    }
+    pub fn companion_decision(&self, entity: EntityId) -> Result<CompanionBehavior, CompanionError> {
+        let companion = self.companion(entity).ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if !self.players.get(&companion.followed_player).is_some_and(|player| {
+            player.is_active && self.entities.contains(companion.followed_player)
+        }) {
+            return Ok(CompanionBehavior::Unavailable);
+        }
+        Ok(companion.behavior)
+    }
+    pub fn companion_recommended_behavior(
+        &self,
+        entity: EntityId,
+    ) -> Result<CompanionBehavior, CompanionError> {
+        let companion = self.companion(entity).ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if !self.players.get(&companion.followed_player).is_some_and(|player| {
+            player.is_active && self.entities.contains(companion.followed_player)
+        }) {
+            return Ok(CompanionBehavior::Unavailable);
+        }
+        let guidance = self
+            .guidance_for_player(companion.followed_player)
+            .map_err(|_| CompanionError::GuidanceUnavailable)?;
+        let recommendation = match guidance.recommended_action {
+            Some(crate::guidance::GuidanceAction::StudyKnowledge(target)) => {
+                Some(CompanionBehavior::Investigate(target))
+            }
+            Some(crate::guidance::GuidanceAction::IdentifySignal(Some(destination))) => {
+                Some(CompanionBehavior::Investigate(KnowledgeTarget::Destination(destination)))
+            }
+            Some(crate::guidance::GuidanceAction::DefeatEnemy(Some(_))) => {
+                Some(CompanionBehavior::CombatSupport)
+            }
+            _ => None,
+        };
+        Ok(recommendation.unwrap_or(CompanionBehavior::Accompany))
+    }
+    pub fn companion_action_recommendation(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<CompanionRecommendation>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active || !self.entities.contains(player.entity_id) {
+            return Ok(None);
+        }
+        let guidance = self
+            .guidance_for_player(companion.followed_player)
+            .map_err(|_| CompanionError::GuidanceUnavailable)?;
+        let Some(action) = guidance.recommended_action else {
+            return Ok(None);
+        };
+        if !self.guidance_action_is_available(companion.followed_player, action) {
+            return Ok(None);
+        }
+        Ok(Some(CompanionRecommendation {
+            companion: entity,
+            player: companion.followed_player,
+            action,
+            mode: CompanionActionMode::PlayerRequired,
+        }))
+    }
+    pub fn companion_tactical_recommendation(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<TacticalRecommendation>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active || !self.entities.contains(player.entity_id) {
+            return Ok(None);
+        }
+        let mut candidates = Vec::new();
+        for enemy in self.enemies() {
+            if !enemy.active || enemy.is_defeated() || !finite_vec3(enemy.position) {
+                continue;
+            }
+            let Some(distance_squared) = crate::encounter::distance_squared(player.position, enemy.position) else {
+                continue;
+            };
+            let priority = if distance_squared <= f64::from(enemy.weapon.range).powi(2) {
+                TacticalPriority::Critical
+            } else {
+                TacticalPriority::High
+            };
+            candidates.push((
+                tactical_priority_rank(priority),
+                0_u8,
+                enemy.entity.value(),
+                TacticalRecommendation {
+                    companion: entity,
+                    player: companion.followed_player,
+                    priority,
+                    action: TacticalAction::DefeatEnemy(enemy.entity),
+                },
+            ));
+        }
+        if let Some(ship_position) = self.ship_position() {
+            for hazard in self.active_environmental_hazards() {
+                let Some(distance_squared) = crate::hazard::distance_squared(ship_position, hazard.position) else {
+                    continue;
+                };
+                if distance_squared <= f64::from(hazard.radius).powi(2) {
+                    candidates.push((
+                        tactical_priority_rank(TacticalPriority::Critical),
+                        1_u8,
+                        u64::from(hazard.id.value()),
+                        TacticalRecommendation {
+                            companion: entity,
+                            player: companion.followed_player,
+                            priority: TacticalPriority::Critical,
+                            action: TacticalAction::WithdrawFromHazard(hazard.id),
+                        },
+                    ));
+                }
+            }
+            for encounter in self.spatial_encounters() {
+                if !matches!(
+                    encounter.state,
+                    crate::encounter::SpatialEncounterState::Pending
+                        | crate::encounter::SpatialEncounterState::Active
+                ) {
+                    continue;
+                }
+                let Some(distance_squared) = crate::encounter::distance_squared(ship_position, encounter.position) else {
+                    continue;
+                };
+                if distance_squared > f64::from(encounter.activation_radius).powi(2) {
+                    continue;
+                }
+                let priority = if encounter.state == crate::encounter::SpatialEncounterState::Active {
+                    TacticalPriority::High
+                } else {
+                    TacticalPriority::Normal
+                };
+                candidates.push((
+                    tactical_priority_rank(priority),
+                    2_u8,
+                    u64::from(encounter.id.value()),
+                    TacticalRecommendation {
+                        companion: entity,
+                        player: companion.followed_player,
+                        priority,
+                        action: TacticalAction::AddressEncounter(encounter.id),
+                    },
+                ));
+            }
+        }
+        if let Some(action) = self.companion_action_recommendation(entity)? {
+            candidates.push((
+                tactical_priority_rank(TacticalPriority::Normal),
+                3_u8,
+                0,
+                TacticalRecommendation {
+                    companion: entity,
+                    player: companion.followed_player,
+                    priority: TacticalPriority::Normal,
+                    action: TacticalAction::PlayerAction(action.action),
+                },
+            ));
+        }
+        candidates.sort_by_key(|(priority, category, target, _)| (*priority, *category, *target));
+        Ok(candidates.into_iter().next().map(|(_, _, _, recommendation)| recommendation))
+    }
+    pub fn companion_navigation_assessment(
+        &self,
+        entity: EntityId,
+    ) -> Result<Option<NavigationAssessment>, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
+        if !companion.active {
+            return Err(CompanionError::CompanionInactive);
+        }
+        if companion.behavior == CompanionBehavior::Unavailable {
+            return Ok(None);
+        }
+        let Some(player) = self.player(companion.followed_player) else {
+            return Ok(None);
+        };
+        if !player.is_active || !self.entities.contains(player.entity_id) {
+            return Ok(None);
+        }
+
+        let autopilot = self.autopilot_state().clone();
+        let travel = self.travel_state();
+        let (destination, route, eta, route_start) = match &autopilot {
+            crate::navigation::AutopilotState::Planned {
+                destination,
+                route,
+                eta,
+                ..
+            } => (Some(*destination), route.clone(), Some(*eta), 0),
+            crate::navigation::AutopilotState::InTransit {
+                destination,
+                route,
+                next_leg,
+                eta,
+                ..
+            } => (Some(*destination), route.clone(), Some(*eta), *next_leg),
+            crate::navigation::AutopilotState::Completed { destination }
+            | crate::navigation::AutopilotState::Interrupted { destination }
+            | crate::navigation::AutopilotState::Failed { destination } => {
+                (Some(*destination), Vec::new(), None, 0)
+            }
+            crate::navigation::AutopilotState::Inactive => (None, Vec::new(), None, 0),
+        };
+        let fuel_available = self
+            .navigation()
+            .ship_id()
+            .and_then(|ship| self.ship_fuel(ship))
+            .map(|fuel| fuel.current());
+        let fuel_required = if route.is_empty() {
+            None
+        } else {
+            route_fuel_requirement(self, &route, route_start)
+        };
+        let mut risks = Vec::new();
+        let current_position = self.ship_position();
+        let destination_position = destination.and_then(|id| self.destination(id)).map(|value| value.position);
+        for hazard in self.active_environmental_hazards() {
+            if [current_position, destination_position]
+                .into_iter()
+                .flatten()
+                .any(|position| within_radius(position, hazard.position, hazard.radius))
+            {
+                risks.push(NavigationRisk::KnownHazard(hazard.id));
+            }
+        }
+        for encounter in self.spatial_encounters() {
+            if encounter.state == crate::encounter::SpatialEncounterState::Resolved {
+                continue;
+            }
+            if [current_position, destination_position]
+                .into_iter()
+                .flatten()
+                .any(|position| within_radius(position, encounter.position, encounter.activation_radius))
+            {
+                risks.push(NavigationRisk::KnownEncounter(encounter.id));
+            }
+        }
+        risks.sort_by_key(|risk| match risk {
+            NavigationRisk::InsufficientFuel { .. } => (0_u8, 0_u64),
+            NavigationRisk::KnownHazard(id) => (1_u8, u64::from(id.value())),
+            NavigationRisk::KnownEncounter(id) => (2_u8, u64::from(id.value())),
+        });
+        if let (Some(required), Some(available)) = (fuel_required, fuel_available) {
+            if required > available {
+                risks.insert(
+                    0,
+                    NavigationRisk::InsufficientFuel {
+                        required,
+                        available,
+                    },
+                );
+            }
+        }
+        let recommendation = match autopilot {
+            crate::navigation::AutopilotState::Planned { destination, .. } => {
+                if fuel_required.zip(fuel_available).is_some_and(|(required, available)| required > available) {
+                    Some(NavigationAdvice::ReplanAutopilot { destination })
+                } else if let Some(NavigationRisk::KnownHazard(id)) = risks.first() {
+                    Some(NavigationAdvice::InspectHazard(*id))
+                } else if let Some(NavigationRisk::KnownEncounter(id)) = risks.first() {
+                    Some(NavigationAdvice::AddressEncounter(*id))
+                } else if fuel_required.zip(fuel_available).is_some() {
+                    Some(NavigationAdvice::StartPlannedAutopilot { destination })
+                } else {
+                    None
+                }
+            }
+            crate::navigation::AutopilotState::InTransit { destination, .. } => {
+                if fuel_required.zip(fuel_available).is_some_and(|(required, available)| required > available) {
+                    Some(NavigationAdvice::ReplanAutopilot { destination })
+                } else if let Some(NavigationRisk::KnownHazard(id)) = risks.first() {
+                    Some(NavigationAdvice::InspectHazard(*id))
+                } else if let Some(NavigationRisk::KnownEncounter(id)) = risks.first() {
+                    Some(NavigationAdvice::AddressEncounter(*id))
+                } else {
+                    Some(NavigationAdvice::MonitorAutopilot { destination })
+                }
+            }
+            crate::navigation::AutopilotState::Interrupted { destination }
+            | crate::navigation::AutopilotState::Failed { destination } => {
+                Some(NavigationAdvice::ReplanAutopilot { destination })
+            }
+            crate::navigation::AutopilotState::Inactive
+            | crate::navigation::AutopilotState::Completed { .. } => None,
+        };
+        Ok(Some(NavigationAssessment {
+            companion: entity,
+            player: companion.followed_player,
+            autopilot,
+            travel,
+            destination,
+            route,
+            eta,
+            fuel_available,
+            fuel_required,
+            risks,
+            recommendation,
+        }))
+    }
+    fn guidance_action_is_available(
+        &self,
+        player: EntityId,
+        action: crate::guidance::GuidanceAction,
+    ) -> bool {
+        match action {
+            crate::guidance::GuidanceAction::Interact(target) => {
+                let Some(actor) = self.player(player) else {
+                    return false;
+                };
+                let Some(interactable) = self.interactable(target) else {
+                    return false;
+                };
+                if !interactable.enabled
+                    || !finite_vec3(actor.position)
+                    || !finite_vec3(interactable.position)
+                    || !interactable.interaction_range.is_finite()
+                    || interactable.interaction_range <= 0.0
+                {
+                    return false;
+                }
+                match interactable.behavior {
+                    InteractionBehavior::Door { door } => {
+                        if !self.access_requirement_satisfied(door.access_requirement) {
+                            return false;
+                        }
+                    }
+                    InteractionBehavior::Station { station }
+                        if station.state(interactable.enabled)
+                            != crate::station::StationState::Available =>
+                    {
+                        return false;
+                    }
+                    _ => {}
+                }
+                let dx = f64::from(actor.position.x) - f64::from(interactable.position.x);
+                let dy = f64::from(actor.position.y) - f64::from(interactable.position.y);
+                let dz = f64::from(actor.position.z) - f64::from(interactable.position.z);
+                let distance_squared = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
+                let range = f64::from(interactable.interaction_range);
+                distance_squared.is_finite() && distance_squared <= range * range
+            }
+            crate::guidance::GuidanceAction::CollectItem { item, amount } => self
+                .collectibles
+                .values()
+                .any(|collectible| {
+                    let Some(actor) = self.player(player) else {
+                        return false;
+                    };
+                    if collectible.item != item
+                        || !collectible.active
+                        || collectible.owner.is_some_and(|owner| owner != player)
+                        || collectible.amount < amount
+                        || !self.can_player_collect(player, collectible.entity, amount)
+                        || !finite_vec3(actor.position)
+                        || !finite_vec3(collectible.position)
+                        || !collectible.interaction_range.is_finite()
+                        || collectible.interaction_range <= 0.0
+                    {
+                        return false;
+                    }
+                    let dx = f64::from(actor.position.x) - f64::from(collectible.position.x);
+                    let dy = f64::from(actor.position.y) - f64::from(collectible.position.y);
+                    let dz = f64::from(actor.position.z) - f64::from(collectible.position.z);
+                    let distance_squared = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
+                    let range = f64::from(collectible.interaction_range);
+                    distance_squared.is_finite() && distance_squared <= range * range
+                }),
+            crate::guidance::GuidanceAction::StudyKnowledge(target) => {
+                self.knowledge(target).can_study() && !self.knowledge(target).is_studied()
+            }
+            crate::guidance::GuidanceAction::IdentifySignal(Some(destination)) => {
+                self.destination(destination).is_some()
+                    && self.knowledge(KnowledgeTarget::Destination(destination))
+                        == crate::knowledge::KnowledgeState::Detected
+            }
+            crate::guidance::GuidanceAction::DefeatEnemy(expected) => self.enemies().any(|enemy| {
+                enemy.active
+                    && !enemy.is_defeated()
+                    && expected.is_none_or(|target| target == enemy.entity)
+            }),
+            _ => false,
+        }
+    }
+    pub(crate) fn update_companions(&mut self, delta: Duration) {
+        if delta.0 == 0 {
+            return;
+        }
+        let companions: Vec<_> = self.companions.values().copied().collect();
+        let seconds = delta.0 as f64 / 1_000.0;
+        let max_step = f64::from(crate::companion::FOLLOW_SPEED) * seconds;
+        if !max_step.is_finite() || max_step <= 0.0 {
+            return;
+        }
+        for companion in companions {
+            if !companion.active {
+                continue;
+            }
+            let Some(player) = self.players.get(&companion.followed_player).copied() else {
+                self.transition_companion(companion.entity, CompanionBehavior::Unavailable);
+                continue;
+            };
+            if !player.is_active
+                || !self.entities.contains(player.entity_id)
+                || !finite_vec3(player.position)
+                || !finite_vec3(companion.position)
+            {
+                self.transition_companion(companion.entity, CompanionBehavior::Unavailable);
+                continue;
+            }
+            match companion.behavior {
+                CompanionBehavior::Accompany => {
+                    self.move_companion_towards_player(companion.entity, player.position, max_step);
+                }
+                CompanionBehavior::Investigate(target) => {
+                    if !self.knowledge_target_exists(target) || !self.knowledge(target).is_detected() {
+                        self.transition_companion(companion.entity, CompanionBehavior::Accompany);
+                    }
+                }
+                CompanionBehavior::CombatSupport => {
+                    let combat_exists = self.enemies().any(|enemy| enemy.active && !enemy.is_defeated());
+                    if !combat_exists {
+                        self.transition_companion(companion.entity, CompanionBehavior::Accompany);
+                    }
+                }
+                CompanionBehavior::Waiting | CompanionBehavior::Unavailable => {}
+            }
+        }
+    }
+    fn move_companion_towards_player(
+        &mut self,
+        entity: EntityId,
+        player_position: engine::Vec3,
+        max_step: f64,
+    ) {
+        let Some(companion) = self.companions.get(&entity).copied() else {
+            return;
+        };
+        let dx = f64::from(companion.position.x) - f64::from(player_position.x);
+        let dy = f64::from(companion.position.y) - f64::from(player_position.y);
+        let dz = f64::from(companion.position.z) - f64::from(player_position.z);
+        let distance = dx.mul_add(dx, dy.mul_add(dy, dz * dz)).sqrt();
+        if !distance.is_finite() {
+            self.transition_companion(entity, CompanionBehavior::Unavailable);
+            return;
+        }
+        let desired = f64::from(crate::companion::FOLLOW_DISTANCE);
+        if distance > 0.0 && distance <= desired {
+            return;
+        }
+        let (direction_x, direction_y, direction_z, remaining) = if distance == 0.0 {
+            (1.0, 0.0, 0.0, desired)
+        } else {
+            (-dx / distance, -dy / distance, -dz / distance, distance - desired)
+        };
+        let step = remaining.min(max_step);
+        let position = engine::Vec3 {
+            x: (f64::from(companion.position.x) + direction_x * step) as f32,
+            y: (f64::from(companion.position.y) + direction_y * step) as f32,
+            z: (f64::from(companion.position.z) + direction_z * step) as f32,
+        };
+        if !finite_vec3(position) {
+            self.transition_companion(entity, CompanionBehavior::Unavailable);
+            return;
+        }
+        if let Some(updated) = self.companions.get_mut(&entity) {
+            updated.position = position;
+        }
+        self.publish(crate::events::GameplayEvent::CompanionMoved { companion: entity, position });
+    }
+    fn transition_companion(&mut self, entity: EntityId, behavior: CompanionBehavior) {
+        if let Some(companion) = self.companions.get_mut(&entity) {
+            if companion.behavior == behavior {
+                return;
+            }
+            companion.behavior = behavior;
+            self.publish(crate::events::GameplayEvent::CompanionBehaviorChanged { companion: entity, behavior });
+        }
     }
     pub fn guidance_for_player(
         &self,
@@ -756,6 +1373,9 @@ impl GameplayWorld {
     }
     pub fn interactable(&self, entity: EntityId) -> Option<&Interactable> {
         self.interactables.get(&entity)
+    }
+    pub fn interactables(&self) -> impl Iterator<Item = &Interactable> {
+        self.interactables.values()
     }
     pub fn door(&self, entity: EntityId) -> Option<Door> {
         match self.interactables.get(&entity)?.behavior {
@@ -2676,6 +3296,35 @@ impl GameplayWorld {
 
 fn finite_vec3(value: engine::Vec3) -> bool {
     value.x.is_finite() && value.y.is_finite() && value.z.is_finite()
+}
+
+fn route_fuel_requirement(
+    world: &GameplayWorld,
+    route: &[crate::navigation::DestinationId],
+    start: usize,
+) -> Option<u32> {
+    if route.len() < 2 || start >= route.len().saturating_sub(1) {
+        return Some(0);
+    }
+    let mut total = 0_u32;
+    for index in start..route.len() - 1 {
+        let leg = world.navigation_route(route[index], route[index + 1])?;
+        total = total.checked_add(leg.fuel_cost)?;
+    }
+    Some(total)
+}
+
+fn within_radius(a: engine::Vec3, b: engine::Vec3, radius: f32) -> bool {
+    crate::encounter::distance_squared(a, b)
+        .is_some_and(|distance| distance <= f64::from(radius) * f64::from(radius))
+}
+
+fn tactical_priority_rank(priority: crate::companion::TacticalPriority) -> u8 {
+    match priority {
+        crate::companion::TacticalPriority::Critical => 0,
+        crate::companion::TacticalPriority::High => 1,
+        crate::companion::TacticalPriority::Normal => 2,
+    }
 }
 
 fn validate_interactable_geometry(

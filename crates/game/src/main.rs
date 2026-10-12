@@ -5207,6 +5207,877 @@ fn run_persistence_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_erick_companion_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let before_entities = session.world().entities().active_count();
+    let invalid = session.update([GameplayCommand::CreateCompanion {
+        followed_player: EntityId::new(u64::MAX),
+        position: Vec3::ZERO,
+    }]);
+    if !matches!(invalid.first().map(|result| result.status), Some(CommandStatus::Rejected { reason: gameplay::CommandRejection::PlayerNotFound }))
+        || session.world().companions().next().is_some()
+        || session.world().entities().active_count() != before_entities
+    {
+        return Err("ERICK aceptó una referencia de jugador inexistente o dejó estado parcial".to_owned());
+    }
+
+    let created = session.update([GameplayCommand::CreateCompanion {
+        followed_player: player,
+        position: Vec3 { x: 2.0, y: 0.0, z: 0.0 },
+    }]);
+    if !matches!(created.first().map(|result| result.status), Some(CommandStatus::Success { changed: true })) {
+        return Err("no se pudo crear ERICK mediante el comando de gameplay".to_owned());
+    }
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "la entidad de ERICK no quedó registrada".to_owned())?;
+    if erick.followed_player != player
+        || session.world().players().count() != 1
+        || session.world().group_size() != gameplay::GroupSize::Solo
+        || session.world().entities().active_count() != before_entities + 1
+    {
+        return Err("ERICK alteró el límite o el escalado de jugadores locales".to_owned());
+    }
+    run_command(
+        &mut session,
+        "activar acompañamiento de ERICK",
+        GameplayCommand::SetCompanionBehavior {
+            companion: erick.entity,
+            behavior: gameplay::CompanionBehavior::Accompany,
+        },
+    )?;
+    let first_position = erick.position;
+    run_command(
+        &mut session,
+        "mover jugador acompañado",
+        GameplayCommand::MovePlayer {
+            player,
+            direction: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+            delta: Duration(1_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "avanzar seguimiento de ERICK",
+        GameplayCommand::AdvanceTime { delta: Duration(1_000) },
+    )?;
+    let followed_position = session.world().companion(erick.entity).map(|value| value.position)
+        .ok_or_else(|| "ERICK desapareció durante el seguimiento".to_owned())?;
+    let moved_distance = ((followed_position.x - first_position.x).powi(2)
+        + (followed_position.y - first_position.y).powi(2)
+        + (followed_position.z - first_position.z).powi(2)).sqrt();
+    let player_position = session.world().player(player).map(|value| value.position)
+        .ok_or_else(|| "no se pudo leer la posición del jugador acompañado".to_owned())?;
+    let distance_to_player = ((followed_position.x - player_position.x).powi(2)
+        + (followed_position.y - player_position.y).powi(2)
+        + (followed_position.z - player_position.z).powi(2)).sqrt();
+    if moved_distance <= 0.0 || moved_distance > gameplay::FOLLOW_SPEED + 0.001
+        || (distance_to_player - gameplay::FOLLOW_DISTANCE).abs() > 0.001
+    {
+        return Err(format!("el seguimiento de ERICK excedió la velocidad o distancia configurada: movió={moved_distance}, distancia={distance_to_player}, posición_jugador={player_position:?}, posición_erick={followed_position:?}"));
+    }
+    let stationary = followed_position;
+    run_command(
+        &mut session,
+        "avanzar sin necesidad de seguimiento",
+        GameplayCommand::AdvanceTime { delta: Duration(1_000) },
+    )?;
+    if session.world().companion(erick.entity).is_none_or(|value| value.position != stationary) {
+        return Err("ERICK se movió innecesariamente dentro de su distancia de seguimiento".to_owned());
+    }
+    run_command(
+        &mut session,
+        "poner ERICK en espera",
+        GameplayCommand::SetCompanionBehavior {
+            companion: erick.entity,
+            behavior: gameplay::CompanionBehavior::Waiting,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "mover jugador con ERICK en espera",
+        GameplayCommand::MovePlayer {
+            player,
+            direction: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+            delta: Duration(1_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "verificar espera de ERICK",
+        GameplayCommand::AdvanceTime { delta: Duration(1_000) },
+    )?;
+    if session.world().companion(erick.entity).is_none_or(|value| value.position != stationary) {
+        return Err("ERICK continuó moviéndose mientras esperaba".to_owned());
+    }
+    run_command(
+        &mut session,
+        "desactivar jugador acompañado",
+        GameplayCommand::SetPlayerActive { player, active: false },
+    )?;
+    run_command(
+        &mut session,
+        "verificar indisponibilidad de ERICK",
+        GameplayCommand::AdvanceTime { delta: Duration(1) },
+    )?;
+    if session.world().companion(erick.entity).is_none_or(|value| value.behavior != gameplay::CompanionBehavior::Unavailable) {
+        return Err("ERICK no adoptó un estado seguro ante un jugador inactivo".to_owned());
+    }
+    run_command(
+        &mut session,
+        "reactivar jugador acompañado",
+        GameplayCommand::SetPlayerActive { player, active: true },
+    )?;
+    let recommendation = session
+        .world()
+        .companion_recommended_behavior(erick.entity)
+        .map_err(|error| format!("consultar guía de ERICK: {error:?}"))?;
+    if recommendation != session
+        .world()
+        .companion_recommended_behavior(erick.entity)
+        .map_err(|error| format!("consultar guía repetida de ERICK: {error:?}"))?
+    {
+        return Err("la recomendación de ERICK no fue determinista".to_owned());
+    }
+    let original_position = stationary;
+    let invalid_behavior = session.update([GameplayCommand::SetCompanionBehavior {
+        companion: erick.entity,
+        behavior: gameplay::CompanionBehavior::Investigate(gameplay::KnowledgeTarget::Destination(
+            DestinationId::new(999_999),
+        )),
+    }]);
+    if !matches!(invalid_behavior.first().map(|result| result.status), Some(CommandStatus::Rejected { reason: gameplay::CommandRejection::CompanionKnowledgeUnavailable }))
+        || session.world().companion(erick.entity).is_none_or(|value| value.behavior != gameplay::CompanionBehavior::Unavailable)
+    {
+        return Err("ERICK aceptó una investigación sin conocimiento disponible".to_owned());
+    }
+    let target = DestinationId::new(900);
+    session
+        .register_destination(Destination {
+            id: target,
+            destination_type: DestinationType::SpacePoint,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Unknown,
+        })
+        .map_err(|error| format!("registrar destino de ERICK: {error:?}"))?;
+    run_command(
+        &mut session,
+        "registrar conocimiento para ERICK",
+        GameplayCommand::RegisterKnowledge {
+            target: gameplay::KnowledgeTarget::Destination(target),
+        },
+    )?;
+    let evidence_position = session
+        .world()
+        .player(player)
+        .map(|value| value.position)
+        .ok_or_else(|| "no se pudo leer la posición de evidencia de ERICK".to_owned())?;
+    let known_item = session
+        .world_mut()
+        .create_collectible(ItemId(2), 1, evidence_position, 2.0)
+        .map_err(|error| format!("crear evidencia para ERICK: {error:?}"))?;
+    run_command(
+        &mut session,
+        "recoger evidencia para ERICK",
+        GameplayCommand::CollectItem {
+            player,
+            collectible: known_item,
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "identificar conocimiento para ERICK",
+        GameplayCommand::IdentifyKnowledge {
+            target: gameplay::KnowledgeTarget::Item(ItemId(2)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ordenar investigación de ERICK",
+        GameplayCommand::SetCompanionBehavior {
+            companion: erick.entity,
+            behavior: gameplay::CompanionBehavior::Investigate(gameplay::KnowledgeTarget::Item(ItemId(2))),
+        },
+    )?;
+    let first_decision = session
+        .world()
+        .companion_decision(erick.entity)
+        .map_err(|error| format!("consultar decisión de ERICK: {error:?}"))?;
+    let second_decision = session
+        .world()
+        .companion_decision(erick.entity)
+        .map_err(|error| format!("consultar decisión repetida de ERICK: {error:?}"))?;
+    if first_decision != second_decision
+        || first_decision != gameplay::CompanionBehavior::Investigate(gameplay::KnowledgeTarget::Item(ItemId(2)))
+        || session.world().companion(erick.entity).is_none_or(|value| value.position != original_position)
+    {
+        return Err("la decisión de ERICK no fue determinista o modificó su posición".to_owned());
+    }
+    run_command(
+        &mut session,
+        "crear enemigo para apoyo de ERICK",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(
+                EnemyArchetype::Shooter,
+                player_position,
+            ),
+        },
+    )?;
+    let enemy = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "no se creó el enemigo para apoyo de ERICK".to_owned())?;
+    run_command(
+        &mut session,
+        "activar apoyo de combate de ERICK",
+        GameplayCommand::SetCompanionBehavior {
+            companion: erick.entity,
+            behavior: gameplay::CompanionBehavior::CombatSupport,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "detectar combate con ERICK",
+        GameplayCommand::AdvanceTime { delta: Duration(1) },
+    )?;
+    if session.world().companion_decision(erick.entity)
+        .map_err(|error| format!("consultar apoyo de combate de ERICK: {error:?}"))?
+        != gameplay::CompanionBehavior::CombatSupport
+        || session.world().combatant(erick.entity).is_some()
+        || session.world().events().iter().any(|event| {
+            matches!(event, GameplayEvent::AttackExecuted { target, .. } if *target == erick.entity)
+        })
+    {
+        return Err("ERICK fue tratado como objetivo o no conservó el apoyo de combate válido".to_owned());
+    }
+    run_command(
+        &mut session,
+        "finalizar combate de apoyo de ERICK",
+        GameplayCommand::SetEnemyActive { enemy, active: false },
+    )?;
+    run_command(
+        &mut session,
+        "volver a acompañamiento tras combate",
+        GameplayCommand::AdvanceTime { delta: Duration(1) },
+    )?;
+    if session.world().companion_decision(erick.entity)
+        .map_err(|error| format!("consultar retorno de ERICK: {error:?}"))?
+        != gameplay::CompanionBehavior::Accompany
+    {
+        return Err("ERICK no volvió al acompañamiento al terminar el combate".to_owned());
+    }
+    let encoded = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&encoded)
+        .map_err(|error| format!("serializar estado de ERICK: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar estado de ERICK: {error}"))?;
+    if restored.save_state().serialize() != encoded
+        || restored.world().companion(erick.entity).is_none_or(|value| {
+            value.followed_player != player
+                || value.behavior != gameplay::CompanionBehavior::Accompany
+        })
+    {
+        return Err("el round-trip textual de ERICK no conservó su relación o comportamiento".to_owned());
+    }
+    let invalid_text = encoded.replace(
+        &format!("companion|{}|{}|", erick.entity.value(), player.value()),
+        &format!("companion|{}|{}|", erick.entity.value(), u64::MAX),
+    );
+    let mut unchanged = ProjectEchoSession::new();
+    let before_invalid = unchanged.save_state().serialize();
+    let invalid_save = gameplay::GameplaySaveState::deserialize(&invalid_text)
+        .map_err(|error| format!("preparar estado inválido de ERICK: {error}"))?;
+    if unchanged.restore_state(invalid_save).is_ok()
+        || unchanged.save_state().serialize() != before_invalid
+    {
+        return Err("la carga inválida de ERICK dejó mutaciones parciales".to_owned());
+    }
+    println!(
+        "ERICK COMPLETADO: entidad={}, jugador={}, comportamiento={:?}, jugadores={}, determinista=true",
+        erick.entity, player, gameplay::CompanionBehavior::Accompany, session.world().players().count()
+    );
+    Ok(())
+}
+
+fn run_erick_interaction_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let status_console = session
+        .create_ship_status_console(Vec3::ZERO, 2.0)
+        .map_err(|error| format!("crear consola para asistencia de ERICK: {error:?}"))?;
+    let electrical_panel = session
+        .create_electrical_panel(
+            Vec3::ZERO,
+            2.0,
+            ElectricalPanelConfiguration::new(vec![ElectricalBreakerConfiguration {
+                id: BreakerId::new(1),
+                initial_state: BreakerState::Off,
+                target_state: BreakerState::On,
+            }]),
+        )
+        .map_err(|error| format!("crear panel para asistencia de ERICK: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK para asistencia de interacciÃ³n",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedÃ³ disponible para asistencia".to_owned())?;
+    run_command(
+        &mut session,
+        "desbloquear misiÃ³n para asistencia de ERICK",
+        GameplayCommand::UnlockMission {
+            mission: el_despertar::EL_DESPERTAR,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar misiÃ³n para asistencia de ERICK",
+        GameplayCommand::StartMission {
+            mission: el_despertar::EL_DESPERTAR,
+        },
+    )?;
+    let recommendation = session
+        .world()
+        .companion_action_recommendation(erick.entity)
+        .map_err(|error| format!("consultar interacciÃ³n recomendada por ERICK: {error:?}"))?
+        .ok_or_else(|| "ERICK no identificÃ³ la interacciÃ³n disponible".to_owned())?;
+    if recommendation.companion != erick.entity
+        || recommendation.player != player
+        || recommendation.mode != gameplay::CompanionActionMode::PlayerRequired
+        || recommendation.action != gameplay::GuidanceAction::Interact(status_console)
+    {
+        return Err(format!(
+            "ERICK recomendÃ³ una acciÃ³n inesperada: {recommendation:?}"
+        ));
+    }
+    if session
+        .world()
+        .companion_action_recommendation(erick.entity)
+        .map_err(|error| format!("consultar recomendaciÃ³n determinista de ERICK: {error:?}"))?
+        != Some(recommendation)
+    {
+        return Err("la recomendaciÃ³n de ERICK no fue determinista".to_owned());
+    }
+    let erick_attempt = session.update([GameplayCommand::Interact {
+        player: erick.entity,
+        target: status_console,
+    }]);
+    if !matches!(
+        erick_attempt.first().map(|result| result.status),
+        Some(CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::PlayerNotFound
+        })
+    ) || !matches!(
+        session.world().interactable(status_console).map(|value| value.behavior),
+        Some(gameplay::InteractionBehavior::Console {
+            state: gameplay::ConsoleState::Off,
+            ..
+        })
+    ) {
+        return Err("ERICK ejecutÃ³ una interacciÃ³n que exige un jugador o dejÃ³ un cambio parcial".to_owned());
+    }
+    run_command(
+        &mut session,
+        "ejecutar por el jugador la interacciÃ³n recomendada por ERICK",
+        GameplayCommand::Interact {
+            player,
+            target: status_console,
+        },
+    )?;
+    if !matches!(
+        session.world().interactable(status_console).map(|value| value.behavior),
+        Some(gameplay::InteractionBehavior::Console {
+            state: gameplay::ConsoleState::On,
+            ..
+        })
+    ) || !session.world().events().iter().any(|event| {
+        matches!(event, GameplayEvent::InteractionSucceeded { player: actor, target } if *actor == gameplay::types::PlayerId(player) && *target == status_console)
+    }) {
+        return Err("la interacciÃ³n recomendada no produjo el efecto real esperado".to_owned());
+    }
+    let next_recommendation = session
+        .world()
+        .companion_action_recommendation(erick.entity)
+        .map_err(|error| format!("consultar siguiente interacciÃ³n de ERICK: {error:?}"))?
+        .ok_or_else(|| "ERICK no actualizÃ³ su recomendaciÃ³n tras el cambio de estado".to_owned())?;
+    if next_recommendation.action != gameplay::GuidanceAction::Interact(electrical_panel)
+        || next_recommendation == recommendation
+    {
+        return Err(format!(
+            "la recomendaciÃ³n no reflejÃ³ el siguiente estado autoritativo: {next_recommendation:?}"
+        ));
+    }
+    let before_invalid = session.world().save_state().serialize();
+    let invalid_target = session.update([GameplayCommand::Interact {
+        player,
+        target: EntityId::new(u64::MAX),
+    }]);
+    if !matches!(
+        invalid_target.first().map(|result| result.status),
+        Some(CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::TargetNotFound
+        })
+    ) || session.world().save_state().serialize() != before_invalid {
+        return Err("una interacciÃ³n invÃ¡lida dejÃ³ mutaciones parciales".to_owned());
+    }
+    run_command(
+        &mut session,
+        "desactivar jugador para comprobar ERICK indisponible",
+        GameplayCommand::SetPlayerActive {
+            player,
+            active: false,
+        },
+    )?;
+    if session
+        .world()
+        .companion_action_recommendation(erick.entity)
+        .map_err(|error| format!("consultar ERICK indisponible: {error:?}"))?
+        .is_some()
+        || session.world().companion_decision(erick.entity)
+            .map_err(|error| format!("consultar estado de ERICK indisponible: {error:?}"))?
+            != gameplay::CompanionBehavior::Unavailable
+    {
+        return Err("ERICK continuÃ³ ofreciendo acciones con el jugador indisponible".to_owned());
+    }
+    println!(
+        "ASISTENCIA DE ERICK COMPLETADA: recomendaciÃ³n={recommendation:?}, siguiente={next_recommendation:?}, ejecuciÃ³n=jugador"
+    );
+    Ok(())
+}
+
+fn run_erick_tactical_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    run_command(
+        &mut session,
+        "crear ERICK para anÃ¡lisis tÃ¡ctico",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedÃ³ registrado para anÃ¡lisis tÃ¡ctico".to_owned())?;
+    run_command(
+        &mut session,
+        "crear amenaza tÃ¡ctica real",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let enemy = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "la amenaza tÃ¡ctica no produjo una entidad real".to_owned())?;
+    let hazard = gameplay::HazardId::new(9_061);
+    run_command(
+        &mut session,
+        "registrar peligro tÃ¡ctico real",
+        GameplayCommand::RegisterEnvironmentalHazard {
+            hazard: EnvironmentalHazard::new(
+                hazard,
+                gameplay::EnvironmentalHazardType::SpaceStorm,
+                Vec3::ZERO,
+                2.0,
+                1,
+                Duration(10_000),
+                true,
+            ),
+        },
+    )?;
+    let state_before_queries = session.world().save_state().serialize();
+    let first = session
+        .world()
+        .companion_tactical_recommendation(erick.entity)
+        .map_err(|error| format!("consultar amenaza tÃ¡ctica de ERICK: {error:?}"))?
+        .ok_or_else(|| "ERICK no detectÃ³ la amenaza activa".to_owned())?;
+    if first.companion != erick.entity
+        || first.player != player
+        || first.priority != gameplay::TacticalPriority::Critical
+        || first.action != gameplay::TacticalAction::DefeatEnemy(enemy)
+    {
+        return Err(format!("la prioridad tÃ¡ctica inicial fue incorrecta: {first:?}"));
+    }
+    let repeated = session
+        .world()
+        .companion_tactical_recommendation(erick.entity)
+        .map_err(|error| format!("consultar prioridad tÃ¡ctica repetida: {error:?}"))?;
+    if repeated != Some(first) || session.world().save_state().serialize() != state_before_queries {
+        return Err("consultar tÃ¡ctica produjo una decisiÃ³n no determinista o mutaciones".to_owned());
+    }
+    if session.world().combatant(erick.entity).is_some() {
+        return Err("ERICK fue registrado como combatiente".to_owned());
+    }
+    run_command(
+        &mut session,
+        "equipar arma del jugador para resolver la amenaza",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 100, 20, Duration(1)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "derrotar amenaza tÃ¡ctica mediante combate real",
+        GameplayCommand::AttackEnemy { player, enemy },
+    )?;
+    if session
+        .world()
+        .combatant(enemy)
+        .is_none_or(|combatant| combatant.active || !combatant.is_defeated())
+    {
+        return Err("la amenaza tÃ¡ctica no quedÃ³ derrotada".to_owned());
+    }
+    let after_defeat = session
+        .world()
+        .companion_tactical_recommendation(erick.entity)
+        .map_err(|error| format!("consultar tÃ¡ctica tras derrota: {error:?}"))?
+        .ok_or_else(|| "ERICK no actualizÃ³ la prioridad tras derrotar la amenaza".to_owned())?;
+    if after_defeat.priority != gameplay::TacticalPriority::Critical
+        || after_defeat.action != gameplay::TacticalAction::WithdrawFromHazard(hazard)
+    {
+        return Err(format!("la prioridad tras la derrota fue incorrecta: {after_defeat:?}"));
+    }
+    if session
+        .world()
+        .companion_tactical_recommendation(erick.entity)
+        .map_err(|error| format!("consultar peligro tÃ¡ctico repetido: {error:?}"))?
+        != Some(after_defeat)
+    {
+        return Err("la recomendaciÃ³n del peligro se duplicÃ³ o cambiÃ³ entre consultas".to_owned());
+    }
+    run_command(
+        &mut session,
+        "desactivar jugador para bloquear asistencia tÃ¡ctica",
+        GameplayCommand::SetPlayerActive {
+            player,
+            active: false,
+        },
+    )?;
+    if session
+        .world()
+        .companion_tactical_recommendation(erick.entity)
+        .map_err(|error| format!("consultar ERICK sin jugador activo: {error:?}"))?
+        .is_some()
+    {
+        return Err("ERICK ofreciÃ³ asistencia accionable a un jugador inactivo".to_owned());
+    }
+    let encoded = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&encoded)
+        .map_err(|error| format!("serializar tÃ¡ctica: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(decoded)
+        .map_err(|error| format!("restaurar tÃ¡ctica: {error}"))?;
+    if restored
+        .world()
+        .companion_tactical_recommendation(erick.entity)
+        .map_err(|error| format!("recalcular tÃ¡ctica restaurada: {error:?}"))?
+        .is_some()
+    {
+        return Err("la sesiÃ³n restaurada ofreciÃ³ asistencia con el jugador inactivo".to_owned());
+    }
+    println!(
+        "TACTICA DE ERICK COMPLETADA: amenaza={:?}, prioridad_inicial={:?}, prioridad_posterior={:?}, restaurada_sin_accion=true",
+        enemy, first.priority, after_defeat.priority
+    );
+    Ok(())
+}
+
+fn run_erick_navigation_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estaciÃ³n para navegaciÃ³n de ERICK: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK para navegaciÃ³n",
+        GameplayCommand::CreateCompanion {
+            followed_player: player,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedÃ³ registrado para navegaciÃ³n".to_owned())?;
+    let origin = DestinationId::new(6_201);
+    let destination = DestinationId::new(6_202);
+    for value in [
+        Destination {
+            id: origin,
+            destination_type: DestinationType::Planet,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        },
+        Destination {
+            id: destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(5),
+            fuel_cost: 2,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino conocido para ERICK",
+            GameplayCommand::RegisterDestination { destination: value },
+        )?;
+    }
+    let route = NavigationRoute {
+        from: origin,
+        to: destination,
+        distance: 10.0,
+        duration: Duration(5),
+        fuel_cost: 2,
+        state: NavigationRouteState::Available,
+    };
+    let reverse_route = NavigationRoute {
+        from: destination,
+        to: origin,
+        distance: 10.0,
+        duration: Duration(5),
+        fuel_cost: 2,
+        state: NavigationRouteState::Available,
+    };
+    run_command(
+        &mut session,
+        "registrar ruta de ERICK",
+        GameplayCommand::RegisterNavigationRoute { route },
+    )?;
+    run_command(
+        &mut session,
+        "registrar ruta de regreso de ERICK",
+        GameplayCommand::RegisterNavigationRoute {
+            route: reverse_route,
+        },
+    )?;
+    let initial = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("consultar navegaciÃ³n inicial de ERICK: {error:?}"))?
+        .ok_or_else(|| "ERICK no produjo contexto de navegaciÃ³n inicial".to_owned())?;
+    if !matches!(initial.autopilot, AutopilotState::Inactive)
+        || initial.destination.is_some()
+        || initial.recommendation.is_some()
+    {
+        return Err(format!("contexto inicial de navegaciÃ³n inesperado: {initial:?}"));
+    }
+    run_command(
+        &mut session,
+        "ocupar estaciÃ³n para ERICK",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar autopilot observado por ERICK",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination,
+        },
+    )?;
+    let planned = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("consultar autopilot planificado de ERICK: {error:?}"))?
+        .ok_or_else(|| "ERICK perdiÃ³ el jugador activo al planificar".to_owned())?;
+    if !matches!(planned.autopilot, AutopilotState::Planned { .. })
+        || planned.destination != Some(destination)
+        || planned.route.as_slice() != [origin, destination]
+        || planned.eta != Some(Duration(5))
+        || planned.fuel_required != Some(2)
+        || planned.recommendation
+            != Some(gameplay::NavigationAdvice::StartPlannedAutopilot { destination })
+    {
+        return Err(format!("contexto de autopilot planificado inesperado: {planned:?}"));
+    }
+    let query_state = session.world().save_state().serialize();
+    if session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("repetir consulta de navegaciÃ³n: {error:?}"))?
+        != Some(planned.clone())
+        || session.world().save_state().serialize() != query_state
+    {
+        return Err("la consulta de navegaciÃ³n no fue determinista o mutÃ³ el estado".to_owned());
+    }
+    run_command(
+        &mut session,
+        "iniciar autopilot observado por ERICK",
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    )?;
+    let encounter = EncounterId::new(6_201);
+    run_command(
+        &mut session,
+        "registrar encuentro conocido en la ruta",
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                encounter,
+                SpatialEncounterKind::Resource {
+                    item: ItemId(1),
+                    amount: 1,
+                },
+                Vec3::ZERO,
+                2.0,
+            ),
+        },
+    )?;
+    let transit = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("consultar autopilot en trÃ¡nsito: {error:?}"))?
+        .ok_or_else(|| "ERICK no produjo contexto durante el trÃ¡nsito".to_owned())?;
+    if !matches!(transit.autopilot, AutopilotState::InTransit { .. })
+        || transit.eta != Some(Duration(5))
+        || transit.risks != vec![gameplay::NavigationRisk::KnownEncounter(encounter)]
+        || transit.recommendation != Some(gameplay::NavigationAdvice::AddressEncounter(encounter))
+    {
+        return Err(format!("riesgo de ruta no observado correctamente: {transit:?}"));
+    }
+    run_command(
+        &mut session,
+        "activar encuentro observado por ERICK",
+        GameplayCommand::ActivateSpatialEncounter { encounter },
+    )?;
+    run_command(
+        &mut session,
+        "resolver encuentro observado por ERICK",
+        GameplayCommand::ResolveSpatialEncounter { player, encounter },
+    )?;
+    let after_resolution = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("consultar ruta tras resolver encuentro: {error:?}"))?
+        .ok_or_else(|| "ERICK no produjo contexto tras resolver el encuentro".to_owned())?;
+    if after_resolution.risks.iter().any(|risk| {
+        *risk == gameplay::NavigationRisk::KnownEncounter(encounter)
+    })
+        || after_resolution.recommendation
+            != Some(gameplay::NavigationAdvice::MonitorAutopilot { destination })
+    {
+        return Err("la advertencia de encuentro no se retirÃ³ tras una resoluciÃ³n real".to_owned());
+    }
+    run_command(
+        &mut session,
+        "completar autopilot observado por ERICK",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(5),
+        },
+    )?;
+    let completed = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("consultar autopilot completado de ERICK: {error:?}"))?
+        .ok_or_else(|| "ERICK no produjo contexto al completar el viaje".to_owned())?;
+    if !matches!(completed.autopilot, AutopilotState::Completed { destination: value } if value == destination)
+        || completed.eta.is_some()
+        || completed.recommendation.is_some()
+    {
+        return Err(format!("estado completado de navegaciÃ³n inesperado: {completed:?}"));
+    }
+    let ship = session.ids.first_ship;
+    let fuel = session
+        .world()
+        .ship_fuel(ship)
+        .ok_or_else(|| "faltÃ³ combustible al validar autopilot de ERICK".to_owned())?
+        .current();
+    run_command(
+        &mut session,
+        "retirar combustible para evaluar riesgo",
+        GameplayCommand::RemoveShipFuel {
+            ship,
+            amount: fuel,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar regreso con combustible agotado",
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin: destination,
+            destination: origin,
+        },
+    )?;
+    let insufficient = session
+        .world()
+        .companion_navigation_assessment(erick.entity)
+        .map_err(|error| format!("consultar combustible insuficiente de ERICK: {error:?}"))?
+        .ok_or_else(|| "ERICK no produjo advertencia de combustible".to_owned())?;
+    if insufficient.fuel_available != Some(0)
+        || insufficient.fuel_required != Some(2)
+        || insufficient.recommendation
+            != Some(gameplay::NavigationAdvice::ReplanAutopilot { destination: origin })
+    {
+        return Err(format!("riesgo de combustible no informado correctamente: {insufficient:?}"));
+    }
+    let rejected = session
+        .update([GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        }])
+        .into_iter()
+        .next()
+        .ok_or_else(|| "inicio con combustible insuficiente sin resultado".to_owned())?;
+    if rejected.status
+        != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::InsufficientFuel,
+        })
+    {
+        return Err(format!("autopilot no rechazÃ³ combustible insuficiente: {:?}", rejected.status));
+    }
+    println!(
+        "NAVEGACION DE ERICK COMPLETADA: destino={:?}, eta_inicial={:?}, combustible_disponible_final=0, recomendacion_restaurada=ReplanAutopilot",
+        destination, planned.eta
+    );
+    Ok(())
+}
+
 fn run_scenario() -> Result<(), String> {
     run_atomicity_regressions()?;
     let mut session = ProjectEchoSession::new();
@@ -5407,5 +6278,9 @@ fn run_scenario() -> Result<(), String> {
     run_guidance_progression_scenario()?;
     run_group_scaling_scenario()?;
     run_persistence_scenario()?;
+    run_erick_companion_scenario()?;
+    run_erick_interaction_scenario()?;
+    run_erick_tactical_scenario()?;
+    run_erick_navigation_scenario()?;
     Ok(())
 }

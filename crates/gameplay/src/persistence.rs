@@ -2,6 +2,7 @@ use engine::{EntityId, EntityRegistry, EntityRegistrySnapshot, GameTime, Tick, D
 use std::fmt;
 
 use crate::{
+    companion::CompanionBehavior,
     collectible::{ItemCategory, ItemDefinition},
     combat::{AttackType, EnemyConfiguration, Shield, WeaponAmmunition, WeaponConfiguration},
     derelict::{Derelict, DerelictReward, DerelictState},
@@ -26,6 +27,15 @@ pub struct PlayerSaveState {
     pub yaw: f32,
     pub pitch: f32,
     pub velocity: Vec3,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompanionSaveState {
+    pub entity: EntityId,
+    pub followed_player: EntityId,
+    pub position: Vec3,
+    pub behavior: CompanionBehavior,
     pub active: bool,
 }
 
@@ -77,6 +87,7 @@ pub struct GameplaySaveState {
     pub time: GameTime,
     pub registry: EntityRegistrySnapshot,
     pub players: Vec<PlayerSaveState>,
+    pub companions: Vec<CompanionSaveState>,
     pub inventories: Vec<InventorySaveState>,
     pub combatants: Vec<CombatantSaveState>,
     pub currencies: Vec<(EntityId, u64)>,
@@ -151,6 +162,15 @@ impl GameplaySaveState {
                 player.id.value(), bits(player.position.x), bits(player.position.y), bits(player.position.z),
                 bits(player.yaw), bits(player.pitch), bits(player.velocity.x), bits(player.velocity.y),
                 bits(player.velocity.z), bool_value(player.active)
+            ));
+        }
+        for companion in &self.companions {
+            let (behavior, target) = companion_behavior(companion.behavior);
+            output.push_str(&format!(
+                "companion|{}|{}|{}|{}|{}|{}|{}|{}\n",
+                companion.entity.value(), companion.followed_player.value(),
+                bits(companion.position.x), bits(companion.position.y), bits(companion.position.z),
+                behavior, target, bool_value(companion.active)
             ));
         }
         for inventory in &self.inventories {
@@ -244,7 +264,7 @@ impl GameplaySaveState {
         if schema_version != GAMEPLAY_SAVE_SCHEMA_VERSION { return Err(SaveError::UnsupportedSchema); }
         let mut state = Self {
             schema_version, phase: SimulationPhase::Loading, time: GameTime::new(), registry: EntityRegistrySnapshot::default(),
-            players: Vec::new(), inventories: Vec::new(), combatants: Vec::new(), currencies: Vec::new(),
+            players: Vec::new(), companions: Vec::new(), inventories: Vec::new(), combatants: Vec::new(), currencies: Vec::new(),
             missions: Vec::new(), knowledge: Vec::new(), collectibles: Vec::new(), ship_fuel: Vec::new(),
             ship_integrity: Vec::new(), ship_position: None,
             destinations: Vec::new(), routes: Vec::new(), item_definitions: Vec::new(),
@@ -261,6 +281,7 @@ impl GameplaySaveState {
                 "route" if fields.len() == 7 => state.routes.push(NavigationRoute { from: DestinationId::new(parse_u32(fields[1])?), to: DestinationId::new(parse_u32(fields[2])?), distance: float(fields[3])?, duration: Duration(parse_u64(fields[4])?), fuel_cost: parse_u32(fields[5])?, state: parse_route_state(fields[6])? }),
                 "registry" if fields.len() == 4 => state.registry = EntityRegistrySnapshot { next_id: parse_u64(fields[1])?, known: parse_ids(fields[2])?, active: parse_ids(fields[3])? },
                 "player" if fields.len() == 11 => state.players.push(PlayerSaveState { id: EntityId::new(parse_u64(fields[1])?), position: vec3(&fields, 2)?, yaw: float(fields[5])?, pitch: float(fields[6])?, velocity: vec3(&fields, 7)?, active: parse_bool(fields[10])? }),
+                "companion" if fields.len() == 9 => state.companions.push(CompanionSaveState { entity: EntityId::new(parse_u64(fields[1])?), followed_player: EntityId::new(parse_u64(fields[2])?), position: vec3(&fields, 3)?, behavior: parse_companion_behavior(fields[6], fields[7])?, active: parse_bool(fields[8])? }),
                 "inventory" if fields.len() == 4 => state.inventories.push(InventorySaveState { owner: EntityId::new(parse_u64(fields[1])?), capacity: parse_u32(fields[2])?, entries: parse_inventory(fields[3])? }),
                 "combatant" if fields.len() == 15 => state.combatants.push(parse_combatant(&fields)?),
                 "item_definition" if fields.len() == 9 => state.item_definitions.push(parse_item_definition(&fields)?),
@@ -308,6 +329,13 @@ fn validate_unique_entities(state: &GameplaySaveState) -> Result<(), SaveError> 
     for id in state.players.iter().map(|v| v.id) {
         if player_ids.contains(&id) { return Err(SaveError::DuplicateRecord); }
         player_ids.push(id);
+    }
+    let mut companion_ids = Vec::new();
+    for id in state.companions.iter().map(|v| v.entity) {
+        if companion_ids.contains(&id) || player_ids.contains(&id) {
+            return Err(SaveError::DuplicateRecord);
+        }
+        companion_ids.push(id);
     }
     let mut combatant_ids = Vec::new();
     for id in state.combatants.iter().map(|v| v.id) {
@@ -368,6 +396,8 @@ fn knowledge_target(value: KnowledgeTarget) -> String { match value { KnowledgeT
 fn parse_mission_state(value: &str) -> Result<MissionState, SaveError> { match parse_u32(value)? { 0 => Ok(MissionState::Locked), 1 => Ok(MissionState::Available), 2 => Ok(MissionState::Active), 3 => Ok(MissionState::Completed), 4 => Ok(MissionState::Failed), _ => Err(SaveError::InvalidState) } }
 fn parse_objective_state(value: &str) -> Result<ObjectiveState, SaveError> { match parse_u32(value)? { 0 => Ok(ObjectiveState::Locked), 1 => Ok(ObjectiveState::Available), 2 => Ok(ObjectiveState::Active), 3 => Ok(ObjectiveState::Completed), 4 => Ok(ObjectiveState::Failed), _ => Err(SaveError::InvalidState) } }
 fn parse_knowledge_state(value: &str) -> Result<KnowledgeState, SaveError> { match parse_u32(value)? { 0 => Ok(KnowledgeState::Unknown), 1 => Ok(KnowledgeState::Detected), 2 => Ok(KnowledgeState::Identified), 3 => Ok(KnowledgeState::Discovered), 4 => Ok(KnowledgeState::Studied), _ => Err(SaveError::InvalidState) } }
+fn companion_behavior(value: CompanionBehavior) -> (u32, String) { match value { CompanionBehavior::Accompany => (0, "x".to_string()), CompanionBehavior::Investigate(target) => (1, knowledge_target(target)), CompanionBehavior::CombatSupport => (2, "x".to_string()), CompanionBehavior::Waiting => (3, "x".to_string()), CompanionBehavior::Unavailable => (4, "x".to_string()) } }
+fn parse_companion_behavior(value: &str, target: &str) -> Result<CompanionBehavior, SaveError> { match parse_u32(value)? { 0 if target == "x" => Ok(CompanionBehavior::Accompany), 1 => Ok(CompanionBehavior::Investigate(parse_knowledge_target(target)?)), 2 if target == "x" => Ok(CompanionBehavior::CombatSupport), 3 if target == "x" => Ok(CompanionBehavior::Waiting), 4 if target == "x" => Ok(CompanionBehavior::Unavailable), _ => Err(SaveError::InvalidState) } }
 fn parse_knowledge_target(value: &str) -> Result<KnowledgeTarget, SaveError> { if value.len() < 2 { return Err(SaveError::MalformedRecord); } let (kind, number) = value.split_at(1); let id = parse_u64(number)?; match kind { "d" => Ok(KnowledgeTarget::Destination(crate::navigation::DestinationId::new(u32::try_from(id).map_err(|_| SaveError::InvalidNumber)?))), "e" => Ok(KnowledgeTarget::Enemy(EntityId::new(id))), "i" => Ok(KnowledgeTarget::Item(ItemId(u32::try_from(id).map_err(|_| SaveError::InvalidNumber)?))), _ => Err(SaveError::MalformedRecord) } }
 
 fn attack_type(value: AttackType) -> u8 { match value { AttackType::Kinetic => 0, AttackType::Energy => 1, AttackType::Plasma => 2 } }
