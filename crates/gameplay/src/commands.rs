@@ -1,6 +1,7 @@
 use crate::collectible::ItemDefinition;
 use crate::combat::{EnemyConfiguration, WeaponConfiguration};
 use crate::derelict::Derelict;
+use crate::world_activity::FunctionalWorld;
 use crate::electrical::{BreakerId, BreakerState, ElectricalPanelConfiguration};
 use crate::encounter::{EncounterId, SpatialEncounter};
 use crate::knowledge::KnowledgeTarget;
@@ -264,6 +265,33 @@ pub enum GameplayCommand {
         player: EntityId,
         derelict: crate::derelict::DerelictId,
     },
+    RegisterFunctionalWorld {
+        world: FunctionalWorld,
+    },
+    ExtractWorldResource {
+        player: EntityId,
+        destination: DestinationId,
+    },
+    BuyWorldItem {
+        player: EntityId,
+        destination: DestinationId,
+        item: crate::types::ItemId,
+        amount: u32,
+    },
+    SellWorldItem {
+        player: EntityId,
+        destination: DestinationId,
+        item: crate::types::ItemId,
+        amount: u32,
+    },
+    InteractStoryWorld {
+        player: EntityId,
+        destination: DestinationId,
+    },
+    ActivateWorldCombat {
+        player: EntityId,
+        destination: DestinationId,
+    },
     LockDoor {
         door: EntityId,
     },
@@ -415,6 +443,24 @@ pub enum CommandRejection {
     DerelictEnemyRegistrationFailed,
     DerelictEnemyStillActive,
     DerelictRewardNotCollected,
+    FunctionalWorldNotFound,
+    FunctionalWorldAlreadyRegistered,
+    FunctionalWorldDestinationNotDiscovered,
+    FunctionalWorldOutOfRange,
+    FunctionalWorldRequiresActivePlayer,
+    FunctionalWorldShipNotOperational,
+    WorldActivityNotFound,
+    WorldInvalidQuantity,
+    WorldInsufficientFunds,
+    WorldPriceOverflow,
+    WorldInventoryCapacity,
+    WorldInventoryInsufficient,
+    WorldResourceUnavailable,
+    WorldCombatAlreadyActivated,
+    WorldCombatResolved,
+    WorldStoryAlreadyInteracted,
+    WorldStoryKnowledgeUnavailable,
+    WorldEnemyCreationFailed,
     NavigationRouteAlreadyRegistered,
     NavigationRouteNotFound,
     NavigationRouteNotDiscovered,
@@ -450,6 +496,7 @@ pub enum CommandInvalidity {
     InvalidSpatialEncounterConfiguration,
     InvalidNavigationRouteConfiguration,
     InvalidDerelictConfiguration,
+    InvalidFunctionalWorldConfiguration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

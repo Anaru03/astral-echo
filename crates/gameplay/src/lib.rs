@@ -11,6 +11,7 @@ pub mod events;
 pub mod hazard;
 pub mod healing;
 pub mod healing_system;
+pub mod guidance;
 pub mod integrity;
 pub mod interaction;
 pub mod knowledge;
@@ -31,6 +32,7 @@ pub mod station;
 pub mod systems;
 pub mod types;
 pub mod world;
+pub mod world_activity;
 
 pub use collectible::{
     Collectible, CollectibleError, ItemCategory, ItemDefinition, ItemDefinitionError,
@@ -60,6 +62,10 @@ pub use hazard::{
 };
 pub use healing::{HealingEffect, HealingError, HealingResult};
 pub use healing_system::HealingSystem;
+pub use guidance::{
+    GuidanceAction, GuidanceError, GuidanceObjective, GuidanceRequirement, GuidanceScope,
+    GuidanceState, GuidanceStatus, GuidanceSystem,
+};
 pub use integrity::{
     IntegrityError, ShipIntegrity, ShipRepairConfiguration, ShipRepairError, StructuralState,
 };
@@ -98,7 +104,11 @@ pub use systems::{
     CombatSystem, DoorSystem, ElectricalSystem, EnemyAiSystem, EnvironmentalHazardSystem,
     HullIntegritySystem, InteractionSystem, InventorySystem, LifeSupportSystem, NavigationSystem,
     PilotSystem, ResourceSystem, ScannerSystem, SpatialEncounterSystem, StationSystem,
-    DerelictSystem,
+    DerelictSystem, FunctionalWorldSystem,
 };
 pub use types::{GameResult, GameplayState, SimulationPhase};
 pub use world::{GameplayWorld, InventoryTransferError, PlayerCreationError, MAX_LOCAL_PLAYERS};
+pub use world_activity::{
+    CombatZone, FunctionalWorld, FunctionalWorldError, ResourceSite, StorySite, TradeMarket,
+    TradeOffer, WorldActivity, WorldActivityError, WorldCategory,
+};

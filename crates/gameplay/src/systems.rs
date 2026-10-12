@@ -1658,6 +1658,196 @@ impl GameplaySystem for DerelictSystem {
     }
 }
 
+pub struct FunctionalWorldSystem {
+    event_cursor: usize,
+}
+
+impl FunctionalWorldSystem {
+    pub const fn new() -> Self {
+        Self { event_cursor: 0 }
+    }
+
+    fn map_error(error: crate::world_activity::WorldActivityError) -> CommandResult {
+        use crate::commands::CommandRejection;
+        let reason = match error {
+            crate::world_activity::WorldActivityError::WorldNotFound => {
+                CommandRejection::FunctionalWorldNotFound
+            }
+            crate::world_activity::WorldActivityError::DestinationNotDiscovered => {
+                CommandRejection::FunctionalWorldDestinationNotDiscovered
+            }
+            crate::world_activity::WorldActivityError::PlayerNotFound => {
+                CommandRejection::PlayerNotFound
+            }
+            crate::world_activity::WorldActivityError::PlayerInactive => {
+                CommandRejection::FunctionalWorldRequiresActivePlayer
+            }
+            crate::world_activity::WorldActivityError::ShipNotOperational => {
+                CommandRejection::FunctionalWorldShipNotOperational
+            }
+            crate::world_activity::WorldActivityError::OutOfRange => {
+                CommandRejection::FunctionalWorldOutOfRange
+            }
+            crate::world_activity::WorldActivityError::ActivityNotFound => {
+                CommandRejection::WorldActivityNotFound
+            }
+            crate::world_activity::WorldActivityError::InvalidQuantity => {
+                CommandRejection::WorldInvalidQuantity
+            }
+            crate::world_activity::WorldActivityError::InvalidItem => {
+                CommandRejection::ItemDefinitionNotFound
+            }
+            crate::world_activity::WorldActivityError::InsufficientFunds => {
+                CommandRejection::WorldInsufficientFunds
+            }
+            crate::world_activity::WorldActivityError::PriceOverflow => {
+                CommandRejection::WorldPriceOverflow
+            }
+            crate::world_activity::WorldActivityError::InventoryCapacity => {
+                CommandRejection::WorldInventoryCapacity
+            }
+            crate::world_activity::WorldActivityError::InventoryInsufficient => {
+                CommandRejection::WorldInventoryInsufficient
+            }
+            crate::world_activity::WorldActivityError::ResourceUnavailable => {
+                CommandRejection::WorldResourceUnavailable
+            }
+            crate::world_activity::WorldActivityError::CombatAlreadyActivated => {
+                CommandRejection::WorldCombatAlreadyActivated
+            }
+            crate::world_activity::WorldActivityError::CombatResolved => {
+                CommandRejection::WorldCombatResolved
+            }
+            crate::world_activity::WorldActivityError::StoryAlreadyInteracted => {
+                CommandRejection::WorldStoryAlreadyInteracted
+            }
+            crate::world_activity::WorldActivityError::StoryKnowledgeUnavailable => {
+                CommandRejection::WorldStoryKnowledgeUnavailable
+            }
+            crate::world_activity::WorldActivityError::EnemyCreationFailed => {
+                CommandRejection::WorldEnemyCreationFailed
+            }
+        };
+        CommandResult::rejected(reason)
+    }
+
+}
+
+impl Default for FunctionalWorldSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GameplaySystem for FunctionalWorldSystem {
+    fn process(
+        &mut self,
+        world: &mut GameplayWorld,
+        command: GameplayCommand,
+    ) -> Option<CommandResult> {
+        match command {
+            GameplayCommand::RegisterFunctionalWorld { world: functional_world } => Some(
+                match world.register_functional_world(functional_world) {
+                    Ok(()) => CommandResult::success(true),
+                    Err(crate::world_activity::FunctionalWorldError::DuplicateDestination) => {
+                        CommandResult::rejected(
+                            crate::commands::CommandRejection::FunctionalWorldAlreadyRegistered,
+                        )
+                    }
+                    Err(crate::world_activity::FunctionalWorldError::DestinationNotDiscovered) => {
+                        CommandResult::rejected(
+                            crate::commands::CommandRejection::FunctionalWorldDestinationNotDiscovered,
+                        )
+                    }
+                    Err(crate::world_activity::FunctionalWorldError::DestinationNotFound) => {
+                        CommandResult::rejected(
+                            crate::commands::CommandRejection::FunctionalWorldNotFound,
+                        )
+                    }
+                    Err(_) => CommandResult::invalid(
+                        crate::commands::CommandInvalidity::InvalidFunctionalWorldConfiguration,
+                    ),
+                },
+            ),
+            GameplayCommand::ExtractWorldResource { player, destination } => {
+                Some(match world.extract_world_resource(player, destination) {
+                    Ok(_) => CommandResult::success(true),
+                    Err(error) => Self::map_error(error),
+                })
+            }
+            GameplayCommand::BuyWorldItem {
+                player,
+                destination,
+                item,
+                amount,
+            } => Some(match world.buy_world_item(player, destination, item, amount) {
+                Ok(_) => CommandResult::success(true),
+                Err(error) => Self::map_error(error),
+            }),
+            GameplayCommand::SellWorldItem {
+                player,
+                destination,
+                item,
+                amount,
+            } => Some(match world.sell_world_item(player, destination, item, amount) {
+                Ok(_) => CommandResult::success(true),
+                Err(error) => Self::map_error(error),
+            }),
+            GameplayCommand::InteractStoryWorld { player, destination } => {
+                Some(match world.interact_story_world(player, destination) {
+                    Ok(_) => CommandResult::success(true),
+                    Err(error) => Self::map_error(error),
+                })
+            }
+            GameplayCommand::ActivateWorldCombat { player, destination } => {
+                Some(match world.activate_world_combat(player, destination) {
+                    Ok(_) => CommandResult::success(true),
+                    Err(error) => Self::map_error(error),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn observes_events(&self) -> bool {
+        true
+    }
+
+    fn observe_events(&mut self, world: &mut GameplayWorld) {
+        let length = world.events().len();
+        if self.event_cursor > length {
+            self.event_cursor = 0;
+        }
+        let events: Vec<_> = world.events().iter().skip(self.event_cursor).cloned().collect();
+        self.event_cursor = length;
+        for event in events {
+            if let crate::events::GameplayEvent::EnemyDefeated { enemy, .. } = event {
+                let destinations: Vec<_> = world
+                    .functional_worlds()
+                    .filter(|functional_world| {
+                        functional_world.activities.iter().any(|activity| {
+                            matches!(activity, crate::world_activity::WorldActivity::Combat(zone) if zone.active_enemy == Some(enemy))
+                        })
+                    })
+                    .map(|functional_world| functional_world.destination)
+                    .collect();
+                for destination in destinations {
+                    if let Some(functional_world) = world.functional_world_mut(destination) {
+                        for activity in &mut functional_world.activities {
+                            if let crate::world_activity::WorldActivity::Combat(zone) = activity {
+                                if zone.active_enemy == Some(enemy) {
+                                    zone.active_enemy = None;
+                                    zone.resolved = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub struct SpatialEncounterSystem {
     event_cursor: usize,
 }

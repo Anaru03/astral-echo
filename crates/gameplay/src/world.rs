@@ -29,6 +29,9 @@ use crate::{
     reward::{EnemyReward, RewardDistributionPolicy, RewardError},
     station::{Station, StationType},
     types::{GameplayState, SimulationPhase},
+    world_activity::{
+        FunctionalWorld, FunctionalWorldError, WorldActivity, WorldActivityError,
+    },
 };
 
 pub const MAX_LOCAL_PLAYERS: usize = 3;
@@ -71,6 +74,8 @@ pub struct GameplayWorld {
     environmental_hazards: BTreeMap<HazardId, EnvironmentalHazard>,
     spatial_encounters: BTreeMap<EncounterId, SpatialEncounter>,
     derelicts: BTreeMap<DerelictId, Derelict>,
+    functional_worlds: BTreeMap<DestinationId, FunctionalWorld>,
+    currencies: BTreeMap<EntityId, u64>,
     enemy_rewards: BTreeMap<crate::combat::EnemyArchetype, EnemyReward>,
     processed_enemy_rewards: BTreeSet<EntityId>,
     knowledge: BTreeMap<KnowledgeTarget, KnowledgeState>,
@@ -101,6 +106,12 @@ impl GameplayWorld {
     }
     pub fn player(&self, entity: EntityId) -> Option<&Player> {
         self.players.get(&entity)
+    }
+    pub fn guidance_for_player(
+        &self,
+        player: EntityId,
+    ) -> Result<crate::guidance::GuidanceState, crate::guidance::GuidanceError> {
+        crate::guidance::GuidanceSystem::query(self, player)
     }
     pub fn players(&self) -> impl Iterator<Item = &Player> {
         self.players.values()
@@ -526,6 +537,79 @@ impl GameplayWorld {
     pub fn derelicts(&self) -> impl Iterator<Item = &Derelict> {
         self.derelicts.values()
     }
+    pub fn functional_world(&self, destination: DestinationId) -> Option<&FunctionalWorld> {
+        self.functional_worlds.get(&destination)
+    }
+    pub fn functional_worlds(&self) -> impl Iterator<Item = &FunctionalWorld> {
+        self.functional_worlds.values()
+    }
+    pub fn player_currency(&self, player: EntityId) -> Option<u64> {
+        self.currencies.get(&player).copied()
+    }
+    pub fn world_trade_offer(
+        &self,
+        destination: DestinationId,
+        item: crate::types::ItemId,
+    ) -> Option<crate::world_activity::TradeOffer> {
+        self.functional_world(destination)?.activities.iter().find_map(|activity| {
+            if let WorldActivity::Trade(market) = activity {
+                market.offers.iter().find(|offer| offer.item == item).cloned()
+            } else {
+                None
+            }
+        })
+    }
+    pub fn register_functional_world(
+        &mut self,
+        functional_world: FunctionalWorld,
+    ) -> Result<(), FunctionalWorldError> {
+        functional_world.validate()?;
+        if self.functional_worlds.contains_key(&functional_world.destination) {
+            return Err(FunctionalWorldError::DuplicateDestination);
+        }
+        let Some(destination) = self.destination(functional_world.destination) else {
+            return Err(FunctionalWorldError::DestinationNotFound);
+        };
+        if destination.discovery != crate::navigation::DiscoveryState::Discovered {
+            return Err(FunctionalWorldError::DestinationNotDiscovered);
+        }
+        for activity in &functional_world.activities {
+            match activity {
+                WorldActivity::Trade(market) => {
+                    for offer in &market.offers {
+                        let Some(definition) = self.item_definition(offer.item) else {
+                            return Err(FunctionalWorldError::ItemDefinitionNotFound);
+                        };
+                        if offer.item.0 == 0 || definition.max_stack < 1 {
+                            return Err(FunctionalWorldError::ItemDefinitionNotFound);
+                        }
+                    }
+                }
+                WorldActivity::Resource(site) => {
+                    if self.item_definition(site.item).is_none() {
+                        return Err(FunctionalWorldError::ItemDefinitionNotFound);
+                    }
+                }
+                WorldActivity::Combat(zone) => {
+                    if zone.configuration.validate().is_err() {
+                        return Err(FunctionalWorldError::InvalidCombat);
+                    }
+                }
+                WorldActivity::Story(story) => {
+                    if !self.knowledge_target_exists(story.target) {
+                        return Err(FunctionalWorldError::KnowledgeTargetNotFound);
+                    }
+                }
+            }
+        }
+        let destination_id = functional_world.destination;
+        self.functional_worlds
+            .insert(destination_id, functional_world);
+        self.publish(crate::events::GameplayEvent::FunctionalWorldRegistered {
+            destination: destination_id,
+        });
+        Ok(())
+    }
     pub fn register_derelict(&mut self, derelict: Derelict) -> Result<(), DerelictError> {
         derelict.validate()?;
         if self.derelicts.contains_key(&derelict.id) {
@@ -946,6 +1030,7 @@ impl GameplayWorld {
         let player = Player::new(entity);
         self.players.insert(entity, player);
         self.combatants.insert(entity, Combatant::player(entity));
+        self.currencies.insert(entity, 0);
         self.events
             .push(crate::events::GameplayEvent::PlayerCreated {
                 player: player.id(),
@@ -1565,6 +1650,317 @@ impl GameplayWorld {
     }
     pub(crate) fn derelict_mut(&mut self, id: DerelictId) -> Option<&mut Derelict> {
         self.derelicts.get_mut(&id)
+    }
+    pub(crate) fn functional_world_mut(
+        &mut self,
+        destination: DestinationId,
+    ) -> Option<&mut FunctionalWorld> {
+        self.functional_worlds.get_mut(&destination)
+    }
+    fn validate_world_access(
+        &self,
+        player: EntityId,
+        destination: DestinationId,
+    ) -> Result<FunctionalWorld, WorldActivityError> {
+        let Some(player_state) = self.player(player) else {
+            return Err(WorldActivityError::PlayerNotFound);
+        };
+        let Some(combatant) = self.combatant(player) else {
+            return Err(WorldActivityError::PlayerInactive);
+        };
+        if !self.entities.contains(player) || !player_state.is_active || !combatant.is_player {
+            return Err(WorldActivityError::PlayerInactive);
+        }
+        let Some(ship) = self.navigation.ship_id() else {
+            return Err(WorldActivityError::ShipNotOperational);
+        };
+        if self.ship_is_operational(ship) != Some(true) {
+            return Err(WorldActivityError::ShipNotOperational);
+        }
+        let Some(world) = self.functional_world(destination).cloned() else {
+            return Err(WorldActivityError::WorldNotFound);
+        };
+        let Some(destination_data) = self.destination(destination) else {
+            return Err(WorldActivityError::WorldNotFound);
+        };
+        if destination_data.discovery != crate::navigation::DiscoveryState::Discovered {
+            return Err(WorldActivityError::DestinationNotDiscovered);
+        }
+        let Some(position) = self.ship_position() else {
+            return Err(WorldActivityError::OutOfRange);
+        };
+        let Some(distance) = crate::encounter::distance_squared(position, destination_data.position)
+        else {
+            return Err(WorldActivityError::OutOfRange);
+        };
+        if distance
+            > f64::from(world.interaction_range) * f64::from(world.interaction_range)
+        {
+            return Err(WorldActivityError::OutOfRange);
+        }
+        Ok(world)
+    }
+    pub(crate) fn buy_world_item(
+        &mut self,
+        player: EntityId,
+        destination: DestinationId,
+        item: crate::types::ItemId,
+        amount: u32,
+    ) -> Result<u64, WorldActivityError> {
+        let world = self.validate_world_access(player, destination)?;
+        if amount == 0 {
+            return Err(WorldActivityError::InvalidQuantity);
+        }
+        let offer = world
+            .activities
+            .iter()
+            .find_map(|activity| match activity {
+                WorldActivity::Trade(market) => market.offers.iter().find(|offer| offer.item == item),
+                _ => None,
+            })
+            .cloned()
+            .ok_or(WorldActivityError::ActivityNotFound)?;
+        if offer.stock < amount {
+            return Err(WorldActivityError::ResourceUnavailable);
+        }
+        if self.item_definition(item).is_none() {
+            return Err(WorldActivityError::InvalidItem);
+        }
+        let total = offer
+            .buy_price
+            .checked_mul(u64::from(amount))
+            .ok_or(WorldActivityError::PriceOverflow)?;
+        let balance = self
+            .player_currency(player)
+            .ok_or(WorldActivityError::PlayerNotFound)?;
+        if balance < total {
+            return Err(WorldActivityError::InsufficientFunds);
+        }
+        let inventory = self
+            .inventory(player)
+            .ok_or(WorldActivityError::InventoryCapacity)?;
+        let mut inventory_after = inventory.clone();
+        inventory_after
+            .try_add(item, amount)
+            .map_err(|error| match error {
+                InventoryError::CapacityExceeded => WorldActivityError::InventoryCapacity,
+                _ => WorldActivityError::InvalidQuantity,
+            })?;
+        let Some(world_mut) = self.functional_worlds.get_mut(&destination) else {
+            return Err(WorldActivityError::WorldNotFound);
+        };
+        let Some(WorldActivity::Trade(market)) = world_mut
+            .activities
+            .iter_mut()
+            .find(|activity| activity.category() == crate::world_activity::WorldCategory::Trade)
+        else {
+            return Err(WorldActivityError::ActivityNotFound);
+        };
+        let Some(offer_mut) = market.offers.iter_mut().find(|offer| offer.item == item) else {
+            return Err(WorldActivityError::ActivityNotFound);
+        };
+        offer_mut.stock -= amount;
+        self.inventories.insert(player, inventory_after);
+        self.currencies.insert(player, balance - total);
+        self.publish(crate::events::GameplayEvent::WorldPurchaseCompleted {
+            player,
+            destination,
+            item,
+            amount,
+            total_price: total,
+        });
+        Ok(total)
+    }
+    pub(crate) fn sell_world_item(
+        &mut self,
+        player: EntityId,
+        destination: DestinationId,
+        item: crate::types::ItemId,
+        amount: u32,
+    ) -> Result<u64, WorldActivityError> {
+        let world = self.validate_world_access(player, destination)?;
+        if amount == 0 {
+            return Err(WorldActivityError::InvalidQuantity);
+        }
+        let offer = world
+            .activities
+            .iter()
+            .find_map(|activity| match activity {
+                WorldActivity::Trade(market) => market.offers.iter().find(|offer| offer.item == item),
+                _ => None,
+            })
+            .cloned()
+            .ok_or(WorldActivityError::ActivityNotFound)?;
+        let total = offer
+            .sell_price
+            .checked_mul(u64::from(amount))
+            .ok_or(WorldActivityError::PriceOverflow)?;
+        let inventory = self
+            .inventory(player)
+            .ok_or(WorldActivityError::InventoryInsufficient)?;
+        let mut inventory_after = inventory.clone();
+        inventory_after
+            .try_remove(item, amount)
+            .map_err(|_| WorldActivityError::InventoryInsufficient)?;
+        let balance = self
+            .player_currency(player)
+            .ok_or(WorldActivityError::PlayerNotFound)?;
+        let balance_after = balance
+            .checked_add(total)
+            .ok_or(WorldActivityError::PriceOverflow)?;
+        self.inventories.insert(player, inventory_after);
+        self.currencies.insert(player, balance_after);
+        self.publish(crate::events::GameplayEvent::WorldSaleCompleted {
+            player,
+            destination,
+            item,
+            amount,
+            total_value: total,
+        });
+        Ok(total)
+    }
+    pub(crate) fn extract_world_resource(
+        &mut self,
+        player: EntityId,
+        destination: DestinationId,
+    ) -> Result<(crate::types::ItemId, u32, u32), WorldActivityError> {
+        let world = self.validate_world_access(player, destination)?;
+        let site = world
+            .activities
+            .iter()
+            .find_map(|activity| match activity {
+                WorldActivity::Resource(site) => Some(*site),
+                _ => None,
+            })
+            .ok_or(WorldActivityError::ActivityNotFound)?;
+        let amount = site.extraction_amount.min(site.available);
+        if amount == 0 {
+            return Err(WorldActivityError::ResourceUnavailable);
+        }
+        let inventory = self
+            .inventory(player)
+            .ok_or(WorldActivityError::InventoryCapacity)?;
+        let mut inventory_after = inventory.clone();
+        inventory_after
+            .try_add(site.item, amount)
+            .map_err(|error| match error {
+                InventoryError::CapacityExceeded => WorldActivityError::InventoryCapacity,
+                _ => WorldActivityError::InvalidQuantity,
+            })?;
+        let Some(world_mut) = self.functional_worlds.get_mut(&destination) else {
+            return Err(WorldActivityError::WorldNotFound);
+        };
+        let Some(WorldActivity::Resource(site_mut)) = world_mut
+            .activities
+            .iter_mut()
+            .find(|activity| activity.category() == crate::world_activity::WorldCategory::Resource)
+        else {
+            return Err(WorldActivityError::ActivityNotFound);
+        };
+        site_mut.available -= amount;
+        self.inventories.insert(player, inventory_after);
+        self.publish(crate::events::GameplayEvent::WorldResourceExtracted {
+            player,
+            destination,
+            item: site.item,
+            amount,
+            remaining: site.available - amount,
+        });
+        Ok((site.item, amount, site.available - amount))
+    }
+    pub(crate) fn activate_world_combat(
+        &mut self,
+        player: EntityId,
+        destination: DestinationId,
+    ) -> Result<EntityId, WorldActivityError> {
+        let world = self.validate_world_access(player, destination)?;
+        let zone = world
+            .activities
+            .iter()
+            .find_map(|activity| match activity {
+                WorldActivity::Combat(zone) => Some(*zone),
+                _ => None,
+            })
+            .ok_or(WorldActivityError::ActivityNotFound)?;
+        if zone.resolved {
+            return Err(WorldActivityError::CombatResolved);
+        }
+        if zone.active_enemy.is_some() {
+            return Err(WorldActivityError::CombatAlreadyActivated);
+        }
+        let enemy = self
+            .register_enemy(zone.configuration)
+            .map_err(|_| WorldActivityError::EnemyCreationFailed)?;
+        let Some(world_mut) = self.functional_worlds.get_mut(&destination) else {
+            return Err(WorldActivityError::WorldNotFound);
+        };
+        let Some(WorldActivity::Combat(zone_mut)) = world_mut
+            .activities
+            .iter_mut()
+            .find(|activity| activity.category() == crate::world_activity::WorldCategory::Combat)
+        else {
+            return Err(WorldActivityError::ActivityNotFound);
+        };
+        zone_mut.active_enemy = Some(enemy);
+        self.publish(crate::events::GameplayEvent::EnemyCreated {
+            enemy,
+            archetype: zone.configuration.archetype,
+            position: zone.configuration.position,
+        });
+        self.publish(crate::events::GameplayEvent::WorldCombatActivated {
+            player,
+            destination,
+            enemy,
+        });
+        Ok(enemy)
+    }
+    pub(crate) fn interact_story_world(
+        &mut self,
+        player: EntityId,
+        destination: DestinationId,
+    ) -> Result<crate::knowledge::KnowledgeTarget, WorldActivityError> {
+        let world = self.validate_world_access(player, destination)?;
+        let story = world
+            .activities
+            .iter()
+            .find_map(|activity| match activity {
+                WorldActivity::Story(story) => Some(*story),
+                _ => None,
+            })
+            .ok_or(WorldActivityError::ActivityNotFound)?;
+        if story.interacted {
+            return Err(WorldActivityError::StoryAlreadyInteracted);
+        }
+        if !self.knowledge_target_exists(story.target) {
+            return Err(WorldActivityError::StoryKnowledgeUnavailable);
+        }
+        let current = self.knowledge(story.target);
+        if current == crate::knowledge::KnowledgeState::Unknown {
+            let _ = self.register_knowledge(story.target);
+        }
+        if self
+            .set_knowledge(story.target, crate::knowledge::KnowledgeState::Identified)
+            .is_err()
+        {
+            return Err(WorldActivityError::StoryKnowledgeUnavailable);
+        }
+        let Some(world_mut) = self.functional_worlds.get_mut(&destination) else {
+            return Err(WorldActivityError::WorldNotFound);
+        };
+        let Some(WorldActivity::Story(story_mut)) = world_mut
+            .activities
+            .iter_mut()
+            .find(|activity| activity.category() == crate::world_activity::WorldCategory::Story)
+        else {
+            return Err(WorldActivityError::ActivityNotFound);
+        };
+        story_mut.interacted = true;
+        self.publish(crate::events::GameplayEvent::WorldStoryInteracted {
+            player,
+            destination,
+            target: story.target,
+        });
+        Ok(story.target)
     }
     pub(crate) fn create_owned_collectible(
         &mut self,

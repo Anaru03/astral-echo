@@ -17,6 +17,208 @@ use gameplay::{
     WeaponAmmunition, WeaponConfiguration,
 };
 use gameplay::{Derelict, DerelictId, DerelictReward, DerelictState};
+use gameplay::{
+    CombatZone, FunctionalWorld, ResourceSite, StorySite, TradeMarket, TradeOffer, WorldActivity,
+};
+
+fn run_guidance_progression_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player_a = session.ids.first_player;
+    let player_b = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador de guía B: {error:?}"))?;
+    let player_c = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador de guía C: {error:?}"))?;
+    let ship = session.ids.first_ship;
+    for player in [player_b, player_c] {
+        session
+            .world_mut()
+            .initialize_inventory(player, 20)
+            .map_err(|error| format!("inicializar inventario de guía: {error:?}"))?;
+    }
+
+    let initial = session
+        .world()
+        .guidance_for_player(player_a)
+        .map_err(|error| format!("consultar guía inicial: {error:?}"))?;
+    if initial.player != player_a
+        || initial.objectives.is_empty()
+        || initial.objectives.iter().all(|objective| {
+            objective.status != gameplay::GuidanceStatus::Locked
+        })
+        || !initial.objectives.iter().any(|objective| {
+            objective.missing_requirements.iter().any(|requirement| {
+                matches!(requirement, gameplay::GuidanceRequirement::KnowledgeAtLeast { .. })
+            })
+        })
+        || !initial.objectives.iter().any(|objective| {
+            objective.missing_requirements.iter().any(|requirement| {
+                matches!(requirement, gameplay::GuidanceRequirement::EnemyDefeated(_))
+            })
+        })
+        || !initial.objectives.iter().any(|objective| {
+            objective.missing_requirements.iter().any(|requirement| {
+                matches!(requirement, gameplay::GuidanceRequirement::ResourceObtained { .. })
+            })
+        })
+    {
+        return Err("la guía inicial no reflejó requisitos reales de conocimiento, combate y recursos".to_owned());
+    }
+
+    run_command(
+        &mut session,
+        "desbloquear misión para guía",
+        GameplayCommand::UnlockMission {
+            mission: el_despertar::EL_DESPERTAR,
+        },
+    )?;
+    let available = session
+        .world()
+        .guidance_for_player(player_b)
+        .map_err(|error| format!("consultar guía disponible: {error:?}"))?;
+    if available.player != player_b
+        || !available.objectives.iter().any(|objective| {
+            objective.status == gameplay::GuidanceStatus::Available
+                && objective.recommended_action
+                    == Some(gameplay::GuidanceAction::StartMission(
+                        el_despertar::EL_DESPERTAR,
+                    ))
+        })
+    {
+        return Err("la guía no recomendó iniciar la misión disponible".to_owned());
+    }
+
+    run_command(
+        &mut session,
+        "iniciar misión para guía",
+        GameplayCommand::StartMission {
+            mission: el_despertar::EL_DESPERTAR,
+        },
+    )?;
+    let active = session
+        .world()
+        .guidance_for_player(player_c)
+        .map_err(|error| format!("consultar guía activa: {error:?}"))?;
+    if active.objectives.iter().all(|objective| {
+        objective.status != gameplay::GuidanceStatus::Active
+            && objective.status != gameplay::GuidanceStatus::Available
+    }) {
+        return Err("la guía activa no expuso un objetivo ejecutable".to_owned());
+    }
+    let before = (
+        session.world().time(),
+        session.world().events().len(),
+        session.world().player_health(player_a),
+        session.world().inventory(player_a).map(|inventory| inventory.used_capacity()),
+    );
+    let repeated = session
+        .world()
+        .guidance_for_player(player_a)
+        .map_err(|error| format!("consultar guía repetida: {error:?}"))?;
+    let after = (
+        session.world().time(),
+        session.world().events().len(),
+        session.world().player_health(player_a),
+        session.world().inventory(player_a).map(|inventory| inventory.used_capacity()),
+    );
+    let active_for_a = session
+        .world()
+        .guidance_for_player(player_a)
+        .map_err(|error| format!("consultar guía activa para A: {error:?}"))?;
+    if before != after || repeated != active_for_a {
+        return Err("consultar la guía modificó el mundo o no fue determinista".to_owned());
+    }
+
+    let guidance_destination = ecos_anomalia::SIGNAL_DESTINATION;
+    session
+        .register_destination(Destination {
+            id: guidance_destination,
+            destination_type: DestinationType::SpacePoint,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Unknown,
+        })
+        .map_err(|error| format!("registrar destino de guía: {error:?}"))?;
+    run_command(
+        &mut session,
+        "registrar conocimiento de guía",
+        GameplayCommand::RegisterKnowledge {
+            target: gameplay::KnowledgeTarget::Destination(guidance_destination),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "escanear señal de guía",
+        GameplayCommand::ScanSignals {
+            player: player_a,
+            ship,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "identificar señal de guía",
+        GameplayCommand::IdentifyKnowledge {
+            target: gameplay::KnowledgeTarget::Destination(guidance_destination),
+        },
+    )?;
+    let guided_collectible = session
+        .world_mut()
+        .create_collectible(ItemId(3), 1, Vec3::ZERO, 2.0)
+        .map_err(|error| format!("crear objeto para guía: {error:?}"))?;
+    run_command(
+        &mut session,
+        "recoger objeto de guía",
+        GameplayCommand::CollectItem {
+            player: player_b,
+            collectible: guided_collectible,
+            amount: 1,
+        },
+    )?;
+    let progressed = session
+        .world()
+        .guidance_for_player(player_c)
+        .map_err(|error| format!("consultar guía progresada: {error:?}"))?;
+    if progressed.objectives.iter().any(|objective| {
+        objective.missing_requirements.iter().any(|requirement| {
+            matches!(
+                requirement,
+                gameplay::GuidanceRequirement::KnowledgeAtLeast {
+                    target: gameplay::KnowledgeTarget::Destination(destination),
+                    state: gameplay::KnowledgeState::Identified,
+                } if *destination == guidance_destination
+            )
+        })
+    }) || progressed.objectives.iter().any(|objective| {
+        objective.missing_requirements.iter().any(|requirement| {
+            matches!(
+                requirement,
+                gameplay::GuidanceRequirement::ResourceObtained {
+                    player: owner,
+                    item: ItemId(3),
+                    amount: 1,
+                } if *owner == player_c
+            )
+        })
+    }) {
+        return Err("la guía no reflejó el conocimiento y recurso obtenidos".to_owned());
+    }
+    if [player_a, player_b, player_c]
+        .iter()
+        .any(|player| session.world().guidance_for_player(*player).is_err())
+    {
+        return Err("la guía no admite los tres jugadores locales activos".to_owned());
+    }
+    println!(
+        "GUIA DE PROGRESION COMPLETADA: jugadores=3, objetivos={}, actual={:?}",
+        active.objectives.len(),
+        active.current_objective
+    );
+    Ok(())
+}
 
 fn run_atomicity_regressions() -> Result<(), String> {
     let electrical_configuration = || {
@@ -484,6 +686,410 @@ fn run_derelict_scenario() -> Result<(), String> {
     println!(
         "DERELICTOS COMPLETADOS: compartido={:?}, personal=3 propietarios, jugadores={:?}",
         derelict_id, [player_a, player_b, player_c]
+    );
+    Ok(())
+}
+
+fn run_functional_world_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player_a = session.ids.first_player;
+    let player_b = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador B para mundos: {error:?}"))?;
+    let player_c = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador C para mundos: {error:?}"))?;
+    for player in [player_b, player_c] {
+        session
+            .world_mut()
+            .initialize_inventory(player, 20)
+            .map_err(|error| format!("inicializar inventario para mundos: {error:?}"))?;
+    }
+    let destinations = [
+        (2001, "recursos"),
+        (2002, "comercio"),
+        (2003, "combate"),
+        (2004, "historia"),
+    ];
+    for (id, label) in destinations {
+        run_command(
+            &mut session,
+            label,
+            GameplayCommand::RegisterDestination {
+                destination: Destination {
+                    id: DestinationId::new(id),
+                    destination_type: DestinationType::Planet,
+                    position: Vec3::ZERO,
+                    travel_duration: Duration(1),
+                    fuel_cost: 1,
+                    discovery: DiscoveryState::Discovered,
+                },
+            },
+        )?;
+    }
+    let resource_destination = DestinationId::new(2001);
+    let trade_destination = DestinationId::new(2002);
+    let combat_destination = DestinationId::new(2003);
+    let story_destination = DestinationId::new(2004);
+    run_command(
+        &mut session,
+        "registrar mundo de recursos",
+        GameplayCommand::RegisterFunctionalWorld {
+            world: FunctionalWorld::new(
+                resource_destination,
+                2.0,
+                vec![WorldActivity::Resource(ResourceSite {
+                    item: ItemId(1),
+                    available: 3,
+                    extraction_amount: 2,
+                })],
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "registrar mundo comercial",
+        GameplayCommand::RegisterFunctionalWorld {
+            world: FunctionalWorld::new(
+                trade_destination,
+                2.0,
+                vec![WorldActivity::Trade(TradeMarket {
+                    offers: vec![
+                        TradeOffer {
+                            item: ItemId(1),
+                            buy_price: 1,
+                            sell_price: 1,
+                            stock: 4,
+                        },
+                        TradeOffer {
+                            item: ItemId(3),
+                            buy_price: 2,
+                            sell_price: 1,
+                            stock: 4,
+                        },
+                    ],
+                })],
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "registrar mundo de combate",
+        GameplayCommand::RegisterFunctionalWorld {
+            world: FunctionalWorld::new(
+                combat_destination,
+                2.0,
+                vec![WorldActivity::Combat(CombatZone {
+                    configuration: EnemyConfiguration {
+                        archetype: EnemyArchetype::Shooter,
+                        position: Vec3::ZERO,
+                        maximum_health: 20,
+                        weapon: WeaponConfiguration::new(
+                            AttackType::Energy,
+                            1,
+                            1,
+                            Duration(1_000),
+                        ),
+                        shield: None,
+                        mobility: 1,
+                    },
+                    active_enemy: None,
+                    resolved: false,
+                })],
+            ),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "registrar mundo de historia",
+        GameplayCommand::RegisterFunctionalWorld {
+            world: FunctionalWorld::new(
+                story_destination,
+                2.0,
+                vec![WorldActivity::Story(StorySite {
+                    target: gameplay::KnowledgeTarget::Destination(story_destination),
+                    interacted: false,
+                })],
+            ),
+        },
+    )?;
+    let offer = session
+        .world()
+        .world_trade_offer(trade_destination, ItemId(3))
+        .ok_or_else(|| "no se pudo consultar el precio del mercado".to_owned())?;
+    if offer.buy_price != 2 || offer.sell_price != 1 || offer.stock != 4 {
+        return Err(format!("precio o disponibilidad inesperados: {offer:?}"));
+    }
+    let resource_before = session
+        .world()
+        .inventory(player_a)
+        .ok_or_else(|| "falta inventario de recursos".to_owned())?
+        .quantity(ItemId(1));
+    run_command(
+        &mut session,
+        "extraer recursos",
+        GameplayCommand::ExtractWorldResource {
+            player: player_a,
+            destination: resource_destination,
+        },
+    )?;
+    if session.world().inventory(player_a).is_none_or(|inventory| {
+        inventory.quantity(ItemId(1)) != resource_before + 2
+    }) {
+        return Err("la extracción no actualizo el inventario".to_owned());
+    }
+    run_command(
+        &mut session,
+        "extraer reserva restante",
+        GameplayCommand::ExtractWorldResource {
+            player: player_a,
+            destination: resource_destination,
+        },
+    )?;
+    let exhausted = session.update([GameplayCommand::ExtractWorldResource {
+        player: player_a,
+        destination: resource_destination,
+    }]);
+    if exhausted.first().is_none_or(|result| {
+        result.status != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::WorldResourceUnavailable,
+        })
+    }) {
+        return Err("la extracción agotada no fue rechazada".to_owned());
+    }
+    let funds_before = session.world().player_currency(player_a).unwrap_or(0);
+    run_command(
+        &mut session,
+        "preparar fondos mediante venta",
+        GameplayCommand::SellWorldItem {
+            player: player_a,
+            destination: trade_destination,
+            item: ItemId(1),
+            amount: 2,
+        },
+    )?;
+    let funds_after_sale = session.world().player_currency(player_a).unwrap_or(0);
+    if funds_after_sale != funds_before + 2 {
+        return Err("la venta no acredito el saldo esperado".to_owned());
+    }
+    run_command(
+        &mut session,
+        "comprar objeto existente",
+        GameplayCommand::BuyWorldItem {
+            player: player_a,
+            destination: trade_destination,
+            item: ItemId(3),
+            amount: 1,
+        },
+    )?;
+    if session.world().player_currency(player_a) != Some(0)
+        || session
+            .world()
+            .inventory(player_a)
+            .is_none_or(|inventory| inventory.quantity(ItemId(3)) != 1)
+    {
+        return Err("la compra no fue atomica o no actualizo el saldo".to_owned());
+    }
+    let no_funds_balance = session.world().player_currency(player_a);
+    let no_funds_inventory = session.world().inventory(player_a).cloned();
+    let no_funds = session.update([GameplayCommand::BuyWorldItem {
+        player: player_a,
+        destination: trade_destination,
+        item: ItemId(3),
+        amount: 1,
+    }]);
+    if no_funds.first().is_none_or(|result| {
+        result.status != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::WorldInsufficientFunds,
+        })
+    }) {
+        return Err("la compra sin fondos no fue rechazada".to_owned());
+    }
+    if session.world().player_currency(player_a) != no_funds_balance
+        || session.world().inventory(player_a).cloned() != no_funds_inventory
+    {
+        return Err("la compra sin fondos dejo cambios parciales".to_owned());
+    }
+    run_command(
+        &mut session,
+        "vender objeto comprado",
+        GameplayCommand::SellWorldItem {
+            player: player_a,
+            destination: trade_destination,
+            item: ItemId(3),
+            amount: 1,
+        },
+    )?;
+    let no_inventory_balance = session.world().player_currency(player_a);
+    let no_inventory_snapshot = session.world().inventory(player_a).cloned();
+    let no_inventory = session.update([GameplayCommand::SellWorldItem {
+        player: player_a,
+        destination: trade_destination,
+        item: ItemId(3),
+        amount: 1,
+    }]);
+    if no_inventory.first().is_none_or(|result| {
+        result.status != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::WorldInventoryInsufficient,
+        })
+    }) {
+        return Err("la venta sin inventario no fue rechazada".to_owned());
+    }
+    if session.world().player_currency(player_a) != no_inventory_balance
+        || session.world().inventory(player_a).cloned() != no_inventory_snapshot
+    {
+        return Err("la venta sin inventario dejo cambios parciales".to_owned());
+    }
+    let balance_b_before = session.world().player_currency(player_b).unwrap_or(0);
+    run_command(
+        &mut session,
+        "dar material al jugador B",
+        GameplayCommand::AddInventoryItem {
+            player: player_b,
+            item: ItemId(1),
+            amount: 1,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "vender desde jugador B",
+        GameplayCommand::SellWorldItem {
+            player: player_b,
+            destination: trade_destination,
+            item: ItemId(1),
+            amount: 1,
+        },
+    )?;
+    if session.world().player_currency(player_a) != Some(1)
+        || session.world().player_currency(player_b) != Some(balance_b_before + 1)
+        || session.world().player_currency(player_c) != Some(0)
+    {
+        return Err("los saldos cooperativos no son independientes".to_owned());
+    }
+    run_command(
+        &mut session,
+        "activar combate del mundo",
+        GameplayCommand::ActivateWorldCombat {
+            player: player_b,
+            destination: combat_destination,
+        },
+    )?;
+    let enemy = session
+        .world()
+        .functional_world(combat_destination)
+        .and_then(|functional_world| {
+            functional_world.activities.iter().find_map(|activity| match activity {
+                WorldActivity::Combat(zone) => zone.active_enemy,
+                _ => None,
+            })
+        })
+        .ok_or_else(|| "el mundo de combate no creo enemigo".to_owned())?;
+    let repeated_combat = session.update([GameplayCommand::ActivateWorldCombat {
+        player: player_c,
+        destination: combat_destination,
+    }]);
+    if repeated_combat.first().is_none_or(|result| {
+        result.status != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::WorldCombatAlreadyActivated,
+        })
+    }) {
+        return Err("el mundo hostil genero enemigos duplicados".to_owned());
+    }
+    let health_before_ai: Vec<_> = [player_a, player_b, player_c]
+        .iter()
+        .filter_map(|player| {
+            session
+                .world()
+                .player_health(*player)
+                .map(|health| (*player, health.0))
+        })
+        .collect();
+    run_command(
+        &mut session,
+        "avanzar IA del mundo hostil",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        },
+    )?;
+    if !health_before_ai.iter().any(|(player, health)| {
+        session
+            .world()
+            .player_health(*player)
+            .is_some_and(|current| current.0 < *health)
+    }) {
+        return Err("la IA del mundo hostil no produjo una accion observable".to_owned());
+    }
+    run_command(
+        &mut session,
+        "equipar arma del mundo hostil",
+        GameplayCommand::EquipPlayerWeapon {
+            player: player_c,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1_000)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "derrotar enemigo del mundo hostil",
+        GameplayCommand::AttackEnemy {
+            player: player_c,
+            enemy,
+        },
+    )?;
+    if session
+        .world()
+        .combatant(enemy)
+        .is_none_or(|combatant| combatant.active || combatant.current_health != 0)
+    {
+        return Err("el enemigo del mundo hostil no fue derrotado".to_owned());
+    }
+    if session
+        .world()
+        .collectibles()
+        .all(|collectible| collectible.entity != enemy && !collectible.active)
+    {
+        return Err("el combate del mundo no genero una recompensa observable".to_owned());
+    }
+    let story_before = session.world().knowledge(gameplay::KnowledgeTarget::Destination(story_destination));
+    run_command(
+        &mut session,
+        "interactuar mundo de historia",
+        GameplayCommand::InteractStoryWorld {
+            player: player_a,
+            destination: story_destination,
+        },
+    )?;
+    if session.world().knowledge(gameplay::KnowledgeTarget::Destination(story_destination)) <= story_before {
+        return Err("el mundo de historia no registro conocimiento".to_owned());
+    }
+    let repeated_story = session.update([GameplayCommand::InteractStoryWorld {
+        player: player_b,
+        destination: story_destination,
+    }]);
+    if repeated_story.first().is_none_or(|result| {
+        result.status != (CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::WorldStoryAlreadyInteracted,
+        })
+    }) {
+        return Err("la historia pudo interactuarse dos veces".to_owned());
+    }
+    if session.world().inventory(player_a).is_none_or(|inventory| {
+        inventory.quantity(ItemId(3)) != 0
+    }) || session.world().inventory(player_b).is_none_or(|inventory| {
+        inventory.quantity(ItemId(3)) != 0
+    }) || session.world().inventory(player_c).is_none_or(|inventory| {
+        inventory.quantity(ItemId(3)) != 0
+    }) {
+        return Err("los inventarios no conservaron el aislamiento esperado".to_owned());
+    }
+    println!(
+        "MUNDOS FUNCIONALES COMPLETADOS: recursos=3 unidades, comercio=compra/venta atomica, combate=enemigo={}, historia={:?}, saldos=[{},{},{}]",
+        enemy,
+        story_destination,
+        session.world().player_currency(player_a).unwrap_or(0),
+        session.world().player_currency(player_b).unwrap_or(0),
+        session.world().player_currency(player_c).unwrap_or(0)
     );
     Ok(())
 }
@@ -4088,5 +4694,7 @@ fn run_scenario() -> Result<(), String> {
     run_spatial_encounter_scenario()?;
     run_autopilot_scenario()?;
     run_derelict_scenario()?;
+    run_functional_world_scenario()?;
+    run_guidance_progression_scenario()?;
     Ok(())
 }

@@ -482,6 +482,40 @@ pub enum GameplayEvent {
         derelict: crate::derelict::DerelictId,
         player: EntityId,
     },
+    FunctionalWorldRegistered {
+        destination: crate::navigation::DestinationId,
+    },
+    WorldResourceExtracted {
+        player: EntityId,
+        destination: crate::navigation::DestinationId,
+        item: ItemId,
+        amount: u32,
+        remaining: u32,
+    },
+    WorldPurchaseCompleted {
+        player: EntityId,
+        destination: crate::navigation::DestinationId,
+        item: ItemId,
+        amount: u32,
+        total_price: u64,
+    },
+    WorldSaleCompleted {
+        player: EntityId,
+        destination: crate::navigation::DestinationId,
+        item: ItemId,
+        amount: u32,
+        total_value: u64,
+    },
+    WorldCombatActivated {
+        player: EntityId,
+        destination: crate::navigation::DestinationId,
+        enemy: EntityId,
+    },
+    WorldStoryInteracted {
+        player: EntityId,
+        destination: crate::navigation::DestinationId,
+        target: crate::knowledge::KnowledgeTarget,
+    },
     ShipDamagedByHazard {
         hazard: crate::hazard::HazardId,
         hazard_type: crate::hazard::EnvironmentalHazardType,
