@@ -11298,6 +11298,14 @@ fn run_erick_cooperative_recovery_assignment_scenario() -> Result<(), String> {
 enum RuntimeCommand {
     Help,
     Status,
+    Ship,
+    Players,
+    Inventory(Option<u64>),
+    Resources,
+    Economy,
+    Upgrades,
+    Missions,
+    Mission(u32),
     Navigation,
     Combat,
     Pilot,
@@ -11310,7 +11318,61 @@ enum RuntimeCommand {
     ActivateEncounter,
     ContinueAutopilot,
     CancelAutopilot,
-    Attack(u64),
+    Attack {
+        enemy: u64,
+        player: Option<u64>,
+    },
+    Damage(u32),
+    Interact(u64),
+    Repair(u64),
+    EnemyAttack {
+        enemy: u64,
+        player: u64,
+    },
+    Revive {
+        helper: u64,
+        target: u64,
+        item: u32,
+    },
+    Heal {
+        player: u64,
+        item: u32,
+        amount: u32,
+    },
+    Extract(u32),
+    Transfer {
+        from: u64,
+        to: u64,
+        item: u32,
+        amount: u32,
+    },
+    Buy {
+        destination: u32,
+        item: u32,
+        amount: u32,
+    },
+    Sell {
+        destination: u32,
+        item: u32,
+        amount: u32,
+    },
+    InstallUpgrade {
+        destination: u32,
+        code: u8,
+    },
+    UnlockMission(u32),
+    StartMission(u32),
+    Scan,
+    Collectibles,
+    Collect {
+        collectible: u64,
+        amount: u32,
+        player: Option<u64>,
+    },
+    Erick(ErickQuery),
+    Checkpoint,
+    CheckpointStatus,
+    RestoreCheckpoint,
     Move {
         direction: Vec3,
         delta: u64,
@@ -11320,9 +11382,23 @@ enum RuntimeCommand {
     Quit,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ErickQuery {
+    Status,
+    Navigation,
+    Tactical,
+    Support,
+    Recovery,
+    All,
+}
+
 struct RuntimeSession {
     gameplay: ProjectEchoSession,
+    checkpoint: Option<String>,
     pilot_station: EntityId,
+    engineering_station: EntityId,
+    erick: EntityId,
+    other_player: EntityId,
     destination: DestinationId,
     encounter: EncounterId,
 }
@@ -11331,6 +11407,14 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
     let mut gameplay = ProjectEchoSession::new();
     let origin = DestinationId::new(13_001);
     let destination = DestinationId::new(13_002);
+    let other_player = gameplay
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear segundo jugador runtime: {error:?}"))?;
+    gameplay
+        .world_mut()
+        .initialize_inventory(other_player, 20)
+        .map_err(|error| format!("inicializar inventario runtime: {error:?}"))?;
     gameplay
         .register_destination(Destination {
             id: origin,
@@ -11351,6 +11435,33 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
             discovery: DiscoveryState::Discovered,
         })
         .map_err(|error| format!("registrar destino runtime: {error:?}"))?;
+    let economy_destination = DestinationId::new(13_004);
+    gameplay
+        .register_destination(Destination {
+            id: economy_destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 20.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(2_000),
+            fuel_cost: 5,
+            discovery: DiscoveryState::Discovered,
+        })
+        .map_err(|error| format!("registrar destino economico runtime: {error:?}"))?;
+    gameplay
+        .register_destination(Destination {
+            id: cooperacion::SIGNAL_DESTINATION,
+            destination_type: DestinationType::SpacePoint,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1_000),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Unknown,
+        })
+        .map_err(|error| format!("registrar señal de misión runtime: {error:?}"))?;
+    gameplay
+        .register_mission(
+            cooperacion::definition()
+                .map_err(|error| format!("definir misión runtime: {error:?}"))?,
+        )
+        .map_err(|error| format!("registrar misión runtime: {error:?}"))?;
     gameplay
         .world_mut()
         .register_navigation_route(NavigationRoute {
@@ -11362,15 +11473,44 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
             state: NavigationRouteState::Available,
         })
         .map_err(|error| format!("registrar ruta runtime: {error:?}"))?;
+    gameplay
+        .world_mut()
+        .register_navigation_route(NavigationRoute {
+            from: origin,
+            to: economy_destination,
+            distance: 20.0,
+            duration: Duration(2_000),
+            fuel_cost: 5,
+            state: NavigationRouteState::Available,
+        })
+        .map_err(|error| format!("registrar ruta economica runtime: {error:?}"))?;
     let pilot_station = gameplay
         .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
         .map_err(|error| format!("crear estación runtime: {error:?}"))?;
+    let engineering_station = gameplay
+        .create_station(Vec3::ZERO, 2.0, StationType::Engineering)
+        .map_err(|error| format!("crear ingeniería runtime: {error:?}"))?;
     let encounter = EncounterId::new(13_003);
     let setup = gameplay.update([
         GameplayCommand::AddInventoryItem {
             player: gameplay.ids.first_player,
             item: ItemId(2),
             amount: 2,
+        },
+        GameplayCommand::AddInventoryItem {
+            player: gameplay.ids.first_player,
+            item: ItemId(5),
+            amount: 1,
+        },
+        GameplayCommand::AddInventoryItem {
+            player: other_player,
+            item: ItemId(2),
+            amount: 2,
+        },
+        GameplayCommand::AddInventoryItem {
+            player: other_player,
+            item: ItemId(4),
+            amount: 1,
         },
         GameplayCommand::EquipPlayerWeapon {
             player: gameplay.ids.first_player,
@@ -11385,6 +11525,28 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
                 },
             ),
         },
+        GameplayCommand::EquipPlayerWeapon {
+            player: other_player,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                20,
+                20,
+                Duration(1_000),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 1,
+                },
+            ),
+        },
+        GameplayCommand::ConfigureSignalScanner {
+            ship: gameplay.ids.first_ship,
+            range: 100.0,
+            cooldown: Duration(1_000),
+        },
+        GameplayCommand::SetSignalScannerEnabled {
+            ship: gameplay.ids.first_ship,
+            enabled: true,
+        },
         GameplayCommand::RegisterSpatialEncounter {
             encounter: SpatialEncounter::new(
                 encounter,
@@ -11392,12 +11554,12 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
                     configuration: EnemyConfiguration {
                         archetype: EnemyArchetype::Shooter,
                         position: Vec3::ZERO,
-                        maximum_health: 40,
+                        maximum_health: 32,
                         weapon: WeaponConfiguration::new(
                             AttackType::Energy,
+                            100,
                             1,
-                            1,
-                            Duration(1_000),
+                            Duration(1_000_000),
                         ),
                         shield: None,
                         mobility: 1,
@@ -11407,17 +11569,47 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
                 2.0,
             ),
         },
+        GameplayCommand::RegisterFunctionalWorld {
+            world: FunctionalWorld::new(
+                origin,
+                2.0,
+                vec![WorldActivity::Resource(ResourceSite {
+                    item: ItemId(1),
+                    available: 6,
+                    extraction_amount: 3,
+                }), WorldActivity::Trade(TradeMarket {
+                    offers: vec![
+                        TradeOffer { item: ItemId(1), buy_price: 2, sell_price: 1, stock: 20 },
+                        TradeOffer { item: ItemId(2), buy_price: 1, sell_price: 1, stock: 2 },
+                    ],
+                })],
+            ),
+        },
+        GameplayCommand::CreateCompanion {
+            followed_player: gameplay.ids.first_player,
+            position: Vec3::ZERO,
+        },
     ]);
-    if setup.len() != 3
+    if setup.len() != 11
         || setup
             .iter()
             .any(|result| !matches!(result.status, CommandStatus::Success { .. }))
     {
         return Err(format!("configurar encuentro runtime: {setup:?}"));
     }
+    let erick = gameplay
+        .world()
+        .companions()
+        .next()
+        .map(|companion| companion.entity)
+        .ok_or_else(|| "crear ERICK runtime no produjo una entidad".to_owned())?;
     Ok(RuntimeSession {
         gameplay,
+        checkpoint: None,
         pilot_station,
+        engineering_station,
+        erick,
+        other_player,
         destination,
         encounter,
     })
@@ -11431,6 +11623,55 @@ fn parse_runtime_command(line: &str) -> Result<RuntimeCommand, String> {
     let parsed = match command.to_ascii_lowercase().as_str() {
         "help" | "ayuda" if parts.next().is_none() => RuntimeCommand::Help,
         "status" | "estado" if parts.next().is_none() => RuntimeCommand::Status,
+        "ship" | "nave" if parts.next().is_none() => RuntimeCommand::Ship,
+        "players" | "jugadores" if parts.next().is_none() => RuntimeCommand::Players,
+        "inventory" | "inventario" => {
+            let player = parts
+                .next()
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .map_err(|_| "inventory requiere un identificador entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("inventory acepta opcionalmente un jugador".to_owned());
+            }
+            RuntimeCommand::Inventory(player)
+        }
+        "resources" | "recursos" if parts.next().is_none() => RuntimeCommand::Resources,
+        "economy" | "economia" if parts.next().is_none() => RuntimeCommand::Economy,
+        "upgrades" | "mejoras" if parts.next().is_none() => RuntimeCommand::Upgrades,
+        "missions" | "misiones" if parts.next().is_none() => RuntimeCommand::Missions,
+        "mission" | "mision" => {
+            let mission = parts
+                .next()
+                .ok_or_else(|| "mission requiere un identificador".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "mission requiere un identificador entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("mission acepta un identificador".to_owned());
+            }
+            RuntimeCommand::Mission(mission)
+        }
+        "erick" => {
+            let query = match parts.next().unwrap_or("status").to_ascii_lowercase().as_str() {
+                "status" | "estado" => ErickQuery::Status,
+                "navigation" | "navegacion" | "nav" => ErickQuery::Navigation,
+                "tactical" | "tactica" | "combate" => ErickQuery::Tactical,
+                "support" | "apoyo" | "preparation" | "preparacion" => ErickQuery::Support,
+                "recovery" | "recuperacion" => ErickQuery::Recovery,
+                "all" | "todo" => ErickQuery::All,
+                value => return Err(format!("erick consulta desconocida: {value}")),
+            };
+            if parts.next().is_some() {
+                return Err("erick acepta una consulta opcional".to_owned());
+            }
+            RuntimeCommand::Erick(query)
+        }
+        "checkpoint" | "punto" => match parts.next() {
+            None => RuntimeCommand::Checkpoint,
+            Some("status") | Some("estado") if parts.next().is_none() => RuntimeCommand::CheckpointStatus,
+            Some(_) => return Err("checkpoint acepta status como subcomando opcional".to_owned()),
+        },
+        "restore" | "restaurar" if parts.next().is_none() => RuntimeCommand::RestoreCheckpoint,
         "navigation" | "nav" if parts.next().is_none() => RuntimeCommand::Navigation,
         "combat" | "combate" if parts.next().is_none() => RuntimeCommand::Combat,
         "pilot" | "pilotear" if parts.next().is_none() => RuntimeCommand::Pilot,
@@ -11445,10 +11686,246 @@ fn parse_runtime_command(line: &str) -> Result<RuntimeCommand, String> {
                 .ok_or_else(|| "attack requiere el identificador del enemigo".to_owned())?
                 .parse::<u64>()
                 .map_err(|_| "attack requiere un identificador entero".to_owned())?;
+            let player = parts
+                .next()
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .map_err(|_| "attack requiere un jugador entero".to_owned())?;
             if parts.next().is_some() {
-                return Err("attack acepta un identificador".to_owned());
+                return Err("attack acepta enemigo y opcionalmente jugador".to_owned());
             }
-            RuntimeCommand::Attack(enemy)
+            RuntimeCommand::Attack { enemy, player }
+        }
+        "damage" | "danar" => {
+            let amount = parts
+                .next()
+                .ok_or_else(|| "damage requiere una cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "damage requiere una cantidad entera".to_owned())?;
+            if parts.next().is_some() {
+                return Err("damage acepta una cantidad".to_owned());
+            }
+            RuntimeCommand::Damage(amount)
+        }
+        "interact" | "interactuar" => {
+            let target = parts
+                .next()
+                .ok_or_else(|| "interact requiere el identificador del objetivo".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "interact requiere un identificador entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("interact acepta un objetivo".to_owned());
+            }
+            RuntimeCommand::Interact(target)
+        }
+        "repair" | "reparar" => {
+            let station = parts
+                .next()
+                .ok_or_else(|| "repair requiere la estación de ingeniería".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "repair requiere un identificador entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("repair acepta una estación".to_owned());
+            }
+            RuntimeCommand::Repair(station)
+        }
+        "enemyattack" | "ataqueenemigo" => {
+            let enemy = parts
+                .next()
+                .ok_or_else(|| "enemyattack requiere enemigo y jugador".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "enemyattack requiere identificadores enteros".to_owned())?;
+            let player = parts
+                .next()
+                .ok_or_else(|| "enemyattack requiere enemigo y jugador".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "enemyattack requiere identificadores enteros".to_owned())?;
+            if parts.next().is_some() {
+                return Err("enemyattack acepta enemigo y jugador".to_owned());
+            }
+            RuntimeCommand::EnemyAttack { enemy, player }
+        }
+        "revive" | "reanimar" => {
+            let helper = parts
+                .next()
+                .ok_or_else(|| "revive requiere ayudante, objetivo e item".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "revive requiere identificadores enteros".to_owned())?;
+            let target = parts
+                .next()
+                .ok_or_else(|| "revive requiere ayudante, objetivo e item".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "revive requiere identificadores enteros".to_owned())?;
+            let item = parts
+                .next()
+                .ok_or_else(|| "revive requiere ayudante, objetivo e item".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "revive requiere un item entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("revive acepta ayudante, objetivo e item".to_owned());
+            }
+            RuntimeCommand::Revive { helper, target, item }
+        }
+        "heal" | "curar" => {
+            let player = parts
+                .next()
+                .ok_or_else(|| "heal requiere jugador, item y cantidad".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "heal requiere identificadores enteros".to_owned())?;
+            let item = parts
+                .next()
+                .ok_or_else(|| "heal requiere jugador, item y cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "heal requiere identificadores enteros".to_owned())?;
+            let amount = parts
+                .next()
+                .ok_or_else(|| "heal requiere jugador, item y cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "heal requiere una cantidad entera".to_owned())?;
+            if parts.next().is_some() {
+                return Err("heal acepta jugador, item y cantidad".to_owned());
+            }
+            RuntimeCommand::Heal { player, item, amount }
+        }
+        "extract" | "extraer" => {
+            let destination = parts
+                .next()
+                .ok_or_else(|| "extract requiere el destino".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "extract requiere un identificador entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("extract acepta un destino".to_owned());
+            }
+            RuntimeCommand::Extract(destination)
+        }
+        "transfer" | "transferir" => {
+            let from = parts
+                .next()
+                .ok_or_else(|| "transfer requiere origen, destino, item y cantidad".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "transfer requiere identificadores enteros".to_owned())?;
+            let to = parts
+                .next()
+                .ok_or_else(|| "transfer requiere origen, destino, item y cantidad".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "transfer requiere identificadores enteros".to_owned())?;
+            let item = parts
+                .next()
+                .ok_or_else(|| "transfer requiere origen, destino, item y cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "transfer requiere identificadores enteros".to_owned())?;
+            let amount = parts
+                .next()
+                .ok_or_else(|| "transfer requiere origen, destino, item y cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "transfer requiere una cantidad entera".to_owned())?;
+            if parts.next().is_some() {
+                return Err("transfer acepta origen, destino, item y cantidad".to_owned());
+            }
+            RuntimeCommand::Transfer { from, to, item, amount }
+        }
+        "buy" | "comprar" => {
+            let destination = parts
+                .next()
+                .ok_or_else(|| "buy requiere destino, item y cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "buy requiere identificadores enteros".to_owned())?;
+            let item = parts
+                .next()
+                .ok_or_else(|| "buy requiere destino, item y cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "buy requiere identificadores enteros".to_owned())?;
+            let amount = parts
+                .next()
+                .ok_or_else(|| "buy requiere destino, item y cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "buy requiere una cantidad entera".to_owned())?;
+            if parts.next().is_some() {
+                return Err("buy acepta destino, item y cantidad".to_owned());
+            }
+            RuntimeCommand::Buy { destination, item, amount }
+        }
+        "sell" | "vender" => {
+            let destination = parts
+                .next()
+                .ok_or_else(|| "sell requiere destino, item y cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "sell requiere identificadores enteros".to_owned())?;
+            let item = parts
+                .next()
+                .ok_or_else(|| "sell requiere destino, item y cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "sell requiere identificadores enteros".to_owned())?;
+            let amount = parts
+                .next()
+                .ok_or_else(|| "sell requiere destino, item y cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "sell requiere una cantidad entera".to_owned())?;
+            if parts.next().is_some() {
+                return Err("sell acepta destino, item y cantidad".to_owned());
+            }
+            RuntimeCommand::Sell { destination, item, amount }
+        }
+        "upgrade" | "mejora" => {
+            let code = parts
+                .next()
+                .ok_or_else(|| "upgrade requiere codigo y destino".to_owned())?
+                .parse::<u8>()
+                .map_err(|_| "upgrade requiere un codigo entero".to_owned())?;
+            let destination = parts
+                .next()
+                .ok_or_else(|| "upgrade requiere codigo y destino".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "upgrade requiere un destino entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("upgrade acepta codigo y destino".to_owned());
+            }
+            RuntimeCommand::InstallUpgrade { destination, code }
+        }
+        "unlock" | "desbloquear" => {
+            let mission = parts
+                .next()
+                .ok_or_else(|| "unlock requiere un identificador de misión".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "unlock requiere un identificador entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("unlock acepta un identificador".to_owned());
+            }
+            RuntimeCommand::UnlockMission(mission)
+        }
+        "startmission" | "iniciarmision" => {
+            let mission = parts
+                .next()
+                .ok_or_else(|| "startmission requiere un identificador de misión".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "startmission requiere un identificador entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("startmission acepta un identificador".to_owned());
+            }
+            RuntimeCommand::StartMission(mission)
+        }
+        "scan" | "escanear" if parts.next().is_none() => RuntimeCommand::Scan,
+        "collectibles" | "recompensas" if parts.next().is_none() => RuntimeCommand::Collectibles,
+        "collect" | "recoger" => {
+            let collectible = parts
+                .next()
+                .ok_or_else(|| "collect requiere coleccionable y cantidad".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "collect requiere un identificador entero".to_owned())?;
+            let amount = parts
+                .next()
+                .ok_or_else(|| "collect requiere coleccionable y cantidad".to_owned())?
+                .parse::<u32>()
+                .map_err(|_| "collect requiere una cantidad entera".to_owned())?;
+            let player = parts
+                .next()
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .map_err(|_| "collect requiere un jugador entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("collect acepta coleccionable, cantidad y jugador opcional".to_owned());
+            }
+            RuntimeCommand::Collect { collectible, amount, player }
         }
         "plan" | "planificar" => {
             let origin = parts
@@ -11516,7 +11993,7 @@ fn parse_runtime_command(line: &str) -> Result<RuntimeCommand, String> {
 fn write_runtime_help(output: &mut dyn Write) -> Result<(), String> {
     writeln!(
         output,
-        "Comandos: help, status, navigation, combat, pilot, plan <origen> <destino>, start, encounter, activate, continue, cancel, attack <enemigo>, move <x> <y> <z> <ms>, advance <duracion>, events, quit"
+        "Comandos: help, status, ship, players, inventory [jugador], resources, economy, upgrades, missions, mission <id>, unlock <id>, startmission <id>, scan, collectibles, collect <coleccionable> <cantidad> [jugador], erick [status|navigation|tactical|support|recovery|all], checkpoint [status], restore, navigation, combat, pilot, plan <origen> <destino>, start, encounter, activate, continue, cancel, attack <enemigo> [jugador], damage <cantidad>, interact <objetivo>, repair <estacion>, enemyattack <enemigo> <jugador>, revive <ayudante> <objetivo> <item>, heal <jugador> <item> <cantidad>, extract <destino>, transfer <origen> <destino> <item> <cantidad>, buy <destino> <item> <cantidad>, sell <destino> <item> <cantidad>, upgrade <codigo> <destino>, move <x> <y> <z> <ms>, advance <duracion>, events, quit"
     )
         .map_err(|error| format!("escribir ayuda: {error}"))
 }
@@ -11548,6 +12025,155 @@ fn execute_runtime_command(
                 session.world().events().len()
             )
             .map_err(|error| format!("escribir estado: {error}"))?;
+        }
+        RuntimeCommand::Ship => {
+            let ship = session.ids.first_ship;
+            writeln!(
+                output,
+                "ship: id={ship:?}, integrity={:?}, state={:?}, operational={:?}, destroyed={:?}, fuel={:?}",
+                session.world().ship_integrity(ship).map(|value| (value.current(), value.maximum())),
+                session.world().ship_structural_state(ship),
+                session.world().ship_is_operational(ship),
+                session.world().ship_is_destroyed(ship),
+                session.world().ship_fuel(ship).map(|value| value.current())
+            )
+            .map_err(|error| format!("escribir estado de nave: {error}"))?;
+        }
+        RuntimeCommand::Players => {
+            let players = session
+                .world()
+                .players()
+                .map(|player| {
+                    (
+                        player.entity_id,
+                        player.is_active,
+                        player.position,
+                        session.world().player_health(player.entity_id),
+                    )
+                })
+                .collect::<Vec<_>>();
+            writeln!(output, "players: {players:?}")
+                .map_err(|error| format!("escribir estado de jugadores: {error}"))?;
+        }
+        RuntimeCommand::Inventory(player) => {
+            let player = player.map(EntityId::new).unwrap_or(session.ids.first_player);
+            let inventory = session
+                .world()
+                .inventory(player)
+                .ok_or_else(|| format!("inventario no encontrado para {player:?}"))?;
+            let entries = inventory.entries().collect::<Vec<_>>();
+            writeln!(
+                output,
+                "inventory: player={player:?}, capacity={}, used={}, remaining={}, entries={entries:?}",
+                inventory.capacity(),
+                inventory.used_capacity(),
+                inventory.remaining_capacity()
+            )
+            .map_err(|error| format!("escribir inventario: {error}"))?;
+        }
+        RuntimeCommand::Resources => {
+            let resources = session
+                .world()
+                .functional_worlds()
+                .flat_map(|world| {
+                    world.activities.iter().filter_map(move |activity| {
+                        if let WorldActivity::Resource(site) = activity {
+                            (site.available > 0).then_some((world.destination, site.item, site.available, site.extraction_amount))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            writeln!(output, "resources: available={resources:?}")
+                .map_err(|error| format!("escribir recursos: {error}"))?;
+        }
+        RuntimeCommand::Economy => {
+            let player = session.ids.first_player;
+            let markets = session
+                .world()
+                .functional_worlds()
+                .flat_map(|world| {
+                    world.activities.iter().filter_map(move |activity| {
+                        if let WorldActivity::Trade(market) = activity {
+                            Some((world.destination, market.offers.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            writeln!(
+                output,
+                "economy: player={player:?}, credits={:?}, markets={markets:?}",
+                session.world().player_currency(player)
+            )
+            .map_err(|error| format!("escribir economia: {error}"))?;
+        }
+        RuntimeCommand::Upgrades => {
+            let ship = session.ids.first_ship;
+            let upgrades = [
+                ShipUpgrade::EngineEfficiencyI,
+                ShipUpgrade::ReinforcedHullI,
+                ShipUpgrade::WeaponCalibrationI,
+            ]
+            .into_iter()
+            .map(|upgrade| {
+                (
+                    upgrade.code(),
+                    upgrade,
+                    session.world().ship_has_upgrade(ship, upgrade),
+                    upgrade.credit_cost(),
+                    upgrade.material(),
+                    upgrade.material_cost(),
+                    upgrade.fuel_discount_percent(),
+                    upgrade.hull_damage_reduction_percent(),
+                    upgrade.weapon_damage_bonus_percent(),
+                )
+            })
+            .collect::<Vec<_>>();
+            writeln!(output, "upgrades: ship={ship:?}, entries={upgrades:?}")
+                .map_err(|error| format!("escribir mejoras: {error}"))?;
+        }
+        RuntimeCommand::Missions => {
+            let missions = session
+                .world()
+                .missions()
+                .map(|mission| (mission.id, mission.name.as_str(), mission.progress()))
+                .collect::<Vec<_>>();
+            writeln!(output, "missions: {missions:?}")
+                .map_err(|error| format!("escribir misiones: {error}"))?;
+        }
+        RuntimeCommand::Mission(id) => {
+            let mission_id = gameplay::types::MissionId(*id);
+            if let Some(mission) = session.world().mission(mission_id) {
+                let objectives = mission
+                    .objectives()
+                    .iter()
+                    .map(|objective| (
+                        objective.id,
+                        objective.name.as_str(),
+                        objective.state(),
+                        objective.progress(),
+                        objective.required_progress(),
+                        objective.required,
+                        objective.dependencies.clone(),
+                        &objective.trigger,
+                    ))
+                    .collect::<Vec<_>>();
+                writeln!(
+                    output,
+                    "mission: id={:?}, name={:?}, state={:?}, progress={:?}, objectives={objectives:?}",
+                    mission.id,
+                    mission.name,
+                    mission.state(),
+                    mission.progress()
+                )
+                .map_err(|error| format!("escribir mision: {error}"))?;
+            } else {
+                writeln!(output, "mission: id={mission_id:?}, state=NotRegistered")
+                    .map_err(|error| format!("escribir mision no registrada: {error}"))?;
+            }
         }
         RuntimeCommand::Navigation => {
             let destinations = session
@@ -11591,6 +12217,90 @@ fn execute_runtime_command(
                 session.world().player_weapon_ready(player)
             )
             .map_err(|error| format!("escribir combate: {error}"))?;
+        }
+        RuntimeCommand::Erick(query) => {
+            let entity = runtime.erick;
+            let result = match query {
+                ErickQuery::Status => format!(
+                    "status={:?}, recommendation={:?}",
+                    session.world().companion_decision(entity),
+                    session.world().companion_action_recommendation(entity)
+                ),
+                ErickQuery::Navigation => format!(
+                    "navigation={:?}, risk={:?}, contingency={:?}, operational={:?}",
+                    session.world().companion_navigation_assessment(entity),
+                    session.world().companion_cooperative_navigation_risk_assessment(entity),
+                    session.world().companion_cooperative_navigation_contingency_assessment(entity),
+                    session.world().companion_operational_assessment(entity)
+                ),
+                ErickQuery::Tactical => format!(
+                    "tactical={:?}, cooperative={:?}, readiness={:?}",
+                    session.world().companion_tactical_recommendation(entity),
+                    session.world().companion_cooperative_tactical_assessment(entity),
+                    session.world().companion_cooperative_encounter_readiness(entity)
+                ),
+                ErickQuery::Support => format!(
+                    "preparation={:?}, support={:?}, coordination={:?}",
+                    session.world().companion_preparation_assessment(entity),
+                    session.world().companion_cooperative_support_assessment(entity),
+                    session.world().companion_coordination_assessment(entity)
+                ),
+                ErickQuery::Recovery => format!(
+                    "recovery={:?}, assignment={:?}, plan={:?}, compatibility={:?}",
+                    session.world().companion_recovery_assessment(entity),
+                    session.world().companion_cooperative_recovery_assignment_assessment(entity),
+                    session.world().companion_cooperative_recovery_plan_assessment(entity),
+                    session.world().companion_cooperative_task_compatibility_assessment(entity)
+                ),
+                ErickQuery::All => format!(
+                    "status={:?}, navigation={:?}, tactical={:?}, support={:?}, recovery={:?}, exploration={:?}, coordination={:?}",
+                    session.world().companion_decision(entity),
+                    session.world().companion_navigation_assessment(entity),
+                    session.world().companion_cooperative_tactical_assessment(entity),
+                    session.world().companion_cooperative_support_assessment(entity),
+                    session.world().companion_recovery_assessment(entity),
+                    session.world().companion_exploration_assessment(entity),
+                    session.world().companion_coordination_assessment(entity)
+                ),
+            };
+            writeln!(output, "erick {:?}: entity={entity:?}, {result}", query)
+                .map_err(|error| format!("escribir evaluacion de ERICK: {error}"))?;
+        }
+        RuntimeCommand::Checkpoint => {
+            let serialized = session.save_state().serialize();
+            let bytes = serialized.len();
+            runtime.checkpoint = Some(serialized);
+            writeln!(output, "checkpoint: created=true, bytes={bytes}")
+                .map_err(|error| format!("escribir checkpoint: {error}"))?;
+        }
+        RuntimeCommand::CheckpointStatus => {
+            let status = runtime
+                .checkpoint
+                .as_ref()
+                .map(|value| format!("present=true, bytes={}", value.len()))
+                .unwrap_or_else(|| "present=false".to_owned());
+            writeln!(output, "checkpoint status: {status}")
+                .map_err(|error| format!("escribir estado de checkpoint: {error}"))?;
+        }
+        RuntimeCommand::RestoreCheckpoint => {
+            let checkpoint = runtime.checkpoint.clone();
+            match checkpoint {
+                Some(serialized) => match gameplay::GameplaySaveState::deserialize(&serialized) {
+                    Ok(decoded) => {
+                        let result = session.restore_state(decoded);
+                        writeln!(output, "restore: {:?}", result)
+                            .map_err(|error| format!("escribir restauracion: {error}"))?;
+                    }
+                    Err(error) => {
+                        writeln!(output, "restore: rejected={error}")
+                            .map_err(|write_error| format!("escribir rechazo de restauracion: {write_error}"))?;
+                    }
+                },
+                None => {
+                    writeln!(output, "restore: rejected=no checkpoint")
+                        .map_err(|error| format!("escribir ausencia de checkpoint: {error}"))?;
+                }
+            }
         }
         RuntimeCommand::Pilot => {
             let result = session.update([GameplayCommand::Interact {
@@ -11652,13 +12362,156 @@ fn execute_runtime_command(
             writeln!(output, "cancel: {:?}", result)
                 .map_err(|error| format!("escribir resultado de cancelación: {error}"))?;
         }
-        RuntimeCommand::Attack(enemy) => {
+        RuntimeCommand::Attack { enemy, player } => {
+            let player = player.map(EntityId::new).unwrap_or(session.ids.first_player);
             let result = session.update([GameplayCommand::AttackEnemy {
-                player: session.ids.first_player,
+                player,
                 enemy: EntityId::new(*enemy),
             }]);
-            writeln!(output, "attack {enemy}: {:?}", result)
+            writeln!(output, "attack {enemy} player={player:?}: {:?}", result)
                 .map_err(|error| format!("escribir resultado de ataque: {error}"))?;
+        }
+        RuntimeCommand::UnlockMission(id) => {
+            let result = session.update([GameplayCommand::UnlockMission {
+                mission: gameplay::types::MissionId(*id),
+            }]);
+            writeln!(output, "unlock {id}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de desbloqueo: {error}"))?;
+        }
+        RuntimeCommand::StartMission(id) => {
+            let result = session.update([GameplayCommand::StartMission {
+                mission: gameplay::types::MissionId(*id),
+            }]);
+            writeln!(output, "startmission {id}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de inicio de mision: {error}"))?;
+        }
+        RuntimeCommand::Scan => {
+            let result = session.update([GameplayCommand::ScanSignals {
+                player: session.ids.first_player,
+                ship: session.ids.first_ship,
+            }]);
+            writeln!(output, "scan: {:?}", result)
+                .map_err(|error| format!("escribir resultado de escaneo: {error}"))?;
+        }
+        RuntimeCommand::Collectibles => {
+            let collectibles = session
+                .world()
+                .collectibles()
+                .map(|value| (value.entity, value.item, value.amount, value.owner, value.active))
+                .collect::<Vec<_>>();
+            writeln!(output, "collectibles: {collectibles:?}")
+                .map_err(|error| format!("escribir coleccionables: {error}"))?;
+        }
+        RuntimeCommand::Collect { collectible, amount, player } => {
+            let player = player.map(EntityId::new).unwrap_or(session.ids.first_player);
+            let result = session.update([GameplayCommand::CollectItem {
+                player,
+                collectible: EntityId::new(*collectible),
+                amount: *amount,
+            }]);
+            writeln!(output, "collect {collectible} {amount} player={player:?}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de recogida: {error}"))?;
+        }
+        RuntimeCommand::Damage(amount) => {
+            let result = session.update([GameplayCommand::DamageShip {
+                ship: session.ids.first_ship,
+                amount: *amount,
+            }]);
+            writeln!(output, "damage {amount}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de daño: {error}"))?;
+        }
+        RuntimeCommand::Interact(target) => {
+            let result = session.update([GameplayCommand::Interact {
+                player: session.ids.first_player,
+                target: EntityId::new(*target),
+            }]);
+            writeln!(output, "interact {target}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de interacción: {error}"))?;
+        }
+        RuntimeCommand::Repair(station) => {
+            let result = session.update([GameplayCommand::RepairShipAtStation {
+                player: session.ids.first_player,
+                ship: session.ids.first_ship,
+                station: EntityId::new(*station),
+            }]);
+            writeln!(output, "repair {station}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de reparación: {error}"))?;
+        }
+        RuntimeCommand::EnemyAttack { enemy, player } => {
+            let result = session.update([GameplayCommand::EnemyAttackPlayer {
+                enemy: EntityId::new(*enemy),
+                player: EntityId::new(*player),
+            }]);
+            writeln!(output, "enemyattack {enemy} {player}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de ataque enemigo: {error}"))?;
+        }
+        RuntimeCommand::Revive { helper, target, item } => {
+            let result = session.update([GameplayCommand::RevivePlayer {
+                helper: EntityId::new(*helper),
+                target: EntityId::new(*target),
+                item: ItemId(*item),
+            }]);
+            writeln!(output, "revive {helper} {target} {item}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de reanimación: {error}"))?;
+        }
+        RuntimeCommand::Heal { player, item, amount } => {
+            let result = session.update([GameplayCommand::UseHealingConsumable {
+                player: EntityId::new(*player),
+                item: ItemId(*item),
+                amount: *amount,
+            }]);
+            writeln!(output, "heal {player} {item} {amount}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de curación: {error}"))?;
+        }
+        RuntimeCommand::Extract(destination) => {
+            let result = session.update([GameplayCommand::ExtractWorldResource {
+                player: session.ids.first_player,
+                destination: DestinationId::new(*destination),
+            }]);
+            writeln!(output, "extract {destination}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de extracción: {error}"))?;
+        }
+        RuntimeCommand::Transfer { from, to, item, amount } => {
+            let result = session.update([GameplayCommand::TransferInventoryItem {
+                from: EntityId::new(*from),
+                to: EntityId::new(*to),
+                item: ItemId(*item),
+                amount: *amount,
+            }]);
+            writeln!(output, "transfer {from} {to} {item} {amount}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de transferencia: {error}"))?;
+        }
+        RuntimeCommand::Buy { destination, item, amount } => {
+            let result = session.update([GameplayCommand::BuyWorldItem {
+                player: session.ids.first_player,
+                destination: DestinationId::new(*destination),
+                item: ItemId(*item),
+                amount: *amount,
+            }]);
+            writeln!(output, "buy {destination} {item} {amount}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de compra: {error}"))?;
+        }
+        RuntimeCommand::Sell { destination, item, amount } => {
+            let result = session.update([GameplayCommand::SellWorldItem {
+                player: session.ids.first_player,
+                destination: DestinationId::new(*destination),
+                item: ItemId(*item),
+                amount: *amount,
+            }]);
+            writeln!(output, "sell {destination} {item} {amount}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de venta: {error}"))?;
+        }
+        RuntimeCommand::InstallUpgrade { destination, code } => {
+            let upgrade = ShipUpgrade::from_code(*code)
+                .ok_or_else(|| format!("mejora desconocida: {code}"))?;
+            let result = session.update([GameplayCommand::InstallShipUpgrade {
+                player: session.ids.first_player,
+                ship: session.ids.first_ship,
+                destination: DestinationId::new(*destination),
+                upgrade,
+            }]);
+            writeln!(output, "upgrade {code} {destination}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de mejora: {error}"))?;
         }
         RuntimeCommand::Events => {
             writeln!(output, "events: {:?}", session.world().events().iter().collect::<Vec<_>>())
@@ -11699,6 +12552,199 @@ fn run_runtime_adapter_scenario() -> Result<(), String> {
         return Err("status del runtime mutó el estado".to_owned());
     }
 
+    let inspection_state = runtime.gameplay.save_state().serialize();
+    for command in [
+        "ship".to_owned(),
+        "players".to_owned(),
+        "inventory".to_owned(),
+        format!("inventory {}", runtime.other_player.value()),
+        "resources".to_owned(),
+    ] {
+        execute_runtime_command(
+            &mut runtime,
+            &parse_runtime_command(&command)?,
+            &mut output,
+        )?;
+    }
+    if runtime.gameplay.save_state().serialize() != inspection_state {
+        return Err("las consultas de inventario y recursos mutaron el estado".to_owned());
+    }
+    let initial_resource = runtime
+        .gameplay
+        .world()
+        .functional_world(DestinationId::new(13_001))
+        .and_then(|world| {
+            world.activities.iter().find_map(|activity| match activity {
+                WorldActivity::Resource(site) => Some(site.available),
+                _ => None,
+            })
+        })
+        .ok_or_else(|| "falta el recurso runtime".to_owned())?;
+    let initial_inventory = runtime
+        .gameplay
+        .world()
+        .inventory(runtime.gameplay.ids.first_player)
+        .ok_or_else(|| "falta el inventario runtime".to_owned())?
+        .quantity(ItemId(1));
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("extract 13001")?,
+        &mut output,
+    )?;
+    let after_first_resource = runtime
+        .gameplay
+        .world()
+        .functional_world(DestinationId::new(13_001))
+        .and_then(|world| {
+            world.activities.iter().find_map(|activity| match activity {
+                WorldActivity::Resource(site) => Some(site.available),
+                _ => None,
+            })
+        })
+        .ok_or_else(|| "se perdió el recurso tras extraer".to_owned())?;
+    let after_first_inventory = runtime
+        .gameplay
+        .world()
+        .inventory(runtime.gameplay.ids.first_player)
+        .ok_or_else(|| "se perdió el inventario tras extraer".to_owned())?
+        .quantity(ItemId(1));
+    if after_first_resource >= initial_resource
+        || after_first_inventory <= initial_inventory
+        || after_first_inventory - initial_inventory != initial_resource - after_first_resource
+    {
+        return Err("la extracción runtime no actualizó recurso e inventario de forma coherente".to_owned());
+    }
+    execute_runtime_command(&mut runtime, &parse_runtime_command("events")?, &mut output)?;
+    if !String::from_utf8_lossy(&output).contains("WorldResourceExtracted") {
+        return Err("events no mostró la extracción real".to_owned());
+    }
+    let transfer_command = format!(
+        "transfer {} {} 1 2",
+        runtime.gameplay.ids.first_player.value(),
+        runtime.other_player.value()
+    );
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&transfer_command)?,
+        &mut output,
+    )?;
+    let first_after_transfer = runtime
+        .gameplay
+        .world()
+        .inventory(runtime.gameplay.ids.first_player)
+        .ok_or_else(|| "falta el inventario emisor runtime".to_owned())?
+        .quantity(ItemId(1));
+    let second_after_transfer = runtime
+        .gameplay
+        .world()
+        .inventory(runtime.other_player)
+        .ok_or_else(|| "falta el inventario receptor runtime".to_owned())?
+        .quantity(ItemId(1));
+    if first_after_transfer + 2 != after_first_inventory || second_after_transfer != 2 {
+        return Err("la transferencia runtime no debitó y acreditó la cantidad real".to_owned());
+    }
+    execute_runtime_command(&mut runtime, &parse_runtime_command("events")?, &mut output)?;
+    if !String::from_utf8_lossy(&output).contains("ItemRemoved")
+        || !String::from_utf8_lossy(&output).contains("ItemAdded")
+    {
+        return Err("events no mostró la transferencia real".to_owned());
+    }
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("extract 13001")?,
+        &mut output,
+    )?;
+    let exhausted_state = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("extract 13001")?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != exhausted_state
+        || !String::from_utf8_lossy(&output).contains("WorldResourceUnavailable")
+    {
+        return Err("la extracción agotada no fue rechazada atomicamente".to_owned());
+    }
+    let invalid_transfer_state = runtime.gameplay.save_state().serialize();
+    let invalid_transfer_command = format!(
+        "transfer {} {} 1 5",
+        runtime.gameplay.ids.first_player.value(),
+        runtime.other_player.value()
+    );
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&invalid_transfer_command)?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != invalid_transfer_state
+        || !String::from_utf8_lossy(&output).contains("InventoryInsufficientQuantity")
+    {
+        return Err("la transferencia insuficiente no fue rechazada atomicamente".to_owned());
+    }
+    let ship = runtime.gameplay.ids.first_ship;
+    let ship_before_damage = runtime
+        .gameplay
+        .world()
+        .ship_integrity(ship)
+        .ok_or_else(|| "falta integridad de nave runtime".to_owned())?
+        .current();
+    execute_runtime_command(&mut runtime, &parse_runtime_command("damage 20")?, &mut output)?;
+    let ship_after_damage = runtime
+        .gameplay
+        .world()
+        .ship_integrity(ship)
+        .ok_or_else(|| "falta integridad tras daño runtime".to_owned())?
+        .current();
+    if ship_after_damage >= ship_before_damage {
+        return Err("damage runtime no redujo la integridad real".to_owned());
+    }
+    let engineering = runtime.engineering_station.value().to_string();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("interact {engineering}"))?,
+        &mut output,
+    )?;
+    let material_before_repair = runtime
+        .gameplay
+        .world()
+        .inventory(runtime.gameplay.ids.first_player)
+        .ok_or_else(|| "falta inventario antes de reparar runtime".to_owned())?
+        .quantity(ItemId(1));
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("repair {engineering}"))?,
+        &mut output,
+    )?;
+    let ship_after_repair = runtime
+        .gameplay
+        .world()
+        .ship_integrity(ship)
+        .ok_or_else(|| "falta integridad reparada runtime".to_owned())?
+        .current();
+    let material_after_repair = runtime
+        .gameplay
+        .world()
+        .inventory(runtime.gameplay.ids.first_player)
+        .ok_or_else(|| "falta inventario tras reparar runtime".to_owned())?
+        .quantity(ItemId(1));
+    if ship_after_repair <= ship_after_damage || material_after_repair + 1 != material_before_repair {
+        return Err("repair runtime no aplicó restauración y coste reales".to_owned());
+    }
+    execute_runtime_command(&mut runtime, &parse_runtime_command("events")?, &mut output)?;
+    if !String::from_utf8_lossy(&output).contains("ShipRepaired") {
+        return Err("events no mostró la reparación real".to_owned());
+    }
+    let invalid_repair_state = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("repair {engineering}"))?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != invalid_repair_state
+        || !String::from_utf8_lossy(&output).contains("ShipAtMaximumIntegrity")
+    {
+        return Err("la reparación sin daño no fue rechazada atomicamente".to_owned());
+    }
     execute_runtime_command(&mut runtime, &parse_runtime_command("navigation")?, &mut output)?;
     execute_runtime_command(&mut runtime, &parse_runtime_command("pilot")?, &mut output)?;
     execute_runtime_command(
@@ -11733,6 +12779,63 @@ fn run_runtime_adapter_scenario() -> Result<(), String> {
     {
         return Err("activate runtime no activó el encuentro real".to_owned());
     }
+    let enemy = runtime
+        .gameplay
+        .world()
+        .spatial_encounter(runtime.encounter)
+        .and_then(|value| value.spawned_enemy)
+        .ok_or_else(|| "el encuentro runtime no tiene enemigo".to_owned())?;
+    let other_player = runtime.other_player.value().to_string();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("enemyattack {} {}", enemy.value(), other_player))?,
+        &mut output,
+    )?;
+    if runtime.gameplay.world().player_health(runtime.other_player) != Some((0, 100, false))
+        || runtime.gameplay.world().entities().contains(runtime.other_player)
+    {
+        return Err("enemyattack runtime no produjo incapacidad real".to_owned());
+    }
+    let helper = runtime.gameplay.ids.first_player.value().to_string();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("revive {} {} 5", helper, other_player))?,
+        &mut output,
+    )?;
+    if runtime.gameplay.world().player_health(runtime.other_player) != Some((30, 100, true))
+        || runtime
+            .gameplay
+            .world()
+            .inventory(runtime.gameplay.ids.first_player)
+            .is_none_or(|inventory| inventory.quantity(ItemId(5)) != 0)
+    {
+        return Err("revive runtime no restauró salud o consumió el recurso real".to_owned());
+    }
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("heal {} 4 1", other_player))?,
+        &mut output,
+    )?;
+    if runtime.gameplay.world().player_health(runtime.other_player) != Some((55, 100, true))
+        || runtime
+            .gameplay
+            .world()
+            .inventory(runtime.other_player)
+            .is_none_or(|inventory| inventory.quantity(ItemId(4)) != 0)
+    {
+        return Err("heal runtime no aplicó el consumible real".to_owned());
+    }
+    let invalid_heal_state = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("heal {} 4 1", other_player))?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != invalid_heal_state
+        || !String::from_utf8_lossy(&output).contains("InventoryInsufficientQuantity")
+    {
+        return Err("la curación sin consumible no fue rechazada atomicamente".to_owned());
+    }
     let blocked_state = runtime.gameplay.save_state().serialize();
     execute_runtime_command(
         &mut runtime,
@@ -11756,12 +12859,6 @@ fn run_runtime_adapter_scenario() -> Result<(), String> {
         &parse_runtime_command("continue")?,
         &mut output,
     )?;
-    let enemy = runtime
-        .gameplay
-        .world()
-        .spatial_encounter(runtime.encounter)
-        .and_then(|value| value.spawned_enemy)
-        .ok_or_else(|| "el encuentro runtime no tiene enemigo".to_owned())?;
     execute_runtime_command(
         &mut runtime,
         &parse_runtime_command(&format!("attack {}", enemy.value()))?,
@@ -11882,16 +12979,519 @@ fn run_runtime_adapter_scenario() -> Result<(), String> {
     Err("quit del runtime no terminó la sesión".to_owned())
 }
 
+fn run_runtime_economy_upgrade_scenario() -> Result<(), String> {
+    let mut runtime = create_runtime_session()?;
+    let mut output = Vec::new();
+    let initial_state = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(&mut runtime, &parse_runtime_command("economy")?, &mut output)?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("upgrades")?, &mut output)?;
+    if runtime.gameplay.save_state().serialize() != initial_state
+        || runtime.gameplay.world().player_currency(runtime.gameplay.ids.first_player) != Some(0)
+        || runtime.gameplay.world().ship_has_upgrade(runtime.gameplay.ids.first_ship, ShipUpgrade::EngineEfficiencyI)
+    {
+        return Err("las consultas economicas o de mejoras mutaron el estado inicial".to_owned());
+    }
+
+    execute_runtime_command(&mut runtime, &parse_runtime_command("extract 13001")?, &mut output)?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("extract 13001")?, &mut output)?;
+    let material_before_sale = runtime
+        .gameplay
+        .world()
+        .inventory(runtime.gameplay.ids.first_player)
+        .ok_or_else(|| "falta inventario para comercio runtime".to_owned())?
+        .quantity(ItemId(1));
+    if material_before_sale < 4 {
+        return Err(format!("la extraccion no produjo material comercial suficiente: {material_before_sale}"));
+    }
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("sell 13001 1 4")?,
+        &mut output,
+    )?;
+    if runtime.gameplay.world().player_currency(runtime.gameplay.ids.first_player) != Some(4)
+        || runtime.gameplay.world().inventory(runtime.gameplay.ids.first_player).is_none_or(|inventory| inventory.quantity(ItemId(1)) != material_before_sale - 4)
+    {
+        return Err("la venta runtime no actualizo saldo e inventario exactos".to_owned());
+    }
+    execute_runtime_command(&mut runtime, &parse_runtime_command("events")?, &mut output)?;
+    if !String::from_utf8_lossy(&output).contains("WorldSaleCompleted") {
+        return Err("events no mostro la venta runtime".to_owned());
+    }
+
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("buy 13001 2 1")?,
+        &mut output,
+    )?;
+    if runtime.gameplay.world().player_currency(runtime.gameplay.ids.first_player) != Some(3)
+        || runtime.gameplay.world().inventory(runtime.gameplay.ids.first_player).is_none_or(|inventory| inventory.quantity(ItemId(2)) != 3)
+        || runtime.gameplay.world().world_trade_offer(DestinationId::new(13001), ItemId(2)).is_none_or(|offer| offer.stock != 1)
+    {
+        return Err("la compra runtime no actualizo saldo, inventario y stock exactos".to_owned());
+    }
+    execute_runtime_command(&mut runtime, &parse_runtime_command("events")?, &mut output)?;
+    if !String::from_utf8_lossy(&output).contains("WorldPurchaseCompleted") {
+        return Err("events no mostro la compra runtime".to_owned());
+    }
+
+    execute_runtime_command(&mut runtime, &parse_runtime_command("upgrades")?, &mut output)?;
+    let credits_before_upgrade = runtime
+        .gameplay
+        .world()
+        .player_currency(runtime.gameplay.ids.first_player)
+        .ok_or_else(|| "falta saldo antes de mejora runtime".to_owned())?;
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("upgrade 1 13001")?,
+        &mut output,
+    )?;
+    if !runtime.gameplay.world().ship_has_upgrade(runtime.gameplay.ids.first_ship, ShipUpgrade::EngineEfficiencyI)
+        || runtime.gameplay.world().player_currency(runtime.gameplay.ids.first_player) != Some(credits_before_upgrade - ShipUpgrade::EngineEfficiencyI.credit_cost())
+        || runtime.gameplay.world().inventory(runtime.gameplay.ids.first_player).is_none_or(|inventory| inventory.quantity(ItemId(1)) != material_before_sale - 6)
+    {
+        return Err("la compra runtime de EngineEfficiencyI no aplico sus costes".to_owned());
+    }
+    execute_runtime_command(&mut runtime, &parse_runtime_command("events")?, &mut output)?;
+    if !String::from_utf8_lossy(&output).contains("ShipUpgradeInstalled") {
+        return Err("events no mostro la instalacion runtime".to_owned());
+    }
+
+    let duplicate_state = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(&mut runtime, &parse_runtime_command("upgrade 1 13001")?, &mut output)?;
+    if runtime.gameplay.save_state().serialize() != duplicate_state
+        || !String::from_utf8_lossy(&output).contains("ShipUpgradeAlreadyInstalled")
+    {
+        return Err("la mejora duplicada runtime no fue atomica".to_owned());
+    }
+    let insufficient_state = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(&mut runtime, &parse_runtime_command("upgrade 2 13001")?, &mut output)?;
+    if runtime.gameplay.save_state().serialize() != insufficient_state
+        || !String::from_utf8_lossy(&output).contains("InsufficientFunds")
+    {
+        return Err("la mejora sin fondos runtime no fue atomica".to_owned());
+    }
+    let invalid_buy_state = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(&mut runtime, &parse_runtime_command("buy 13001 1 1")?, &mut output)?;
+    if runtime.gameplay.save_state().serialize() != invalid_buy_state
+        || !String::from_utf8_lossy(&output).contains("InsufficientFunds")
+    {
+        return Err("la compra runtime sin fondos no fue atomica".to_owned());
+    }
+    let invalid_sale_state = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(&mut runtime, &parse_runtime_command("sell 13001 1 1")?, &mut output)?;
+    if runtime.gameplay.save_state().serialize() != invalid_sale_state
+        || !String::from_utf8_lossy(&output).contains("InventoryInsufficient")
+    {
+        return Err("la venta runtime sin inventario no fue atomica".to_owned());
+    }
+
+    execute_runtime_command(&mut runtime, &parse_runtime_command("pilot")?, &mut output)?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("plan 13001 13004")?, &mut output)?;
+    let fuel_before_start = runtime
+        .gameplay
+        .world()
+        .ship_fuel(runtime.gameplay.ids.first_ship)
+        .ok_or_else(|| "falta combustible antes de efecto de mejora".to_owned())?
+        .current();
+    execute_runtime_command(&mut runtime, &parse_runtime_command("start")?, &mut output)?;
+    let fuel_after_start = runtime
+        .gameplay
+        .world()
+        .ship_fuel(runtime.gameplay.ids.first_ship)
+        .ok_or_else(|| "falta combustible tras efecto de mejora".to_owned())?
+        .current();
+    if fuel_before_start != 60 || fuel_after_start != 56 {
+        return Err(format!("EngineEfficiencyI no aplico el descuento real: {fuel_before_start}->{fuel_after_start}"));
+    }
+    let saved = runtime.gameplay.save_state().serialize();
+    let mut restored = create_runtime_session()?;
+    restored
+        .gameplay
+        .restore_state(
+            gameplay::GameplaySaveState::deserialize(&saved)
+                .map_err(|error| format!("deserializar economia runtime: {error}"))?,
+        )
+        .map_err(|error| format!("restaurar economia runtime: {error:?}"))?;
+    if !restored.gameplay.world().ship_has_upgrade(runtime.gameplay.ids.first_ship, ShipUpgrade::EngineEfficiencyI)
+        || restored.gameplay.world().ship_fuel(runtime.gameplay.ids.first_ship).is_none_or(|fuel| fuel.current() != 56)
+        || restored.gameplay.world().player_currency(runtime.gameplay.ids.first_player) != Some(1)
+        || restored.gameplay.world().inventory(runtime.gameplay.ids.first_player).is_none_or(|inventory| inventory.quantity(ItemId(2)) != 3)
+        || restored.gameplay.world().world_trade_offer(DestinationId::new(13001), ItemId(2)).is_none_or(|offer| offer.stock != 1)
+    {
+        return Err("la restauracion runtime perdio comercio, saldo o mejora".to_owned());
+    }
+    println!("RUNTIME ECONOMIA Y MEJORAS VALIDADO: venta=true, compra=true, engine_efficiency=20%, combustible={fuel_before_start}->{fuel_after_start}, rechazos_atomicos=true, restaurado=true");
+    Ok(())
+}
+
+fn run_runtime_mission_scenario() -> Result<(), String> {
+    let mut runtime = create_runtime_session()?;
+    let mut output = Vec::new();
+    let mission_id = cooperacion::PROGRESION_COOPERATIVA;
+    let initial_state = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(&mut runtime, &parse_runtime_command("missions")?, &mut output)?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("mission 5")?, &mut output)?;
+    let initial_missions = runtime.gameplay.world().missions().collect::<Vec<_>>();
+    if initial_missions.len() != 5
+        || initial_missions.iter().any(|mission| {
+            mission.id != mission_id
+                && mission.state() != MissionState::Locked
+        })
+        || runtime.gameplay.world().mission(mission_id).is_none_or(|mission| mission.state() != MissionState::Locked)
+        || runtime.gameplay.save_state().serialize() != initial_state
+    {
+        return Err("la consulta inicial de misiones no reflejo cinco misiones independientes".to_owned());
+    }
+
+    execute_runtime_command(&mut runtime, &parse_runtime_command("unlock 5")?, &mut output)?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("startmission 5")?, &mut output)?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("mission 5")?, &mut output)?;
+    if runtime.gameplay.world().mission(mission_id).is_none_or(|mission| mission.state() != MissionState::Active || mission.progress().required_completed != 0)
+    {
+        return Err("la mision runtime no paso a activa sin progreso artificial".to_owned());
+    }
+
+    execute_runtime_command(&mut runtime, &parse_runtime_command("scan")?, &mut output)?;
+    if runtime.gameplay.world().mission(mission_id).is_none_or(|mission| {
+        mission.objectives().iter().find(|objective| objective.id == cooperacion::IDENTIFICAR_SENAL).is_none_or(|objective| objective.progress() != 0)
+    }) {
+        return Err("el primer escaneo avanzo indebidamente la identificacion".to_owned());
+    }
+    execute_runtime_command(&mut runtime, &parse_runtime_command("advance 1000")?, &mut output)?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("scan")?, &mut output)?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("mission 5")?, &mut output)?;
+    if runtime.gameplay.world().mission(mission_id).is_none_or(|mission| {
+        mission.objectives().iter().find(|objective| objective.id == cooperacion::IDENTIFICAR_SENAL).is_none_or(|objective| objective.progress() != 1 || objective.state() != ObjectiveState::Completed)
+    }) {
+        return Err("la identificacion runtime no completo el objetivo por evento real".to_owned());
+    }
+    let identified_state = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(&mut runtime, &parse_runtime_command("mission 5")?, &mut output)?;
+    if runtime.gameplay.save_state().serialize() != identified_state {
+        return Err("consultar el progreso de mision lo mutó".to_owned());
+    }
+
+    execute_runtime_command(&mut runtime, &parse_runtime_command("activate")?, &mut output)?;
+    let enemy = runtime
+        .gameplay
+        .world()
+        .spatial_encounter(runtime.encounter)
+        .and_then(|encounter| encounter.spawned_enemy)
+        .ok_or_else(|| "la amenaza de mision no fue creada por el encuentro real".to_owned())?;
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("attack {}", enemy.value()))?,
+        &mut output,
+    )?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("advance 1000")?, &mut output)?;
+    let second_attacker = runtime.other_player.value().to_string();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("attack {} {}", enemy.value(), second_attacker))?,
+        &mut output,
+    )?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("mission 5")?, &mut output)?;
+    if runtime.gameplay.world().mission(mission_id).is_none_or(|mission| {
+        mission.objectives().iter().find(|objective| objective.id == cooperacion::DERROTAR_AMENAZA).is_none_or(|objective| objective.progress() != 1 || objective.state() != ObjectiveState::Completed)
+    }) {
+        return Err("el combate runtime no completo el objetivo de amenaza".to_owned());
+    }
+
+    let reward = runtime
+        .gameplay
+        .world()
+        .collectibles()
+        .find(|collectible| collectible.active && collectible.item == ItemId(3))
+        .copied()
+        .ok_or_else(|| "la derrota runtime no genero la recompensa esperada".to_owned())?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("collectibles")?, &mut output)?;
+    let reward_collector = runtime.other_player.value().to_string();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("collect {} 1 {reward_collector}", reward.entity.value()))?,
+        &mut output,
+    )?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("mission 5")?, &mut output)?;
+    if runtime.gameplay.world().mission(mission_id).is_none_or(|mission| {
+        mission.state() != MissionState::Completed
+            || mission.progress().required_completed != mission.progress().required_total
+    }) || runtime.gameplay.world().inventory(runtime.other_player).is_none_or(|inventory| inventory.quantity(ItemId(3)) != 1)
+    {
+        return Err("la recompensa runtime no completo la mision real".to_owned());
+    }
+    let completed_state = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("collect {} 1 {reward_collector}", reward.entity.value()))?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != completed_state
+        || !String::from_utf8_lossy(&output).contains("CollectibleUnavailable")
+    {
+        return Err("la recogida repetida de la recompensa de mision no fue idempotente".to_owned());
+    }
+
+    let saved = runtime.gameplay.save_state().serialize();
+    let mut restored = create_runtime_session()?;
+    restored
+        .gameplay
+        .restore_state(
+            gameplay::GameplaySaveState::deserialize(&saved)
+                .map_err(|error| format!("deserializar mision runtime: {error}"))?,
+        )
+        .map_err(|error| format!("restaurar mision runtime: {error:?}"))?;
+    if restored.gameplay.world().mission(mission_id).is_none_or(|mission| mission.state() != MissionState::Completed || mission.progress().required_completed != mission.progress().required_total)
+        || restored.gameplay.world().inventory(restored.other_player).is_none_or(|inventory| inventory.quantity(ItemId(3)) != 1)
+    {
+        return Err("la restauracion runtime perdio el progreso de mision".to_owned());
+    }
+    println!("RUNTIME MISIONES VALIDADO: misiones=5, identificacion=true, amenaza=true, recompensa=true, completada=true, idempotente=true, restaurada=true");
+    Ok(())
+}
+
+fn run_runtime_erick_scenario() -> Result<(), String> {
+    let mut runtime = create_runtime_session()?;
+    let mut output = Vec::new();
+    for query in [
+        "erick status",
+        "erick navigation",
+        "erick support",
+        "erick tactical",
+        "erick recovery",
+        "erick all",
+    ] {
+        let before = runtime.gameplay.save_state().serialize();
+        execute_runtime_command(&mut runtime, &parse_runtime_command(query)?, &mut output)?;
+        if runtime.gameplay.save_state().serialize() != before {
+            return Err(format!("{query} de ERICK mutó el estado serializado"));
+        }
+    }
+    let initial_erick_output = output.clone();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("activate")?,
+        &mut output,
+    )?;
+    let enemy = runtime
+        .gameplay
+        .world()
+        .spatial_encounter(runtime.encounter)
+        .and_then(|encounter| encounter.spawned_enemy)
+        .ok_or_else(|| "la consulta contextual no pudo activar una amenaza real".to_owned())?;
+    let before_tactical = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("erick tactical")?,
+        &mut output,
+    )?;
+    let tactical_once = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("erick tactical")?,
+        &mut output,
+    )?;
+    if tactical_once != runtime.gameplay.save_state().serialize()
+        || tactical_once != before_tactical
+        || !String::from_utf8_lossy(&output).contains("tactical")
+    {
+        return Err("la evaluación táctica de ERICK no fue determinista o mutó el mundo".to_owned());
+    }
+    let before_attack = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!("attack {}", enemy.value()))?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() == before_attack {
+        return Err("la acción explícita del jugador no produjo el cambio de combate esperado".to_owned());
+    }
+    let before_updated_query = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("erick tactical")?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != before_updated_query {
+        return Err("ERICK alteró el estado después de la acción explícita".to_owned());
+    }
+    let saved = runtime.gameplay.save_state().serialize();
+    let mut restored = create_runtime_session()?;
+    restored
+        .gameplay
+        .restore_state(
+            gameplay::GameplaySaveState::deserialize(&saved)
+                .map_err(|error| format!("deserializar ERICK runtime: {error}"))?,
+        )
+        .map_err(|error| format!("restaurar ERICK runtime: {error:?}"))?;
+    let restored_before = restored.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut restored,
+        &parse_runtime_command("erick all")?,
+        &mut output,
+    )?;
+    if restored.gameplay.save_state().serialize() != restored_before
+        || restored.gameplay.world().companion(restored.erick).is_none()
+    {
+        return Err("ERICK no fue consultable de forma read-only después de restaurar".to_owned());
+    }
+    println!(
+        "RUNTIME ERICK VALIDADO: consultas=6, solo_lectura=true, contexto_actualizado=true, accion_explicita=true, restaurado=true, salida_inicial={}",
+        initial_erick_output.len()
+    );
+    Ok(())
+}
+
+fn run_runtime_checkpoint_scenario() -> Result<(), String> {
+    let mut runtime = create_runtime_session()?;
+    let mut output = Vec::new();
+    let initial = runtime.gameplay.save_state().serialize();
+    for command in ["status", "inventory", "navigation"] {
+        execute_runtime_command(&mut runtime, &parse_runtime_command(command)?, &mut output)?;
+    }
+    if runtime.gameplay.save_state().serialize() != initial {
+        return Err("las consultas iniciales mutaron el estado antes del checkpoint".to_owned());
+    }
+    let before_empty_restore = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("restore")?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != before_empty_restore
+        || !String::from_utf8_lossy(&output).contains("no checkpoint")
+    {
+        return Err("restore sin checkpoint no fue rechazado de forma read-only".to_owned());
+    }
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("checkpoint status")?,
+        &mut output,
+    )?;
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("checkpoint")?,
+        &mut output,
+    )?;
+    let checkpoint = runtime
+        .checkpoint
+        .clone()
+        .ok_or_else(|| "checkpoint no quedó disponible en memoria".to_owned())?;
+    let after_checkpoint = runtime.gameplay.save_state().serialize();
+    if after_checkpoint != checkpoint {
+        return Err("checkpoint no conserva la serialización completa del mundo".to_owned());
+    }
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("extract 13001")?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() == checkpoint {
+        return Err("la acción real posterior al checkpoint no cambió el estado".to_owned());
+    }
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("restore")?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != checkpoint {
+        return Err("restore no recuperó exactamente el checkpoint válido".to_owned());
+    }
+    let before_erick = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("erick navigation")?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != before_erick
+        || runtime.gameplay.world().companion(runtime.erick).is_none()
+    {
+        return Err("ERICK no continuó disponible de forma read-only tras restore".to_owned());
+    }
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("extract 13001")?,
+        &mut output,
+    )?;
+    let before_invalid_restore = runtime.gameplay.save_state().serialize();
+    runtime.checkpoint = Some("invalid checkpoint".to_owned());
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("restore")?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != before_invalid_restore {
+        return Err("restore inválido dejó el mundo parcialmente modificado".to_owned());
+    }
+    runtime.checkpoint = Some(checkpoint.clone());
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("restore")?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != checkpoint {
+        return Err("la segunda restauración válida no fue idempotente".to_owned());
+    }
+    let before_final_queries = runtime.gameplay.save_state().serialize();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("checkpoint status")?,
+        &mut output,
+    )?;
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("erick status")?,
+        &mut output,
+    )?;
+    if runtime.gameplay.save_state().serialize() != before_final_queries {
+        return Err("las consultas finales mutaron el estado restaurado".to_owned());
+    }
+    println!(
+        "CHECKPOINT RUNTIME VALIDADO: captura_completa=true, accion_real=true, restaurado=true, erick_read_only=true, restore_invalido_atomico=true, segunda_restauracion=true, temporal_en_memoria=true"
+    );
+    Ok(())
+}
+
 fn run_runtime_cancel_recovery_scenario() -> Result<(), String> {
     let mut runtime = create_runtime_session()?;
     let mut output = Vec::new();
-    for command in ["pilot", "plan 13001 13002", "start", "activate", "advance 5"] {
+    for command in ["pilot", "plan 13001 13002", "start", "activate"] {
         execute_runtime_command(
             &mut runtime,
             &parse_runtime_command(command)?,
             &mut output,
         )?;
     }
+    let transit_enemy = runtime
+        .gameplay
+        .world()
+        .spatial_encounter(runtime.encounter)
+        .and_then(|value| value.spawned_enemy)
+        .ok_or_else(|| "el encuentro de cancelación no tiene enemigo".to_owned())?;
+    let other_player = runtime.other_player.value().to_string();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!(
+            "enemyattack {} {}",
+            transit_enemy.value(),
+            other_player
+        ))?,
+        &mut output,
+    )?;
+    let helper_player = runtime.gameplay.ids.first_player.value().to_string();
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command(&format!(
+            "revive {} {} 5",
+            helper_player,
+            other_player
+        ))?,
+        &mut output,
+    )?;
+    execute_runtime_command(
+        &mut runtime,
+        &parse_runtime_command("advance 5")?,
+        &mut output,
+    )?;
     if !matches!(runtime.gameplay.world().autopilot_state(), AutopilotState::InTransit { .. })
         || !matches!(runtime.gameplay.world().travel_state(), TravelState::InProgress { .. })
     {
@@ -18044,6 +19644,10 @@ fn run_three_player_integrated_session_scenario() -> Result<(), String> {
 }
 
 fn run_scenario() -> Result<(), String> {
+    run_runtime_economy_upgrade_scenario()?;
+    run_runtime_mission_scenario()?;
+    run_runtime_erick_scenario()?;
+    run_runtime_checkpoint_scenario()?;
     run_runtime_adapter_scenario()?;
     run_runtime_cancel_recovery_scenario()?;
     run_atomicity_regressions()?;
