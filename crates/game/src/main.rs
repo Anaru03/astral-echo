@@ -575,6 +575,54 @@ fn run_group_scaling_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_real_scaling_expedition_case(player_count: usize, persist: bool) -> Result<(gameplay::GameplayScaling, u32, u32, u32), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let mut players = vec![player];
+    for _ in 1..player_count {
+        let next = session.world_mut().create_player().map_err(|error| format!("crear jugador de escalado real: {error:?}"))?;
+        session.world_mut().initialize_inventory(next, 20).map_err(|error| format!("inicializar inventario de escalado real: {error:?}"))?;
+        players.push(next);
+    }
+    if player_count == 3 && session.world_mut().create_player().is_ok() {
+        return Err("se acepto un cuarto jugador durante la expedicion escalada".to_owned());
+    }
+    let destination = DestinationId::new(9_700 + player_count as u32);
+    session.register_destination(Destination { id: destination, destination_type: DestinationType::Planet, position: Vec3::ZERO, travel_duration: Duration(1), fuel_cost: 1, discovery: DiscoveryState::Discovered }).map_err(|error| format!("registrar destino de escalado real: {error:?}"))?;
+    let configuration = EnemyConfiguration { archetype: EnemyArchetype::Shooter, position: Vec3::ZERO, maximum_health: 20, weapon: WeaponConfiguration::new(AttackType::Energy, 5, 20, Duration(1_000)), shield: None, mobility: 1 };
+    session.world_mut().register_functional_world(FunctionalWorld::new(destination, 2.0, vec![WorldActivity::Combat(CombatZone { configuration, active_enemy: None, resolved: false }), WorldActivity::Resource(ResourceSite { item: ItemId(1), available: 20, extraction_amount: 10 })])).map_err(|error| format!("registrar actividades de escalado real: {error:?}"))?;
+    run_command(&mut session, "activar combate escalado real", GameplayCommand::ActivateWorldCombat { player, destination })?;
+    let enemy = session.world().functional_world(destination).and_then(|world| world.activities.iter().find_map(|activity| match activity { WorldActivity::Combat(zone) => zone.active_enemy, _ => None })).ok_or_else(|| "no se creo enemigo de escalado real".to_owned())?;
+    let scaled = session.world().combatant(enemy).ok_or_else(|| "falta enemigo escalado real".to_owned())?;
+    let health = scaled.maximum_health;
+    let damage = scaled.weapon.damage;
+    run_command(&mut session, "equipar arma de escalado real", GameplayCommand::EquipPlayerWeapon { player, weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1)) })?;
+    run_command(&mut session, "derrotar enemigo escalado real", GameplayCommand::AttackEnemy { player, enemy })?;
+    let reward = session.world().collectibles().find(|value| value.active && value.item == ItemId(3)).map(|value| value.entity).ok_or_else(|| "no se genero recompensa escalada real".to_owned())?;
+    run_command(&mut session, "recoger recompensa escalada real", GameplayCommand::CollectItem { player, collectible: reward, amount: 1 })?;
+    run_command(&mut session, "extraer recurso escalado real", GameplayCommand::ExtractWorldResource { player, destination })?;
+    let resource = session.world().inventory(player).map(|value| value.quantity(ItemId(1))).unwrap_or(0);
+    let scaling = session.world().current_group_scaling();
+    if persist {
+        let saved = session.save_state().serialize();
+        let decoded = gameplay::GameplaySaveState::deserialize(&saved).map_err(|error| format!("deserializar escalado real: {error}"))?;
+        let mut restored = ProjectEchoSession::new();
+        restored.restore_state(decoded).map_err(|error| format!("restaurar escalado real: {error}"))?;
+        if restored.world().current_group_scaling() != scaling || restored.world().combatant(enemy).is_none_or(|value| value.active || !value.is_defeated()) || restored.world().inventory(player).map(|value| value.quantity(ItemId(1))) != Some(resource) || restored.world().collectible(reward).is_none_or(|value| value.active) { return Err("el restore de duo no conservo escalado y consecuencias".to_owned()); }
+        run_command(&mut restored, "continuar gameplay tras escalado restaurado", GameplayCommand::AddInventoryItem { player, item: ItemId(1), amount: 1 })?;
+    }
+    Ok((scaling, health, damage, resource))
+}
+
+fn run_cooperative_scaling_expedition_scenario() -> Result<(), String> {
+    let (solo, solo_health, solo_damage, solo_resource) = run_real_scaling_expedition_case(1, false)?;
+    let (duo, duo_health, duo_damage, duo_resource) = run_real_scaling_expedition_case(2, true)?;
+    let (trio, trio_health, trio_damage, trio_resource) = run_real_scaling_expedition_case(3, false)?;
+    if solo.group_size != gameplay::GroupSize::Solo || duo.group_size != gameplay::GroupSize::Duo || trio.group_size != gameplay::GroupSize::Trio || (solo_health, solo_damage, solo_resource) != (20, 5, 10) || (duo_health, duo_damage, duo_resource) != (25, 5, 11) || (trio_health, trio_damage, trio_resource) != (30, 6, 12) || solo.reward_yield_percent != duo.reward_yield_percent || duo.reward_yield_percent != trio.reward_yield_percent { return Err(format!("el escalado real no coincidió con scaling.rs: solo={solo:?}/{solo_health}/{solo_damage}/{solo_resource}, duo={duo:?}/{duo_health}/{duo_damage}/{duo_resource}, trio={trio:?}/{trio_health}/{trio_damage}/{trio_resource}")); }
+    println!("REGRESION COOPERATIVA DE EXPEDICION COMPLETADA: solo={:?}/salud{}/dano{}/recurso{}, duo={:?}/salud{}/dano{}/recurso{}, trio={:?}/salud{}/dano{}/recurso{}, cuarto=rechazado, duo_restaurado=true", solo.group_size, solo_health, solo_damage, solo_resource, duo.group_size, duo_health, duo_damage, duo_resource, trio.group_size, trio_health, trio_damage, trio_resource);
+    Ok(())
+}
+
 fn run_atomicity_regressions() -> Result<(), String> {
     let electrical_configuration = || {
         ElectricalPanelConfiguration::new(vec![ElectricalBreakerConfiguration {
@@ -697,6 +745,33 @@ fn run_atomicity_regressions() -> Result<(), String> {
         .map_err(|error| format!("crear recolectable posterior: {error:?}"))?;
     if actual_collectible != expected_collectible {
         return Err("el rechazo del recolectable consumió un identificador".to_owned());
+    }
+
+    let mut restore_session = ProjectEchoSession::new();
+    let restore_before = restore_session.save_state().serialize();
+    let invalid_integrity = restore_before
+        .lines()
+        .find(|line| line.starts_with("integrity|"))
+        .ok_or_else(|| "el estado de control no contiene integridad".to_owned())?
+        .to_owned();
+    let invalid_integrity_fields: Vec<_> = invalid_integrity.split('|').collect();
+    if invalid_integrity_fields.len() != 5 {
+        return Err("el registro de integridad de control tiene un formato inesperado".to_owned());
+    }
+    let invalid_integrity_record = format!(
+        "integrity|{}|{}|{}|{}",
+        invalid_integrity_fields[1],
+        invalid_integrity_fields[2].parse::<u32>().map_err(|_| "la integridad de control no es numerica".to_owned())?.saturating_add(1),
+        invalid_integrity_fields[3],
+        invalid_integrity_fields[4]
+    );
+    let invalid_restore_text = restore_before.replacen(&invalid_integrity, &invalid_integrity_record, 1);
+    let invalid_save = gameplay::GameplaySaveState::deserialize(&invalid_restore_text)
+        .map_err(|error| format!("deserializar estado invalido de control: {error}"))?;
+    if !matches!(restore_session.restore_state(invalid_save), Err(gameplay::SaveError::InvalidState))
+        || restore_session.save_state().serialize() != restore_before
+    {
+        return Err("una restauracion rechazada reemplazo parcialmente el mundo".to_owned());
     }
 
     println!("REGRESIONES DE ATOMICIDAD COMPLETADAS");
@@ -15163,6 +15238,52 @@ fn run_full_expedition_regression_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_survival_recovery_expedition_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let helper = session.ids.first_player;
+    let target = session.world_mut().create_player().map_err(|error| format!("crear jugador de supervivencia: {error:?}"))?;
+    session.world_mut().initialize_inventory(target, 20).map_err(|error| format!("inicializar inventario de supervivencia: {error:?}"))?;
+    let ship = session.ids.first_ship;
+    let station = session.create_station(Vec3::ZERO, 2.0, StationType::Engineering).map_err(|error| format!("crear ingenieria de supervivencia: {error:?}"))?;
+    let destination = DestinationId::new(9_801);
+    session.register_destination(Destination { id: destination, destination_type: DestinationType::Planet, position: Vec3::ZERO, travel_duration: Duration(1), fuel_cost: 1, discovery: DiscoveryState::Discovered }).map_err(|error| format!("registrar destino de supervivencia: {error:?}"))?;
+    session.world_mut().register_functional_world(FunctionalWorld::new(destination, 2.0, vec![WorldActivity::Resource(ResourceSite { item: ItemId(1), available: 4, extraction_amount: 2 })])).map_err(|error| format!("registrar recurso de supervivencia: {error:?}"))?;
+    let integrity_before = session.world().ship_integrity(ship).ok_or_else(|| "falta integridad inicial".to_owned())?.current();
+    run_command(&mut session, "danar nave durante supervivencia", GameplayCommand::DamageShip { ship, amount: 40 })?;
+    let integrity_damaged = session.world().ship_integrity(ship).ok_or_else(|| "falta integridad danada".to_owned())?.current();
+    if integrity_damaged != integrity_before - 40 { return Err("el dano de nave no fue exacto".to_owned()); }
+    run_command(&mut session, "extraer material de reparacion", GameplayCommand::ExtractWorldResource { player: target, destination })?;
+    run_command(&mut session, "transferir material de reparacion", GameplayCommand::TransferInventoryItem { from: target, to: helper, item: ItemId(1), amount: 2 })?;
+    if session.world().inventory(target).is_none_or(|value| value.quantity(ItemId(1)) != 0) || session.world().inventory(helper).is_none_or(|value| value.quantity(ItemId(1)) != 2) { return Err("la transferencia de supervivencia no conservo inventarios".to_owned()); }
+    let invalid_repair = session.update([GameplayCommand::RepairShipAtStation { player: helper, ship, station }]);
+    if invalid_repair.first().is_none_or(|result| !matches!(result.status, CommandStatus::Rejected { .. })) || session.world().ship_integrity(ship).map(|value| value.current()) != Some(integrity_damaged) { return Err("una reparacion sin estacion ocupada mutó el estado".to_owned()); }
+    run_command(&mut session, "ocupar ingenieria de supervivencia", GameplayCommand::Interact { player: helper, target: station })?;
+    run_command(&mut session, "reparar nave con transferencia", GameplayCommand::RepairShipAtStation { player: helper, ship, station })?;
+    if session.world().ship_integrity(ship).is_none_or(|value| value.current() != integrity_damaged + 20) || session.world().inventory(helper).is_none_or(|value| value.quantity(ItemId(1)) != 1) { return Err(format!("la reparacion no consumo exactamente material: integridad={:?}, material={:?}", session.world().ship_integrity(ship), session.world().inventory(helper).map(|value| value.quantity(ItemId(1))))); }
+    let revival_item = ItemId(5);
+    run_command(&mut session, "preparar reanimacion cooperativa", GameplayCommand::AddInventoryItem { player: helper, item: revival_item, amount: 1 })?;
+    run_command(&mut session, "crear amenaza de supervivencia", GameplayCommand::CreateEnemy { configuration: EnemyConfiguration { archetype: EnemyArchetype::Charger, position: Vec3::ZERO, maximum_health: 20, weapon: WeaponConfiguration::new(AttackType::Kinetic, 100, 20, Duration(1)), shield: None, mobility: 1 } })?;
+    let attacker = session.world().events().iter().find_map(|event| match event { GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy), _ => None }).ok_or_else(|| "no se creo amenaza de supervivencia".to_owned())?;
+    run_command(&mut session, "derrotar jugador cooperativo", GameplayCommand::EnemyAttackPlayer { enemy: attacker, player: target })?;
+    if session.world().player_health(target).is_none_or(|value| value.0 != 0 || value.2) || session.world().entities().contains(target) { return Err("el dano no produjo derrota coherente".to_owned()); }
+    run_command(&mut session, "reanimar jugador cooperativo", GameplayCommand::RevivePlayer { helper, target, item: revival_item })?;
+    if session.world().player_health(target).is_none_or(|value| value.0 != 30 || !value.2) || session.world().inventory(helper).is_none_or(|value| value.quantity(revival_item) != 0) { return Err("la reanimacion no consumo exactamente el consumible".to_owned()); }
+    run_command(&mut session, "equipar recuperador de supervivencia", GameplayCommand::EquipPlayerWeapon { player: helper, weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1_000)) })?;
+    run_command(&mut session, "derrotar amenaza tras reanimacion", GameplayCommand::AttackEnemy { player: helper, enemy: attacker })?;
+    let saved = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&saved).map_err(|error| format!("deserializar supervivencia: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored.restore_state(decoded).map_err(|error| format!("restaurar supervivencia: {error}"))?;
+    if restored.world().players().count() != 2 || restored.world().ship_integrity(ship).is_none_or(|value| value.current() != integrity_damaged + 20) || restored.world().inventory(helper).is_none_or(|value| value.quantity(ItemId(1)) != 1 || value.quantity(revival_item) != 0) || restored.world().inventory(target).is_none_or(|value| value.quantity(ItemId(1)) != 0) || restored.world().player_health(target).is_none_or(|value| value.0 != 30 || !value.2) || restored.world().combatant(attacker).is_none_or(|value| value.active || !value.is_defeated()) { return Err("la restauracion perdio estados de supervivencia".to_owned()); }
+    let restored_before = restored.save_state().serialize();
+    let invalid_revival = restored.update([GameplayCommand::RevivePlayer { helper, target, item: revival_item }]);
+    if invalid_revival.first().is_none_or(|result| !matches!(result.status, CommandStatus::Rejected { .. })) || restored.save_state().serialize() != restored_before { return Err("la reanimacion invalida post-restore no fue atomica".to_owned()); }
+    run_command(&mut restored, "continuar gameplay de supervivencia", GameplayCommand::AddInventoryItem { player: target, item: ItemId(1), amount: 1 })?;
+    if restored.world().inventory(target).is_none_or(|value| value.quantity(ItemId(1)) != 1) { return Err("el gameplay no continuo despues de restaurar supervivencia".to_owned()); }
+    println!("SUPERVIVENCIA COOPERATIVA COMPLETADA: dano_nave={}→{}, reparacion={}→{}, transferencia=true, jugador_derrotado=true, reanimacion=30, restaurado=true, continuidad=true", integrity_before, integrity_damaged, integrity_damaged, integrity_damaged + 20);
+    Ok(())
+}
+
 fn run_scenario() -> Result<(), String> {
     run_atomicity_regressions()?;
     let mut session = ProjectEchoSession::new();
@@ -15388,6 +15509,8 @@ fn run_scenario() -> Result<(), String> {
     run_full_expedition_regression_scenario()?;
     run_guidance_progression_scenario()?;
     run_group_scaling_scenario()?;
+    run_cooperative_scaling_expedition_scenario()?;
+    run_survival_recovery_expedition_scenario()?;
     run_persistence_scenario()?;
     run_erick_companion_scenario()?;
     run_erick_interaction_scenario()?;

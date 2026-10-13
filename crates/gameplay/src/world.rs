@@ -168,7 +168,7 @@ impl GameplayWorld {
                 .map(|(owner, inventory)| InventorySaveState {
                     owner: *owner,
                     capacity: inventory.capacity(),
-                    entries: inventory.entries().collect(),
+                    entries: inventory.entries().filter(|(_, quantity)| *quantity > 0).collect(),
                 })
                 .collect(),
             combatants: self
