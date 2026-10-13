@@ -3487,7 +3487,18 @@ impl CombatSystem {
         }
 
         let attack_type = weapon.attack_type;
-        let base_damage = weapon.damage;
+        let base_damage = if player_attack {
+            match world.player_attack_damage(weapon.damage) {
+                Some(value) => value,
+                None => {
+                    return CommandResult::invalid(
+                        crate::commands::CommandInvalidity::InvalidCombatConfiguration,
+                    )
+                }
+            }
+        } else {
+            weapon.damage
+        };
         let mut health_damage = base_damage;
         let mut shield_event = None;
         let mut shield_disabled = false;

@@ -15433,14 +15433,236 @@ fn run_ship_upgrade_scenario() -> Result<(), String> {
     {
         return Err("la compra duplicada de la mejora mutó el estado".to_owned());
     }
+    run_command(&mut session, "crear enemigo para dano ofensivo base", GameplayCommand::CreateEnemy {
+        configuration: EnemyConfiguration {
+            archetype: EnemyArchetype::Shooter,
+            position: Vec3::ZERO,
+            maximum_health: 40,
+            weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)),
+            shield: None,
+            mobility: 1,
+        },
+    })?;
+    let base_damage_enemy = session
+        .world()
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .last()
+        .ok_or_else(|| "no se creo el enemigo para dano base".to_owned())?;
+    run_command(&mut session, "equipar arma de calibracion base", GameplayCommand::EquipPlayerWeapon {
+        player,
+        weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1)),
+    })?;
+    run_command(&mut session, "atacar sin calibracion", GameplayCommand::AttackEnemy { player, enemy: base_damage_enemy })?;
+    if session.world().combatant(base_damage_enemy).is_none_or(|enemy| enemy.current_health != 20) {
+        return Err("el dano ofensivo base no fue 20".to_owned());
+    }
+    run_command(&mut session, "desactivar enemigo de dano base", GameplayCommand::SetEnemyActive { enemy: base_damage_enemy, active: false })?;
+    run_command(&mut session, "avanzar cooldown de calibracion", GameplayCommand::AdvanceTime { delta: Duration(3) })?;
+    let alternative_weapon = WeaponConfiguration::new(AttackType::Energy, 30, 8, Duration(2));
+    run_command(&mut session, "crear enemigo para arma alternativa", GameplayCommand::CreateEnemy {
+        configuration: EnemyConfiguration {
+            archetype: EnemyArchetype::Shooter,
+            position: Vec3::ZERO,
+            maximum_health: 40,
+            weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)),
+            shield: None,
+            mobility: 1,
+        },
+    })?;
+    let alternative_weapon_enemy = session
+        .world()
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .last()
+        .ok_or_else(|| "no se creo el enemigo para arma alternativa".to_owned())?;
+    run_command(&mut session, "seleccionar arma alternativa", GameplayCommand::EquipPlayerWeapon { player, weapon: alternative_weapon })?;
+    run_command(&mut session, "atacar con arma alternativa", GameplayCommand::AttackEnemy { player, enemy: alternative_weapon_enemy })?;
+    if session.world().combatant(alternative_weapon_enemy).is_none_or(|enemy| enemy.current_health != 10) {
+        return Err("el arma alternativa no aplico su dano de 30".to_owned());
+    }
+    run_command(&mut session, "desactivar enemigo de arma alternativa", GameplayCommand::SetEnemyActive { enemy: alternative_weapon_enemy, active: false })?;
+    run_command(&mut session, "avanzar cooldown de arma alternativa", GameplayCommand::AdvanceTime { delta: Duration(2) })?;
+    run_command(&mut session, "crear enemigo fuera del alcance alternativo", GameplayCommand::CreateEnemy {
+        configuration: EnemyConfiguration {
+            archetype: EnemyArchetype::Shooter,
+            position: Vec3 { x: 9.0, y: 0.0, z: 0.0 },
+            maximum_health: 40,
+            weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)),
+            shield: None,
+            mobility: 1,
+        },
+    })?;
+    let out_of_range_enemy = session
+        .world()
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .last()
+        .ok_or_else(|| "no se creo el enemigo fuera de alcance".to_owned())?;
+    let out_of_range_state = session.save_state().serialize();
+    let out_of_range = session.update([GameplayCommand::AttackEnemy { player, enemy: out_of_range_enemy }]);
+    if out_of_range.first().is_none_or(|result| result.status != CommandStatus::Rejected { reason: gameplay::CommandRejection::OutOfAttackRange })
+        || session.world().combatant(out_of_range_enemy).is_none_or(|enemy| enemy.current_health != 40)
+        || session.save_state().serialize() != out_of_range_state
+    {
+        return Err("el ataque fuera de alcance no fue rechazado atomicamente".to_owned());
+    }
+    run_command(&mut session, "crear enemigo en el limite del alcance", GameplayCommand::CreateEnemy {
+        configuration: EnemyConfiguration {
+            archetype: EnemyArchetype::Shooter,
+            position: Vec3 { x: 8.0, y: 0.0, z: 0.0 },
+            maximum_health: 40,
+            weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)),
+            shield: None,
+            mobility: 1,
+        },
+    })?;
+    let boundary_enemy = session
+        .world()
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .last()
+        .ok_or_else(|| "no se creo el enemigo del limite".to_owned())?;
+    run_command(&mut session, "atacar exactamente en el limite", GameplayCommand::AttackEnemy { player, enemy: boundary_enemy })?;
+    if session.world().combatant(boundary_enemy).is_none_or(|enemy| enemy.current_health != 10) {
+        return Err("el alcance exacto no acepto el ataque valido".to_owned());
+    }
+    let cooldown_state = session.save_state().serialize();
+    let cooldown_rejected = session.update([GameplayCommand::AttackEnemy { player, enemy: boundary_enemy }]);
+    if cooldown_rejected.first().is_none_or(|result| result.status != CommandStatus::Rejected { reason: gameplay::CommandRejection::AttackCooldown })
+        || session.world().combatant(boundary_enemy).is_none_or(|enemy| enemy.current_health != 10)
+        || session.save_state().serialize() != cooldown_state
+    {
+        return Err("el segundo ataque dentro del cooldown no fue atomico".to_owned());
+    }
+    run_command(&mut session, "cambiar arma durante cooldown", GameplayCommand::EquipPlayerWeapon {
+        player,
+        weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1)),
+    })?;
+    let switched_cooldown_state = session.save_state().serialize();
+    let switched_cooldown_rejected = session.update([GameplayCommand::AttackEnemy { player, enemy: boundary_enemy }]);
+    if switched_cooldown_rejected.first().is_none_or(|result| result.status != CommandStatus::Rejected { reason: gameplay::CommandRejection::AttackCooldown })
+        || session.world().combatant(boundary_enemy).is_none_or(|enemy| enemy.current_health != 10)
+        || session.save_state().serialize() != switched_cooldown_state
+    {
+        return Err("cambiar de arma eludio indebidamente el cooldown".to_owned());
+    }
+    run_command(&mut session, "restaurar arma alternativa tras cooldown", GameplayCommand::EquipPlayerWeapon { player, weapon: alternative_weapon })?;
+    run_command(&mut session, "esperar cooldown del limite", GameplayCommand::AdvanceTime { delta: Duration(2) })?;
+    run_command(&mut session, "extraer materiales de calibracion", GameplayCommand::ExtractWorldResource { player, destination })?;
+    run_command(&mut session, "extraer segunda reserva de calibracion", GameplayCommand::ExtractWorldResource { player, destination })?;
+    run_command(&mut session, "extraer tercera reserva de calibracion", GameplayCommand::ExtractWorldResource { player, destination })?;
+    run_command(&mut session, "vender materiales de calibracion", GameplayCommand::SellWorldItem { player, destination, item: ItemId(1), amount: 4 })?;
+    run_command(&mut session, "instalar calibracion de armamento", GameplayCommand::InstallShipUpgrade {
+        player, ship, destination, upgrade: ShipUpgrade::WeaponCalibrationI,
+    })?;
+    if !session.world().ship_has_upgrade(ship, ShipUpgrade::WeaponCalibrationI)
+        || session.world().player_currency(player) != Some(1)
+        || session.world().inventory(player).is_none_or(|inventory| inventory.quantity(ItemId(1)) != 0)
+    {
+        return Err("la calibracion no aplico su coste exacto".to_owned());
+    }
+    run_command(&mut session, "volver al arma convencional calibrada", GameplayCommand::EquipPlayerWeapon {
+        player,
+        weapon: WeaponConfiguration::new(AttackType::Kinetic, 20, 20, Duration(1)),
+    })?;
+    run_command(&mut session, "crear enemigo para dano calibrado", GameplayCommand::CreateEnemy {
+        configuration: EnemyConfiguration {
+            archetype: EnemyArchetype::Shooter,
+            position: Vec3::ZERO,
+            maximum_health: 40,
+            weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)),
+            shield: None,
+            mobility: 1,
+        },
+    })?;
+    let calibrated_damage_enemy = session
+        .world()
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .last()
+        .ok_or_else(|| "no se creo el enemigo para dano calibrado".to_owned())?;
+    run_command(&mut session, "atacar con calibracion", GameplayCommand::AttackEnemy { player, enemy: calibrated_damage_enemy })?;
+    if session.world().combatant(calibrated_damage_enemy).is_none_or(|enemy| enemy.current_health != 16) {
+        return Err("el dano ofensivo calibrado no fue 24".to_owned());
+    }
+    run_command(&mut session, "desactivar enemigo de dano calibrado", GameplayCommand::SetEnemyActive { enemy: calibrated_damage_enemy, active: false })?;
+    run_command(&mut session, "avanzar cooldown de arma calibrada", GameplayCommand::AdvanceTime { delta: Duration(2) })?;
+    run_command(&mut session, "seleccionar arma alternativa calibrada", GameplayCommand::EquipPlayerWeapon { player, weapon: alternative_weapon })?;
+    run_command(&mut session, "crear enemigo para arma calibrada", GameplayCommand::CreateEnemy {
+        configuration: EnemyConfiguration {
+            archetype: EnemyArchetype::Shooter,
+            position: Vec3::ZERO,
+            maximum_health: 40,
+            weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)),
+            shield: None,
+            mobility: 1,
+        },
+    })?;
+    let calibrated_alternative_enemy = session
+        .world()
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .last()
+        .ok_or_else(|| "no se creo el enemigo para arma calibrada".to_owned())?;
+    run_command(&mut session, "atacar con arma alternativa calibrada", GameplayCommand::AttackEnemy { player, enemy: calibrated_alternative_enemy })?;
+    if session.world().combatant(calibrated_alternative_enemy).is_none_or(|enemy| enemy.current_health != 4) {
+        return Err("la calibracion no aumento una sola vez el arma alternativa a 36".to_owned());
+    }
+    run_command(&mut session, "desactivar enemigo de arma calibrada", GameplayCommand::SetEnemyActive { enemy: calibrated_alternative_enemy, active: false })?;
+    let invalid_weapon_state = session.save_state().serialize();
+    let invalid_weapon = session.update([GameplayCommand::EquipPlayerWeapon {
+        player,
+        weapon: WeaponConfiguration::new(AttackType::Plasma, 0, 8, Duration(2)),
+    }]);
+    if invalid_weapon.first().is_none_or(|result| result.status != CommandStatus::Invalid { reason: gameplay::CommandInvalidity::InvalidCombatConfiguration })
+        || session.save_state().serialize() != invalid_weapon_state
+    {
+        return Err("la seleccion de arma invalida altero el equipamiento".to_owned());
+    }
+    let duplicate_calibration_state = session.save_state().serialize();
+    let duplicate_calibration = session.update([GameplayCommand::InstallShipUpgrade {
+        player, ship, destination, upgrade: ShipUpgrade::WeaponCalibrationI,
+    }]);
+    if duplicate_calibration.first().is_none_or(|result| result.status != CommandStatus::Rejected { reason: gameplay::CommandRejection::ShipUpgradeAlreadyInstalled })
+        || session.save_state().serialize() != duplicate_calibration_state
+    {
+        return Err("la compra duplicada de calibracion mutó el estado".to_owned());
+    }
     let checkpoint = session.save_state().serialize();
     let decoded = gameplay::GameplaySaveState::deserialize(&checkpoint).map_err(|error| format!("deserializar mejora: {error}"))?;
     let mut restored = ProjectEchoSession::new();
     restored.restore_state(decoded).map_err(|error| format!("restaurar mejora: {error:?}"))?;
     if !restored.world().ship_has_upgrade(ship, ShipUpgrade::EngineEfficiencyI)
         || !restored.world().ship_has_upgrade(ship, ShipUpgrade::ReinforcedHullI)
+        || !restored.world().ship_has_upgrade(ship, ShipUpgrade::WeaponCalibrationI)
         || restored.world().ship_fuel(ship).is_none_or(|fuel| fuel.current() != 50)
         || restored.world().ship_integrity(ship).is_none_or(|value| value.current() != integrity_after_hull_damage)
+        || restored.world().combatant(player).is_none_or(|value| value.equipped_weapon != Some(alternative_weapon))
     {
         return Err("la restauración perdió la mejora o el combustible".to_owned());
     }
@@ -15450,6 +15672,32 @@ fn run_ship_upgrade_scenario() -> Result<(), String> {
     if restored_integrity_before_damage.saturating_sub(restored_integrity_after_damage) != 16 {
         return Err("el blindaje restaurado no redujo el dano real".to_owned());
     }
+    run_command(&mut restored, "avanzar cooldown restaurado", GameplayCommand::AdvanceTime { delta: Duration(2) })?;
+    run_command(&mut restored, "crear enemigo para calibracion restaurada", GameplayCommand::CreateEnemy {
+        configuration: EnemyConfiguration {
+            archetype: EnemyArchetype::Shooter,
+            position: Vec3::ZERO,
+            maximum_health: 40,
+            weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)),
+            shield: None,
+            mobility: 1,
+        },
+    })?;
+    let restored_calibrated_enemy = restored
+        .world()
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .last()
+        .ok_or_else(|| "no se creo el enemigo calibrado restaurado".to_owned())?;
+    run_command(&mut restored, "atacar con calibracion restaurada", GameplayCommand::AttackEnemy { player, enemy: restored_calibrated_enemy })?;
+    if restored.world().combatant(restored_calibrated_enemy).is_none_or(|enemy| enemy.current_health != 4) {
+        return Err("la calibracion restaurada no aumento el dano ofensivo".to_owned());
+    }
+    run_command(&mut restored, "desactivar enemigo calibrado restaurado", GameplayCommand::SetEnemyActive { enemy: restored_calibrated_enemy, active: false })?;
     let saved_after_restore = restored.save_state().serialize();
     let restored_station = restored
         .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
@@ -15476,7 +15724,7 @@ fn run_ship_upgrade_scenario() -> Result<(), String> {
     {
         return Err("el trayecto posterior a la mejora no fue real o no conservó el descuento".to_owned());
     }
-    println!("MEJORA ECONÓMICA: coste_inicial=10, coste_con_eficiencia=8, restaurada=true, combustible_final={}", restored.world().ship_fuel(ship).map_or(0, |fuel| fuel.current()));
+    println!("MEJORAS ECONOMICAS: calibracion=20%, dano_base=20, dano_calibrado=24, blindaje=20%, eficiencia=20%, restauradas=true, combustible_final={}", restored.world().ship_fuel(ship).map_or(0, |fuel| fuel.current()));
     Ok(())
 }
 

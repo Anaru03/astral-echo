@@ -5571,6 +5571,16 @@ impl GameplayWorld {
         u32::try_from(scaled.checked_add(99)? / 100).ok()
     }
 
+    pub(crate) fn player_attack_damage(&self, amount: u32) -> Option<u32> {
+        let bonus = self
+            .navigation
+            .ship_id()
+            .filter(|ship| self.ship_has_upgrade(*ship, ShipUpgrade::WeaponCalibrationI))
+            .map_or(0, |_| ShipUpgrade::WeaponCalibrationI.weapon_damage_bonus_percent());
+        let scaled = u64::from(amount).checked_mul(u64::from(100 + bonus))?;
+        u32::try_from(scaled.checked_add(99)? / 100).ok()
+    }
+
     fn ship_fuel_discount_percent(&self) -> u32 {
         self.navigation
             .ship_id()

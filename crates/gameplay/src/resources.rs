@@ -6,6 +6,7 @@ use crate::types::ItemId;
 pub enum ShipUpgrade {
     EngineEfficiencyI,
     ReinforcedHullI,
+    WeaponCalibrationI,
 }
 
 impl ShipUpgrade {
@@ -13,6 +14,7 @@ impl ShipUpgrade {
         match self {
             Self::EngineEfficiencyI => 2,
             Self::ReinforcedHullI => 3,
+            Self::WeaponCalibrationI => 4,
         }
     }
 
@@ -24,6 +26,7 @@ impl ShipUpgrade {
         match self {
             Self::EngineEfficiencyI => 2,
             Self::ReinforcedHullI => 3,
+            Self::WeaponCalibrationI => 2,
         }
     }
 
@@ -31,6 +34,7 @@ impl ShipUpgrade {
         match self {
             Self::EngineEfficiencyI => 20,
             Self::ReinforcedHullI => 0,
+            Self::WeaponCalibrationI => 0,
         }
     }
 
@@ -38,6 +42,15 @@ impl ShipUpgrade {
         match self {
             Self::EngineEfficiencyI => 0,
             Self::ReinforcedHullI => 20,
+            Self::WeaponCalibrationI => 0,
+        }
+    }
+
+    pub const fn weapon_damage_bonus_percent(self) -> u32 {
+        match self {
+            Self::EngineEfficiencyI => 0,
+            Self::ReinforcedHullI => 0,
+            Self::WeaponCalibrationI => 20,
         }
     }
 
@@ -45,6 +58,7 @@ impl ShipUpgrade {
         match self {
             Self::EngineEfficiencyI => 1,
             Self::ReinforcedHullI => 2,
+            Self::WeaponCalibrationI => 3,
         }
     }
 
@@ -52,6 +66,7 @@ impl ShipUpgrade {
         match code {
             1 => Some(Self::EngineEfficiencyI),
             2 => Some(Self::ReinforcedHullI),
+            3 => Some(Self::WeaponCalibrationI),
             _ => None,
         }
     }
