@@ -10338,9 +10338,46 @@ fn run_persistence_scenario() -> Result<(), String> {
                     available: 4,
                     extraction_amount: 2,
                 }),
+                WorldActivity::Combat(CombatZone {
+                    configuration: EnemyConfiguration {
+                        archetype: EnemyArchetype::Shooter,
+                        position: Vec3::ZERO,
+                        maximum_health: 20,
+                        weapon: WeaponConfiguration::new(
+                            AttackType::Energy,
+                            1,
+                            1,
+                            Duration(1_000),
+                        ),
+                        shield: None,
+                        mobility: 1,
+                    },
+                    active_enemy: None,
+                    resolved: false,
+                }),
+                WorldActivity::Story(StorySite {
+                    target: gameplay::KnowledgeTarget::Item(ItemId(3)),
+                    interacted: false,
+                }),
             ],
         ))
         .map_err(|error| format!("registrar mundo funcional de persistencia: {error:?}"))?;
+    run_command(
+        &mut session,
+        "activar combate funcional antes de guardar",
+        GameplayCommand::ActivateWorldCombat {
+            player: first,
+            destination: persistence_destination,
+        },
+    )?;
+    let functional_combat_enemy = session
+        .world()
+        .functional_world(persistence_destination)
+        .and_then(|world| world.activities.iter().find_map(|activity| match activity {
+            WorldActivity::Combat(zone) => zone.active_enemy,
+            _ => None,
+        }))
+        .ok_or_else(|| "no se asocio enemigo al combate funcional".to_owned())?;
     run_command(
         &mut session,
         "extraer stock de recursos para persistencia",
@@ -10525,6 +10562,9 @@ fn run_persistence_scenario() -> Result<(), String> {
         || restored.world().derelict(DerelictId::new(5702)).map(|value| value.state) != Some(DerelictState::Resolved)
         || restored.world().functional_world(persistence_destination).is_none_or(|value| !value.activities.iter().any(|activity| matches!(activity, WorldActivity::Resource(site) if site.available == 0)))
         || restored.world().world_trade_offer(persistence_destination, ItemId(3)).is_none_or(|offer| offer.stock != 3)
+        || restored.world().functional_world(persistence_destination).is_none_or(|value| !value.activities.iter().any(|activity| matches!(activity, WorldActivity::Combat(zone) if zone.active_enemy == Some(functional_combat_enemy) && !zone.resolved && zone.configuration.archetype == EnemyArchetype::Shooter && zone.configuration.maximum_health == 20)))
+        || restored.world().combatant(functional_combat_enemy).is_none_or(|value| value.is_player || !value.active)
+        || restored.world().functional_world(persistence_destination).is_none_or(|value| !value.activities.iter().any(|activity| matches!(activity, WorldActivity::Story(site) if site.target == gameplay::KnowledgeTarget::Item(ItemId(3)) && !site.interacted)))
     {
         return Err("la restauración no conservó identidades, inventarios o recursos".to_owned());
     }
@@ -14535,6 +14575,516 @@ fn run_resource_mission_integration_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_integrated_expedition_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player_a = session.ids.first_player;
+    let player_b = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador cooperativo de expedicion: {error:?}"))?;
+    session
+        .world_mut()
+        .initialize_inventory(player_b, 20)
+        .map_err(|error| format!("inicializar inventario de expedicion: {error:?}"))?;
+    let ship = session.ids.first_ship;
+    let pilot_station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear pilotaje de expedicion: {error:?}"))?;
+    let engineering_station = session
+        .create_station(
+            Vec3 {
+                x: 10.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            20.0,
+            StationType::Engineering,
+        )
+        .map_err(|error| format!("crear ingenieria de expedicion: {error:?}"))?;
+    run_command(
+        &mut session,
+        "crear ERICK de expedicion",
+        GameplayCommand::CreateCompanion {
+            followed_player: player_a,
+            position: Vec3::ZERO,
+        },
+    )?;
+    let erick = session
+        .world()
+        .companions()
+        .next()
+        .copied()
+        .ok_or_else(|| "ERICK no quedo registrado en la expedicion".to_owned())?;
+
+    let expedition = DestinationId::new(9_301);
+    let final_destination = DestinationId::new(9_302);
+    for destination in [
+        Destination {
+            id: expedition,
+            destination_type: DestinationType::Planet,
+            position: Vec3 {
+                x: 10.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            travel_duration: Duration(1),
+            fuel_cost: 2,
+            discovery: DiscoveryState::Known,
+        },
+        Destination {
+            id: final_destination,
+            destination_type: DestinationType::Planet,
+            position: Vec3 {
+                x: 20.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            travel_duration: Duration(1),
+            fuel_cost: 2,
+            discovery: DiscoveryState::Discovered,
+        },
+    ] {
+        run_command(
+            &mut session,
+            "registrar destino de expedicion",
+            GameplayCommand::RegisterDestination { destination },
+        )?;
+    }
+    run_command(
+        &mut session,
+        "danar nave antes de la expedicion",
+        GameplayCommand::DamageShip { ship, amount: 20 },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar pilotaje de expedicion",
+        GameplayCommand::Interact {
+            player: player_a,
+            target: pilot_station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "seleccionar destino de expedicion",
+        GameplayCommand::SelectDestination {
+            player: player_a,
+            pilot_station,
+            destination: expedition,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "viajar al destino de expedicion",
+        GameplayCommand::StartTravel {
+            player: player_a,
+            pilot_station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "llegar al destino de expedicion",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        },
+    )?;
+    if session.world().destination(expedition).is_none_or(|destination| {
+        destination.discovery != DiscoveryState::Discovered
+    }) || session.world().ship_position()
+        != Some(Vec3 {
+            x: 10.0,
+            y: 0.0,
+            z: 0.0,
+        })
+    {
+        return Err("la llegada no descubrio el destino ni actualizo la posicion".to_owned());
+    }
+    run_command(
+        &mut session,
+        "liberar pilotaje tras la llegada",
+        GameplayCommand::ReleaseStation {
+            station: pilot_station,
+            player: player_a,
+        },
+    )?;
+
+    run_command(
+        &mut session,
+        "registrar actividades de expedicion",
+        GameplayCommand::RegisterFunctionalWorld {
+            world: FunctionalWorld::new(
+                expedition,
+                2.0,
+                vec![
+                    WorldActivity::Trade(TradeMarket {
+                        offers: vec![
+                            TradeOffer {
+                                item: ItemId(1),
+                                buy_price: 4,
+                                sell_price: 2,
+                                stock: 2,
+                            },
+                            TradeOffer {
+                                item: ItemId(4),
+                                buy_price: 2,
+                                sell_price: 1,
+                                stock: 2,
+                            },
+                        ],
+                    }),
+                    WorldActivity::Resource(ResourceSite {
+                        item: ItemId(1),
+                        available: 8,
+                        extraction_amount: 2,
+                    }),
+                ],
+            ),
+        },
+    )?;
+    let resource_before = session
+        .world()
+        .inventory(player_a)
+        .ok_or_else(|| "falta inventario del explorador".to_owned())?
+        .quantity(ItemId(1));
+    run_command(
+        &mut session,
+        "extraer material de expedicion",
+        GameplayCommand::ExtractWorldResource {
+            player: player_a,
+            destination: expedition,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "extraer segunda reserva de expedicion",
+        GameplayCommand::ExtractWorldResource {
+            player: player_a,
+            destination: expedition,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "extraer tercera reserva de expedicion",
+        GameplayCommand::ExtractWorldResource {
+            player: player_a,
+            destination: expedition,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "extraer cuarta reserva de expedicion",
+        GameplayCommand::ExtractWorldResource {
+            player: player_a,
+            destination: expedition,
+        },
+    )?;
+    if session.world().inventory(player_a).is_none_or(|inventory| {
+        inventory.quantity(ItemId(1)) != resource_before + 8
+    }) || session
+        .world()
+        .functional_world(expedition)
+        .is_none_or(|world| {
+            !world.activities.iter().any(|activity| {
+                matches!(activity, WorldActivity::Resource(site) if site.available == 0)
+            })
+        })
+    {
+        return Err("la extraccion no actualizo inventario y stock".to_owned());
+    }
+    run_command(
+        &mut session,
+        "transferir material para mantenimiento",
+        GameplayCommand::TransferInventoryItem {
+            from: player_a,
+            to: player_b,
+            item: ItemId(1),
+            amount: 2,
+        },
+    )?;
+    if session.world().inventory(player_a).is_none_or(|inventory| {
+        inventory.quantity(ItemId(1)) != 6
+    }) || session.world().inventory(player_b).is_none_or(|inventory| {
+        inventory.quantity(ItemId(1)) != 2
+    }) {
+        return Err("la transferencia de material no preservo inventarios separados".to_owned());
+    }
+    run_command(
+        &mut session,
+        "ocupar ingenieria de expedicion",
+        GameplayCommand::Interact {
+            player: player_b,
+            target: engineering_station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "reparar nave con material transferido",
+        GameplayCommand::RepairShipAtStation {
+            player: player_b,
+            ship,
+            station: engineering_station,
+        },
+    )?;
+    if session.world().ship_integrity(ship).is_none_or(|integrity| {
+        integrity.current() != 100
+    }) || session.world().inventory(player_b).is_none_or(|inventory| {
+        inventory.quantity(ItemId(1)) != 1
+    }) {
+        return Err("la reparacion no consumo el material transferido".to_owned());
+    }
+
+    run_command(
+        &mut session,
+        "vender material restante",
+        GameplayCommand::SellWorldItem {
+            player: player_a,
+            destination: expedition,
+            item: ItemId(1),
+            amount: 2,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "comprar consumible de expedicion",
+        GameplayCommand::BuyWorldItem {
+            player: player_a,
+            destination: expedition,
+            item: ItemId(4),
+            amount: 1,
+        },
+    )?;
+    if session.world().player_currency(player_a) != Some(2)
+        || session.world().inventory(player_a).is_none_or(|inventory| {
+            inventory.quantity(ItemId(1)) != 4 || inventory.quantity(ItemId(4)) != 1
+        })
+    {
+        return Err("la economia de expedicion no conservo saldo e inventario".to_owned());
+    }
+
+    run_command(
+        &mut session,
+        "activar combate de expedicion",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration {
+                archetype: EnemyArchetype::Shooter,
+                position: Vec3 {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                maximum_health: 1,
+                weapon: WeaponConfiguration::new(AttackType::Energy, 1, 20, Duration(1_000)),
+                shield: None,
+                mobility: 1,
+            },
+        },
+    )?;
+    let enemy = session
+        .world()
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .last()
+        .ok_or_else(|| "el combate de expedicion no creo enemigo".to_owned())?;
+    run_command(
+        &mut session,
+        "equipar arma de expedicion",
+        GameplayCommand::EquipPlayerWeapon {
+            player: player_b,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 10, 20, Duration(1)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "derrotar enemigo de expedicion",
+        GameplayCommand::AttackEnemy {
+            player: player_b,
+            enemy,
+        },
+    )?;
+    if session
+        .world()
+        .combatant(enemy)
+        .is_none_or(|combatant| combatant.active || !combatant.is_defeated())
+        || session
+            .world()
+            .collectibles()
+            .filter(|collectible| collectible.active)
+            .count()
+            != 1
+    {
+        return Err("el combate de expedicion no genero una recompensa unica".to_owned());
+    }
+    let reward = session
+        .world()
+        .collectibles()
+        .find(|collectible| collectible.active)
+        .copied()
+        .ok_or_else(|| "falta recompensa de expedicion".to_owned())?;
+    run_command(
+        &mut session,
+        "acercar jugador a la recompensa de expedicion",
+        GameplayCommand::MovePlayer {
+            player: player_b,
+            direction: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+            delta: Duration(2_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "recoger recompensa de expedicion",
+        GameplayCommand::CollectItem {
+            player: player_b,
+            collectible: reward.entity,
+            amount: 1,
+        },
+    )?;
+    let repeated = session.update([GameplayCommand::AttackEnemy {
+        player: player_b,
+        enemy,
+    }]);
+    if !matches!(repeated.first().map(|result| &result.status), Some(CommandStatus::Rejected { .. }))
+        || session.world().collectible(reward.entity).is_none_or(|item| {
+            item.active || item.amount != 0
+        })
+    {
+        return Err("la derrota o recompensa de expedicion no fueron idempotentes".to_owned());
+    }
+
+    run_command(
+        &mut session,
+        "liberar ingenieria para navegar",
+        GameplayCommand::ReleaseStation {
+            station: engineering_station,
+            player: player_b,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar siguiente ruta de expedicion",
+        GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: expedition,
+                to: final_destination,
+                distance: 10.0,
+                duration: Duration(1),
+                fuel_cost: 2,
+                state: NavigationRouteState::Available,
+            },
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar pilotaje para continuar expedicion",
+        GameplayCommand::Interact {
+            player: player_a,
+            target: pilot_station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "planificar ruta final de expedicion",
+        GameplayCommand::PlanAutopilot {
+            player: player_a,
+            pilot_station,
+            origin: expedition,
+            destination: final_destination,
+        },
+    )?;
+    let navigation_before = session.save_state().serialize();
+    let operational = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("evaluar operacion de expedicion: {error:?}"))?
+        .ok_or_else(|| "ERICK no evaluo la nave de expedicion".to_owned())?;
+    let operational_repeat = session
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("repetir evaluacion de expedicion: {error:?}"))?;
+    if operational_repeat != Some(operational.clone())
+        || session.save_state().serialize() != navigation_before
+        || operational.integrity != 100
+        || operational.fuel_available != Some(58)
+    {
+        return Err("ERICK no reflejo el estado operativo reparado".to_owned());
+    }
+    run_command(
+        &mut session,
+        "iniciar viaje final de expedicion",
+        GameplayCommand::StartAutopilot {
+            player: player_a,
+            pilot_station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "llegar al destino final de expedicion",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        },
+    )?;
+    if session.world().ship_position()
+        != Some(Vec3 {
+            x: 20.0,
+            y: 0.0,
+            z: 0.0,
+        }) || session.world().ship_fuel(ship).is_none_or(|fuel| fuel.current() != 56)
+    {
+        return Err("la navegacion final no actualizo posicion y combustible".to_owned());
+    }
+
+    let saved = session.save_state().serialize();
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .restore_state(
+            gameplay::GameplaySaveState::deserialize(&saved)
+                .map_err(|error| format!("deserializar expedicion integrada: {error}"))?,
+        )
+        .map_err(|error| format!("restaurar expedicion integrada: {error}"))?;
+    if restored.world().ship_position()
+        != Some(Vec3 {
+            x: 20.0,
+            y: 0.0,
+            z: 0.0,
+        }) || restored.world().ship_fuel(ship).is_none_or(|fuel| fuel.current() != 56)
+        || restored.world().ship_integrity(ship).is_none_or(|integrity| {
+            integrity.current() != 100
+        })
+        || restored.world().inventory(player_a).is_none_or(|inventory| {
+            inventory.quantity(ItemId(4)) != 1
+        })
+        || restored.world().inventory(player_b).is_none_or(|inventory| {
+            inventory.quantity(ItemId(1)) != 1 || inventory.quantity(ItemId(3)) != 1
+        })
+        || restored.world().player_currency(player_a) != Some(2)
+        || restored.world().combatant(enemy).is_none_or(|combatant| {
+            combatant.active || !combatant.is_defeated()
+        })
+        || restored.world().collectible(reward.entity).is_none_or(|item| {
+            item.active || item.amount != 0
+        })
+    {
+        return Err("la restauracion perdio consecuencias de la expedicion".to_owned());
+    }
+    let restored_before = restored.save_state().serialize();
+    let restored_assessment = restored
+        .world()
+        .companion_operational_assessment(erick.entity)
+        .map_err(|error| format!("evaluar expedicion restaurada: {error:?}"))?;
+    if restored_assessment.is_none()
+        || restored.save_state().serialize() != restored_before
+    {
+        return Err("la evaluacion restaurada no fue disponible o mutante".to_owned());
+    }
+    println!(
+        "EXPEDICION INTEGRADA COMPLETADA: destino={:?}, recurso_extraido=true, transferencia=true, reparacion=100, comercio=true, enemigo={}, recompensa_recogida=true, destino_final={:?}, restaurado=true",
+        expedition, enemy, final_destination
+    );
+    Ok(())
+}
+
 fn run_scenario() -> Result<(), String> {
     run_atomicity_regressions()?;
     let mut session = ProjectEchoSession::new();
@@ -14756,6 +15306,7 @@ fn run_scenario() -> Result<(), String> {
     run_exploration_continuity_scenario()?;
     run_functional_world_scenario()?;
     run_resource_mission_integration_scenario()?;
+    run_integrated_expedition_scenario()?;
     run_guidance_progression_scenario()?;
     run_group_scaling_scenario()?;
     run_persistence_scenario()?;
