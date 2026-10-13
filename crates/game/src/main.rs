@@ -13753,7 +13753,7 @@ fn run_runtime_campaign_scenario() -> Result<(), String> {
     let campaign_engineering = runtime.campaign_engineering_station;
     let pilot_station = runtime.pilot_station;
     let campaign_encounter = runtime.campaign_encounter;
-    let mission_completed = |runtime: &RuntimeSession, id: gameplay::types::MissionId, label: &str| {
+    let _mission_completed = |runtime: &RuntimeSession, id: gameplay::types::MissionId, label: &str| {
         let mission = runtime
             .gameplay
             .world()
@@ -13764,9 +13764,59 @@ fn run_runtime_campaign_scenario() -> Result<(), String> {
         }
         Ok(())
     };
+    let assert_required_mission = |
+        runtime: &RuntimeSession,
+        id: gameplay::types::MissionId,
+        label: &str,
+        required: &[gameplay::types::ObjectiveId],
+    | -> Result<(), String> {
+        let mission = runtime
+            .gameplay
+            .world()
+            .mission(id)
+            .ok_or_else(|| format!("{label} no estÃ¡ registrada"))?;
+        let progress = mission.progress();
+        if progress.state != MissionState::Completed
+            || progress.required_total != required.len()
+            || progress.required_completed != required.len()
+        {
+            return Err(format!(
+                "{label} no completÃ³ todos sus objetivos requeridos: {progress:?}"
+            ));
+        }
+        for objective_id in required {
+            let objective = mission
+                .objectives()
+                .iter()
+                .find(|objective| objective.id == *objective_id)
+                .ok_or_else(|| format!("{label} no tiene el objetivo {objective_id:?}"))?;
+            if !objective.required
+                || objective.state() != ObjectiveState::Completed
+                || objective.progress() != objective.required_progress()
+            {
+                return Err(format!(
+                    "{label} tiene incompleto el objetivo {objective_id:?}: estado={:?}, progreso={}/{}",
+                    objective.state(),
+                    objective.progress(),
+                    objective.required_progress()
+                ));
+            }
+        }
+        Ok(())
+    };
     let run = |runtime: &mut RuntimeSession, output: &mut Vec<u8>, line: &str| -> Result<(), String> {
         let command = parse_runtime_command(line)?;
         execute_runtime_command(runtime, &command, output).map(|_| ())
+    };
+    let run_action = |runtime: &mut RuntimeSession, output: &mut Vec<u8>, line: &str| -> Result<(), String> {
+        let before = output.len();
+        let command = parse_runtime_command(line)?;
+        execute_runtime_command(runtime, &command, output)?;
+        let result = String::from_utf8_lossy(&output[before..]);
+        if !result.contains("Success { changed: true }") {
+            return Err(format!("la acciÃ³n runtime no fue aceptada: {line}: {result}"));
+        }
+        Ok(())
     };
 
     run(&mut runtime, &mut output, "missions")?;
@@ -13780,40 +13830,51 @@ fn run_runtime_campaign_scenario() -> Result<(), String> {
         return Err("un comando de misión inválido no fue rechazado sin mutación".to_owned());
     }
 
-    run(&mut runtime, &mut output, "unlock 1")?;
-    run(&mut runtime, &mut output, "startmission 1")?;
-    run(&mut runtime, &mut output, &format!("interact {}", status_console.value()))?;
-    run(&mut runtime, &mut output, &format!("interact {}", electrical_panel.value()))?;
-    run(&mut runtime, &mut output, &format!("breaker {} 1 on", electrical_panel.value()))?;
-    run(&mut runtime, &mut output, &format!("interact {}", life_support_panel.value()))?;
-    run(&mut runtime, &mut output, &format!("oxygen {} 1 3", life_support_panel.value()))?;
-    run(&mut runtime, &mut output, &format!("oxygen {} 2 2", life_support_panel.value()))?;
-    run(&mut runtime, &mut output, &format!("unlockdoor {}", bridge.value()))?;
-    run(&mut runtime, &mut output, &format!("interact {}", bridge.value()))?;
+    run_action(&mut runtime, &mut output, "unlock 1")?;
+    run_action(&mut runtime, &mut output, "startmission 1")?;
+    run_action(&mut runtime, &mut output, &format!("interact {}", status_console.value()))?;
+    run_action(&mut runtime, &mut output, &format!("interact {}", electrical_panel.value()))?;
+    run_action(&mut runtime, &mut output, &format!("breaker {} 1 on", electrical_panel.value()))?;
+    run_action(&mut runtime, &mut output, &format!("interact {}", life_support_panel.value()))?;
+    run_action(&mut runtime, &mut output, &format!("oxygen {} 1 3", life_support_panel.value()))?;
+    run_action(&mut runtime, &mut output, &format!("oxygen {} 2 2", life_support_panel.value()))?;
+    run_action(&mut runtime, &mut output, &format!("unlockdoor {}", bridge.value()))?;
+    run_action(&mut runtime, &mut output, &format!("interact {}", bridge.value()))?;
     run(&mut runtime, &mut output, &format!("interact {}", pilot_station.value()))?;
-    mission_completed(&runtime, el_despertar::EL_DESPERTAR, "El despertar")?;
+    assert_required_mission(
+        &runtime,
+        el_despertar::EL_DESPERTAR,
+        "El despertar",
+        &[
+            el_despertar::EVALUAR_ESTADO_NAVE,
+            el_despertar::RESTAURAR_ENERGIA,
+            el_despertar::RESTABLECER_SOPORTE_VITAL,
+            el_despertar::ACCEDER_PUENTE_MANDO,
+            el_despertar::TOMAR_CONTROL_NAVE,
+        ],
+    )?;
 
-    run(&mut runtime, &mut output, "unlock 2")?;
-    run(&mut runtime, &mut output, "startmission 2")?;
-    run(&mut runtime, &mut output, "unlock 5")?;
-    run(&mut runtime, &mut output, "startmission 5")?;
-    run(&mut runtime, &mut output, "scan")?;
-    run(&mut runtime, &mut output, "advance 1000")?;
-    run(&mut runtime, &mut output, "scan")?;
-    run(&mut runtime, &mut output, "extract 13001")?;
-    run(&mut runtime, &mut output, &format!("select {}", ecos_anomalia::PLANET_DESTINATION.value()))?;
-    run(&mut runtime, &mut output, "travel")?;
-    run(&mut runtime, &mut output, "advance 100")?;
-    run(&mut runtime, &mut output, "move 1 0 0 2000")?;
+    run_action(&mut runtime, &mut output, "unlock 2")?;
+    run_action(&mut runtime, &mut output, "startmission 2")?;
+    run_action(&mut runtime, &mut output, "unlock 5")?;
+    run_action(&mut runtime, &mut output, "startmission 5")?;
+    run_action(&mut runtime, &mut output, "scan")?;
+    run_action(&mut runtime, &mut output, "advance 1000")?;
+    run_action(&mut runtime, &mut output, "scan")?;
+    run_action(&mut runtime, &mut output, "extract 13001")?;
+    run_action(&mut runtime, &mut output, &format!("select {}", ecos_anomalia::PLANET_DESTINATION.value()))?;
+    run_action(&mut runtime, &mut output, "travel")?;
+    run_action(&mut runtime, &mut output, "advance 100")?;
+    run_action(&mut runtime, &mut output, "move 1 0 0 2000")?;
     let anomaly_enemy = runtime
         .gameplay
         .world()
         .spatial_encounter(campaign_encounter)
         .and_then(|encounter| encounter.spawned_enemy)
         .ok_or_else(|| "el encuentro runtime no creó la amenaza de Ecos".to_owned())?;
-    run(&mut runtime, &mut output, &format!("attack {} 2", anomaly_enemy.value()))?;
-    run(&mut runtime, &mut output, "advance 1000")?;
-    run(&mut runtime, &mut output, &format!("attack {} 2", anomaly_enemy.value()))?;
+    run_action(&mut runtime, &mut output, &format!("attack {} 2", anomaly_enemy.value()))?;
+    run_action(&mut runtime, &mut output, "advance 1000")?;
+    run_action(&mut runtime, &mut output, &format!("attack {} 2", anomaly_enemy.value()))?;
     let anomaly_reward = runtime
         .gameplay
         .world()
@@ -13821,10 +13882,29 @@ fn run_runtime_campaign_scenario() -> Result<(), String> {
         .find(|collectible| collectible.active && collectible.item == ItemId(3))
         .copied()
         .ok_or_else(|| "Ecos no generó su recompensa Item3".to_owned())?;
-    run(&mut runtime, &mut output, &format!("collect {} 1", anomaly_reward.entity.value()))?;
-    run(&mut runtime, &mut output, "move -1 0 0 2000")?;
-    mission_completed(&runtime, ecos_anomalia::ECOS_DE_LA_ANOMALIA, "Ecos de la anomalia")?;
-    mission_completed(&runtime, cooperacion::PROGRESION_COOPERATIVA, "Progresion cooperativa")?;
+    run_action(&mut runtime, &mut output, &format!("collect {} 1", anomaly_reward.entity.value()))?;
+    run_action(&mut runtime, &mut output, "move -1 0 0 2000")?;
+    assert_required_mission(
+        &runtime,
+        ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+        "Ecos de la anomalia",
+        &[
+            ecos_anomalia::CONFIRMAR_SENAL,
+            ecos_anomalia::INVESTIGAR_DESTINO,
+            ecos_anomalia::NEUTRALIZAR_AMENAZA,
+            ecos_anomalia::RECUPERAR_INFORMACION,
+        ],
+    )?;
+    assert_required_mission(
+        &runtime,
+        cooperacion::PROGRESION_COOPERATIVA,
+        "Progresion cooperativa",
+        &[
+            cooperacion::IDENTIFICAR_SENAL,
+            cooperacion::DERROTAR_AMENAZA,
+            cooperacion::RECUPERAR_RECOMPENSA,
+        ],
+    )?;
 
     run(&mut runtime, &mut output, "checkpoint")?;
     let checkpoint = runtime
@@ -13842,23 +13922,32 @@ fn run_runtime_campaign_scenario() -> Result<(), String> {
         return Err("la restauración no conservó progreso o ERICK".to_owned());
     }
 
-    run(&mut runtime, &mut output, "unlock 3")?;
-    run(&mut runtime, &mut output, "startmission 3")?;
-    run(&mut runtime, &mut output, "advance 1000")?;
-    run(&mut runtime, &mut output, &format!("move 1 0 0 2000"))?;
-    run(&mut runtime, &mut output, &format!("interact {}", campaign_engineering.value()))?;
-    run(&mut runtime, &mut output, &format!("repair {}", campaign_engineering.value()))?;
-    run(&mut runtime, &mut output, &format!("release {}", campaign_engineering.value()))?;
-    run(&mut runtime, &mut output, "move -1 0 0 2000")?;
+    run_action(&mut runtime, &mut output, "unlock 3")?;
+    run_action(&mut runtime, &mut output, "startmission 3")?;
+    run_action(&mut runtime, &mut output, "advance 1000")?;
+    run_action(&mut runtime, &mut output, &format!("move 1 0 0 2000"))?;
+    run_action(&mut runtime, &mut output, &format!("interact {}", campaign_engineering.value()))?;
+    run_action(&mut runtime, &mut output, &format!("repair {}", campaign_engineering.value()))?;
+    run_action(&mut runtime, &mut output, &format!("release {}", campaign_engineering.value()))?;
+    run_action(&mut runtime, &mut output, "move -1 0 0 2000")?;
     run(&mut runtime, &mut output, &format!("interact {}", pilot_station.value()))?;
-    run(&mut runtime, &mut output, &format!("select {}", tormenta_gravitacional::ESCAPE_DESTINATION.value()))?;
-    run(&mut runtime, &mut output, "travel")?;
-    run(&mut runtime, &mut output, "advance 100")?;
-    mission_completed(&runtime, tormenta_gravitacional::TORMENTA_GRAVITACIONAL, "Tormenta gravitacional")?;
+    run_action(&mut runtime, &mut output, &format!("select {}", tormenta_gravitacional::ESCAPE_DESTINATION.value()))?;
+    run_action(&mut runtime, &mut output, "travel")?;
+    run_action(&mut runtime, &mut output, "advance 100")?;
+    assert_required_mission(
+        &runtime,
+        tormenta_gravitacional::TORMENTA_GRAVITACIONAL,
+        "Tormenta gravitacional",
+        &[
+            tormenta_gravitacional::ENTRAR_EN_LA_TORMENTA,
+            tormenta_gravitacional::ESTABILIZAR_LA_NAVE,
+            tormenta_gravitacional::CONTINUAR_EL_VIAJE,
+        ],
+    )?;
 
-    run(&mut runtime, &mut output, "unlock 4")?;
-    run(&mut runtime, &mut output, "startmission 4")?;
-    run(&mut runtime, &mut output, "spawn shielded")?;
+    run_action(&mut runtime, &mut output, "unlock 4")?;
+    run_action(&mut runtime, &mut output, "startmission 4")?;
+    run_action(&mut runtime, &mut output, "spawn shielded")?;
     let shielded = runtime
         .gameplay
         .world()
@@ -13871,10 +13960,10 @@ fn run_runtime_campaign_scenario() -> Result<(), String> {
         })
         .ok_or_else(|| "La defensa no creó el enemigo escudado".to_owned())?;
     run(&mut runtime, &mut output, "equip kinetic")?;
-    run(&mut runtime, &mut output, &format!("attack {}", shielded.value()))?;
-    run(&mut runtime, &mut output, "advance 1000")?;
+    run_action(&mut runtime, &mut output, &format!("attack {}", shielded.value()))?;
+    run_action(&mut runtime, &mut output, "advance 1000")?;
     run(&mut runtime, &mut output, "equip energy")?;
-    run(&mut runtime, &mut output, &format!("attack {}", shielded.value()))?;
+    run_action(&mut runtime, &mut output, &format!("attack {}", shielded.value()))?;
     let defense_reward = runtime
         .gameplay
         .world()
@@ -13882,8 +13971,18 @@ fn run_runtime_campaign_scenario() -> Result<(), String> {
         .find(|collectible| collectible.active && collectible.item == ItemId(1))
         .copied()
         .ok_or_else(|| "La defensa no generó su recompensa Item1".to_owned())?;
-    run(&mut runtime, &mut output, &format!("collect {} 1", defense_reward.entity.value()))?;
-    mission_completed(&runtime, la_defensa_imposible::LA_DEFENSA_IMPOSIBLE, "La defensa imposible")?;
+    run_action(&mut runtime, &mut output, &format!("collect {} 1", defense_reward.entity.value()))?;
+    assert_required_mission(
+        &runtime,
+        la_defensa_imposible::LA_DEFENSA_IMPOSIBLE,
+        "La defensa imposible",
+        &[
+            la_defensa_imposible::COMPROBAR_LA_DEFENSA,
+            la_defensa_imposible::DESACTIVAR_EL_ESCUDO,
+            la_defensa_imposible::NEUTRALIZAR_EL_ESCUDADO,
+            la_defensa_imposible::RECUPERAR_LA_RECOMPENSA,
+        ],
+    )?;
 
     let duplicate_state = runtime.gameplay.save_state().serialize();
     run(&mut runtime, &mut output, "startmission 1")?;
@@ -13894,6 +13993,274 @@ fn run_runtime_campaign_scenario() -> Result<(), String> {
         return Err("el runtime no completó exactamente las cinco misiones".to_owned());
     }
     println!("CAMPAÑA RUNTIME COMPLETADA: misiones=5, parser_dispatcher=true, checkpoint=true, restauracion=true, erick=true, duplicacion=false, continuacion=true, jugador={}", first.value());
+    let repeated_reward_state = runtime.gameplay.save_state().serialize();
+    run(&mut runtime, &mut output, &format!("collect {} 1", defense_reward.entity.value()))?;
+    if runtime.gameplay.save_state().serialize() != repeated_reward_state
+        || !String::from_utf8_lossy(&output).contains("CollectibleUnavailable")
+    {
+        return Err("repetir la recogida no fue idempotente".to_owned());
+    }
+    let final_state = runtime.gameplay.save_state().serialize();
+    let mut restored = create_runtime_session()?;
+    restored.checkpoint = Some(final_state.clone());
+    run(&mut restored, &mut output, "restore")?;
+    if restored.gameplay.save_state().serialize() != final_state {
+        return Err("la restauraciÃ³n final alterÃ³ el estado de las cinco misiones".to_owned());
+    }
+    for (id, label, objectives) in [
+        (
+            el_despertar::EL_DESPERTAR,
+            "El despertar restaurado",
+            vec![
+                el_despertar::EVALUAR_ESTADO_NAVE,
+                el_despertar::RESTAURAR_ENERGIA,
+                el_despertar::RESTABLECER_SOPORTE_VITAL,
+                el_despertar::ACCEDER_PUENTE_MANDO,
+                el_despertar::TOMAR_CONTROL_NAVE,
+            ],
+        ),
+        (
+            ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+            "Ecos restaurado",
+            vec![
+                ecos_anomalia::CONFIRMAR_SENAL,
+                ecos_anomalia::INVESTIGAR_DESTINO,
+                ecos_anomalia::NEUTRALIZAR_AMENAZA,
+                ecos_anomalia::RECUPERAR_INFORMACION,
+            ],
+        ),
+        (
+            tormenta_gravitacional::TORMENTA_GRAVITACIONAL,
+            "Tormenta restaurada",
+            vec![
+                tormenta_gravitacional::ENTRAR_EN_LA_TORMENTA,
+                tormenta_gravitacional::ESTABILIZAR_LA_NAVE,
+                tormenta_gravitacional::CONTINUAR_EL_VIAJE,
+            ],
+        ),
+        (
+            la_defensa_imposible::LA_DEFENSA_IMPOSIBLE,
+            "Defensa restaurada",
+            vec![
+                la_defensa_imposible::COMPROBAR_LA_DEFENSA,
+                la_defensa_imposible::DESACTIVAR_EL_ESCUDO,
+                la_defensa_imposible::NEUTRALIZAR_EL_ESCUDADO,
+                la_defensa_imposible::RECUPERAR_LA_RECOMPENSA,
+            ],
+        ),
+        (
+            cooperacion::PROGRESION_COOPERATIVA,
+            "Progresion restaurada",
+            vec![
+                cooperacion::IDENTIFICAR_SENAL,
+                cooperacion::DERROTAR_AMENAZA,
+                cooperacion::RECUPERAR_RECOMPENSA,
+            ],
+        ),
+    ] {
+        assert_required_mission(&restored, id, label, &objectives)?;
+    }
+    let post_origin = tormenta_gravitacional::ESCAPE_DESTINATION;
+    let post_destination = DestinationId::new(13_004);
+    let post_engineering_station = restored.engineering_station;
+    let post_first_player = restored.gameplay.ids.first_player;
+    let post_other_player = restored.other_player;
+    let register_post_route = restored.gameplay.update([GameplayCommand::RegisterNavigationRoute {
+        route: NavigationRoute {
+            from: post_origin,
+            to: post_destination,
+            distance: 20.0,
+            duration: Duration(10),
+            fuel_cost: 1,
+            state: NavigationRouteState::Available,
+        },
+    }]);
+    if !matches!(
+        register_post_route.first().map(|result| result.status),
+        Some(CommandStatus::Success { changed: true })
+    ) {
+        return Err(format!("no se pudo registrar la ruta post-campaÃ±a: {register_post_route:?}"));
+    }
+    run(&mut restored, &mut output, "navigation")?;
+    let fuel_before_post_travel = restored
+        .gameplay
+        .world()
+        .ship_fuel(restored.gameplay.ids.first_ship)
+        .ok_or_else(|| "falta combustible post-campaÃ±a".to_owned())?
+        .current();
+    run_action(&mut restored, &mut output, "pilot")?;
+    run_action(&mut restored, &mut output, "plan 103 13004")?;
+    run_action(&mut restored, &mut output, "start")?;
+    run_action(&mut restored, &mut output, "advance 10")?;
+    if restored.gameplay.world().ship_position()
+        != Some(Vec3 { x: 20.0, y: 0.0, z: 0.0 })
+        || restored
+            .gameplay
+            .world()
+            .ship_fuel(restored.gameplay.ids.first_ship)
+            .map(|fuel| fuel.current())
+            != Some(fuel_before_post_travel - 1)
+    {
+        return Err("el autopilot post-campaÃ±a no produjo llegada y consumo coherentes".to_owned());
+    }
+    let register_return_route = restored.gameplay.update([GameplayCommand::RegisterNavigationRoute {
+        route: NavigationRoute {
+            from: post_destination,
+            to: DestinationId::new(13_001),
+            distance: 20.0,
+            duration: Duration(10),
+            fuel_cost: 1,
+            state: NavigationRouteState::Available,
+        },
+    }]);
+    if !matches!(
+        register_return_route.first().map(|result| result.status),
+        Some(CommandStatus::Success { changed: true })
+    ) {
+        return Err(format!("no se pudo registrar el retorno post-campaÃ±a: {register_return_route:?}"));
+    }
+    run_action(&mut restored, &mut output, "plan 13004 13001")?;
+    run_action(&mut restored, &mut output, "start")?;
+    run_action(&mut restored, &mut output, "advance 10")?;
+    run_action(&mut restored, &mut output, "extract 13001")?;
+    let integrity_before_damage = restored
+        .gameplay
+        .world()
+        .ship_integrity(restored.gameplay.ids.first_ship)
+        .ok_or_else(|| "falta integridad post-campaÃ±a".to_owned())?
+        .current();
+    run_action(&mut restored, &mut output, "damage 10")?;
+    let integrity_damaged = restored
+        .gameplay
+        .world()
+        .ship_integrity(restored.gameplay.ids.first_ship)
+        .ok_or_else(|| "no se aplicÃ³ daÃ±o post-campaÃ±a".to_owned())?
+        .current();
+    run_action(&mut restored, &mut output, &format!("interact {}", post_engineering_station.value()))?;
+    run_action(&mut restored, &mut output, &format!("repair {}", post_engineering_station.value()))?;
+    run_action(&mut restored, &mut output, &format!("release {}", post_engineering_station.value()))?;
+    let integrity_repaired = restored
+        .gameplay
+        .world()
+        .ship_integrity(restored.gameplay.ids.first_ship)
+        .ok_or_else(|| "no se reparÃ³ la nave post-campaÃ±a".to_owned())?
+        .current();
+    if integrity_damaged >= integrity_before_damage || integrity_repaired <= integrity_damaged {
+        return Err("la recuperaciÃ³n post-campaÃ±a no cambiÃ³ la integridad correctamente".to_owned());
+    }
+    run_action(&mut restored, &mut output, &format!("transfer {} {} 2 1", post_first_player.value(), post_other_player.value()))?;
+    let invalid_transfer_state = restored.gameplay.save_state().serialize();
+    run(&mut restored, &mut output, &format!("transfer {} {} 2 3", post_first_player.value(), post_other_player.value()))?;
+    if restored.gameplay.save_state().serialize() != invalid_transfer_state
+        || !String::from_utf8_lossy(&output).contains("InventoryInsufficientQuantity")
+    {
+        return Err("la transferencia post-campaÃ±a invÃ¡lida no fue atÃ³mica".to_owned());
+    }
+    run_action(&mut restored, &mut output, "sell 13001 1 3")?;
+    run_action(&mut restored, &mut output, "buy 13001 2 1")?;
+    run_action(&mut restored, &mut output, "sell 13001 2 1")?;
+    run_action(&mut restored, &mut output, "upgrade 1 13001")?;
+    if !restored
+        .gameplay
+        .world()
+        .ship_has_upgrade(restored.gameplay.ids.first_ship, ShipUpgrade::EngineEfficiencyI)
+    {
+        return Err("la mejora econÃ³mica post-campaÃ±a no quedÃ³ instalada".to_owned());
+    }
+    run_action(&mut restored, &mut output, &format!("transfer {} {} 5 1", post_first_player.value(), post_other_player.value()))?;
+    run_action(&mut restored, &mut output, "spawn shooter")?;
+    let post_enemy = restored
+        .gameplay
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, archetype, .. }
+                if *archetype == EnemyArchetype::Shooter => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "el combate post-campaÃ±a no creÃ³ enemigo".to_owned())?;
+    run_action(&mut restored, &mut output, "advance 1000")?;
+    run_action(&mut restored, &mut output, &format!("attack {} {}", post_enemy.value(), post_other_player.value()))?;
+    run_action(&mut restored, &mut output, &format!("revive {} {} 5", post_other_player.value(), post_first_player.value()))?;
+    let post_checkpoint = restored.gameplay.save_state().serialize();
+    run(&mut restored, &mut output, "checkpoint")?;
+    let checkpoint = restored
+        .checkpoint
+        .clone()
+        .ok_or_else(|| "no se creÃ³ checkpoint post-campaÃ±a".to_owned())?;
+    if checkpoint != post_checkpoint {
+        return Err("el checkpoint post-campaÃ±a no capturÃ³ el estado actual".to_owned());
+    }
+    let before_erick = restored.gameplay.save_state().serialize();
+    run(&mut restored, &mut output, "erick all")?;
+    if restored.gameplay.save_state().serialize() != before_erick {
+        return Err("ERICK mutÃ³ el estado post-campaÃ±a".to_owned());
+    }
+    run_action(&mut restored, &mut output, "move 1 0 0 100")?;
+    if restored.gameplay.save_state().serialize() == checkpoint {
+        return Err("la acciÃ³n post-campaÃ±a no produjo una mutaciÃ³n real".to_owned());
+    }
+    run(&mut restored, &mut output, "restore")?;
+    if restored.gameplay.save_state().serialize() != checkpoint {
+        return Err("restore no recuperÃ³ exactamente el checkpoint post-campaÃ±a".to_owned());
+    }
+    for (id, label, objectives) in [
+        (
+            el_despertar::EL_DESPERTAR,
+            "El despertar post-campaÃ±a",
+            vec![
+                el_despertar::EVALUAR_ESTADO_NAVE,
+                el_despertar::RESTAURAR_ENERGIA,
+                el_despertar::RESTABLECER_SOPORTE_VITAL,
+                el_despertar::ACCEDER_PUENTE_MANDO,
+                el_despertar::TOMAR_CONTROL_NAVE,
+            ],
+        ),
+        (
+            ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+            "Ecos post-campaÃ±a",
+            vec![
+                ecos_anomalia::CONFIRMAR_SENAL,
+                ecos_anomalia::INVESTIGAR_DESTINO,
+                ecos_anomalia::NEUTRALIZAR_AMENAZA,
+                ecos_anomalia::RECUPERAR_INFORMACION,
+            ],
+        ),
+        (
+            tormenta_gravitacional::TORMENTA_GRAVITACIONAL,
+            "Tormenta post-campaÃ±a",
+            vec![
+                tormenta_gravitacional::ENTRAR_EN_LA_TORMENTA,
+                tormenta_gravitacional::ESTABILIZAR_LA_NAVE,
+                tormenta_gravitacional::CONTINUAR_EL_VIAJE,
+            ],
+        ),
+        (
+            la_defensa_imposible::LA_DEFENSA_IMPOSIBLE,
+            "Defensa post-campaÃ±a",
+            vec![
+                la_defensa_imposible::COMPROBAR_LA_DEFENSA,
+                la_defensa_imposible::DESACTIVAR_EL_ESCUDO,
+                la_defensa_imposible::NEUTRALIZAR_EL_ESCUDADO,
+                la_defensa_imposible::RECUPERAR_LA_RECOMPENSA,
+            ],
+        ),
+        (
+            cooperacion::PROGRESION_COOPERATIVA,
+            "Progresion post-campaÃ±a",
+            vec![
+                cooperacion::IDENTIFICAR_SENAL,
+                cooperacion::DERROTAR_AMENAZA,
+                cooperacion::RECUPERAR_RECOMPENSA,
+            ],
+        ),
+    ] {
+        assert_required_mission(&restored, id, label, &objectives)?;
+    }
+    run_action(&mut restored, &mut output, "move -1 0 0 100")?;
+    println!("POST-CAMPAIGN CONTINUITY COMPLETED: missions=5, navigation=true, extraction=true, repair=true, transfer=true, economy=true, upgrade=true, combat=true, erick_read_only=true, checkpoint=true, restore=true");
+    println!("CAMPAIGN MISSION OBJECTIVES: m1=5/5, m2=4/4, m3=3/3, m4=4/4, m5=3/3, terminal=Completed");
     Ok(())
 }
 
