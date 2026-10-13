@@ -5,7 +5,7 @@ pub const PROGRESION_COOPERATIVA: MissionId = MissionId(5);
 pub const IDENTIFICAR_SENAL: ObjectiveId = ObjectiveId(20);
 pub const DERROTAR_AMENAZA: ObjectiveId = ObjectiveId(21);
 pub const RECUPERAR_RECOMPENSA: ObjectiveId = ObjectiveId(22);
-pub const SIGNAL_DESTINATION: gameplay::DestinationId = gameplay::DestinationId::new(103);
+pub const SIGNAL_DESTINATION: gameplay::DestinationId = gameplay::DestinationId::new(104);
 
 pub fn definition() -> Result<Mission, MissionDefinitionError> {
     let identify_signal = Objective::new(
