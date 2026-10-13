@@ -15294,26 +15294,35 @@ fn run_ship_upgrade_scenario() -> Result<(), String> {
         .map_err(|error| format!("crear estación de mejora: {error:?}"))?;
     let origin = DestinationId::new(9_001);
     let destination = DestinationId::new(9_002);
-    for (id, position) in [(origin, Vec3::ZERO), (destination, Vec3 { x: 30.0, y: 0.0, z: 0.0 })] {
+    let intermediate = DestinationId::new(9_003);
+    for (id, position) in [
+        (origin, Vec3::ZERO),
+        (destination, Vec3 { x: 30.0, y: 0.0, z: 0.0 }),
+        (intermediate, Vec3 { x: 15.0, y: 0.0, z: 0.0 }),
+    ] {
         run_command(&mut session, "registrar destino de mejora", GameplayCommand::RegisterDestination {
             destination: Destination {
                 id,
                 destination_type: DestinationType::Planet,
                 position,
                 travel_duration: Duration(1),
-                fuel_cost: 10,
+                fuel_cost: if id == destination { 10 } else { 1 },
                 discovery: DiscoveryState::Discovered,
             },
         })?;
     }
-    for (from, to) in [(origin, destination), (destination, origin)] {
+    for (from, to, distance, fuel_cost) in [
+        (origin, destination, 30.0, 10),
+        (destination, intermediate, 15.0, 5),
+        (intermediate, origin, 15.0, 1),
+    ] {
         run_command(&mut session, "registrar ruta de mejora", GameplayCommand::RegisterNavigationRoute {
             route: NavigationRoute {
                 from,
                 to,
-                distance: 30.0,
+                distance,
                 duration: Duration(1),
-                fuel_cost: 10,
+                fuel_cost,
                 state: NavigationRouteState::Available,
             },
         })?;
@@ -15323,7 +15332,7 @@ fn run_ship_upgrade_scenario() -> Result<(), String> {
             WorldActivity::Trade(TradeMarket { offers: vec![TradeOffer {
                 item: ItemId(1), buy_price: 1, sell_price: 1, stock: 10,
             }] }),
-            WorldActivity::Resource(ResourceSite { item: ItemId(1), available: 10, extraction_amount: 2 }),
+            WorldActivity::Resource(ResourceSite { item: ItemId(1), available: 20, extraction_amount: 2 }),
         ]),
     })?;
     run_command(&mut session, "ocupar estación de mejora", GameplayCommand::Interact { player, target: station })?;
@@ -15371,11 +15380,56 @@ fn run_ship_upgrade_scenario() -> Result<(), String> {
     if before_install == after_install {
         return Err("la instalación no cambió el estado persistente".to_owned());
     }
+    run_command(&mut session, "extraer materiales de blindaje", GameplayCommand::ExtractWorldResource { player, destination })?;
+    run_command(&mut session, "extraer segundo material de blindaje", GameplayCommand::ExtractWorldResource { player, destination })?;
+    let integrity_before_unarmored_damage = session.world().ship_integrity(ship).ok_or_else(|| "falta integridad antes del blindaje".to_owned())?.current();
+    run_command(&mut session, "danar nave sin blindaje", GameplayCommand::DamageShip { ship, amount: 20 })?;
+    let integrity_after_unarmored_damage = session.world().ship_integrity(ship).ok_or_else(|| "falta integridad tras dano sin blindaje".to_owned())?.current();
+    if integrity_before_unarmored_damage.saturating_sub(integrity_after_unarmored_damage) != 20 {
+        return Err("el dano sin blindaje no fue completo".to_owned());
+    }
+    let engineering_station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Engineering)
+        .map_err(|error| format!("crear estacion de reparacion: {error:?}"))?;
+    run_command(&mut session, "ocupar estacion de reparacion", GameplayCommand::Interact { player, target: engineering_station })?;
+    run_command(&mut session, "reparar dano previo al blindaje", GameplayCommand::RepairShipAtStation { player, ship, station: engineering_station })?;
+    if session.world().ship_integrity(ship).is_none_or(|value| value.current() != integrity_before_unarmored_damage) {
+        return Err("la reparacion previa al blindaje no restauro la integridad".to_owned());
+    }
+    let hull_purchase_before = session.save_state().serialize();
+    run_command(&mut session, "instalar blindaje reforzado", GameplayCommand::InstallShipUpgrade {
+        player, ship, destination, upgrade: ShipUpgrade::ReinforcedHullI,
+    })?;
+    if !session.world().ship_has_upgrade(ship, ShipUpgrade::ReinforcedHullI)
+        || session.world().player_currency(player) != Some(1)
+        || session.world().inventory(player).is_none_or(|inventory| inventory.quantity(ItemId(1)) != 0)
+    {
+        return Err("la instalacion del blindaje no aplico su coste atomicamente".to_owned());
+    }
+    if session.save_state().serialize() == hull_purchase_before {
+        return Err("la instalacion del blindaje no cambio el estado".to_owned());
+    }
+    let integrity_before_hull_damage = session.world().ship_integrity(ship).ok_or_else(|| "falta integridad antes del blindaje activo".to_owned())?.current();
+    run_command(&mut session, "danar nave con blindaje", GameplayCommand::DamageShip { ship, amount: 20 })?;
+    let integrity_after_hull_damage = session.world().ship_integrity(ship).ok_or_else(|| "falta integridad tras blindaje".to_owned())?.current();
+    if integrity_before_hull_damage.saturating_sub(integrity_after_hull_damage) != 16 {
+        return Err(format!("el blindaje no redujo el dano al 80 por ciento: antes={integrity_before_hull_damage}, despues={integrity_after_hull_damage}"));
+    }
+    let duplicate_hull_state = session.save_state().serialize();
+    let duplicate_hull = session.update([GameplayCommand::InstallShipUpgrade {
+        player, ship, destination, upgrade: ShipUpgrade::ReinforcedHullI,
+    }]);
+    if duplicate_hull.first().is_none_or(|result| result.status != CommandStatus::Rejected { reason: gameplay::CommandRejection::ShipUpgradeAlreadyInstalled })
+        || session.save_state().serialize() != duplicate_hull_state
+    {
+        return Err("la compra duplicada del blindaje mutó el estado".to_owned());
+    }
+    let duplicate_engine_state = session.save_state().serialize();
     let duplicate = session.update([GameplayCommand::InstallShipUpgrade {
         player, ship, destination, upgrade: ShipUpgrade::EngineEfficiencyI,
     }]);
     if duplicate.first().is_none_or(|result| result.status != CommandStatus::Rejected { reason: gameplay::CommandRejection::ShipUpgradeAlreadyInstalled })
-        || session.save_state().serialize() != after_install
+        || session.save_state().serialize() != duplicate_engine_state
     {
         return Err("la compra duplicada de la mejora mutó el estado".to_owned());
     }
@@ -15384,9 +15438,17 @@ fn run_ship_upgrade_scenario() -> Result<(), String> {
     let mut restored = ProjectEchoSession::new();
     restored.restore_state(decoded).map_err(|error| format!("restaurar mejora: {error:?}"))?;
     if !restored.world().ship_has_upgrade(ship, ShipUpgrade::EngineEfficiencyI)
+        || !restored.world().ship_has_upgrade(ship, ShipUpgrade::ReinforcedHullI)
         || restored.world().ship_fuel(ship).is_none_or(|fuel| fuel.current() != 50)
+        || restored.world().ship_integrity(ship).is_none_or(|value| value.current() != integrity_after_hull_damage)
     {
         return Err("la restauración perdió la mejora o el combustible".to_owned());
+    }
+    let restored_integrity_before_damage = restored.world().ship_integrity(ship).ok_or_else(|| "falta integridad restaurada".to_owned())?.current();
+    run_command(&mut restored, "danar nave blindada restaurada", GameplayCommand::DamageShip { ship, amount: 20 })?;
+    let restored_integrity_after_damage = restored.world().ship_integrity(ship).ok_or_else(|| "falta integridad tras dano restaurado".to_owned())?.current();
+    if restored_integrity_before_damage.saturating_sub(restored_integrity_after_damage) != 16 {
+        return Err("el blindaje restaurado no redujo el dano real".to_owned());
     }
     let saved_after_restore = restored.save_state().serialize();
     let restored_station = restored
@@ -15398,12 +15460,18 @@ fn run_ship_upgrade_scenario() -> Result<(), String> {
     })?;
     run_command(&mut restored, "iniciar trayecto con eficiencia", GameplayCommand::StartAutopilot { player, pilot_station: restored_station })?;
     let fuel_after_start = restored.world().ship_fuel(ship).ok_or_else(|| "falta combustible tras mejora".to_owned())?.current();
-    if fuel_after_start != 42 {
-        return Err(format!("la mejora no redujo el coste futuro a 8: combustible={fuel_after_start}"));
+    if fuel_after_start != 46 {
+        return Err(format!("la mejora no redujo el primer segmento de 5 a 4: combustible={fuel_after_start}"));
     }
     run_command(&mut restored, "llegar tras instalar eficiencia", GameplayCommand::AdvanceTime { delta: Duration(1) })?;
+    if restored.world().ship_position() != Some(Vec3 { x: 15.0, y: 0.0, z: 0.0 })
+        || restored.world().ship_fuel(ship).is_none_or(|fuel| fuel.current() != 45)
+    {
+        return Err("el primer segmento posterior no aplicó exactamente una vez el descuento".to_owned());
+    }
+    run_command(&mut restored, "completar segmento final con eficiencia", GameplayCommand::AdvanceTime { delta: Duration(1) })?;
     if restored.world().ship_position() != Some(Vec3::ZERO)
-        || restored.world().ship_fuel(ship).is_none_or(|fuel| fuel.current() != 42)
+        || restored.world().ship_fuel(ship).is_none_or(|fuel| fuel.current() != 45)
         || restored.save_state().serialize() == saved_after_restore
     {
         return Err("el trayecto posterior a la mejora no fue real o no conservó el descuento".to_owned());

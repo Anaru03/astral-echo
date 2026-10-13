@@ -3648,6 +3648,7 @@ impl CombatSystem {
             );
         }
         let amount = attacker.weapon.damage;
+        let integrity_before = world.ship_integrity(ship).map(|value| value.current());
         let remaining = match world.apply_ship_damage(ship, amount) {
             Ok((remaining, _, _)) => remaining,
             Err(crate::integrity::IntegrityError::Destroyed) => {
@@ -3676,7 +3677,7 @@ impl CombatSystem {
         world.publish(crate::events::GameplayEvent::ShipCombatDamageApplied {
             attacker: enemy,
             ship,
-            amount,
+            amount: integrity_before.map_or(amount, |before| before.saturating_sub(remaining)),
             remaining_integrity: remaining,
         });
         CommandResult::success(true)

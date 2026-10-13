@@ -5,11 +5,15 @@ use crate::types::ItemId;
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ShipUpgrade {
     EngineEfficiencyI,
+    ReinforcedHullI,
 }
 
 impl ShipUpgrade {
     pub const fn credit_cost(self) -> u64 {
-        2
+        match self {
+            Self::EngineEfficiencyI => 2,
+            Self::ReinforcedHullI => 3,
+        }
     }
 
     pub const fn material(self) -> ItemId {
@@ -17,22 +21,37 @@ impl ShipUpgrade {
     }
 
     pub const fn material_cost(self) -> u32 {
-        2
+        match self {
+            Self::EngineEfficiencyI => 2,
+            Self::ReinforcedHullI => 3,
+        }
     }
 
     pub const fn fuel_discount_percent(self) -> u32 {
-        20
+        match self {
+            Self::EngineEfficiencyI => 20,
+            Self::ReinforcedHullI => 0,
+        }
+    }
+
+    pub const fn hull_damage_reduction_percent(self) -> u32 {
+        match self {
+            Self::EngineEfficiencyI => 0,
+            Self::ReinforcedHullI => 20,
+        }
     }
 
     pub const fn code(self) -> u8 {
         match self {
             Self::EngineEfficiencyI => 1,
+            Self::ReinforcedHullI => 2,
         }
     }
 
     pub const fn from_code(code: u8) -> Option<Self> {
         match code {
             1 => Some(Self::EngineEfficiencyI),
+            2 => Some(Self::ReinforcedHullI),
             _ => None,
         }
     }

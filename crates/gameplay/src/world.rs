@@ -5559,6 +5559,18 @@ impl GameplayWorld {
             .is_some_and(|upgrades| upgrades.contains(&upgrade))
     }
 
+    fn ship_damage_after_upgrades(&self, ship: EntityId, amount: u32) -> Option<u32> {
+        let reduction = self
+            .ship_has_upgrade(ship, ShipUpgrade::ReinforcedHullI)
+            .then_some(ShipUpgrade::ReinforcedHullI.hull_damage_reduction_percent())
+            .unwrap_or(0);
+        if reduction > 100 {
+            return None;
+        }
+        let scaled = u64::from(amount).checked_mul(u64::from(100 - reduction))?;
+        u32::try_from(scaled.checked_add(99)? / 100).ok()
+    }
+
     fn ship_fuel_discount_percent(&self) -> u32 {
         self.navigation
             .ship_id()
@@ -7002,16 +7014,19 @@ impl GameplayWorld {
         ship: EntityId,
         amount: u32,
     ) -> Result<(u32, StructuralState, StructuralState), IntegrityError> {
+        let effective_amount = self
+            .ship_damage_after_upgrades(ship, amount)
+            .ok_or(IntegrityError::InvalidAmount)?;
         let outcome = {
             let Some(integrity) = self.ship_integrity.get_mut(&ship) else {
                 return Err(IntegrityError::NotInitialized);
             };
-            integrity.apply_damage(amount)?
+            integrity.apply_damage(effective_amount)?
         };
         let (remaining, before, after) = outcome;
         self.publish(crate::events::GameplayEvent::ShipDamageApplied {
             ship,
-            amount,
+            amount: effective_amount,
             remaining,
             state: after,
         });
