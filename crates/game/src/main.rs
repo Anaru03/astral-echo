@@ -16,6 +16,7 @@ use gameplay::{
     SpatialEncounterKind, SpatialEncounterState, StationType, TravelState,
     WeaponAmmunition, WeaponConfiguration,
 };
+use gameplay::ShipUpgrade;
 use gameplay::{Derelict, DerelictId, DerelictReward, DerelictState};
 use gameplay::{
     CombatZone, FunctionalWorld, ResourceSite, StorySite, TradeMarket, TradeOffer, WorldActivity,
@@ -15284,6 +15285,133 @@ fn run_survival_recovery_expedition_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_ship_upgrade_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación de mejora: {error:?}"))?;
+    let origin = DestinationId::new(9_001);
+    let destination = DestinationId::new(9_002);
+    for (id, position) in [(origin, Vec3::ZERO), (destination, Vec3 { x: 30.0, y: 0.0, z: 0.0 })] {
+        run_command(&mut session, "registrar destino de mejora", GameplayCommand::RegisterDestination {
+            destination: Destination {
+                id,
+                destination_type: DestinationType::Planet,
+                position,
+                travel_duration: Duration(1),
+                fuel_cost: 10,
+                discovery: DiscoveryState::Discovered,
+            },
+        })?;
+    }
+    for (from, to) in [(origin, destination), (destination, origin)] {
+        run_command(&mut session, "registrar ruta de mejora", GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from,
+                to,
+                distance: 30.0,
+                duration: Duration(1),
+                fuel_cost: 10,
+                state: NavigationRouteState::Available,
+            },
+        })?;
+    }
+    run_command(&mut session, "registrar mundo de mejora", GameplayCommand::RegisterFunctionalWorld {
+        world: FunctionalWorld::new(destination, 2.0, vec![
+            WorldActivity::Trade(TradeMarket { offers: vec![TradeOffer {
+                item: ItemId(1), buy_price: 1, sell_price: 1, stock: 10,
+            }] }),
+            WorldActivity::Resource(ResourceSite { item: ItemId(1), available: 10, extraction_amount: 2 }),
+        ]),
+    })?;
+    run_command(&mut session, "ocupar estación de mejora", GameplayCommand::Interact { player, target: station })?;
+    run_command(&mut session, "planificar primer trayecto de mejora", GameplayCommand::PlanAutopilot {
+        player, pilot_station: station, origin, destination,
+    })?;
+    run_command(&mut session, "iniciar primer trayecto de mejora", GameplayCommand::StartAutopilot { player, pilot_station: station })?;
+    run_command(&mut session, "llegar al mercado de mejoras", GameplayCommand::AdvanceTime { delta: Duration(1) })?;
+    let fuel_before_upgrade = session.world().ship_fuel(ship).ok_or_else(|| "falta combustible antes de mejora".to_owned())?.current();
+    if fuel_before_upgrade != 50 || session.world().ship_position() != Some(Vec3 { x: 30.0, y: 0.0, z: 0.0 }) {
+        return Err(format!("el trayecto inicial no consumió 10 unidades: combustible={fuel_before_upgrade}"));
+    }
+    let rejected = session.update([GameplayCommand::InstallShipUpgrade {
+        player, ship, destination, upgrade: ShipUpgrade::EngineEfficiencyI,
+    }]);
+    if rejected.first().is_none_or(|result| result.status != CommandStatus::Rejected { reason: gameplay::CommandRejection::WorldInsufficientFunds }) {
+        return Err("la mejora sin fondos no fue rechazada".to_owned());
+    }
+    run_command(&mut session, "extraer primer material de mejora", GameplayCommand::ExtractWorldResource { player, destination })?;
+    run_command(&mut session, "extraer segundo material de mejora", GameplayCommand::ExtractWorldResource { player, destination })?;
+    run_command(&mut session, "extraer reserva final de mejora", GameplayCommand::ExtractWorldResource { player, destination })?;
+    run_command(&mut session, "vender materiales para mejora", GameplayCommand::SellWorldItem { player, destination, item: ItemId(1), amount: 2 })?;
+    run_command(&mut session, "vender toda la reserva para validar materiales", GameplayCommand::SellWorldItem { player, destination, item: ItemId(1), amount: 4 })?;
+    let material_rejection_state = session.save_state().serialize();
+    let material_rejected = session.update([GameplayCommand::InstallShipUpgrade {
+        player, ship, destination, upgrade: ShipUpgrade::EngineEfficiencyI,
+    }]);
+    if material_rejected.first().is_none_or(|result| result.status != CommandStatus::Rejected { reason: gameplay::CommandRejection::WorldInventoryInsufficient })
+        || session.save_state().serialize() != material_rejection_state
+    {
+        return Err("la mejora sin materiales no fue rechazada atomicamente".to_owned());
+    }
+    run_command(&mut session, "recuperar materiales para mejora", GameplayCommand::ExtractWorldResource { player, destination })?;
+    let before_install = session.save_state().serialize();
+    run_command(&mut session, "instalar eficiencia de motor", GameplayCommand::InstallShipUpgrade {
+        player, ship, destination, upgrade: ShipUpgrade::EngineEfficiencyI,
+    })?;
+    if !session.world().ship_has_upgrade(ship, ShipUpgrade::EngineEfficiencyI)
+        || session.world().player_currency(player) != Some(4)
+        || session.world().inventory(player).is_none_or(|inventory| inventory.quantity(ItemId(1)) != 0)
+    {
+        return Err(format!("la mejora no aplicó su coste atómicamente: upgrade={}, saldo={:?}, material={:?}", session.world().ship_has_upgrade(ship, ShipUpgrade::EngineEfficiencyI), session.world().player_currency(player), session.world().inventory(player).map(|inventory| inventory.quantity(ItemId(1)))));
+    }
+    let after_install = session.save_state().serialize();
+    if before_install == after_install {
+        return Err("la instalación no cambió el estado persistente".to_owned());
+    }
+    let duplicate = session.update([GameplayCommand::InstallShipUpgrade {
+        player, ship, destination, upgrade: ShipUpgrade::EngineEfficiencyI,
+    }]);
+    if duplicate.first().is_none_or(|result| result.status != CommandStatus::Rejected { reason: gameplay::CommandRejection::ShipUpgradeAlreadyInstalled })
+        || session.save_state().serialize() != after_install
+    {
+        return Err("la compra duplicada de la mejora mutó el estado".to_owned());
+    }
+    let checkpoint = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&checkpoint).map_err(|error| format!("deserializar mejora: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored.restore_state(decoded).map_err(|error| format!("restaurar mejora: {error:?}"))?;
+    if !restored.world().ship_has_upgrade(ship, ShipUpgrade::EngineEfficiencyI)
+        || restored.world().ship_fuel(ship).is_none_or(|fuel| fuel.current() != 50)
+    {
+        return Err("la restauración perdió la mejora o el combustible".to_owned());
+    }
+    let saved_after_restore = restored.save_state().serialize();
+    let restored_station = restored
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación restaurada de mejora: {error:?}"))?;
+    run_command(&mut restored, "ocupar estación restaurada de mejora", GameplayCommand::Interact { player, target: restored_station })?;
+    run_command(&mut restored, "planificar trayecto con eficiencia", GameplayCommand::PlanAutopilot {
+        player, pilot_station: restored_station, origin: destination, destination: origin,
+    })?;
+    run_command(&mut restored, "iniciar trayecto con eficiencia", GameplayCommand::StartAutopilot { player, pilot_station: restored_station })?;
+    let fuel_after_start = restored.world().ship_fuel(ship).ok_or_else(|| "falta combustible tras mejora".to_owned())?.current();
+    if fuel_after_start != 42 {
+        return Err(format!("la mejora no redujo el coste futuro a 8: combustible={fuel_after_start}"));
+    }
+    run_command(&mut restored, "llegar tras instalar eficiencia", GameplayCommand::AdvanceTime { delta: Duration(1) })?;
+    if restored.world().ship_position() != Some(Vec3::ZERO)
+        || restored.world().ship_fuel(ship).is_none_or(|fuel| fuel.current() != 42)
+        || restored.save_state().serialize() == saved_after_restore
+    {
+        return Err("el trayecto posterior a la mejora no fue real o no conservó el descuento".to_owned());
+    }
+    println!("MEJORA ECONÓMICA: coste_inicial=10, coste_con_eficiencia=8, restaurada=true, combustible_final={}", restored.world().ship_fuel(ship).map_or(0, |fuel| fuel.current()));
+    Ok(())
+}
+
 fn run_scenario() -> Result<(), String> {
     run_atomicity_regressions()?;
     let mut session = ProjectEchoSession::new();
@@ -15504,6 +15632,7 @@ fn run_scenario() -> Result<(), String> {
     run_derelict_exploration_flow_scenario()?;
     run_exploration_continuity_scenario()?;
     run_functional_world_scenario()?;
+    run_ship_upgrade_scenario()?;
     run_resource_mission_integration_scenario()?;
     run_integrated_expedition_scenario()?;
     run_full_expedition_regression_scenario()?;

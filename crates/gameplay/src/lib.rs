@@ -135,7 +135,7 @@ pub use objective::{Objective, ObjectiveTrigger, ObjectiveTriggerError};
 pub use pipeline::GameplayProcessor;
 pub use player::{MovementParameters, Orientation, Player};
 pub use persistence::{GameplaySaveState, SaveError, GAMEPLAY_SAVE_SCHEMA_VERSION};
-pub use resources::{FuelError, FuelTank, ShipResources};
+pub use resources::{FuelError, FuelTank, ShipResources, ShipUpgrade};
 pub use revival::{RevivalError, ReviveEffect, ReviveResult};
 pub use revival_system::RevivalSystem;
 pub use reward::{

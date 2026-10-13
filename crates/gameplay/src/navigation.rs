@@ -840,6 +840,7 @@ impl NavigationState {
         fuel: &mut FuelTank,
         player: EntityId,
         pilot_station: EntityId,
+        discount_percent: u32,
     ) -> Result<(DestinationId, Duration, Duration, u32, u32), AutopilotError> {
         let AutopilotState::Planned {
             origin,
@@ -859,7 +860,7 @@ impl NavigationState {
         let total_fuel = route
             .windows(2)
             .try_fold(0_u32, |total, pair| {
-                total.checked_add(self.route(pair[0], pair[1])?.fuel_cost)
+                total.checked_add(effective_fuel_cost(self.route(pair[0], pair[1])?.fuel_cost, discount_percent)?)
             })
             .ok_or(AutopilotError::InsufficientFuel)?;
         if !fuel.can_consume(total_fuel) {
@@ -869,16 +870,18 @@ impl NavigationState {
             .route(route[0], route[1])
             .copied()
             .ok_or(AutopilotError::NoRoute)?;
-        if leg.state != NavigationRouteState::Available || !fuel.can_consume(leg.fuel_cost) {
+        let leg_fuel = effective_fuel_cost(leg.fuel_cost, discount_percent)
+            .ok_or(AutopilotError::InsufficientFuel)?;
+        if leg.state != NavigationRouteState::Available || !fuel.can_consume(leg_fuel) {
             return Err(AutopilotError::InsufficientFuel);
         }
-        fuel.consume(leg.fuel_cost).map_err(|_| AutopilotError::InsufficientFuel)?;
+        fuel.consume(leg_fuel).map_err(|_| AutopilotError::InsufficientFuel)?;
         self.autopilot_continuation_authorized = false;
         self.travel_state = TravelState::InProgress {
             destination: leg.to,
             started_at: now,
             duration: leg.duration,
-            fuel_cost: leg.fuel_cost,
+            fuel_cost: leg_fuel,
         };
         let eta = self.route_duration(&route, 0).unwrap_or(leg.duration);
         self.autopilot = AutopilotState::InTransit {
@@ -890,13 +893,14 @@ impl NavigationState {
             player,
             pilot_station,
         };
-        Ok((leg.to, now, leg.duration, leg.fuel_cost, fuel.current()))
+        Ok((leg.to, now, leg.duration, leg_fuel, fuel.current()))
     }
 
     pub(crate) fn advance_autopilot_leg(
         &mut self,
         now: Duration,
         fuel: &mut FuelTank,
+        discount_percent: u32,
     ) -> Result<Option<(EntityId, EntityId, DestinationId, Duration, u32, u32)>, AutopilotError> {
         let AutopilotState::InTransit {
             origin,
@@ -919,17 +923,19 @@ impl NavigationState {
             .route(route[next_leg], route[next_leg + 1])
             .copied()
             .ok_or(AutopilotError::NoRoute)?;
-        if leg.state != NavigationRouteState::Available || !fuel.can_consume(leg.fuel_cost) {
+        let leg_fuel = effective_fuel_cost(leg.fuel_cost, discount_percent)
+            .ok_or(AutopilotError::InsufficientFuel)?;
+        if leg.state != NavigationRouteState::Available || !fuel.can_consume(leg_fuel) {
             self.autopilot = AutopilotState::Failed { destination };
             return Err(AutopilotError::InsufficientFuel);
         }
-        fuel.consume(leg.fuel_cost).map_err(|_| AutopilotError::InsufficientFuel)?;
+        fuel.consume(leg_fuel).map_err(|_| AutopilotError::InsufficientFuel)?;
         self.autopilot_continuation_authorized = false;
         self.travel_state = TravelState::InProgress {
             destination: leg.to,
             started_at: now,
             duration: leg.duration,
-            fuel_cost: leg.fuel_cost,
+            fuel_cost: leg_fuel,
         };
         let remaining = self
             .route_duration(&route, next_leg)
@@ -948,7 +954,7 @@ impl NavigationState {
             pilot_station,
             leg.to,
             leg.duration,
-            leg.fuel_cost,
+            leg_fuel,
             fuel.current(),
         )))
     }
@@ -1022,6 +1028,7 @@ impl NavigationState {
         &mut self,
         now: Duration,
         fuel: &mut FuelTank,
+        discount_percent: u32,
     ) -> Result<(DestinationId, Duration, Duration, u32, u32), NavigationStartError> {
         if self.has_active_travel() {
             return Err(NavigationStartError::TravelActive);
@@ -1051,22 +1058,24 @@ impl NavigationState {
         {
             return Err(NavigationStartError::InvalidDuration);
         }
-        if !fuel.can_consume(destination_data.fuel_cost) {
+        let fuel_cost = effective_fuel_cost(destination_data.fuel_cost, discount_percent)
+            .ok_or(NavigationStartError::InsufficientFuel)?;
+        if !fuel.can_consume(fuel_cost) {
             return Err(NavigationStartError::InsufficientFuel);
         }
-        fuel.consume(destination_data.fuel_cost)
+        fuel.consume(fuel_cost)
             .map_err(|_| NavigationStartError::InsufficientFuel)?;
         self.travel_state = TravelState::InProgress {
             destination,
             started_at: now,
             duration: destination_data.travel_duration,
-            fuel_cost: destination_data.fuel_cost,
+            fuel_cost,
         };
         Ok((
             destination,
             now,
             destination_data.travel_duration,
-            destination_data.fuel_cost,
+            fuel_cost,
             fuel.current(),
         ))
     }
@@ -1109,6 +1118,19 @@ impl NavigationState {
         destination_data.discovery = DiscoveryState::Discovered;
         true
     }
+}
+
+fn effective_fuel_cost(base: u32, discount_percent: u32) -> Option<u32> {
+    if discount_percent > 100 {
+        return None;
+    }
+    let remaining = u64::from(100 - discount_percent);
+    let scaled = u64::from(base).checked_mul(remaining)?;
+    u32::try_from(scaled.checked_add(99)? / 100).ok()
+}
+
+pub(crate) fn discounted_fuel_cost(base: u32, discount_percent: u32) -> Option<u32> {
+    effective_fuel_cost(base, discount_percent)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

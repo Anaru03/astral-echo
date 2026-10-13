@@ -518,6 +518,14 @@ pub enum GameplayEvent {
         amount: u32,
         total_value: u64,
     },
+    ShipUpgradeInstalled {
+        player: EntityId,
+        ship: EntityId,
+        upgrade: crate::resources::ShipUpgrade,
+        credits: u64,
+        material: ItemId,
+        material_amount: u32,
+    },
     WorldCombatActivated {
         player: EntityId,
         destination: crate::navigation::DestinationId,

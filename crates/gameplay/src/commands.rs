@@ -10,6 +10,7 @@ use crate::life_support::{CompartmentId, LifeSupportConfiguration};
 use crate::navigation::ShipMovementParameters;
 use crate::navigation::{Destination, DestinationId, NavigationRoute};
 use crate::reward::EnemyReward;
+use crate::resources::ShipUpgrade;
 use crate::types::{MissionId, ObjectiveId};
 use engine::{Duration, EntityId, Vec3};
 
@@ -305,6 +306,12 @@ pub enum GameplayCommand {
         player: EntityId,
         destination: DestinationId,
     },
+    InstallShipUpgrade {
+        player: EntityId,
+        ship: EntityId,
+        destination: DestinationId,
+        upgrade: ShipUpgrade,
+    },
     LockDoor {
         door: EntityId,
     },
@@ -479,6 +486,7 @@ pub enum CommandRejection {
     WorldStoryAlreadyInteracted,
     WorldStoryKnowledgeUnavailable,
     WorldEnemyCreationFailed,
+    ShipUpgradeAlreadyInstalled,
     NavigationRouteAlreadyRegistered,
     NavigationRouteNotFound,
     NavigationRouteNotDiscovered,
