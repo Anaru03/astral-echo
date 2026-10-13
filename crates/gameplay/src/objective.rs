@@ -172,6 +172,10 @@ impl ObjectiveTrigger {
                 crate::events::GameplayEvent::ItemCollected { item: actual, .. },
             ) => item == actual,
             (
+                Self::ItemsCollected { item, .. },
+                crate::events::GameplayEvent::WorldResourceExtracted { item: actual, .. },
+            ) => item == actual,
+            (
                 Self::CollectibleCollected { collectible },
                 crate::events::GameplayEvent::ItemCollected {
                     collectible: actual,
@@ -245,6 +249,10 @@ impl ObjectiveTrigger {
             (
                 Self::ItemsCollected { .. },
                 crate::events::GameplayEvent::ItemCollected { amount, .. },
+            ) => *amount,
+            (
+                Self::ItemsCollected { .. },
+                crate::events::GameplayEvent::WorldResourceExtracted { amount, .. },
             ) => *amount,
             (
                 Self::FuelConsumed { .. },

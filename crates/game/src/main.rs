@@ -14325,6 +14325,216 @@ fn run_erick_recovery_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_resource_mission_integration_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    session
+        .register_mission(
+            cooperacion::definition()
+                .map_err(|error| format!("definir misión de extracción: {error:?}"))?,
+        )
+        .map_err(|error| format!("registrar misión de extracción: {error:?}"))?;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear estación de extracción: {error:?}"))?;
+    session
+        .register_destination(Destination {
+            id: cooperacion::SIGNAL_DESTINATION,
+            destination_type: DestinationType::SpacePoint,
+            position: Vec3::ZERO,
+            travel_duration: Duration(100),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Unknown,
+        })
+        .map_err(|error| format!("registrar señal de extracción: {error:?}"))?;
+    run_command(
+        &mut session,
+        "desbloquear misión de extracción",
+        GameplayCommand::UnlockMission {
+            mission: cooperacion::PROGRESION_COOPERATIVA,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "iniciar misión de extracción",
+        GameplayCommand::StartMission {
+            mission: cooperacion::PROGRESION_COOPERATIVA,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "ocupar estación de extracción",
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+    )?;
+    run_command(
+        &mut session,
+        "detectar señal de extracción",
+        GameplayCommand::ScanSignals { player, ship },
+    )?;
+    run_command(
+        &mut session,
+        "esperar identificación de extracción",
+        GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "identificar señal de extracción",
+        GameplayCommand::ScanSignals { player, ship },
+    )?;
+    if session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .is_none_or(|progress| progress.required_completed != 1)
+    {
+        return Err("la identificación no habilitó el objetivo de extracción".to_owned());
+    }
+
+    run_command(
+        &mut session,
+        "equipar arma de extracción",
+        GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: WeaponConfiguration::new(AttackType::Kinetic, 60, 20, Duration(1_000)),
+        },
+    )?;
+    run_command(
+        &mut session,
+        "crear amenaza de extracción",
+        GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
+        },
+    )?;
+    let enemy = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "la amenaza de extracción no fue creada".to_owned())?;
+    run_command(
+        &mut session,
+        "derrotar amenaza de extracción",
+        GameplayCommand::AttackEnemy { player, enemy },
+    )?;
+    if session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .is_none_or(|progress| progress.required_completed != 2)
+    {
+        return Err("la derrota no habilitó el objetivo de extracción".to_owned());
+    }
+
+    let resource_destination = DestinationId::new(8901);
+    run_command(
+        &mut session,
+        "registrar destino de extracción",
+        GameplayCommand::RegisterDestination {
+            destination: Destination {
+                id: resource_destination,
+                destination_type: DestinationType::Planet,
+                position: Vec3::ZERO,
+                travel_duration: Duration(1),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            },
+        },
+    )?;
+    run_command(
+        &mut session,
+        "registrar actividad de extracción",
+        GameplayCommand::RegisterFunctionalWorld {
+            world: FunctionalWorld::new(
+                resource_destination,
+                2.0,
+                vec![WorldActivity::Resource(ResourceSite {
+                    item: ItemId(3),
+                    available: 1,
+                    extraction_amount: 1,
+                })],
+            ),
+        },
+    )?;
+    let before_extraction = session.save_state().serialize();
+    run_command(
+        &mut session,
+        "extraer recurso para la misión",
+        GameplayCommand::ExtractWorldResource {
+            player,
+            destination: resource_destination,
+        },
+    )?;
+    let after_extraction = session
+        .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+        .ok_or_else(|| "se perdió la misión tras la extracción".to_owned())?;
+    if after_extraction.state != MissionState::Completed
+        || after_extraction.required_completed != 3
+        || session.world().inventory(player).is_none_or(|inventory| inventory.quantity(ItemId(3)) != 1)
+        || session
+            .world()
+            .functional_world(resource_destination)
+            .is_none_or(|world| !world.activities.iter().any(|activity| {
+                matches!(activity, WorldActivity::Resource(site) if site.available == 0)
+            }))
+        || session.world().save_state().serialize() == before_extraction
+    {
+        return Err(format!("la extracción no integró la misión: {after_extraction:?}"));
+    }
+    let before_repeat = session.save_state().serialize();
+    let repeated = session.update([GameplayCommand::ExtractWorldResource {
+        player,
+        destination: resource_destination,
+    }]);
+    if !matches!(
+        repeated.first().map(|result| &result.status),
+        Some(CommandStatus::Rejected {
+            reason: gameplay::CommandRejection::WorldResourceUnavailable
+        })
+    ) || session.save_state().serialize() != before_repeat
+    {
+        return Err("la extracción repetida no fue rechazada sin mutación".to_owned());
+    }
+
+    let saved = session.save_state().serialize();
+    let mut restored = ProjectEchoSession::new();
+    restored
+        .register_mission(
+            cooperacion::definition()
+                .map_err(|error| format!("definir misión restaurada de extracción: {error:?}"))?,
+        )
+        .map_err(|error| format!("registrar misión restaurada de extracción: {error:?}"))?;
+    restored
+        .restore_state(
+            gameplay::GameplaySaveState::deserialize(&saved)
+                .map_err(|error| format!("deserializar misión de extracción: {error}"))?,
+        )
+        .map_err(|error| format!("restaurar misión de extracción: {error}"))?;
+    if restored.save_state().serialize() != saved
+        || restored
+            .mission_progress(cooperacion::PROGRESION_COOPERATIVA)
+            .is_none_or(|progress| progress.state != MissionState::Completed)
+        || restored.world().inventory(player).is_none_or(|inventory| inventory.quantity(ItemId(3)) != 1)
+        || restored
+            .world()
+            .functional_world(resource_destination)
+            .is_none_or(|world| !world.activities.iter().any(|activity| {
+                matches!(activity, WorldActivity::Resource(site) if site.available == 0)
+            }))
+    {
+        return Err("la restauración perdió la integración de extracción".to_owned());
+    }
+    println!(
+        "INTEGRACIÓN MISIÓN-RECURSO COMPLETADA: misión=Progresion cooperativa, enemigo={}, extracción=WorldResourceExtracted, progreso=3/3, restaurado=true",
+        enemy
+    );
+    Ok(())
+}
+
 fn run_scenario() -> Result<(), String> {
     run_atomicity_regressions()?;
     let mut session = ProjectEchoSession::new();
@@ -14545,6 +14755,7 @@ fn run_scenario() -> Result<(), String> {
     run_derelict_exploration_flow_scenario()?;
     run_exploration_continuity_scenario()?;
     run_functional_world_scenario()?;
+    run_resource_mission_integration_scenario()?;
     run_guidance_progression_scenario()?;
     run_group_scaling_scenario()?;
     run_persistence_scenario()?;
