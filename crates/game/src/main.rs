@@ -15085,6 +15085,84 @@ fn run_integrated_expedition_scenario() -> Result<(), String> {
     Ok(())
 }
 
+fn run_full_expedition_regression_scenario() -> Result<(), String> {
+    let mut session = ProjectEchoSession::new();
+    let player_a = session.ids.first_player;
+    let player_b = session
+        .world_mut()
+        .create_player()
+        .map_err(|error| format!("crear jugador B de regresion: {error:?}"))?;
+    session
+        .world_mut()
+        .initialize_inventory(player_b, 20)
+        .map_err(|error| format!("inicializar inventario B de regresion: {error:?}"))?;
+    let ship = session.ids.first_ship;
+    let station = session
+        .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
+        .map_err(|error| format!("crear pilotaje de regresion: {error:?}"))?;
+    run_command(&mut session, "registrar ERICK de regresion", GameplayCommand::CreateCompanion { followed_player: player_a, position: Vec3::ZERO })?;
+    let erick = session.world().companions().next().copied().ok_or_else(|| "ERICK no fue registrado".to_owned())?;
+    let origin = DestinationId::new(9_601);
+    let destination = DestinationId::new(9_602);
+    for id in [origin, destination] {
+        run_command(&mut session, "registrar destino de regresion", GameplayCommand::RegisterDestination { destination: Destination { id, destination_type: DestinationType::Planet, position: Vec3::ZERO, travel_duration: Duration(10), fuel_cost: 1, discovery: DiscoveryState::Discovered } })?;
+    }
+    run_command(&mut session, "registrar ruta de regresion", GameplayCommand::RegisterNavigationRoute { route: NavigationRoute { from: origin, to: destination, distance: 10.0, duration: Duration(10), fuel_cost: 1, state: NavigationRouteState::Available } })?;
+    let encounter = EncounterId::new(9_601);
+    run_command(&mut session, "registrar encuentro hostil de regresion", GameplayCommand::RegisterSpatialEncounter { encounter: SpatialEncounter::new(encounter, SpatialEncounterKind::Hostile { configuration: EnemyConfiguration { archetype: EnemyArchetype::Shooter, position: Vec3::ZERO, maximum_health: 20, weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)), shield: None, mobility: 1 } }, Vec3::ZERO, 2.0) })?;
+    run_command(&mut session, "equipar combate de regresion", GameplayCommand::EquipPlayerWeapon { player: player_a, weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1_000)) })?;
+    run_command(&mut session, "ocupar pilotaje de regresion", GameplayCommand::Interact { player: player_a, target: station })?;
+    run_command(&mut session, "planificar autopilot de regresion", GameplayCommand::PlanAutopilot { player: player_a, pilot_station: station, origin, destination })?;
+    run_command(&mut session, "iniciar autopilot de regresion", GameplayCommand::StartAutopilot { player: player_a, pilot_station: station })?;
+    if !matches!(session.world().autopilot_state(), AutopilotState::InTransit { .. }) { return Err("el autopilot integrado no inicio en transito".to_owned()); }
+    let fuel_after_start = session.world().ship_fuel(ship).ok_or_else(|| "falta combustible inicial".to_owned())?.current();
+    run_command(&mut session, "avanzar primer segmento de regresion", GameplayCommand::AdvanceTime { delta: Duration(2) })?;
+    run_command(&mut session, "activar encuentro durante regresion", GameplayCommand::ActivateSpatialEncounter { encounter })?;
+    let before_erick = session.save_state().serialize();
+    let advice = session.world().companion_navigation_assessment(erick.entity).map_err(|error| format!("evaluar ERICK de regresion: {error:?}"))?;
+    if advice.is_none() || session.save_state().serialize() != before_erick { return Err("ERICK no fue consultativo durante el encuentro".to_owned()); }
+    run_command(&mut session, "cancelar autopilot por decision del jugador", GameplayCommand::CancelAutopilot { player: player_a, pilot_station: station })?;
+    if !matches!(session.world().autopilot_state(), AutopilotState::Interrupted { .. }) || !matches!(session.world().travel_state(), TravelState::Cancelled { .. }) || session.world().ship_position() != Some(Vec3::ZERO) || session.world().ship_fuel(ship).map(|value| value.current()) != Some(fuel_after_start) { return Err("la interrupcion no conservo viaje, posicion o combustible".to_owned()); }
+    let enemy = session.world().spatial_encounter(encounter).and_then(|value| value.spawned_enemy).ok_or_else(|| "el encuentro no creo enemigo real".to_owned())?;
+    run_command(&mut session, "derrotar enemigo de regresion", GameplayCommand::AttackEnemy { player: player_a, enemy })?;
+    let encounter_reward = session.world().collectibles().find(|value| value.active && value.item == ItemId(3)).map(|value| value.entity).ok_or_else(|| "el combate no genero recompensa".to_owned())?;
+    run_command(&mut session, "recoger recompensa de regresion", GameplayCommand::CollectItem { player: player_a, collectible: encounter_reward, amount: 1 })?;
+    if session.world().spatial_encounter(encounter).map(|value| value.state) != Some(SpatialEncounterState::Resolved) || session.world().collectible(encounter_reward).is_none_or(|value| value.active) { return Err("la recompensa o el encuentro no quedaron resueltos".to_owned()); }
+    let continuation = DestinationId::new(9_603);
+    run_command(&mut session, "registrar destino de continuacion", GameplayCommand::RegisterDestination { destination: Destination { id: continuation, destination_type: DestinationType::Planet, position: Vec3::ZERO, travel_duration: Duration(10), fuel_cost: 1, discovery: DiscoveryState::Discovered } })?;
+    run_command(&mut session, "registrar ruta de continuacion", GameplayCommand::RegisterNavigationRoute { route: NavigationRoute { from: origin, to: continuation, distance: 10.0, duration: Duration(10), fuel_cost: 1, state: NavigationRouteState::Available } })?;
+    run_command(&mut session, "planificar continuacion explicita", GameplayCommand::PlanAutopilot { player: player_a, pilot_station: station, origin, destination: continuation })?;
+    run_command(&mut session, "iniciar continuacion explicita", GameplayCommand::StartAutopilot { player: player_a, pilot_station: station })?;
+    let fuel_before_arrival = session.world().ship_fuel(ship).ok_or_else(|| "falta combustible de continuacion".to_owned())?.current();
+    run_command(&mut session, "llegar al destino de regresion", GameplayCommand::AdvanceTime { delta: Duration(10) })?;
+    if !matches!(session.world().autopilot_state(), AutopilotState::Completed { destination: value } if *value == continuation) || session.world().ship_position() != Some(Vec3::ZERO) || session.world().ship_fuel(ship).map(|value| value.current()) != Some(fuel_before_arrival) { return Err("la continuacion no llego coherentemente".to_owned()); }
+    run_command(&mut session, "registrar actividades de destino", GameplayCommand::RegisterFunctionalWorld { world: FunctionalWorld::new(continuation, 2.0, vec![WorldActivity::Trade(TradeMarket { offers: vec![TradeOffer { item: ItemId(1), buy_price: 2, sell_price: 1, stock: 2 }] }), WorldActivity::Resource(ResourceSite { item: ItemId(1), available: 2, extraction_amount: 1 })]) })?;
+    run_command(&mut session, "extraer recurso de destino", GameplayCommand::ExtractWorldResource { player: player_a, destination: continuation })?;
+    let stock_before_sale = session.world().world_trade_offer(continuation, ItemId(1)).map(|value| value.stock).ok_or_else(|| "falta actividad comercial".to_owned())?;
+    run_command(&mut session, "vender actividad de destino", GameplayCommand::SellWorldItem { player: player_a, destination: continuation, item: ItemId(1), amount: 1 })?;
+    if session.world().world_trade_offer(continuation, ItemId(1)).map(|value| value.stock) != Some(stock_before_sale) { return Err("una venta altero stock incorrectamente".to_owned()); }
+    let derelict = DerelictId::new(9_601);
+    run_command(&mut session, "registrar derelict de expedicion", GameplayCommand::RegisterDerelict { derelict: Derelict::new(derelict, Vec3::ZERO, 2.0).with_enemy(EnemyConfiguration { archetype: EnemyArchetype::Charger, position: Vec3::ZERO, maximum_health: 20, weapon: WeaponConfiguration::new(AttackType::Energy, 1, 1, Duration(1_000)), shield: None, mobility: 1 }).with_rewards(vec![DerelictReward { item: ItemId(1), amount: 1 }], RewardDistributionPolicy::Shared) })?;
+    run_command(&mut session, "descubrir derelict de expedicion", GameplayCommand::DiscoverDerelict { player: player_b, derelict })?;
+    run_command(&mut session, "explorar derelict de expedicion", GameplayCommand::ExploreDerelict { player: player_b, derelict })?;
+    let derelict_enemy = session.world().derelict(derelict).and_then(|value| value.spawned_enemy).ok_or_else(|| "el derelict no activo enemigo".to_owned())?;
+    run_command(&mut session, "equipar explorador de expedicion", GameplayCommand::EquipPlayerWeapon { player: player_b, weapon: WeaponConfiguration::new(AttackType::Kinetic, 40, 20, Duration(1_000)) })?;
+    run_command(&mut session, "derrotar enemigo del derelict", GameplayCommand::AttackEnemy { player: player_b, enemy: derelict_enemy })?;
+    let derelict_reward = session.world().derelict(derelict).and_then(|value| value.reward_collectibles.first().copied()).ok_or_else(|| "el derelict no genero recompensa".to_owned())?;
+    run_command(&mut session, "recoger recompensa del derelict", GameplayCommand::CollectItem { player: player_a, collectible: derelict_reward, amount: 1 })?;
+    run_command(&mut session, "resolver derelict de expedicion", GameplayCommand::ResolveDerelict { player: player_b, derelict })?;
+    let saved = session.save_state().serialize();
+    let decoded = gameplay::GameplaySaveState::deserialize(&saved).map_err(|error| format!("deserializar expedicion completa: {error}"))?;
+    let mut restored = ProjectEchoSession::new();
+    restored.restore_state(decoded).map_err(|error| format!("restaurar expedicion completa: {error}"))?;
+    if restored.world().spatial_encounter(encounter).map(|value| value.state) != Some(SpatialEncounterState::Resolved) || restored.world().derelict(derelict).map(|value| value.state) != Some(DerelictState::Resolved) || restored.world().combatant(derelict_enemy).is_none_or(|value| !value.is_defeated()) || restored.world().collectible(derelict_reward).is_none_or(|value| value.active) || restored.world().ship_fuel(restored.ids.first_ship).map(|value| value.current()) != Some(fuel_before_arrival) || restored.world().inventory(player_a).is_none_or(|value| value.quantity(ItemId(3)) != 1) { return Err("la restauracion perdio consecuencias de la expedicion".to_owned()); }
+    let restored_before = restored.save_state().serialize();
+    let repeat = restored.update([GameplayCommand::ResolveDerelict { player: player_b, derelict }]);
+    if repeat.first().is_none_or(|result| !matches!(result.status, CommandStatus::Rejected { .. })) || restored.save_state().serialize() != restored_before { return Err("el derelict restaurado no fue idempotente".to_owned()); }
+    println!("REGRESION DE EXPEDICION COMPLETADA: autopilot=interrumpido/replanificado, encuentro=Resuelto, destino={:?}, actividad=true, derelict=Resuelto, restaurado=true", continuation);
+    Ok(())
+}
+
 fn run_scenario() -> Result<(), String> {
     run_atomicity_regressions()?;
     let mut session = ProjectEchoSession::new();
@@ -15307,6 +15385,7 @@ fn run_scenario() -> Result<(), String> {
     run_functional_world_scenario()?;
     run_resource_mission_integration_scenario()?;
     run_integrated_expedition_scenario()?;
+    run_full_expedition_regression_scenario()?;
     run_guidance_progression_scenario()?;
     run_group_scaling_scenario()?;
     run_persistence_scenario()?;
