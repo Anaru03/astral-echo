@@ -11313,9 +11313,11 @@ enum RuntimeCommand {
         origin: u32,
         destination: u32,
     },
+    SelectDestination(u32),
+    StartTravel,
     StartAutopilot,
     Encounter,
-    ActivateEncounter,
+    ActivateEncounter(Option<u64>),
     ContinueAutopilot,
     CancelAutopilot,
     Attack {
@@ -11370,6 +11372,20 @@ enum RuntimeCommand {
         player: Option<u64>,
     },
     Erick(ErickQuery),
+    SetBreaker {
+        panel: u64,
+        breaker: u16,
+        on: bool,
+    },
+    SetOxygen {
+        panel: u64,
+        compartment: u16,
+        allocation: u32,
+    },
+    UnlockDoor(u64),
+    ReleaseStation(u64),
+    Equip(AttackType),
+    Spawn(EnemyArchetype),
     Checkpoint,
     CheckpointStatus,
     RestoreCheckpoint,
@@ -11397,10 +11413,16 @@ struct RuntimeSession {
     checkpoint: Option<String>,
     pilot_station: EntityId,
     engineering_station: EntityId,
+    campaign_status_console: EntityId,
+    campaign_electrical_panel: EntityId,
+    campaign_life_support_panel: EntityId,
+    campaign_bridge: EntityId,
+    campaign_engineering_station: EntityId,
     erick: EntityId,
     other_player: EntityId,
     destination: DestinationId,
     encounter: EncounterId,
+    campaign_encounter: EncounterId,
 }
 
 fn create_runtime_session() -> Result<RuntimeSession, String> {
@@ -11446,6 +11468,36 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
             discovery: DiscoveryState::Discovered,
         })
         .map_err(|error| format!("registrar destino economico runtime: {error:?}"))?;
+    for destination in [
+        Destination {
+            id: ecos_anomalia::PLANET_DESTINATION,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(100),
+            fuel_cost: 5,
+            discovery: DiscoveryState::Known,
+        },
+        Destination {
+            id: ecos_anomalia::SIGNAL_DESTINATION,
+            destination_type: DestinationType::SpacePoint,
+            position: Vec3 { x: 25.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(200),
+            fuel_cost: 8,
+            discovery: DiscoveryState::Unknown,
+        },
+        Destination {
+            id: tormenta_gravitacional::ESCAPE_DESTINATION,
+            destination_type: DestinationType::Planet,
+            position: Vec3 { x: 20.0, y: 0.0, z: 0.0 },
+            travel_duration: Duration(100),
+            fuel_cost: 5,
+            discovery: DiscoveryState::Known,
+        },
+    ] {
+        gameplay
+            .register_destination(destination)
+            .map_err(|error| format!("registrar destino de campaÃ±a runtime: {error:?}"))?;
+    }
     gameplay
         .register_destination(Destination {
             id: cooperacion::SIGNAL_DESTINATION,
@@ -11490,7 +11542,51 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
     let engineering_station = gameplay
         .create_station(Vec3::ZERO, 2.0, StationType::Engineering)
         .map_err(|error| format!("crear ingeniería runtime: {error:?}"))?;
+    let campaign_status_console = gameplay
+        .create_ship_status_console(Vec3::ZERO, 2.0)
+        .map_err(|error| format!("crear consola de campaÃ±a runtime: {error:?}"))?;
+    let campaign_electrical_panel = gameplay
+        .create_electrical_panel(
+            Vec3::ZERO,
+            2.0,
+            ElectricalPanelConfiguration::new(vec![ElectricalBreakerConfiguration {
+                id: BreakerId::new(1),
+                initial_state: BreakerState::Off,
+                target_state: BreakerState::On,
+            }]),
+        )
+        .map_err(|error| format!("crear panel electrico runtime: {error:?}"))?;
+    let campaign_life_support_panel = gameplay
+        .create_life_support_panel(
+            Vec3::ZERO,
+            2.0,
+            LifeSupportConfiguration::new(
+                5,
+                vec![
+                    OxygenCompartmentConfiguration {
+                        id: gameplay::CompartmentId::new(1),
+                        initial_allocation: 0,
+                        minimum_allocation: 3,
+                        maximum_allocation: 5,
+                    },
+                    OxygenCompartmentConfiguration {
+                        id: gameplay::CompartmentId::new(2),
+                        initial_allocation: 0,
+                        minimum_allocation: 2,
+                        maximum_allocation: 5,
+                    },
+                ],
+            ),
+        )
+        .map_err(|error| format!("crear soporte vital runtime: {error:?}"))?;
+    let campaign_bridge = gameplay
+        .create_bridge_door(Vec3::ZERO, 2.0)
+        .map_err(|error| format!("crear puente runtime: {error:?}"))?;
+    let campaign_engineering_station = gameplay
+        .create_station(Vec3 { x: 10.0, y: 0.0, z: 0.0 }, 2.0, StationType::Engineering)
+        .map_err(|error| format!("crear ingenieria de campaÃ±a runtime: {error:?}"))?;
     let encounter = EncounterId::new(13_003);
+    let campaign_encounter = EncounterId::new(13_005);
     let setup = gameplay.update([
         GameplayCommand::AddInventoryItem {
             player: gameplay.ids.first_player,
@@ -11569,6 +11665,28 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
                 2.0,
             ),
         },
+        GameplayCommand::RegisterSpatialEncounter {
+            encounter: SpatialEncounter::new(
+                campaign_encounter,
+                SpatialEncounterKind::Hostile {
+                    configuration: EnemyConfiguration {
+                        archetype: EnemyArchetype::Shooter,
+                        position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+                        maximum_health: 32,
+                        weapon: WeaponConfiguration::new(
+                            AttackType::Energy,
+                            1,
+                            1,
+                            Duration(1_000_000),
+                        ),
+                        shield: None,
+                        mobility: 1,
+                    },
+                },
+                Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+                2.0,
+            ),
+        },
         GameplayCommand::RegisterFunctionalWorld {
             world: FunctionalWorld::new(
                 origin,
@@ -11585,12 +11703,23 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
                 })],
             ),
         },
+        GameplayCommand::RegisterEnvironmentalHazard {
+            hazard: EnvironmentalHazard::new(
+                tormenta_gravitacional::HAZARD,
+                gameplay::EnvironmentalHazardType::GravitationalAnomaly,
+                Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+                2.0,
+                10,
+                Duration(1_000),
+                true,
+            ),
+        },
         GameplayCommand::CreateCompanion {
             followed_player: gameplay.ids.first_player,
             position: Vec3::ZERO,
         },
     ]);
-    if setup.len() != 11
+    if setup.len() != 13
         || setup
             .iter()
             .any(|result| !matches!(result.status, CommandStatus::Success { .. }))
@@ -11608,10 +11737,16 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
         checkpoint: None,
         pilot_station,
         engineering_station,
+        campaign_status_console,
+        campaign_electrical_panel,
+        campaign_life_support_panel,
+        campaign_bridge,
+        campaign_engineering_station,
         erick,
         other_player,
         destination,
         encounter,
+        campaign_encounter,
     })
 }
 
@@ -11666,6 +11801,65 @@ fn parse_runtime_command(line: &str) -> Result<RuntimeCommand, String> {
             }
             RuntimeCommand::Erick(query)
         }
+        "breaker" => {
+            let panel = parts.next().ok_or_else(|| "breaker requiere panel, breaker y estado".to_owned())?.parse::<u64>().map_err(|_| "breaker requiere identificadores enteros".to_owned())?;
+            let breaker = parts.next().ok_or_else(|| "breaker requiere panel, breaker y estado".to_owned())?.parse::<u16>().map_err(|_| "breaker requiere un breaker entero".to_owned())?;
+            let state = parts.next().ok_or_else(|| "breaker requiere panel, breaker y estado".to_owned())?;
+            if parts.next().is_some() {
+                return Err("breaker acepta panel, breaker y on/off".to_owned());
+            }
+            let on = match state {
+                "on" | "encendido" => true,
+                "off" | "apagado" => false,
+                _ => return Err("breaker requiere on/off".to_owned()),
+            };
+            RuntimeCommand::SetBreaker { panel, breaker, on }
+        }
+        "oxygen" | "oxigeno" => {
+            let panel = parts.next().ok_or_else(|| "oxygen requiere panel, compartimento y asignacion".to_owned())?.parse::<u64>().map_err(|_| "oxygen requiere identificadores enteros".to_owned())?;
+            let compartment = parts.next().ok_or_else(|| "oxygen requiere panel, compartimento y asignacion".to_owned())?.parse::<u16>().map_err(|_| "oxygen requiere un compartimento entero".to_owned())?;
+            let allocation = parts.next().ok_or_else(|| "oxygen requiere panel, compartimento y asignacion".to_owned())?.parse::<u32>().map_err(|_| "oxygen requiere una asignacion entera".to_owned())?;
+            if parts.next().is_some() {
+                return Err("oxygen acepta panel, compartimento y asignacion".to_owned());
+            }
+            RuntimeCommand::SetOxygen { panel, compartment, allocation }
+        }
+        "unlockdoor" | "abrirpuerta" => {
+            let door = parts.next().ok_or_else(|| "unlockdoor requiere una puerta".to_owned())?.parse::<u64>().map_err(|_| "unlockdoor requiere un identificador entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("unlockdoor acepta una puerta".to_owned());
+            }
+            RuntimeCommand::UnlockDoor(door)
+        }
+        "release" | "liberar" => {
+            let station = parts.next().ok_or_else(|| "release requiere una estacion".to_owned())?.parse::<u64>().map_err(|_| "release requiere un identificador entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("release acepta una estacion".to_owned());
+            }
+            RuntimeCommand::ReleaseStation(station)
+        }
+        "equip" | "equipar" => {
+            let weapon = parts.next().ok_or_else(|| "equip requiere kinetic o energy".to_owned())?;
+            if parts.next().is_some() {
+                return Err("equip acepta kinetic o energy".to_owned());
+            }
+            match weapon {
+                "kinetic" | "cinética" | "cinetica" => RuntimeCommand::Equip(AttackType::Kinetic),
+                "energy" | "energia" | "energía" => RuntimeCommand::Equip(AttackType::Energy),
+                _ => return Err("equip requiere kinetic o energy".to_owned()),
+            }
+        }
+        "spawn" | "crearenemigo" => {
+            let archetype = parts.next().ok_or_else(|| "spawn requiere shooter o shielded".to_owned())?;
+            if parts.next().is_some() {
+                return Err("spawn acepta un arquetipo".to_owned());
+            }
+            match archetype {
+                "shooter" | "tirador" => RuntimeCommand::Spawn(EnemyArchetype::Shooter),
+                "shielded" | "escudado" => RuntimeCommand::Spawn(EnemyArchetype::Shielded),
+                _ => return Err("spawn requiere shooter o shielded".to_owned()),
+            }
+        }
         "checkpoint" | "punto" => match parts.next() {
             None => RuntimeCommand::Checkpoint,
             Some("status") | Some("estado") if parts.next().is_none() => RuntimeCommand::CheckpointStatus,
@@ -11675,9 +11869,27 @@ fn parse_runtime_command(line: &str) -> Result<RuntimeCommand, String> {
         "navigation" | "nav" if parts.next().is_none() => RuntimeCommand::Navigation,
         "combat" | "combate" if parts.next().is_none() => RuntimeCommand::Combat,
         "pilot" | "pilotear" if parts.next().is_none() => RuntimeCommand::Pilot,
+        "select" | "seleccionar" => {
+            let destination = parts.next().ok_or_else(|| "select requiere el destino".to_owned())?.parse::<u32>().map_err(|_| "select requiere un destino entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("select acepta un destino".to_owned());
+            }
+            RuntimeCommand::SelectDestination(destination)
+        }
+        "travel" | "viajar" if parts.next().is_none() => RuntimeCommand::StartTravel,
         "start" | "iniciar" if parts.next().is_none() => RuntimeCommand::StartAutopilot,
         "encounter" | "encuentro" if parts.next().is_none() => RuntimeCommand::Encounter,
-        "activate" | "activar" if parts.next().is_none() => RuntimeCommand::ActivateEncounter,
+        "activate" | "activar" => {
+            let encounter = parts
+                .next()
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .map_err(|_| "activate requiere un identificador entero".to_owned())?;
+            if parts.next().is_some() {
+                return Err("activate acepta opcionalmente un encuentro".to_owned());
+            }
+            RuntimeCommand::ActivateEncounter(encounter)
+        }
         "continue" | "continuar" if parts.next().is_none() => RuntimeCommand::ContinueAutopilot,
         "cancel" | "cancelar" if parts.next().is_none() => RuntimeCommand::CancelAutopilot,
         "attack" | "atacar" => {
@@ -11993,7 +12205,7 @@ fn parse_runtime_command(line: &str) -> Result<RuntimeCommand, String> {
 fn write_runtime_help(output: &mut dyn Write) -> Result<(), String> {
     writeln!(
         output,
-        "Comandos: help, status, ship, players, inventory [jugador], resources, economy, upgrades, missions, mission <id>, unlock <id>, startmission <id>, scan, collectibles, collect <coleccionable> <cantidad> [jugador], erick [status|navigation|tactical|support|recovery|all], checkpoint [status], restore, navigation, combat, pilot, plan <origen> <destino>, start, encounter, activate, continue, cancel, attack <enemigo> [jugador], damage <cantidad>, interact <objetivo>, repair <estacion>, enemyattack <enemigo> <jugador>, revive <ayudante> <objetivo> <item>, heal <jugador> <item> <cantidad>, extract <destino>, transfer <origen> <destino> <item> <cantidad>, buy <destino> <item> <cantidad>, sell <destino> <item> <cantidad>, upgrade <codigo> <destino>, move <x> <y> <z> <ms>, advance <duracion>, events, quit"
+        "Comandos: help, status, ship, players, inventory [jugador], resources, economy, upgrades, missions, mission <id>, unlock <id>, startmission <id>, scan, collectibles, collect <coleccionable> <cantidad> [jugador], erick [status|navigation|tactical|support|recovery|all], checkpoint [status], restore, breaker <panel> <breaker> <on|off>, oxygen <panel> <compartimento> <asignacion>, unlockdoor <puerta>, release <estacion>, equip <kinetic|energy>, spawn <shooter|shielded>, navigation, combat, pilot, select <destino>, travel, plan <origen> <destino>, start, encounter, activate, continue, cancel, attack <enemigo> [jugador], damage <cantidad>, interact <objetivo>, repair <estacion>, enemyattack <enemigo> <jugador>, revive <ayudante> <objetivo> <item>, heal <jugador> <item> <cantidad>, extract <destino>, transfer <origen> <destino> <item> <cantidad>, buy <destino> <item> <cantidad>, sell <destino> <item> <cantidad>, upgrade <codigo> <destino>, move <x> <y> <z> <ms>, advance <duracion>, events, quit"
     )
         .map_err(|error| format!("escribir ayuda: {error}"))
 }
@@ -12266,6 +12478,65 @@ fn execute_runtime_command(
             writeln!(output, "erick {:?}: entity={entity:?}, {result}", query)
                 .map_err(|error| format!("escribir evaluacion de ERICK: {error}"))?;
         }
+        RuntimeCommand::SetBreaker { panel, breaker, on } => {
+            let result = session.update([GameplayCommand::SetElectricalBreakerState {
+                player: session.ids.first_player,
+                panel: EntityId::new(*panel),
+                breaker: BreakerId::new(*breaker),
+                state: if *on { BreakerState::On } else { BreakerState::Off },
+            }]);
+            writeln!(output, "breaker {panel} {breaker}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de breaker: {error}"))?;
+        }
+        RuntimeCommand::SetOxygen { panel, compartment, allocation } => {
+            let result = session.update([GameplayCommand::SetOxygenAllocation {
+                player: session.ids.first_player,
+                panel: EntityId::new(*panel),
+                compartment: gameplay::CompartmentId::new(*compartment),
+                allocation: *allocation,
+            }]);
+            writeln!(output, "oxygen {panel} {compartment} {allocation}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de oxigeno: {error}"))?;
+        }
+        RuntimeCommand::UnlockDoor(door) => {
+            let result = session.update([GameplayCommand::UnlockDoor { door: EntityId::new(*door) }]);
+            writeln!(output, "unlockdoor {door}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de puerta: {error}"))?;
+        }
+        RuntimeCommand::ReleaseStation(station) => {
+            let result = session.update([GameplayCommand::ReleaseStation {
+                station: EntityId::new(*station),
+                player: session.ids.first_player,
+            }]);
+            writeln!(output, "release {station}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de liberar estacion: {error}"))?;
+        }
+        RuntimeCommand::Equip(attack_type) => {
+            let (damage, ammo) = match attack_type {
+                AttackType::Kinetic => (20, WeaponAmmunition { item: ItemId(2), amount_per_attack: 1 }),
+                AttackType::Energy => (100, WeaponAmmunition { item: ItemId(3), amount_per_attack: 1 }),
+                AttackType::Plasma => (60, WeaponAmmunition { item: ItemId(4), amount_per_attack: 1 }),
+            };
+            let result = session.update([GameplayCommand::EquipPlayerWeapon {
+                player: session.ids.first_player,
+                weapon: WeaponConfiguration::with_ammunition(
+                    *attack_type,
+                    damage,
+                    20,
+                    Duration(1_000),
+                    ammo,
+                ),
+            }]);
+            writeln!(output, "equip {:?}: {:?}", attack_type, result)
+                .map_err(|error| format!("escribir resultado de equipamiento: {error}"))?;
+        }
+        RuntimeCommand::Spawn(archetype) => {
+            let result = session.update([GameplayCommand::CreateEnemy {
+                configuration: EnemyConfiguration::for_archetype(*archetype, Vec3::ZERO),
+            }]);
+            writeln!(output, "spawn {:?}: {:?}", archetype, result)
+                .map_err(|error| format!("escribir resultado de enemigo: {error}"))?;
+        }
         RuntimeCommand::Checkpoint => {
             let serialized = session.save_state().serialize();
             let bytes = serialized.len();
@@ -12310,6 +12581,23 @@ fn execute_runtime_command(
             writeln!(output, "pilot: {:?}", result)
                 .map_err(|error| format!("escribir resultado de pilotaje: {error}"))?;
         }
+        RuntimeCommand::SelectDestination(destination) => {
+            let result = session.update([GameplayCommand::SelectDestination {
+                player: session.ids.first_player,
+                pilot_station: runtime.pilot_station,
+                destination: DestinationId::new(*destination),
+            }]);
+            writeln!(output, "select {destination}: {:?}", result)
+                .map_err(|error| format!("escribir resultado de seleccion: {error}"))?;
+        }
+        RuntimeCommand::StartTravel => {
+            let result = session.update([GameplayCommand::StartTravel {
+                player: session.ids.first_player,
+                pilot_station: runtime.pilot_station,
+            }]);
+            writeln!(output, "travel: {:?}", result)
+                .map_err(|error| format!("escribir resultado de viaje: {error}"))?;
+        }
         RuntimeCommand::Plan { origin, destination } => {
             let result = session.update([GameplayCommand::PlanAutopilot {
                 player: session.ids.first_player,
@@ -12339,11 +12627,14 @@ fn execute_runtime_command(
             )
             .map_err(|error| format!("escribir encuentro: {error}"))?;
         }
-        RuntimeCommand::ActivateEncounter => {
+        RuntimeCommand::ActivateEncounter(requested) => {
+            let encounter = requested
+                .map(|value| EncounterId::new(value as u32))
+                .unwrap_or(runtime.encounter);
             let result = session.update([GameplayCommand::ActivateSpatialEncounter {
-                encounter: runtime.encounter,
+                encounter,
             }]);
-            writeln!(output, "activate: {:?}", result)
+            writeln!(output, "activate {:?}: {:?}", encounter, result)
                 .map_err(|error| format!("escribir resultado de activación: {error}"))?;
         }
         RuntimeCommand::ContinueAutopilot => {
@@ -13448,6 +13739,161 @@ fn run_runtime_checkpoint_scenario() -> Result<(), String> {
     println!(
         "CHECKPOINT RUNTIME VALIDADO: captura_completa=true, accion_real=true, restaurado=true, erick_read_only=true, restore_invalido_atomico=true, segunda_restauracion=true, temporal_en_memoria=true"
     );
+    Ok(())
+}
+
+fn run_runtime_campaign_scenario() -> Result<(), String> {
+    let mut runtime = create_runtime_session()?;
+    let mut output = Vec::new();
+    let first = runtime.gameplay.ids.first_player;
+    let status_console = runtime.campaign_status_console;
+    let electrical_panel = runtime.campaign_electrical_panel;
+    let life_support_panel = runtime.campaign_life_support_panel;
+    let bridge = runtime.campaign_bridge;
+    let campaign_engineering = runtime.campaign_engineering_station;
+    let pilot_station = runtime.pilot_station;
+    let campaign_encounter = runtime.campaign_encounter;
+    let mission_completed = |runtime: &RuntimeSession, id: gameplay::types::MissionId, label: &str| {
+        let mission = runtime
+            .gameplay
+            .world()
+            .mission(id)
+            .ok_or_else(|| format!("{label} no está registrada"))?;
+        if mission.state() != MissionState::Completed {
+            return Err(format!("{label} no terminó: {:?}", mission.progress()));
+        }
+        Ok(())
+    };
+    let run = |runtime: &mut RuntimeSession, output: &mut Vec<u8>, line: &str| -> Result<(), String> {
+        let command = parse_runtime_command(line)?;
+        execute_runtime_command(runtime, &command, output).map(|_| ())
+    };
+
+    run(&mut runtime, &mut output, "missions")?;
+    if runtime.gameplay.world().missions().count() != 5 {
+        return Err("el runtime no expuso las cinco misiones originales".to_owned());
+    }
+    let initial = runtime.gameplay.save_state().serialize();
+    if parse_runtime_command("startmission invalid").is_ok()
+        || runtime.gameplay.save_state().serialize() != initial
+    {
+        return Err("un comando de misión inválido no fue rechazado sin mutación".to_owned());
+    }
+
+    run(&mut runtime, &mut output, "unlock 1")?;
+    run(&mut runtime, &mut output, "startmission 1")?;
+    run(&mut runtime, &mut output, &format!("interact {}", status_console.value()))?;
+    run(&mut runtime, &mut output, &format!("interact {}", electrical_panel.value()))?;
+    run(&mut runtime, &mut output, &format!("breaker {} 1 on", electrical_panel.value()))?;
+    run(&mut runtime, &mut output, &format!("interact {}", life_support_panel.value()))?;
+    run(&mut runtime, &mut output, &format!("oxygen {} 1 3", life_support_panel.value()))?;
+    run(&mut runtime, &mut output, &format!("oxygen {} 2 2", life_support_panel.value()))?;
+    run(&mut runtime, &mut output, &format!("unlockdoor {}", bridge.value()))?;
+    run(&mut runtime, &mut output, &format!("interact {}", bridge.value()))?;
+    run(&mut runtime, &mut output, &format!("interact {}", pilot_station.value()))?;
+    mission_completed(&runtime, el_despertar::EL_DESPERTAR, "El despertar")?;
+
+    run(&mut runtime, &mut output, "unlock 2")?;
+    run(&mut runtime, &mut output, "startmission 2")?;
+    run(&mut runtime, &mut output, "unlock 5")?;
+    run(&mut runtime, &mut output, "startmission 5")?;
+    run(&mut runtime, &mut output, "scan")?;
+    run(&mut runtime, &mut output, "advance 1000")?;
+    run(&mut runtime, &mut output, "scan")?;
+    run(&mut runtime, &mut output, "extract 13001")?;
+    run(&mut runtime, &mut output, &format!("select {}", ecos_anomalia::PLANET_DESTINATION.value()))?;
+    run(&mut runtime, &mut output, "travel")?;
+    run(&mut runtime, &mut output, "advance 100")?;
+    run(&mut runtime, &mut output, "move 1 0 0 2000")?;
+    let anomaly_enemy = runtime
+        .gameplay
+        .world()
+        .spatial_encounter(campaign_encounter)
+        .and_then(|encounter| encounter.spawned_enemy)
+        .ok_or_else(|| "el encuentro runtime no creó la amenaza de Ecos".to_owned())?;
+    run(&mut runtime, &mut output, &format!("attack {} 2", anomaly_enemy.value()))?;
+    run(&mut runtime, &mut output, "advance 1000")?;
+    run(&mut runtime, &mut output, &format!("attack {} 2", anomaly_enemy.value()))?;
+    let anomaly_reward = runtime
+        .gameplay
+        .world()
+        .collectibles()
+        .find(|collectible| collectible.active && collectible.item == ItemId(3))
+        .copied()
+        .ok_or_else(|| "Ecos no generó su recompensa Item3".to_owned())?;
+    run(&mut runtime, &mut output, &format!("collect {} 1", anomaly_reward.entity.value()))?;
+    run(&mut runtime, &mut output, "move -1 0 0 2000")?;
+    mission_completed(&runtime, ecos_anomalia::ECOS_DE_LA_ANOMALIA, "Ecos de la anomalia")?;
+    mission_completed(&runtime, cooperacion::PROGRESION_COOPERATIVA, "Progresion cooperativa")?;
+
+    run(&mut runtime, &mut output, "checkpoint")?;
+    let checkpoint = runtime
+        .checkpoint
+        .clone()
+        .ok_or_else(|| "la campaña no creó el checkpoint intermedio".to_owned())?;
+    run(&mut runtime, &mut output, "erick all")?;
+    if runtime.gameplay.save_state().serialize() != checkpoint {
+        return Err("consultar ERICK alteró el checkpoint de campaña".to_owned());
+    }
+    run(&mut runtime, &mut output, "restore")?;
+    if runtime.gameplay.save_state().serialize() != checkpoint
+        || runtime.gameplay.world().companion(runtime.erick).is_none()
+    {
+        return Err("la restauración no conservó progreso o ERICK".to_owned());
+    }
+
+    run(&mut runtime, &mut output, "unlock 3")?;
+    run(&mut runtime, &mut output, "startmission 3")?;
+    run(&mut runtime, &mut output, "advance 1000")?;
+    run(&mut runtime, &mut output, &format!("move 1 0 0 2000"))?;
+    run(&mut runtime, &mut output, &format!("interact {}", campaign_engineering.value()))?;
+    run(&mut runtime, &mut output, &format!("repair {}", campaign_engineering.value()))?;
+    run(&mut runtime, &mut output, &format!("release {}", campaign_engineering.value()))?;
+    run(&mut runtime, &mut output, "move -1 0 0 2000")?;
+    run(&mut runtime, &mut output, &format!("interact {}", pilot_station.value()))?;
+    run(&mut runtime, &mut output, &format!("select {}", tormenta_gravitacional::ESCAPE_DESTINATION.value()))?;
+    run(&mut runtime, &mut output, "travel")?;
+    run(&mut runtime, &mut output, "advance 100")?;
+    mission_completed(&runtime, tormenta_gravitacional::TORMENTA_GRAVITACIONAL, "Tormenta gravitacional")?;
+
+    run(&mut runtime, &mut output, "unlock 4")?;
+    run(&mut runtime, &mut output, "startmission 4")?;
+    run(&mut runtime, &mut output, "spawn shielded")?;
+    let shielded = runtime
+        .gameplay
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            GameplayEvent::EnemyCreated { enemy, archetype, .. }
+                if *archetype == EnemyArchetype::Shielded => Some(*enemy),
+            _ => None,
+        })
+        .ok_or_else(|| "La defensa no creó el enemigo escudado".to_owned())?;
+    run(&mut runtime, &mut output, "equip kinetic")?;
+    run(&mut runtime, &mut output, &format!("attack {}", shielded.value()))?;
+    run(&mut runtime, &mut output, "advance 1000")?;
+    run(&mut runtime, &mut output, "equip energy")?;
+    run(&mut runtime, &mut output, &format!("attack {}", shielded.value()))?;
+    let defense_reward = runtime
+        .gameplay
+        .world()
+        .collectibles()
+        .find(|collectible| collectible.active && collectible.item == ItemId(1))
+        .copied()
+        .ok_or_else(|| "La defensa no generó su recompensa Item1".to_owned())?;
+    run(&mut runtime, &mut output, &format!("collect {} 1", defense_reward.entity.value()))?;
+    mission_completed(&runtime, la_defensa_imposible::LA_DEFENSA_IMPOSIBLE, "La defensa imposible")?;
+
+    let duplicate_state = runtime.gameplay.save_state().serialize();
+    run(&mut runtime, &mut output, "startmission 1")?;
+    if runtime.gameplay.save_state().serialize() != duplicate_state {
+        return Err("repetir una misión completada produjo una mutación".to_owned());
+    }
+    if runtime.gameplay.world().missions().filter(|mission| mission.state() == MissionState::Completed).count() != 5 {
+        return Err("el runtime no completó exactamente las cinco misiones".to_owned());
+    }
+    println!("CAMPAÑA RUNTIME COMPLETADA: misiones=5, parser_dispatcher=true, checkpoint=true, restauracion=true, erick=true, duplicacion=false, continuacion=true, jugador={}", first.value());
     Ok(())
 }
 
@@ -19648,6 +20094,7 @@ fn run_scenario() -> Result<(), String> {
     run_runtime_mission_scenario()?;
     run_runtime_erick_scenario()?;
     run_runtime_checkpoint_scenario()?;
+    run_runtime_campaign_scenario()?;
     run_runtime_adapter_scenario()?;
     run_runtime_cancel_recovery_scenario()?;
     run_atomicity_regressions()?;
