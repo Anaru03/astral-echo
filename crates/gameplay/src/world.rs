@@ -64,7 +64,7 @@ use crate::{
         NavigationState, TravelProgress, TravelState,
     },
     player::Player,
-    resources::{FuelError, FuelTank, ShipResources},
+    resources::{FuelError, FuelTank, ShipResources, ShipUpgrade},
     persistence::{
         CombatantSaveState, CollectibleSaveState, GameplaySaveState, InventorySaveState,
         MissionSaveState, PlayerSaveState, SaveError,
@@ -121,6 +121,7 @@ pub struct GameplayWorld {
     spatial_encounters: BTreeMap<EncounterId, SpatialEncounter>,
     derelicts: BTreeMap<DerelictId, Derelict>,
     functional_worlds: BTreeMap<DestinationId, FunctionalWorld>,
+    ship_upgrades: BTreeMap<EntityId, BTreeSet<ShipUpgrade>>,
     currencies: BTreeMap<EntityId, u64>,
     enemy_rewards: BTreeMap<crate::combat::EnemyArchetype, EnemyReward>,
     processed_enemy_rewards: BTreeSet<EntityId>,
@@ -237,6 +238,11 @@ impl GameplayWorld {
                         integrity.current(),
                     )
                 })
+                .collect(),
+            ship_upgrades: self
+                .ship_upgrades
+                .iter()
+                .flat_map(|(ship, upgrades)| upgrades.iter().map(move |upgrade| (*ship, *upgrade)))
                 .collect(),
             ship_position: self.navigation.ship_id().map(|_| self.navigation.current_position()),
             destinations: self.navigation.destinations().cloned().collect(),
@@ -376,6 +382,16 @@ impl GameplayWorld {
         restored_navigation
             .restore_destinations_and_routes(save.destinations.clone(), save.routes.clone())
             .map_err(|_| SaveError::InvalidState)?;
+        let active_ship = restored_navigation.ship_id();
+        let mut ship_upgrades: BTreeMap<EntityId, BTreeSet<ShipUpgrade>> = BTreeMap::new();
+        for (ship, upgrade) in &save.ship_upgrades {
+            if Some(*ship) != active_ship || ShipUpgrade::from_code(upgrade.code()).is_none() {
+                return Err(SaveError::InvalidReference);
+            }
+            if ship_upgrades.entry(*ship).or_default().insert(*upgrade) == false {
+                return Err(SaveError::DuplicateRecord);
+            }
+        }
         let mut companions = BTreeMap::new();
         for saved in &save.companions {
             if !registry.snapshot().known.contains(&saved.entity)
@@ -522,6 +538,7 @@ impl GameplayWorld {
         self.currencies = save.currencies.into_iter().collect();
         self.ship_resources = ship_resources;
         self.ship_integrity = ship_integrity;
+        self.ship_upgrades = ship_upgrades;
         self.collectibles = save
             .collectibles
             .into_iter()
@@ -3264,7 +3281,10 @@ impl GameplayWorld {
             };
             route.state == crate::navigation::NavigationRouteState::Available
                 && ship_operational
-                && fuel.is_some_and(|available| available >= route.fuel_cost)
+                && fuel.is_some_and(|available| {
+                    crate::navigation::discounted_fuel_cost(route.fuel_cost, self.ship_fuel_discount_percent())
+                        .is_some_and(|required| available >= required)
+                })
         };
         let player_can_reach = |position: engine::Vec3, range: f32| {
             finite_vec3(player.position)
@@ -3505,7 +3525,13 @@ impl GameplayWorld {
                 .find(|value| value.position == current_position)
                 .map(|value| value.id)?;
             let route = self.navigation().route(origin, destination)?;
-            Some((route.fuel_cost, fuel_available.unwrap_or_default()))
+            Some((
+                crate::navigation::discounted_fuel_cost(
+                    route.fuel_cost,
+                    self.ship_fuel_discount_percent(),
+                )?,
+                fuel_available.unwrap_or_default(),
+            ))
         };
         let mut satisfied = Vec::new();
         let mut missing = Vec::new();
@@ -5526,6 +5552,19 @@ impl GameplayWorld {
     pub fn ship_resources(&self, ship: EntityId) -> Option<ShipResources> {
         self.ship_resources.get(&ship).copied()
     }
+
+    pub fn ship_has_upgrade(&self, ship: EntityId, upgrade: ShipUpgrade) -> bool {
+        self.ship_upgrades
+            .get(&ship)
+            .is_some_and(|upgrades| upgrades.contains(&upgrade))
+    }
+
+    fn ship_fuel_discount_percent(&self) -> u32 {
+        self.navigation
+            .ship_id()
+            .filter(|ship| self.ship_has_upgrade(*ship, ShipUpgrade::EngineEfficiencyI))
+            .map_or(0, |_| ShipUpgrade::EngineEfficiencyI.fuel_discount_percent())
+    }
     pub fn ship_fuel(&self, ship: EntityId) -> Option<FuelTank> {
         self.ship_resources
             .get(&ship)
@@ -6542,6 +6581,46 @@ impl GameplayWorld {
         });
         Ok(total)
     }
+
+    pub(crate) fn install_ship_upgrade(
+        &mut self,
+        player: EntityId,
+        ship: EntityId,
+        destination: DestinationId,
+        upgrade: ShipUpgrade,
+    ) -> Result<(), WorldActivityError> {
+        let world = self.validate_world_access(player, destination)?;
+        if self.navigation.ship_id() != Some(ship) {
+            return Err(WorldActivityError::ShipNotOperational);
+        }
+        if !world.activities.iter().any(|activity| matches!(activity, WorldActivity::Trade(_))) {
+            return Err(WorldActivityError::ActivityNotFound);
+        }
+        if self.ship_has_upgrade(ship, upgrade) {
+            return Err(WorldActivityError::UpgradeAlreadyInstalled);
+        }
+        let balance = self.player_currency(player).ok_or(WorldActivityError::PlayerNotFound)?;
+        if balance < upgrade.credit_cost() {
+            return Err(WorldActivityError::InsufficientFunds);
+        }
+        let inventory = self.inventory(player).ok_or(WorldActivityError::InventoryInsufficient)?;
+        let mut inventory_after = inventory.clone();
+        inventory_after
+            .try_remove(upgrade.material(), upgrade.material_cost())
+            .map_err(|_| WorldActivityError::InventoryInsufficient)?;
+        self.ship_upgrades.entry(ship).or_default().insert(upgrade);
+        self.inventories.insert(player, inventory_after);
+        self.currencies.insert(player, balance - upgrade.credit_cost());
+        self.publish(crate::events::GameplayEvent::ShipUpgradeInstalled {
+            player,
+            ship,
+            upgrade,
+            credits: upgrade.credit_cost(),
+            material: upgrade.material(),
+            material_amount: upgrade.material_cost(),
+        });
+        Ok(())
+    }
     pub(crate) fn sell_world_item(
         &mut self,
         player: EntityId,
@@ -6960,10 +7039,11 @@ impl GameplayWorld {
         let Some(ship) = self.navigation.ship_id() else {
             return Err(crate::navigation::NavigationStartError::ShipNotFound);
         };
+        let discount_percent = self.ship_fuel_discount_percent();
         let Some(resources) = self.ship_resources.get_mut(&ship) else {
             return Err(crate::navigation::NavigationStartError::ResourcesNotInitialized);
         };
-        self.navigation.start_travel(now, resources.fuel_mut())
+        self.navigation.start_travel(now, resources.fuel_mut(), discount_percent)
     }
     pub(crate) fn plan_autopilot(
         &mut self,
@@ -6984,11 +7064,12 @@ impl GameplayWorld {
         let Some(ship) = self.navigation.ship_id() else {
             return Err(crate::navigation::AutopilotError::DestinationNotFound);
         };
+        let discount_percent = self.ship_fuel_discount_percent();
         let Some(resources) = self.ship_resources.get_mut(&ship) else {
             return Err(crate::navigation::AutopilotError::DestinationNotFound);
         };
         self.navigation
-            .start_autopilot(now, resources.fuel_mut(), player, pilot_station)
+            .start_autopilot(now, resources.fuel_mut(), player, pilot_station, discount_percent)
     }
     pub(crate) fn advance_autopilot_leg(
         &mut self,
@@ -7000,11 +7081,12 @@ impl GameplayWorld {
         let Some(ship) = self.navigation.ship_id() else {
             return Err(crate::navigation::AutopilotError::DestinationNotFound);
         };
+        let discount_percent = self.ship_fuel_discount_percent();
         let Some(resources) = self.ship_resources.get_mut(&ship) else {
             return Err(crate::navigation::AutopilotError::DestinationNotFound);
         };
         self.navigation
-            .advance_autopilot_leg(now, resources.fuel_mut())
+            .advance_autopilot_leg(now, resources.fuel_mut(), discount_percent)
     }
     pub(crate) fn ship_resources_mut(&mut self, ship: EntityId) -> Option<&mut ShipResources> {
         self.ship_resources.get_mut(&ship)
@@ -7036,7 +7118,10 @@ fn route_fuel_requirement(
     let mut total = 0_u32;
     for index in start..route.len() - 1 {
         let leg = world.navigation_route(route[index], route[index + 1])?;
-        total = total.checked_add(leg.fuel_cost)?;
+        total = total.checked_add(crate::navigation::discounted_fuel_cost(
+            leg.fuel_cost,
+            world.ship_fuel_discount_percent(),
+        )?)?;
     }
     Some(total)
 }
@@ -7212,7 +7297,10 @@ fn summarize_route(
             return None;
         }
         duration = duration.checked_add(leg.duration.0)?;
-        fuel_required = fuel_required.checked_add(leg.fuel_cost)?;
+        fuel_required = fuel_required.checked_add(crate::navigation::discounted_fuel_cost(
+            leg.fuel_cost,
+            world.ship_fuel_discount_percent(),
+        )?)?;
     }
     let mut risks = Vec::new();
     for hazard in world.environmental_hazards() {

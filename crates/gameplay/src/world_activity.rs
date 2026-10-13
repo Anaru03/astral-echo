@@ -177,4 +177,5 @@ pub enum WorldActivityError {
     StoryAlreadyInteracted,
     StoryKnowledgeUnavailable,
     EnemyCreationFailed,
+    UpgradeAlreadyInstalled,
 }

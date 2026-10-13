@@ -1,5 +1,43 @@
 use engine::EntityId;
 
+use crate::types::ItemId;
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ShipUpgrade {
+    EngineEfficiencyI,
+}
+
+impl ShipUpgrade {
+    pub const fn credit_cost(self) -> u64 {
+        2
+    }
+
+    pub const fn material(self) -> ItemId {
+        ItemId(1)
+    }
+
+    pub const fn material_cost(self) -> u32 {
+        2
+    }
+
+    pub const fn fuel_discount_percent(self) -> u32 {
+        20
+    }
+
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::EngineEfficiencyI => 1,
+        }
+    }
+
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::EngineEfficiencyI),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FuelTank {
     current: u32,

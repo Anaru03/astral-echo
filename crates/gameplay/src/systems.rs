@@ -1799,6 +1799,9 @@ impl FunctionalWorldSystem {
             crate::world_activity::WorldActivityError::EnemyCreationFailed => {
                 CommandRejection::WorldEnemyCreationFailed
             }
+            crate::world_activity::WorldActivityError::UpgradeAlreadyInstalled => {
+                CommandRejection::ShipUpgradeAlreadyInstalled
+            }
         };
         CommandResult::rejected(reason)
     }
@@ -1874,6 +1877,12 @@ impl GameplaySystem for FunctionalWorldSystem {
             GameplayCommand::ActivateWorldCombat { player, destination } => {
                 Some(match world.activate_world_combat(player, destination) {
                     Ok(_) => CommandResult::success(true),
+                    Err(error) => Self::map_error(error),
+                })
+            }
+            GameplayCommand::InstallShipUpgrade { player, ship, destination, upgrade } => {
+                Some(match world.install_ship_upgrade(player, ship, destination, upgrade) {
+                    Ok(()) => CommandResult::success(true),
                     Err(error) => Self::map_error(error),
                 })
             }

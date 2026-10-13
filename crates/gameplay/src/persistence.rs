@@ -14,6 +14,7 @@ use crate::{
     types::{ItemId, MissionId, ObjectiveId, SimulationPhase},
     revival::ReviveEffect,
     reward::{EnemyReward, RewardDistributionPolicy, RewardEntry},
+    resources::ShipUpgrade,
     world_activity::{CombatZone, FunctionalWorld, ResourceSite, StorySite, TradeMarket, TradeOffer, WorldActivity},
     world::GameplayWorld,
 };
@@ -96,6 +97,7 @@ pub struct GameplaySaveState {
     pub collectibles: Vec<CollectibleSaveState>,
     pub ship_fuel: Vec<(EntityId, u32, u32)>,
     pub ship_integrity: Vec<(EntityId, u32, u32, u32, u32)>,
+    pub ship_upgrades: Vec<(EntityId, ShipUpgrade)>,
     pub ship_position: Option<Vec3>,
     pub destinations: Vec<Destination>,
     pub routes: Vec<NavigationRoute>,
@@ -245,6 +247,9 @@ impl GameplaySaveState {
         for (ship, current, capacity) in &self.ship_fuel {
             output.push_str(&format!("fuel|{}|{}|{}\n", ship.value(), current, capacity));
         }
+        for (ship, upgrade) in &self.ship_upgrades {
+            output.push_str(&format!("ship_upgrade|{}|{}\n", ship.value(), upgrade.code()));
+        }
         for (ship, current, maximum, threshold, _) in &self.ship_integrity {
             output.push_str(&format!("integrity|{}|{}|{}|{}\n", ship.value(), current, maximum, threshold));
         }
@@ -266,7 +271,7 @@ impl GameplaySaveState {
             schema_version, phase: SimulationPhase::Loading, time: GameTime::new(), registry: EntityRegistrySnapshot::default(),
             players: Vec::new(), companions: Vec::new(), inventories: Vec::new(), combatants: Vec::new(), currencies: Vec::new(),
             missions: Vec::new(), knowledge: Vec::new(), collectibles: Vec::new(), ship_fuel: Vec::new(),
-            ship_integrity: Vec::new(), ship_position: None,
+            ship_integrity: Vec::new(), ship_upgrades: Vec::new(), ship_position: None,
             destinations: Vec::new(), routes: Vec::new(), item_definitions: Vec::new(),
             enemy_rewards: Vec::new(), processed_enemy_rewards: Vec::new(), hazards: Vec::new(), encounters: Vec::new(), derelicts: Vec::new(), functional_worlds: Vec::new(),
             world_snapshot: None,
@@ -311,6 +316,11 @@ impl GameplaySaveState {
                 "knowledge" if fields.len() == 4 => state.knowledge.push((parse_knowledge_target(fields[1])?, parse_knowledge_state(fields[2])?)),
                 "collectible" if fields.len() == 10 => state.collectibles.push(CollectibleSaveState { entity: EntityId::new(parse_u64(fields[1])?), item: ItemId(parse_u32(fields[2])?), amount: parse_u32(fields[3])?, position: vec3(&fields, 4)?, interaction_range: float(fields[7])?, owner: match parse_u64(fields[8])? { 0 => None, value => Some(EntityId::new(value)) }, active: parse_bool(fields[9])? }),
                 "fuel" if fields.len() == 4 => state.ship_fuel.push((EntityId::new(parse_u64(fields[1])?), parse_u32(fields[2])?, parse_u32(fields[3])?)),
+                "ship_upgrade" if fields.len() == 3 => {
+                    let code = parse_u32(fields[2])?;
+                    let code = u8::try_from(code).map_err(|_| SaveError::InvalidState)?;
+                    state.ship_upgrades.push((EntityId::new(parse_u64(fields[1])?), ShipUpgrade::from_code(code).ok_or(SaveError::InvalidState)?));
+                }
                 "integrity" if fields.len() == 5 => state.ship_integrity.push((EntityId::new(parse_u64(fields[1])?), parse_u32(fields[2])?, parse_u32(fields[3])?, parse_u32(fields[4])?, parse_u32(fields[2])?)),
                 "ship_position" if fields.len() == 4 => state.ship_position = Some(vec3(&fields, 1)?),
                 _ => return Err(SaveError::MalformedRecord),
@@ -365,6 +375,11 @@ fn validate_unique_entities(state: &GameplaySaveState) -> Result<(), SaveError> 
     for enemy in &state.processed_enemy_rewards {
         if processed_rewards.contains(enemy) { return Err(SaveError::DuplicateRecord); }
         processed_rewards.push(*enemy);
+    }
+    let mut upgrades = Vec::new();
+    for (ship, upgrade) in &state.ship_upgrades {
+        if upgrades.contains(&(*ship, *upgrade)) { return Err(SaveError::DuplicateRecord); }
+        upgrades.push((*ship, *upgrade));
     }
     if state.players.iter().any(|v| !state.registry.known.contains(&v.id)) { return Err(SaveError::InvalidReference); }
     Ok(())
