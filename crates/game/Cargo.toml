@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 engine.workspace = true
 gameplay.workspace = true
-minifb = "0.28"
+bevy = "0.19"
 
 [lib]
 path = "src/lib.rs"

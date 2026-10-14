@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Write};
 
 use engine::{Duration, EntityId, Vec3};
-use minifb::{Key, KeyRepeat, Window, WindowOptions};
+mod visual;
 use game::{
     cooperacion, ecos_anomalia, el_despertar, la_defensa_imposible, tormenta_gravitacional,
     ProjectEchoSession,
@@ -14462,12 +14462,14 @@ fn run_runtime_mode() -> Result<(), String> {
     }
 }
 
+#[cfg(any())]
 fn visual_put_pixel(buffer: &mut [u32], width: usize, height: usize, x: i32, y: i32, color: u32) {
     if x >= 0 && y >= 0 && (x as usize) < width && (y as usize) < height {
         buffer[y as usize * width + x as usize] = color;
     }
 }
 
+#[cfg(any())]
 fn visual_line(buffer: &mut [u32], width: usize, height: usize, start: (i32, i32), end: (i32, i32), color: u32) {
     let (mut x0, mut y0) = start;
     let (x1, y1) = end;
@@ -14485,6 +14487,7 @@ fn visual_line(buffer: &mut [u32], width: usize, height: usize, start: (i32, i32
     }
 }
 
+#[cfg(any())]
 fn visual_rect(buffer: &mut [u32], width: usize, height: usize, left: i32, top: i32, right: i32, bottom: i32, color: u32) {
     for y in top..bottom {
         for x in left..right {
@@ -14493,6 +14496,7 @@ fn visual_rect(buffer: &mut [u32], width: usize, height: usize, left: i32, top: 
     }
 }
 
+#[cfg(any())]
 fn visual_circle(buffer: &mut [u32], width: usize, height: usize, center: (i32, i32), radius: i32, color: u32) {
     for y in -radius..=radius {
         for x in -radius..=radius {
@@ -14503,6 +14507,7 @@ fn visual_circle(buffer: &mut [u32], width: usize, height: usize, center: (i32, 
     }
 }
 
+#[cfg(any())]
 fn visual_project(position: Vec3, width: usize, height: usize) -> Option<(i32, i32)> {
     let depth = (position.z + 100.0).max(8.0);
     let scale = 220.0 / depth;
@@ -14511,6 +14516,7 @@ fn visual_project(position: Vec3, width: usize, height: usize) -> Option<(i32, i
     x.is_finite().then_some((x as i32, y as i32))
 }
 
+#[cfg(any())]
 fn visual_ship(buffer: &mut [u32], width: usize, height: usize, position: Vec3, color: u32) {
     let Some(center) = visual_project(position, width, height) else { return; };
     let nose = (center.0 + 18, center.1);
@@ -14522,6 +14528,7 @@ fn visual_ship(buffer: &mut [u32], width: usize, height: usize, position: Vec3, 
     visual_line(buffer, width, height, (center.0 - 3, center.1), (center.0 - 20, center.1), color);
 }
 
+#[cfg(any())]
 fn visual_feedback(session: &mut ProjectEchoSession, command: GameplayCommand) -> String {
     let results = session.update([command]);
     let status = results.first().map(|result| format!("{:?}", result.status)).unwrap_or_else(|| "sin resultado".to_owned());
@@ -14529,6 +14536,7 @@ fn visual_feedback(session: &mut ProjectEchoSession, command: GameplayCommand) -
     format!("{status}; {event}")
 }
 
+#[cfg(any())]
 fn run_visual_mode() -> Result<(), String> {
     const WIDTH: usize = 960;
     const HEIGHT: usize = 600;
@@ -14615,7 +14623,7 @@ fn main() {
     let result = match arguments.next().as_deref() {
         None => run_scenario(),
         Some("--runtime") if arguments.next().is_none() => run_runtime_mode(),
-        Some("--visual") if arguments.next().is_none() => run_visual_mode(),
+        Some("--visual") if arguments.next().is_none() => visual::run(),
         Some(argument) => Err(format!("argumento no reconocido: {argument}")),
     };
     if let Err(error) = result {

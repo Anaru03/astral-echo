@@ -1,0 +1,351 @@
+use bevy::prelude::*;
+use engine::{Duration, EntityId, Vec3 as GameplayVec3};
+use game::ProjectEchoSession;
+use gameplay::types::ItemId;
+use gameplay::{
+    AttackType, Destination, DestinationId, DestinationType, DiscoveryState, EnemyArchetype,
+    EnemyConfiguration, GameplayCommand, GameplayEvent, NavigationRoute, NavigationRouteState,
+    StationType, WeaponAmmunition, WeaponConfiguration,
+};
+
+const ORIGIN: DestinationId = DestinationId::new(9_001);
+const DESTINATION: DestinationId = DestinationId::new(9_002);
+const SIGNAL: DestinationId = DestinationId::new(9_003);
+
+#[derive(Component)]
+struct ShipVisual;
+
+#[derive(Component)]
+struct DestinationVisual;
+
+#[derive(Component)]
+struct EnemyVisual;
+
+#[derive(Component)]
+struct HudText;
+
+struct VisualBridge {
+    session: ProjectEchoSession,
+    player: EntityId,
+    ship: EntityId,
+    pilot_station: EntityId,
+    enemy: EntityId,
+    feedback: String,
+}
+
+impl VisualBridge {
+    fn new() -> Result<Self, String> {
+        let mut session = ProjectEchoSession::new();
+        let player = session.ids.first_player;
+        let ship = session.ids.first_ship;
+        session
+            .register_destination(Destination {
+                id: ORIGIN,
+                destination_type: DestinationType::SpacePoint,
+                position: GameplayVec3::ZERO,
+                travel_duration: Duration(1_000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .map_err(|error| format!("registrar origen visual: {error:?}"))?;
+        session
+            .register_destination(Destination {
+                id: DESTINATION,
+                destination_type: DestinationType::Planet,
+                position: GameplayVec3 {
+                    x: 42.0,
+                    y: 0.0,
+                    z: -25.0,
+                },
+                travel_duration: Duration(1_000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .map_err(|error| format!("registrar destino visual: {error:?}"))?;
+        session
+            .register_destination(Destination {
+                id: SIGNAL,
+                destination_type: DestinationType::SpacePoint,
+                position: GameplayVec3 {
+                    x: -35.0,
+                    y: 8.0,
+                    z: -20.0,
+                },
+                travel_duration: Duration(1_000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Unknown,
+            })
+            .map_err(|error| format!("registrar señal visual: {error:?}"))?;
+        session.update([GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: ORIGIN,
+                to: DESTINATION,
+                distance: 49.0,
+                duration: Duration(1_000),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        }]);
+        let pilot_station = session
+            .create_station(GameplayVec3::ZERO, 3.0, StationType::Piloting)
+            .map_err(|error| format!("crear estación visual: {error:?}"))?;
+        session.update([
+            GameplayCommand::ConfigureSignalScanner {
+                ship,
+                range: 100.0,
+                cooldown: Duration(1),
+            },
+            GameplayCommand::SetSignalScannerEnabled {
+                ship,
+                enabled: true,
+            },
+            GameplayCommand::AddInventoryItem {
+                player,
+                item: ItemId(2),
+                amount: 8,
+            },
+            GameplayCommand::EquipPlayerWeapon {
+                player,
+                weapon: WeaponConfiguration::with_ammunition(
+                    AttackType::Kinetic,
+                    20,
+                    80,
+                    Duration(1_000),
+                    WeaponAmmunition {
+                        item: ItemId(2),
+                        amount_per_attack: 1,
+                    },
+                ),
+            },
+            GameplayCommand::CreateEnemy {
+                configuration: EnemyConfiguration::for_archetype(
+                    EnemyArchetype::Shooter,
+                    GameplayVec3 {
+                        x: 18.0,
+                        y: 0.0,
+                        z: -18.0,
+                    },
+                ),
+            },
+        ]);
+        let enemy = session
+            .world()
+            .events()
+            .iter()
+            .find_map(|event| match event {
+                GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+                _ => None,
+            })
+            .ok_or_else(|| "el escenario visual no creó el enemigo".to_owned())?;
+        Ok(Self {
+            session,
+            player,
+            ship,
+            pilot_station,
+            enemy,
+            feedback: "ESCENA INICIALIZADA".to_owned(),
+        })
+    }
+
+    fn issue(&mut self, commands: impl IntoIterator<Item = GameplayCommand>) {
+        let results = self.session.update(commands);
+        let status = results
+            .last()
+            .map(|result| format!("{:?}", result.status))
+            .unwrap_or_else(|| "sin resultado".to_owned());
+        let event = self
+            .session
+            .world()
+            .events()
+            .iter()
+            .last()
+            .map(|value| format!("{:?}", value))
+            .unwrap_or_else(|| "sin evento".to_owned());
+        self.feedback = format!("{status}; {event}");
+    }
+}
+
+pub fn run() -> Result<(), String> {
+    let bridge = VisualBridge::new()?;
+    App::new()
+        .insert_non_send(bridge)
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Astral Echo — Visual 3D".to_owned(),
+                resolution: (1280, 720).into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        .add_systems(Startup, setup)
+        .add_systems(Update, (input_system, sync_world_system, update_hud_system))
+        .run();
+    Ok(())
+}
+
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    bridge: NonSend<VisualBridge>,
+) {
+    let ship_material = materials.add(Color::srgb(0.18, 0.75, 1.0));
+    let destination_material = materials.add(Color::srgb(0.3, 0.95, 0.65));
+    let enemy_material = materials.add(Color::srgb(0.95, 0.18, 0.35));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(3.0, 1.2, 5.0))),
+        MeshMaterial3d(ship_material),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+        ShipVisual,
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(4.0))),
+        MeshMaterial3d(destination_material),
+        Transform::from_xyz(42.0, 0.0, -25.0),
+        DestinationVisual,
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Capsule3d::new(1.2, 3.0))),
+        MeshMaterial3d(enemy_material),
+        Transform::from_xyz(18.0, 0.0, -18.0),
+        EnemyVisual,
+    ));
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(0.0, 38.0, 62.0).looking_at(Vec3::new(18.0, 0.0, -18.0), Vec3::Y),
+    ));
+    commands.spawn((
+        PointLight {
+            intensity: 3_000_000.0,
+            range: 180.0,
+            shadow_maps_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(8.0, 26.0, 18.0),
+    ));
+    commands.spawn((
+        Text::new(hud_text(&bridge)),
+        TextFont {
+            font_size: FontSize::Px(18.0),
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(12.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+        HudText,
+    ));
+}
+
+fn input_system(keys: Res<ButtonInput<KeyCode>>, mut bridge: NonSendMut<VisualBridge>) {
+    let player = bridge.player;
+    let ship = bridge.ship;
+    let enemy = bridge.enemy;
+    let pilot_station = bridge.pilot_station;
+    if keys.just_pressed(KeyCode::Escape) {
+        std::process::exit(0);
+    }
+    if keys.just_pressed(KeyCode::Space) {
+        bridge.issue([GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        }]);
+    }
+    if keys.just_pressed(KeyCode::KeyW) {
+        bridge.issue([GameplayCommand::MovePlayer {
+            player,
+            direction: GameplayVec3 { x: 0.0, y: 0.0, z: -1.0 },
+            delta: Duration(100),
+        }]);
+    }
+    if keys.just_pressed(KeyCode::KeyS) {
+        bridge.issue([GameplayCommand::ScanSignals {
+            player,
+            ship,
+        }]);
+    }
+    if keys.just_pressed(KeyCode::KeyF) {
+        bridge.issue([GameplayCommand::AttackEnemy {
+            player,
+            enemy,
+        }]);
+    }
+    if keys.just_pressed(KeyCode::KeyP) {
+        bridge.issue([
+            GameplayCommand::Interact {
+                player,
+                target: pilot_station,
+            },
+            GameplayCommand::PlanAutopilot {
+                player,
+                pilot_station,
+                origin: ORIGIN,
+                destination: DESTINATION,
+            },
+            GameplayCommand::StartAutopilot {
+                player,
+                pilot_station,
+            },
+        ]);
+    }
+}
+
+fn sync_world_system(
+    bridge: NonSend<VisualBridge>,
+    mut ship_query: Query<&mut Transform, (With<ShipVisual>, Without<EnemyVisual>)>,
+    mut enemy_query: Query<(&mut Transform, &mut Visibility), (With<EnemyVisual>, Without<ShipVisual>)>,
+) {
+    if let Some(position) = bridge.session.world().ship_position() {
+        if let Ok(mut transform) = ship_query.single_mut() {
+            transform.translation = to_bevy(position);
+        }
+    }
+    if let Ok((mut transform, mut visibility)) = enemy_query.single_mut() {
+        if let Some(enemy) = bridge
+            .session
+            .world()
+            .enemies()
+            .find(|value| value.entity == bridge.enemy)
+        {
+            transform.translation = to_bevy(enemy.position);
+            *visibility = if enemy.active && !enemy.is_defeated() {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
+        }
+    }
+}
+
+fn update_hud_system(bridge: NonSend<VisualBridge>, mut query: Query<&mut Text, With<HudText>>) {
+    if let Ok(mut text) = query.single_mut() {
+        *text = Text::new(hud_text(&bridge));
+    }
+}
+
+fn hud_text(bridge: &VisualBridge) -> String {
+    let world = bridge.session.world();
+    let (health, maximum_health, _) = world.player_health(bridge.player).unwrap_or((0, 0, false));
+    let (hull, maximum_hull) = world
+        .ship_integrity(bridge.ship)
+        .map(|value| (value.current(), value.maximum()))
+        .unwrap_or((0, 0));
+    let (fuel, capacity) = world
+        .ship_fuel(bridge.ship)
+        .map(|value| (value.current(), value.capacity()))
+        .unwrap_or((0, 0));
+    let active_enemies = world
+        .enemies()
+        .filter(|value| value.active && !value.is_defeated())
+        .count();
+    format!(
+        "ASTRAL ECHO 3D\nWASD mover  SPACE tiempo  S escanear  F atacar  P autopilot  ESC salir\nHP {health}/{maximum_health}  CASCO {hull}/{maximum_hull}  COMBUSTIBLE {fuel}/{capacity}\nNAV {:?}  ENEMIGOS {active_enemies}\n{}",
+        world.autopilot_state(), bridge.feedback
+    )
+}
+
+fn to_bevy(position: GameplayVec3) -> Vec3 {
+    Vec3::new(position.x, position.y, position.z)
+}
