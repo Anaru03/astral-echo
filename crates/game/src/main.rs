@@ -1,6 +1,7 @@
 use std::io::{self, BufRead, Write};
 
 use engine::{Duration, EntityId, Vec3};
+use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use game::{
     cooperacion, ecos_anomalia, el_despertar, la_defensa_imposible, tormenta_gravitacional,
     ProjectEchoSession,
@@ -14461,11 +14462,160 @@ fn run_runtime_mode() -> Result<(), String> {
     }
 }
 
+fn visual_put_pixel(buffer: &mut [u32], width: usize, height: usize, x: i32, y: i32, color: u32) {
+    if x >= 0 && y >= 0 && (x as usize) < width && (y as usize) < height {
+        buffer[y as usize * width + x as usize] = color;
+    }
+}
+
+fn visual_line(buffer: &mut [u32], width: usize, height: usize, start: (i32, i32), end: (i32, i32), color: u32) {
+    let (mut x0, mut y0) = start;
+    let (x1, y1) = end;
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut error = dx + dy;
+    loop {
+        visual_put_pixel(buffer, width, height, x0, y0, color);
+        if x0 == x1 && y0 == y1 { break; }
+        let doubled = error * 2;
+        if doubled >= dy { error += dy; x0 += sx; }
+        if doubled <= dx { error += dx; y0 += sy; }
+    }
+}
+
+fn visual_rect(buffer: &mut [u32], width: usize, height: usize, left: i32, top: i32, right: i32, bottom: i32, color: u32) {
+    for y in top..bottom {
+        for x in left..right {
+            visual_put_pixel(buffer, width, height, x, y, color);
+        }
+    }
+}
+
+fn visual_circle(buffer: &mut [u32], width: usize, height: usize, center: (i32, i32), radius: i32, color: u32) {
+    for y in -radius..=radius {
+        for x in -radius..=radius {
+            if x * x + y * y <= radius * radius {
+                visual_put_pixel(buffer, width, height, center.0 + x, center.1 + y, color);
+            }
+        }
+    }
+}
+
+fn visual_project(position: Vec3, width: usize, height: usize) -> Option<(i32, i32)> {
+    let depth = (position.z + 100.0).max(8.0);
+    let scale = 220.0 / depth;
+    let x = width as f32 * 0.5 + position.x * scale;
+    let y = height as f32 * 0.52 - position.y * scale;
+    x.is_finite().then_some((x as i32, y as i32))
+}
+
+fn visual_ship(buffer: &mut [u32], width: usize, height: usize, position: Vec3, color: u32) {
+    let Some(center) = visual_project(position, width, height) else { return; };
+    let nose = (center.0 + 18, center.1);
+    let upper = (center.0 - 12, center.1 - 9);
+    let lower = (center.0 - 12, center.1 + 9);
+    visual_line(buffer, width, height, nose, upper, color);
+    visual_line(buffer, width, height, upper, lower, color);
+    visual_line(buffer, width, height, lower, nose, color);
+    visual_line(buffer, width, height, (center.0 - 3, center.1), (center.0 - 20, center.1), color);
+}
+
+fn visual_feedback(session: &mut ProjectEchoSession, command: GameplayCommand) -> String {
+    let results = session.update([command]);
+    let status = results.first().map(|result| format!("{:?}", result.status)).unwrap_or_else(|| "sin resultado".to_owned());
+    let event = session.world().events().iter().last().map(|event| format!("{:?}", event)).unwrap_or_else(|| "sin evento".to_owned());
+    format!("{status}; {event}")
+}
+
+fn run_visual_mode() -> Result<(), String> {
+    const WIDTH: usize = 960;
+    const HEIGHT: usize = 600;
+    const ORIGIN: DestinationId = DestinationId::new(9_001);
+    const DESTINATION: DestinationId = DestinationId::new(9_002);
+    const SIGNAL: DestinationId = DestinationId::new(9_003);
+    let mut session = ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    session.register_destination(Destination { id: ORIGIN, destination_type: DestinationType::SpacePoint, position: Vec3::ZERO, travel_duration: Duration(1_000), fuel_cost: 1, discovery: DiscoveryState::Discovered }).map_err(|error| format!("origen visual: {error:?}"))?;
+    session.register_destination(Destination { id: DESTINATION, destination_type: DestinationType::Planet, position: Vec3 { x: 42.0, y: 0.0, z: -25.0 }, travel_duration: Duration(1_000), fuel_cost: 1, discovery: DiscoveryState::Discovered }).map_err(|error| format!("destino visual: {error:?}"))?;
+    session.register_destination(Destination { id: SIGNAL, destination_type: DestinationType::SpacePoint, position: Vec3 { x: -35.0, y: 8.0, z: -20.0 }, travel_duration: Duration(1_000), fuel_cost: 1, discovery: DiscoveryState::Unknown }).map_err(|error| format!("señal visual: {error:?}"))?;
+    let route = NavigationRoute { from: ORIGIN, to: DESTINATION, distance: 49.0, duration: Duration(1_000), fuel_cost: 1, state: NavigationRouteState::Available };
+    session.update([GameplayCommand::RegisterNavigationRoute { route }]);
+    let pilot_station = session.create_station(Vec3::ZERO, 3.0, StationType::Piloting).map_err(|error| format!("estación visual: {error:?}"))?;
+    let setup = session.update([
+        GameplayCommand::ConfigureSignalScanner { ship, range: 100.0, cooldown: Duration(1) },
+        GameplayCommand::SetSignalScannerEnabled { ship, enabled: true },
+        GameplayCommand::AddInventoryItem { player, item: ItemId(2), amount: 8 },
+        GameplayCommand::EquipPlayerWeapon { player, weapon: WeaponConfiguration::with_ammunition(AttackType::Kinetic, 20, 80, Duration(1_000), WeaponAmmunition { item: ItemId(2), amount_per_attack: 1 }) },
+        GameplayCommand::CreateEnemy { configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3 { x: 18.0, y: 0.0, z: -18.0 }) },
+    ]);
+    let enemy = session.world().events().iter().find_map(|event| match event {
+        GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+        _ => None,
+    }).ok_or_else(|| format!("no se pudo crear el enemigo visual: {setup:?}"))?;
+    let mut window = Window::new("Astral Echo — Visual | SPACE tiempo | S escanear | F atacar | P autopilot | ESC salir", WIDTH, HEIGHT, WindowOptions::default()).map_err(|error| format!("crear ventana visual: {error}"))?;
+    let mut buffer = vec![0_u32; WIDTH * HEIGHT];
+    let mut feedback = "ESCENA INICIALIZADA".to_owned();
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        for key in window.get_keys_pressed(KeyRepeat::No) {
+            feedback = match key {
+                Key::Space => visual_feedback(&mut session, GameplayCommand::AdvanceTime { delta: Duration(100) }),
+                Key::S => visual_feedback(&mut session, GameplayCommand::ScanSignals { player, ship }),
+                Key::F => visual_feedback(&mut session, GameplayCommand::AttackEnemy { player, enemy }),
+                Key::P => {
+                    let results = session.update([
+                        GameplayCommand::Interact { player, target: pilot_station },
+                        GameplayCommand::PlanAutopilot { player, pilot_station, origin: ORIGIN, destination: DESTINATION },
+                        GameplayCommand::StartAutopilot { player, pilot_station },
+                    ]);
+                    format!("{:?}; navegación={:?}", results, session.world().autopilot_state())
+                }
+                _ => continue,
+            };
+        }
+        buffer.fill(0x050816);
+        for index in 0..90_i32 {
+            let x = (index * 83 + 17) % WIDTH as i32;
+            let y = (index * 47 + 23) % HEIGHT as i32;
+            visual_put_pixel(&mut buffer, WIDTH, HEIGHT, x, y, 0x445070);
+        }
+        let ship_position = session.world().ship_position().unwrap_or(Vec3::ZERO);
+        if let Some(destination) = session.world().destination(DESTINATION) {
+            if let (Some(from), Some(to)) = (visual_project(ship_position, WIDTH, HEIGHT), visual_project(destination.position, WIDTH, HEIGHT)) {
+                visual_line(&mut buffer, WIDTH, HEIGHT, from, to, 0x254060);
+                visual_circle(&mut buffer, WIDTH, HEIGHT, to, 18, 0x1f8060);
+                visual_circle(&mut buffer, WIDTH, HEIGHT, to, 9, 0x6ee7b7);
+            }
+        }
+        for combatant in session.world().enemies().filter(|enemy_state| enemy_state.active && !enemy_state.is_defeated()) {
+            visual_ship(&mut buffer, WIDTH, HEIGHT, combatant.position, 0xf05a72);
+        }
+        visual_ship(&mut buffer, WIDTH, HEIGHT, ship_position, 0x67d9ff);
+        let (health, max_health, _) = session.world().player_health(player).unwrap_or((0, 1, false));
+        let hull = session.world().ship_integrity(ship).map(|value| (value.current(), value.maximum())).unwrap_or((0, 1));
+        let fuel = session.world().ship_fuel(ship).map(|value| (value.current(), value.capacity())).unwrap_or((0, 1));
+        visual_rect(&mut buffer, WIDTH, HEIGHT, 24, 24, 260, 34, 0x202a42);
+        visual_rect(&mut buffer, WIDTH, HEIGHT, 24, 24, 24 + (236 * health / max_health.max(1)) as i32, 34, 0xd94b63);
+        visual_rect(&mut buffer, WIDTH, HEIGHT, 24, 42, 260, 52, 0x202a42);
+        visual_rect(&mut buffer, WIDTH, HEIGHT, 24, 42, 24 + (236 * hull.0 / hull.1.max(1)) as i32, 52, 0xe6a84e);
+        visual_rect(&mut buffer, WIDTH, HEIGHT, 24, 60, 260, 70, 0x202a42);
+        visual_rect(&mut buffer, WIDTH, HEIGHT, 24, 60, 24 + (236 * fuel.0 / fuel.1.max(1)) as i32, 70, 0x4d9de0);
+        visual_rect(&mut buffer, WIDTH, HEIGHT, 24, 78, 260, 88, 0x202a42);
+        visual_rect(&mut buffer, WIDTH, HEIGHT, 24, 78, 24 + (236 * session.world().missions().next().map(|mission| mission.progress().required_completed).unwrap_or(0) / 5) as i32, 88, 0x6bcf8b);
+        window.set_title(&format!("Astral Echo Visual | HP {health}/{max_health} | CASCO {}/{} | COMBUSTIBLE {}/{} | NAV {:?} | ENEMIGO {} | {}", hull.0, hull.1, fuel.0, fuel.1, session.world().autopilot_state(), session.world().enemies().filter(|value| value.active && !value.is_defeated()).count(), feedback.chars().take(100).collect::<String>()));
+        window.update_with_buffer(&buffer, WIDTH, HEIGHT).map_err(|error| format!("actualizar ventana visual: {error}"))?;
+    }
+    Ok(())
+}
+
 fn main() {
     let mut arguments = std::env::args().skip(1);
     let result = match arguments.next().as_deref() {
         None => run_scenario(),
         Some("--runtime") if arguments.next().is_none() => run_runtime_mode(),
+        Some("--visual") if arguments.next().is_none() => run_visual_mode(),
         Some(argument) => Err(format!("argumento no reconocido: {argument}")),
     };
     if let Err(error) = result {
