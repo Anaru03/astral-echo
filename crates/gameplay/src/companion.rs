@@ -749,7 +749,7 @@ impl RecommendationExplanation {
         if reason == ExplanationChangeReason::PreparationResolved {
             evidence.push(ExplanationEvidence {
                 kind: ExplanationEvidenceKind::StateChange,
-                description: "Los requisitos que bloqueaban la preparacion ya no faltan".to_string(),
+                description: "Los requisitos que bloqueaban la preparación ya no faltan".to_string(),
                 objective: current.objective,
                 destination: None,
                 entity: None,
@@ -758,7 +758,7 @@ impl RecommendationExplanation {
         } else if reason == ExplanationChangeReason::ThreatResolved {
             evidence.push(ExplanationEvidence {
                 kind: ExplanationEvidenceKind::StateChange,
-                description: "La amenaza que justificaba la prioridad critica ya no esta activa".to_string(),
+                description: "La amenaza que justificaba la prioridad critica ya no está activa".to_string(),
                 objective: current.objective,
                 destination: None,
                 entity: previous.blocker.as_ref().and_then(|value| value.entity),

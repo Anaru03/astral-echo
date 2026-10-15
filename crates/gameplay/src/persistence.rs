@@ -373,85 +373,653 @@ fn validate_unique_entities(state: &GameplaySaveState) -> Result<(), SaveError> 
     }
     let mut processed_rewards = Vec::new();
     for enemy in &state.processed_enemy_rewards {
-        if processed_rewards.contains(enemy) { return Err(SaveError::DuplicateRecord); }
+        if processed_rewards.contains(enemy) { 
+            return Err(SaveError::DuplicateRecord); 
+        }
+        
         processed_rewards.push(*enemy);
     }
     let mut upgrades = Vec::new();
     for (ship, upgrade) in &state.ship_upgrades {
-        if upgrades.contains(&(*ship, *upgrade)) { return Err(SaveError::DuplicateRecord); }
+        if upgrades.contains(&(*ship, *upgrade)) { 
+            return Err(SaveError::DuplicateRecord); 
+        }
+        
         upgrades.push((*ship, *upgrade));
     }
-    if state.players.iter().any(|v| !state.registry.known.contains(&v.id)) { return Err(SaveError::InvalidReference); }
+
+    if state.players.iter().any(|v| !state.registry.known.contains(&v.id)) { 
+        return Err(SaveError::InvalidReference); 
+    }
+    
     Ok(())
 }
 
-fn bits(value: f32) -> u32 { value.to_bits() }
-fn float(value: &str) -> Result<f32, SaveError> { Ok(f32::from_bits(parse_u32(value)?)) }
-fn vec3(fields: &[&str], index: usize) -> Result<Vec3, SaveError> { Ok(Vec3 { x: float(fields[index])?, y: float(fields[index + 1])?, z: float(fields[index + 2])? }) }
-fn parse_u32(value: &str) -> Result<u32, SaveError> { value.parse().map_err(|_| SaveError::InvalidNumber) }
-fn parse_u64(value: &str) -> Result<u64, SaveError> { value.parse().map_err(|_| SaveError::InvalidNumber) }
-fn bool_value(value: bool) -> u8 { u8::from(value) }
-fn parse_bool(value: &str) -> Result<bool, SaveError> { match value { "0" => Ok(false), "1" => Ok(true), _ => Err(SaveError::MalformedRecord) } }
-fn ids(values: &[EntityId]) -> String { values.iter().map(|v| v.value().to_string()).collect::<Vec<_>>().join(",") }
-fn parse_ids(value: &str) -> Result<Vec<EntityId>, SaveError> { if value.is_empty() { return Ok(Vec::new()); } value.split(',').map(|v| Ok(EntityId::new(parse_u64(v)?))).collect() }
-fn inventory_entries(values: &[(ItemId, u32)]) -> String { values.iter().map(|(id, amount)| format!("{}:{amount}", id.0)).collect::<Vec<_>>().join(",") }
-fn parse_inventory(value: &str) -> Result<Vec<(ItemId, u32)>, SaveError> { if value.is_empty() { return Ok(Vec::new()); } value.split(',').map(|v| { let mut fields = v.split(':'); Ok((ItemId(parse_u32(fields.next().ok_or(SaveError::MalformedRecord)?)?), parse_u32(fields.next().ok_or(SaveError::MalformedRecord)?)?)) }).collect() }
-fn mission_state(value: MissionState) -> u8 { match value { MissionState::Locked => 0, MissionState::Available => 1, MissionState::Active => 2, MissionState::Completed => 3, MissionState::Failed => 4 } }
-fn phase(value: SimulationPhase) -> u8 { match value { SimulationPhase::Loading => 0, SimulationPhase::Running => 1, SimulationPhase::Paused => 2, SimulationPhase::Complete => 3 } }
-fn parse_phase(value: &str) -> Result<SimulationPhase, SaveError> { match parse_u32(value)? { 0 => Ok(SimulationPhase::Loading), 1 => Ok(SimulationPhase::Running), 2 => Ok(SimulationPhase::Paused), 3 => Ok(SimulationPhase::Complete), _ => Err(SaveError::InvalidState) } }
-fn destination_type(value: DestinationType) -> u8 { match value { DestinationType::Planet => 0, DestinationType::SpacePoint => 1 } }
-fn parse_destination_type(value: &str) -> Result<DestinationType, SaveError> { match parse_u32(value)? { 0 => Ok(DestinationType::Planet), 1 => Ok(DestinationType::SpacePoint), _ => Err(SaveError::InvalidState) } }
-fn discovery(value: DiscoveryState) -> u8 { match value { DiscoveryState::Unknown => 0, DiscoveryState::Known => 1, DiscoveryState::Discovered => 2 } }
-fn parse_discovery(value: &str) -> Result<DiscoveryState, SaveError> { match parse_u32(value)? { 0 => Ok(DiscoveryState::Unknown), 1 => Ok(DiscoveryState::Known), 2 => Ok(DiscoveryState::Discovered), _ => Err(SaveError::InvalidState) } }
-fn route_state(value: NavigationRouteState) -> u8 { match value { NavigationRouteState::Available => 0, NavigationRouteState::Blocked => 1 } }
-fn parse_route_state(value: &str) -> Result<NavigationRouteState, SaveError> { match parse_u32(value)? { 0 => Ok(NavigationRouteState::Available), 1 => Ok(NavigationRouteState::Blocked), _ => Err(SaveError::InvalidState) } }
-fn objective_state(value: ObjectiveState) -> u8 { match value { ObjectiveState::Locked => 0, ObjectiveState::Available => 1, ObjectiveState::Active => 2, ObjectiveState::Completed => 3, ObjectiveState::Failed => 4 } }
-fn knowledge_state(value: KnowledgeState) -> u8 { match value { KnowledgeState::Unknown => 0, KnowledgeState::Detected => 1, KnowledgeState::Identified => 2, KnowledgeState::Discovered => 3, KnowledgeState::Studied => 4 } }
-fn knowledge_target(value: KnowledgeTarget) -> String { match value { KnowledgeTarget::Destination(id) => format!("d{}", id.value()), KnowledgeTarget::Enemy(id) => format!("e{}", id.value()), KnowledgeTarget::Item(id) => format!("i{}", id.0) } }
-fn parse_mission_state(value: &str) -> Result<MissionState, SaveError> { match parse_u32(value)? { 0 => Ok(MissionState::Locked), 1 => Ok(MissionState::Available), 2 => Ok(MissionState::Active), 3 => Ok(MissionState::Completed), 4 => Ok(MissionState::Failed), _ => Err(SaveError::InvalidState) } }
-fn parse_objective_state(value: &str) -> Result<ObjectiveState, SaveError> { match parse_u32(value)? { 0 => Ok(ObjectiveState::Locked), 1 => Ok(ObjectiveState::Available), 2 => Ok(ObjectiveState::Active), 3 => Ok(ObjectiveState::Completed), 4 => Ok(ObjectiveState::Failed), _ => Err(SaveError::InvalidState) } }
-fn parse_knowledge_state(value: &str) -> Result<KnowledgeState, SaveError> { match parse_u32(value)? { 0 => Ok(KnowledgeState::Unknown), 1 => Ok(KnowledgeState::Detected), 2 => Ok(KnowledgeState::Identified), 3 => Ok(KnowledgeState::Discovered), 4 => Ok(KnowledgeState::Studied), _ => Err(SaveError::InvalidState) } }
-fn companion_behavior(value: CompanionBehavior) -> (u32, String) { match value { CompanionBehavior::Accompany => (0, "x".to_string()), CompanionBehavior::Investigate(target) => (1, knowledge_target(target)), CompanionBehavior::CombatSupport => (2, "x".to_string()), CompanionBehavior::Waiting => (3, "x".to_string()), CompanionBehavior::Unavailable => (4, "x".to_string()) } }
-fn parse_companion_behavior(value: &str, target: &str) -> Result<CompanionBehavior, SaveError> { match parse_u32(value)? { 0 if target == "x" => Ok(CompanionBehavior::Accompany), 1 => Ok(CompanionBehavior::Investigate(parse_knowledge_target(target)?)), 2 if target == "x" => Ok(CompanionBehavior::CombatSupport), 3 if target == "x" => Ok(CompanionBehavior::Waiting), 4 if target == "x" => Ok(CompanionBehavior::Unavailable), _ => Err(SaveError::InvalidState) } }
-fn parse_knowledge_target(value: &str) -> Result<KnowledgeTarget, SaveError> { if value.len() < 2 { return Err(SaveError::MalformedRecord); } let (kind, number) = value.split_at(1); let id = parse_u64(number)?; match kind { "d" => Ok(KnowledgeTarget::Destination(crate::navigation::DestinationId::new(u32::try_from(id).map_err(|_| SaveError::InvalidNumber)?))), "e" => Ok(KnowledgeTarget::Enemy(EntityId::new(id))), "i" => Ok(KnowledgeTarget::Item(ItemId(u32::try_from(id).map_err(|_| SaveError::InvalidNumber)?))), _ => Err(SaveError::MalformedRecord) } }
+fn bits(value: f32) -> u32 { 
+    value.to_bits() 
+}
 
-fn attack_type(value: AttackType) -> u8 { match value { AttackType::Kinetic => 0, AttackType::Energy => 1, AttackType::Plasma => 2 } }
-fn parse_attack_type(value: &str) -> Result<AttackType, SaveError> { match parse_u32(value)? { 0 => Ok(AttackType::Kinetic), 1 => Ok(AttackType::Energy), 2 => Ok(AttackType::Plasma), _ => Err(SaveError::InvalidState) } }
-fn archetype(value: Option<crate::combat::EnemyArchetype>) -> u8 { match value { None => 255, Some(crate::combat::EnemyArchetype::Shielded) => 0, Some(crate::combat::EnemyArchetype::Shooter) => 1, Some(crate::combat::EnemyArchetype::Charger) => 2 } }
-fn parse_archetype(value: &str) -> Result<Option<crate::combat::EnemyArchetype>, SaveError> { match parse_u32(value)? { 255 => Ok(None), 0 => Ok(Some(crate::combat::EnemyArchetype::Shielded)), 1 => Ok(Some(crate::combat::EnemyArchetype::Shooter)), 2 => Ok(Some(crate::combat::EnemyArchetype::Charger)), _ => Err(SaveError::InvalidState) } }
-fn weapon(value: WeaponConfiguration) -> String { match value.ammunition { Some(ammunition) => format!("{},{},{},{},{},{}", attack_type(value.attack_type), value.damage, value.range, value.cooldown.0, ammunition.item.0, ammunition.amount_per_attack), None => format!("{},{},{},{}", attack_type(value.attack_type), value.damage, value.range, value.cooldown.0) } }
-fn parse_weapon(value: &str) -> Result<WeaponConfiguration, SaveError> { let fields = value.split(',').collect::<Vec<_>>(); if fields.len() != 4 && fields.len() != 6 { return Err(SaveError::MalformedRecord); } let attack = parse_attack_type(fields[0])?; let damage = parse_u32(fields[1])?; let range = parse_u32(fields[2])?; let cooldown = Duration(parse_u64(fields[3])?); let value = if fields.len() == 6 { WeaponConfiguration::with_ammunition(attack, damage, range, cooldown, WeaponAmmunition { item: ItemId(parse_u32(fields[4])?), amount_per_attack: parse_u32(fields[5])? }) } else { WeaponConfiguration::new(attack, damage, range, cooldown) }; value.validate().map_err(|_| SaveError::InvalidState)?; Ok(value) }
-fn optional_weapon(value: Option<WeaponConfiguration>) -> String { value.map_or_else(|| "x".to_string(), weapon) }
-fn parse_optional_weapon(value: &str) -> Result<Option<WeaponConfiguration>, SaveError> { if value == "x" { Ok(None) } else { Ok(Some(parse_weapon(value)?)) } }
-fn shield(value: Shield) -> String { format!("{},{},{}", value.current, value.maximum, attack_type(value.weakness)) }
-fn optional_shield(value: Option<Shield>) -> String { value.map_or_else(|| "x".to_string(), shield) }
-fn parse_optional_shield(value: &str) -> Result<Option<Shield>, SaveError> { if value == "x" { return Ok(None); } let fields = value.split(',').collect::<Vec<_>>(); if fields.len() != 3 { return Err(SaveError::MalformedRecord); } let value = Shield { current: parse_u32(fields[0])?, maximum: parse_u32(fields[1])?, weakness: parse_attack_type(fields[2])? }; if value.maximum == 0 || value.current > value.maximum { return Err(SaveError::InvalidState); } Ok(Some(value)) }
-fn parse_combatant(fields: &[&str]) -> Result<CombatantSaveState, SaveError> { let value = CombatantSaveState { id: EntityId::new(parse_u64(fields[1])?), is_player: parse_bool(fields[2])?, active: parse_bool(fields[3])?, maximum_health: parse_u32(fields[4])?, current_health: parse_u32(fields[5])?, position: vec3(fields, 6)?, archetype: parse_archetype(fields[9])?, weapon: parse_weapon(fields[10])?, equipped_weapon: parse_optional_weapon(fields[11])?, shield: parse_optional_shield(fields[12])?, mobility: parse_u32(fields[13])?, last_attack_at: match parse_u64(fields[14])? { u64::MAX => None, value => Some(Duration(value)) } }; if value.maximum_health == 0 || value.current_health > value.maximum_health || value.mobility == 0 { return Err(SaveError::InvalidState); } Ok(value) }
-fn item_category(value: ItemCategory) -> u8 { match value { ItemCategory::RepairMaterial => 0, ItemCategory::CombatAmmunition => 1, ItemCategory::MineralSample => 2, ItemCategory::ElectronicComponent => 3, ItemCategory::HealingConsumable => 4, ItemCategory::RevivalConsumable => 5 } }
-fn parse_item_category(value: &str) -> Result<ItemCategory, SaveError> { match parse_u32(value)? { 0 => Ok(ItemCategory::RepairMaterial), 1 => Ok(ItemCategory::CombatAmmunition), 2 => Ok(ItemCategory::MineralSample), 3 => Ok(ItemCategory::ElectronicComponent), 4 => Ok(ItemCategory::HealingConsumable), 5 => Ok(ItemCategory::RevivalConsumable), _ => Err(SaveError::InvalidState) } }
-fn parse_item_definition(fields: &[&str]) -> Result<ItemDefinition, SaveError> { let category = parse_item_category(fields[2])?; let healing = parse_u32(fields[4])?; let revival_item = parse_u32(fields[5])?; let revival = if revival_item > 0 { Some(ReviveEffect::new(ItemId(revival_item), parse_u32(fields[6])?, parse_u32(fields[7])?, parse_u32(fields[8])?)) } else { None }; let definition = ItemDefinition { id: ItemId(parse_u32(fields[1])?), category, max_stack: parse_u32(fields[3])?, healing: (healing > 0).then(|| crate::healing::HealingEffect::new(healing)), revival }; definition.validate().map_err(|_| SaveError::InvalidState)?; Ok(definition) }
-fn distribution(value: RewardDistributionPolicy) -> u8 { match value { RewardDistributionPolicy::Shared => 0, RewardDistributionPolicy::Personal => 1 } }
-fn parse_distribution(value: &str) -> Result<RewardDistributionPolicy, SaveError> { match parse_u32(value)? { 0 => Ok(RewardDistributionPolicy::Shared), 1 => Ok(RewardDistributionPolicy::Personal), _ => Err(SaveError::InvalidState) } }
-fn reward_entries(values: &[RewardEntry]) -> String { values.iter().map(|entry| format!("{}:{}", entry.item.0, entry.amount)).collect::<Vec<_>>().join(",") }
-fn parse_reward_entries(value: &str) -> Result<Vec<RewardEntry>, SaveError> { if value.is_empty() { return Err(SaveError::InvalidState); } value.split(',').map(|entry| { let fields = entry.split(':').collect::<Vec<_>>(); if fields.len() != 2 { return Err(SaveError::MalformedRecord); } Ok(RewardEntry { item: ItemId(parse_u32(fields[0])?), amount: parse_u32(fields[1])? }) }).collect() }
-fn parse_enemy_reward(fields: &[&str]) -> Result<EnemyReward, SaveError> { let archetype = parse_archetype(fields[1])?.ok_or(SaveError::InvalidState)?; let reward = EnemyReward { archetype, entries: parse_reward_entries(fields[3])?, distribution: parse_distribution(fields[2])? }; reward.validate().map_err(|_| SaveError::InvalidState)?; Ok(reward) }
-fn hazard_type(value: EnvironmentalHazardType) -> u8 { match value { EnvironmentalHazardType::Radiation => 0, EnvironmentalHazardType::SpaceStorm => 1, EnvironmentalHazardType::GravitationalAnomaly => 2, EnvironmentalHazardType::DebrisField => 3 } }
-fn parse_hazard(fields: &[&str]) -> Result<EnvironmentalHazard, SaveError> { let value = EnvironmentalHazard::new(HazardId::new(parse_u32(fields[1])?), match parse_u32(fields[2])? { 0 => EnvironmentalHazardType::Radiation, 1 => EnvironmentalHazardType::SpaceStorm, 2 => EnvironmentalHazardType::GravitationalAnomaly, 3 => EnvironmentalHazardType::DebrisField, _ => return Err(SaveError::InvalidState) }, vec3(fields, 3)?, float(fields[6])?, parse_u32(fields[7])?, Duration(parse_u64(fields[8])?), parse_bool(fields[9])?); value.validate().map_err(|_| SaveError::InvalidState)?; let mut value = value; value.restore_accumulated(Duration(parse_u64(fields[10])?)); Ok(value) }
-fn encounter_state(value: SpatialEncounterState) -> u8 { match value { SpatialEncounterState::Pending => 0, SpatialEncounterState::Active => 1, SpatialEncounterState::Resolved => 2 } }
-fn encounter_kind(value: SpatialEncounterKind) -> u8 { match value { SpatialEncounterKind::Signal { .. } => 0, SpatialEncounterKind::Hazard { .. } => 1, SpatialEncounterKind::Hostile { .. } => 2, SpatialEncounterKind::Resource { .. } => 3 } }
-fn encounter_payload(value: SpatialEncounterKind) -> String { match value { SpatialEncounterKind::Signal { destination } => format!("d:{}", destination.value()), SpatialEncounterKind::Hazard { hazard } => format!("h:{}", hazard.value()), SpatialEncounterKind::Hostile { configuration } => format!("e:{}", enemy_configuration(configuration)), SpatialEncounterKind::Resource { item, amount } => format!("r:{}:{}", item.0, amount) } }
-fn parse_encounter(fields: &[&str]) -> Result<SpatialEncounter, SaveError> { let kind = parse_u32(fields[2])?; let payload = fields[8]; let kind = match kind { 0 => SpatialEncounterKind::Signal { destination: crate::navigation::DestinationId::new(parse_prefixed_u32(payload, 'd')?) }, 1 => SpatialEncounterKind::Hazard { hazard: HazardId::new(parse_prefixed_u32(payload, 'h')?) }, 2 => SpatialEncounterKind::Hostile { configuration: parse_enemy_configuration(payload.strip_prefix("e:").ok_or(SaveError::MalformedRecord)?)? }, 3 => { let values = payload.strip_prefix("r:").ok_or(SaveError::MalformedRecord)?.split(':').collect::<Vec<_>>(); if values.len() != 2 { return Err(SaveError::MalformedRecord); } SpatialEncounterKind::Resource { item: ItemId(parse_u32(values[0])?), amount: parse_u32(values[1])? } }, _ => return Err(SaveError::InvalidState) }; let state = match parse_u32(fields[7])? { 0 => SpatialEncounterState::Pending, 1 => SpatialEncounterState::Active, 2 => SpatialEncounterState::Resolved, _ => return Err(SaveError::InvalidState) }; let encounter = SpatialEncounter { id: EncounterId::new(parse_u32(fields[1])?), kind, position: vec3(fields, 3)?, activation_radius: float(fields[6])?, state, spawned_enemy: match parse_u64(fields[9])? { u64::MAX => None, value => Some(EntityId::new(value)) } }; encounter.validate().map_err(|_| SaveError::InvalidState)?; Ok(encounter) }
-fn parse_prefixed_u32(value: &str, prefix: char) -> Result<u32, SaveError> { let expected = format!("{prefix}:"); parse_u32(value.strip_prefix(&expected).ok_or(SaveError::MalformedRecord)?) }
-fn enemy_configuration(value: EnemyConfiguration) -> String { format!("{};{};{};{};{};{};{};{}", archetype(Some(value.archetype)), bits(value.position.x), bits(value.position.y), bits(value.position.z), value.maximum_health, weapon(value.weapon), optional_shield(value.shield), value.mobility) }
-fn parse_enemy_configuration(value: &str) -> Result<EnemyConfiguration, SaveError> { let fields = value.split(';').collect::<Vec<_>>(); if fields.len() != 8 { return Err(SaveError::MalformedRecord); } let archetype = parse_archetype(fields[0])?.ok_or(SaveError::InvalidState)?; let value = EnemyConfiguration { archetype, position: Vec3 { x: float(fields[1])?, y: float(fields[2])?, z: float(fields[3])? }, maximum_health: parse_u32(fields[4])?, weapon: parse_weapon(fields[5])?, shield: parse_optional_shield(fields[6])?, mobility: parse_u32(fields[7])? }; value.validate().map_err(|_| SaveError::InvalidState)?; Ok(value) }
-fn derelict_state(value: DerelictState) -> u8 { match value { DerelictState::Undiscovered => 0, DerelictState::Discovered => 1, DerelictState::Exploring => 2, DerelictState::Resolved => 3 } }
-fn entity_ids(values: &[EntityId]) -> String { values.iter().map(|value| value.value().to_string()).collect::<Vec<_>>().join(",") }
-fn derelict_rewards(values: &[DerelictReward]) -> String { values.iter().map(|value| format!("{}:{}", value.item.0, value.amount)).collect::<Vec<_>>().join(",") }
-fn parse_derelict_rewards(value: &str) -> Result<Vec<DerelictReward>, SaveError> { if value.is_empty() { return Ok(Vec::new()); } value.split(',').map(|entry| { let fields = entry.split(':').collect::<Vec<_>>(); if fields.len() != 2 { return Err(SaveError::MalformedRecord); } Ok(DerelictReward { item: ItemId(parse_u32(fields[0])?), amount: parse_u32(fields[1])? }) }).collect() }
-fn parse_entity_ids(value: &str) -> Result<Vec<EntityId>, SaveError> { if value.is_empty() { return Ok(Vec::new()); } value.split(',').map(|value| Ok(EntityId::new(parse_u64(value)?))).collect() }
-fn parse_derelict(fields: &[&str]) -> Result<Derelict, SaveError> { let state = match parse_u32(fields[6])? { 0 => DerelictState::Undiscovered, 1 => DerelictState::Discovered, 2 => DerelictState::Exploring, 3 => DerelictState::Resolved, _ => return Err(SaveError::InvalidState) }; let associated_encounter = match parse_u32(fields[7])? { u32::MAX => None, value => Some(EncounterId::new(value)) }; let value = Derelict { id: crate::derelict::DerelictId::new(parse_u32(fields[1])?), position: vec3(fields, 2)?, interaction_range: float(fields[5])?, state, associated_encounter, enemy_configuration: if fields[8] == "x" { None } else { Some(parse_enemy_configuration(fields[8])?) }, rewards: Vec::new(), distribution: parse_distribution(fields[9])?, spawned_enemy: match parse_u64(fields[10])? { u64::MAX => None, value => Some(EntityId::new(value)) }, enemy_defeated: parse_bool(fields[11])?, reward_collectibles: parse_entity_ids(fields[12])?, reward_generated: parse_bool(fields[13])? }; value.validate().map_err(|_| SaveError::InvalidState)?; Ok(value) }
-fn world_activity(value: &WorldActivity) -> String { match value { WorldActivity::Trade(market) => format!("t;{}", market.offers.iter().map(|offer| format!("{}:{}:{}:{}", offer.item.0, offer.buy_price, offer.sell_price, offer.stock)).collect::<Vec<_>>().join(",")), WorldActivity::Resource(site) => format!("r;{};{};{}", site.item.0, site.available, site.extraction_amount), WorldActivity::Combat(zone) => format!("c;{};{};{}", enemy_configuration(zone.configuration), zone.active_enemy.map_or(u64::MAX, EntityId::value), bool_value(zone.resolved)), WorldActivity::Story(site) => format!("s;{};{}", knowledge_target(site.target), bool_value(site.interacted)) } }
-fn parse_world_activity(value: &str) -> Result<WorldActivity, SaveError> { let fields = value.split(';').collect::<Vec<_>>(); match fields.first().copied() { Some("t") => { let offers = if fields.get(1).is_some_and(|value| !value.is_empty()) { fields[1].split(',').map(|offer| { let values = offer.split(':').collect::<Vec<_>>(); if values.len() != 4 { return Err(SaveError::MalformedRecord); } Ok(TradeOffer { item: ItemId(parse_u32(values[0])?), buy_price: parse_u64(values[1])?, sell_price: parse_u64(values[2])?, stock: parse_u32(values[3])? }) }).collect::<Result<Vec<_>, SaveError>>()? } else { Vec::new() }; Ok(WorldActivity::Trade(TradeMarket { offers })) }, Some("r") if fields.len() == 4 => Ok(WorldActivity::Resource(ResourceSite { item: ItemId(parse_u32(fields[1])?), available: parse_u32(fields[2])?, extraction_amount: parse_u32(fields[3])? })), Some("c") if fields.len() == 11 => Ok(WorldActivity::Combat(CombatZone { configuration: parse_enemy_configuration(&fields[1..9].join(";"))?, active_enemy: match parse_u64(fields[9])? { u64::MAX => None, value => Some(EntityId::new(value)) }, resolved: parse_bool(fields[10])? })), Some("s") if fields.len() == 3 => Ok(WorldActivity::Story(StorySite { target: parse_knowledge_target(fields[1])?, interacted: parse_bool(fields[2])? })), _ => Err(SaveError::MalformedRecord) } }
+fn float(value: &str) -> Result<f32, SaveError> { 
+    Ok(f32::from_bits(parse_u32(value)?)) 
+}
+
+fn vec3(fields: &[&str], index: usize) -> Result<Vec3, SaveError> { 
+    Ok(Vec3 { x: float(fields[index])?, y: float(fields[index + 1])?, z: float(fields[index + 2])? }) 
+}
+
+fn parse_u32(value: &str) -> Result<u32, SaveError> { 
+    value.parse().map_err(|_| SaveError::InvalidNumber) 
+}
+
+fn parse_u64(value: &str) -> Result<u64, SaveError> { 
+    value.parse().map_err(|_| SaveError::InvalidNumber) 
+}
+
+fn bool_value(value: bool) -> u8 { 
+    u8::from(value) 
+}
+
+fn parse_bool(value: &str) -> Result<bool, SaveError> { 
+    match value { 
+        "0" => Ok(false), "1" => Ok(true), _ => Err(SaveError::MalformedRecord) 
+    } 
+}
+
+fn ids(values: &[EntityId]) -> String { 
+    values.iter().map(|v| v.value().to_string()).collect::<Vec<_>>().join(",") 
+}
+
+fn parse_ids(value: &str) -> Result<Vec<EntityId>, SaveError> { 
+    if value.is_empty() { 
+        return Ok(Vec::new()); 
+    } 
+    
+    value.split(',').map(|v| Ok(EntityId::new(parse_u64(v)?))).collect() 
+}
+
+fn inventory_entries(values: &[(ItemId, u32)]) -> String { 
+    values.iter().map(|(id, amount)| format!("{}:{amount}", id.0)).collect::<Vec<_>>().join(",") 
+}
+
+fn parse_inventory(value: &str) -> Result<Vec<(ItemId, u32)>, SaveError> { 
+    if value.is_empty() { 
+        return Ok(Vec::new()); 
+    } 
+
+    value.split(',').map(|v| { 
+        let mut fields = v.split(':'); 
+        Ok((ItemId(parse_u32(fields.next().ok_or(SaveError::MalformedRecord)?)?), parse_u32(fields.next().ok_or(SaveError::MalformedRecord)?)?)) 
+    }).collect() 
+}
+
+fn mission_state(value: MissionState) -> u8 { 
+    match value { 
+        MissionState::Locked => 0, MissionState::Available => 1, MissionState::Active => 2, MissionState::Completed => 3, MissionState::Failed => 4 
+    } 
+}
+
+fn phase(value: SimulationPhase) -> u8 {
+    match value { 
+        SimulationPhase::Loading => 0, SimulationPhase::Running => 1, SimulationPhase::Paused => 2, SimulationPhase::Complete => 3 
+    } 
+}
+
+fn parse_phase(value: &str) -> Result<SimulationPhase, SaveError> { 
+    match parse_u32(value)? { 
+        0 => Ok(SimulationPhase::Loading), 1 => Ok(SimulationPhase::Running), 2 => Ok(SimulationPhase::Paused), 3 => Ok(SimulationPhase::Complete), _ => Err(SaveError::InvalidState) 
+    } 
+}
+
+fn destination_type(value: DestinationType) -> u8 { 
+    match value { DestinationType::Planet => 0, DestinationType::SpacePoint => 1 } 
+}
+
+fn parse_destination_type(value: &str) -> Result<DestinationType, SaveError> { 
+    match parse_u32(value)? { 
+        0 => Ok(DestinationType::Planet), 1 => Ok(DestinationType::SpacePoint), _ => Err(SaveError::InvalidState) 
+    } 
+}
+
+fn discovery(value: DiscoveryState) -> u8 { 
+    match value { 
+        DiscoveryState::Unknown => 0, DiscoveryState::Known => 1, DiscoveryState::Discovered => 2 
+    } 
+}
+
+fn parse_discovery(value: &str) -> Result<DiscoveryState, SaveError> { 
+    match parse_u32(value)? { 
+        0 => Ok(DiscoveryState::Unknown), 1 => Ok(DiscoveryState::Known), 2 => Ok(DiscoveryState::Discovered), _ => Err(SaveError::InvalidState) 
+    } 
+}
+
+fn route_state(value: NavigationRouteState) -> u8 { 
+    match value { 
+        NavigationRouteState::Available => 0, NavigationRouteState::Blocked => 1 
+    } 
+}
+
+fn parse_route_state(value: &str) -> Result<NavigationRouteState, SaveError> { 
+    match parse_u32(value)? { 
+        0 => Ok(NavigationRouteState::Available), 1 => Ok(NavigationRouteState::Blocked), _ => Err(SaveError::InvalidState) 
+    } 
+}
+
+fn objective_state(value: ObjectiveState) -> u8 { 
+    match value { 
+        ObjectiveState::Locked => 0, ObjectiveState::Available => 1, ObjectiveState::Active => 2, ObjectiveState::Completed => 3, ObjectiveState::Failed => 4 
+    } 
+}
+
+fn knowledge_state(value: KnowledgeState) -> u8 { 
+    match value { 
+        KnowledgeState::Unknown => 0, KnowledgeState::Detected => 1, KnowledgeState::Identified => 2, KnowledgeState::Discovered => 3, KnowledgeState::Studied => 4 
+    } 
+}
+
+fn knowledge_target(value: KnowledgeTarget) -> String { 
+    match value { 
+        KnowledgeTarget::Destination(id) => format!("d{}", id.value()), KnowledgeTarget::Enemy(id) => format!("e{}", id.value()), KnowledgeTarget::Item(id) => format!("i{}", id.0) 
+    } 
+}
+
+fn parse_mission_state(value: &str) -> Result<MissionState, SaveError> { 
+    match parse_u32(value)? { 
+        0 => Ok(MissionState::Locked), 1 => Ok(MissionState::Available), 2 => Ok(MissionState::Active), 3 => Ok(MissionState::Completed), 4 => Ok(MissionState::Failed), _ => Err(SaveError::InvalidState) 
+    } 
+}
+
+fn parse_objective_state(value: &str) -> Result<ObjectiveState, SaveError> { 
+    match parse_u32(value)? { 
+        0 => Ok(ObjectiveState::Locked), 1 => Ok(ObjectiveState::Available), 2 => Ok(ObjectiveState::Active), 3 => Ok(ObjectiveState::Completed), 4 => Ok(ObjectiveState::Failed), _ => Err(SaveError::InvalidState) 
+    } 
+}
+
+fn parse_knowledge_state(value: &str) -> Result<KnowledgeState, SaveError> { 
+    match parse_u32(value)? { 
+        0 => Ok(KnowledgeState::Unknown), 1 => Ok(KnowledgeState::Detected), 2 => Ok(KnowledgeState::Identified), 3 => Ok(KnowledgeState::Discovered), 4 => Ok(KnowledgeState::Studied), _ => Err(SaveError::InvalidState) 
+    } 
+}
+
+fn companion_behavior(value: CompanionBehavior) -> (u32, String) {
+    match value {
+        CompanionBehavior::Accompany => (0, "x".to_string()),
+        CompanionBehavior::Investigate(target) => (1, knowledge_target(target)),
+        CompanionBehavior::CombatSupport => (2, "x".to_string()),
+        CompanionBehavior::Waiting => (3, "x".to_string()),
+        CompanionBehavior::Unavailable => (4, "x".to_string()),
+    }
+}
+
+fn parse_companion_behavior(value: &str, target: &str) -> Result<CompanionBehavior, SaveError> {
+    match parse_u32(value)? {
+        0 if target == "x" => Ok(CompanionBehavior::Accompany),
+        1 => Ok(CompanionBehavior::Investigate(parse_knowledge_target(target)?)),
+        2 if target == "x" => Ok(CompanionBehavior::CombatSupport),
+        3 if target == "x" => Ok(CompanionBehavior::Waiting),
+        4 if target == "x" => Ok(CompanionBehavior::Unavailable),
+        _ => Err(SaveError::InvalidState),
+    }
+}
+
+fn parse_knowledge_target(value: &str) -> Result<KnowledgeTarget, SaveError> {
+    if value.len() < 2 {
+        return Err(SaveError::MalformedRecord);
+    }
+    let (kind, number) = value.split_at(1);
+    let id = parse_u64(number)?;
+    match kind {
+        "d" => Ok(KnowledgeTarget::Destination(crate::navigation::DestinationId::new(
+            u32::try_from(id).map_err(|_| SaveError::InvalidNumber)?,
+        ))),
+        "e" => Ok(KnowledgeTarget::Enemy(EntityId::new(id))),
+        "i" => Ok(KnowledgeTarget::Item(ItemId(
+            u32::try_from(id).map_err(|_| SaveError::InvalidNumber)?,
+        ))),
+        _ => Err(SaveError::MalformedRecord),
+    }
+}
+
+fn attack_type(value: AttackType) -> u8 { 
+    match value { 
+        AttackType::Kinetic => 0, AttackType::Energy => 1, AttackType::Plasma => 2 
+    } 
+}
+
+fn parse_attack_type(value: &str) -> Result<AttackType, SaveError> {
+    match parse_u32(value)? {
+        0 => Ok(AttackType::Kinetic),
+        1 => Ok(AttackType::Energy),
+        2 => Ok(AttackType::Plasma),
+        _ => Err(SaveError::InvalidState),
+    }
+}
+
+fn archetype(value: Option<crate::combat::EnemyArchetype>) -> u8 { 
+    match value { 
+        None => 255, Some(crate::combat::EnemyArchetype::Shielded) => 0, Some(crate::combat::EnemyArchetype::Shooter) => 1, Some(crate::combat::EnemyArchetype::Charger) => 2 
+    } 
+}
+
+fn parse_archetype(value: &str) -> Result<Option<crate::combat::EnemyArchetype>, SaveError> {
+    match parse_u32(value)? {
+        255 => Ok(None),
+        0 => Ok(Some(crate::combat::EnemyArchetype::Shielded)),
+        1 => Ok(Some(crate::combat::EnemyArchetype::Shooter)),
+        2 => Ok(Some(crate::combat::EnemyArchetype::Charger)),
+        _ => Err(SaveError::InvalidState),
+    }
+}
+
+fn weapon(value: WeaponConfiguration) -> String { 
+    match value.ammunition { Some(ammunition) => format!("{},{},{},{},{},{}", attack_type(value.attack_type), value.damage, value.range, value.cooldown.0, ammunition.item.0, ammunition.amount_per_attack), None => format!("{},{},{},{}", attack_type(value.attack_type), value.damage, value.range, value.cooldown.0) 
+    } 
+}
+
+fn parse_weapon(value: &str) -> Result<WeaponConfiguration, SaveError> {
+    let fields = value.split(',').collect::<Vec<_>>();
+    if fields.len() != 4 && fields.len() != 6 {
+        return Err(SaveError::MalformedRecord);
+    }
+    let attack = parse_attack_type(fields[0])?;
+    let damage = parse_u32(fields[1])?;
+    let range = parse_u32(fields[2])?;
+    let cooldown = Duration(parse_u64(fields[3])?);
+    let value = if fields.len() == 6 {
+        WeaponConfiguration::with_ammunition(
+            attack,
+            damage,
+            range,
+            cooldown,
+            WeaponAmmunition {
+                item: ItemId(parse_u32(fields[4])?),
+                amount_per_attack: parse_u32(fields[5])?,
+            },
+        )
+    } else {
+        WeaponConfiguration::new(attack, damage, range, cooldown)
+    };
+    value.validate().map_err(|_| SaveError::InvalidState)?;
+    Ok(value)
+}
+
+fn optional_weapon(value: Option<WeaponConfiguration>) -> String { 
+    value.map_or_else(|| "x".to_string(), weapon) 
+}
+
+fn parse_optional_weapon(value: &str) -> Result<Option<WeaponConfiguration>, SaveError> { 
+    if value == "x" { 
+        Ok(None) } else { Ok(Some(parse_weapon(value)?)) 
+    } 
+}
+
+fn shield(value: Shield) -> String { 
+    format!("{},{},{}", value.current, value.maximum, attack_type(value.weakness)) 
+}
+
+fn optional_shield(value: Option<Shield>) -> String { 
+    value.map_or_else(|| "x".to_string(), shield) 
+}
+
+fn parse_optional_shield(value: &str) -> Result<Option<Shield>, SaveError> {
+    if value == "x" {
+        return Ok(None);
+    }
+    let fields = value.split(',').collect::<Vec<_>>();
+    if fields.len() != 3 {
+        return Err(SaveError::MalformedRecord);
+    }
+    let value = Shield {
+        current: parse_u32(fields[0])?,
+        maximum: parse_u32(fields[1])?,
+        weakness: parse_attack_type(fields[2])?,
+    };
+    if value.maximum == 0 || value.current > value.maximum {
+        return Err(SaveError::InvalidState);
+    }
+    Ok(Some(value))
+}
+
+fn parse_combatant(fields: &[&str]) -> Result<CombatantSaveState, SaveError> { 
+    let value = CombatantSaveState { id: EntityId::new(parse_u64(fields[1])?), is_player: parse_bool(fields[2])?, active: parse_bool(fields[3])?, maximum_health: parse_u32(fields[4])?, current_health: parse_u32(fields[5])?, position: vec3(fields, 6)?, archetype: parse_archetype(fields[9])?, weapon: parse_weapon(fields[10])?, equipped_weapon: parse_optional_weapon(fields[11])?, shield: parse_optional_shield(fields[12])?, mobility: parse_u32(fields[13])?, last_attack_at: match parse_u64(fields[14])? { u64::MAX => None, value => Some(Duration(value)) } }; 
+
+    if value.maximum_health == 0 || value.current_health > value.maximum_health || value.mobility == 0 { 
+        return Err(SaveError::InvalidState); 
+    } Ok(value) 
+}
+
+fn item_category(value: ItemCategory) -> u8 { 
+    match value { 
+        ItemCategory::RepairMaterial => 0, ItemCategory::CombatAmmunition => 1, ItemCategory::MineralSample => 2, ItemCategory::ElectronicComponent => 3, ItemCategory::HealingConsumable => 4, ItemCategory::RevivalConsumable => 5 
+    } 
+}
+
+fn parse_item_category(value: &str) -> Result<ItemCategory, SaveError> {
+    match parse_u32(value)? {
+        0 => Ok(ItemCategory::RepairMaterial),
+        1 => Ok(ItemCategory::CombatAmmunition),
+        2 => Ok(ItemCategory::MineralSample),
+        3 => Ok(ItemCategory::ElectronicComponent),
+        4 => Ok(ItemCategory::HealingConsumable),
+        5 => Ok(ItemCategory::RevivalConsumable),
+        _ => Err(SaveError::InvalidState),
+    }
+}
+
+fn parse_item_definition(fields: &[&str]) -> Result<ItemDefinition, SaveError> { 
+    let category = parse_item_category(fields[2])?; 
+    let healing = parse_u32(fields[4])?; 
+    let revival_item = parse_u32(fields[5])?; 
+    let revival = if revival_item > 0 { 
+        Some(ReviveEffect::new(ItemId(revival_item), parse_u32(fields[6])?, parse_u32(fields[7])?, parse_u32(fields[8])?)) 
+    } else { 
+        None 
+    }; 
+    let definition = ItemDefinition { id: ItemId(parse_u32(fields[1])?), category, max_stack: parse_u32(fields[3])?, healing: (healing > 0).then(|| crate::healing::HealingEffect::new(healing)), revival }; 
+    definition.validate().map_err(|_| SaveError::InvalidState)?; 
+    Ok(definition) 
+}
+
+fn distribution(value: RewardDistributionPolicy) -> u8 { 
+    match value { 
+        RewardDistributionPolicy::Shared => 0, RewardDistributionPolicy::Personal => 1 
+    } 
+}
+
+fn parse_distribution(value: &str) -> Result<RewardDistributionPolicy, SaveError> { 
+    match parse_u32(value)? { 
+        0 => Ok(RewardDistributionPolicy::Shared), 1 => Ok(RewardDistributionPolicy::Personal), _ => Err(SaveError::InvalidState) 
+    } 
+}
+
+fn reward_entries(values: &[RewardEntry]) -> String { 
+    values.iter().map(|entry| format!("{}:{}", entry.item.0, entry.amount)).collect::<Vec<_>>().join(",") 
+}
+
+fn parse_reward_entries(value: &str) -> Result<Vec<RewardEntry>, SaveError> {
+    if value.is_empty() {
+        return Err(SaveError::InvalidState);
+    }
+    value
+        .split(',')
+        .map(|entry| {
+            let fields = entry.split(':').collect::<Vec<_>>();
+            if fields.len() != 2 {
+                return Err(SaveError::MalformedRecord);
+            }
+            Ok(RewardEntry {
+                item: ItemId(parse_u32(fields[0])?),
+                amount: parse_u32(fields[1])?,
+            })
+        })
+        .collect()
+}
+
+fn parse_enemy_reward(fields: &[&str]) -> Result<EnemyReward, SaveError> { 
+    let archetype = parse_archetype(fields[1])?.ok_or(SaveError::InvalidState)?; 
+    let reward = EnemyReward { archetype, entries: parse_reward_entries(fields[3])?, distribution: parse_distribution(fields[2])? }; 
+    reward.validate().map_err(|_| SaveError::InvalidState)?; 
+    Ok(reward) 
+}
+
+fn hazard_type(value: EnvironmentalHazardType) -> u8 { 
+    match value { 
+        EnvironmentalHazardType::Radiation => 0, EnvironmentalHazardType::SpaceStorm => 1, EnvironmentalHazardType::GravitationalAnomaly => 2, EnvironmentalHazardType::DebrisField => 3 
+    } 
+}
+
+fn parse_hazard(fields: &[&str]) -> Result<EnvironmentalHazard, SaveError> {
+    let hazard_type = match parse_u32(fields[2])? {
+        0 => EnvironmentalHazardType::Radiation,
+        1 => EnvironmentalHazardType::SpaceStorm,
+        2 => EnvironmentalHazardType::GravitationalAnomaly,
+        3 => EnvironmentalHazardType::DebrisField,
+        _ => return Err(SaveError::InvalidState),
+    };
+    let value = EnvironmentalHazard::new(
+        HazardId::new(parse_u32(fields[1])?),
+        hazard_type,
+        vec3(fields, 3)?,
+        float(fields[6])?,
+        parse_u32(fields[7])?,
+        Duration(parse_u64(fields[8])?),
+        parse_bool(fields[9])?,
+    );
+    value.validate().map_err(|_| SaveError::InvalidState)?;
+    let mut value = value;
+    value.restore_accumulated(Duration(parse_u64(fields[10])?));
+    Ok(value)
+}
+
+fn encounter_state(value: SpatialEncounterState) -> u8 { 
+    match value { 
+        SpatialEncounterState::Pending => 0, SpatialEncounterState::Active => 1, SpatialEncounterState::Resolved => 2 
+    }
+}
+
+fn encounter_kind(value: SpatialEncounterKind) -> u8 { 
+    match value { 
+        SpatialEncounterKind::Signal { .. } => 0, SpatialEncounterKind::Hazard { .. } => 1, SpatialEncounterKind::Hostile { .. } => 2, SpatialEncounterKind::Resource { .. } => 3 
+    } 
+}
+
+fn encounter_payload(value: SpatialEncounterKind) -> String { 
+    match value { 
+        SpatialEncounterKind::Signal { destination } => format!("d:{}", destination.value()), SpatialEncounterKind::Hazard { hazard } => format!("h:{}", hazard.value()), SpatialEncounterKind::Hostile { configuration } => format!("e:{}", enemy_configuration(configuration)), SpatialEncounterKind::Resource { item, amount } => format!("r:{}:{}", item.0, amount) 
+    } 
+}
+
+fn parse_encounter(fields: &[&str]) -> Result<SpatialEncounter, SaveError> {
+    let payload = fields[8];
+    let kind = match parse_u32(fields[2])? {
+        0 => SpatialEncounterKind::Signal {
+            destination: crate::navigation::DestinationId::new(parse_prefixed_u32(payload, 'd')?),
+        },
+        1 => SpatialEncounterKind::Hazard {
+            hazard: HazardId::new(parse_prefixed_u32(payload, 'h')?),
+        },
+        2 => SpatialEncounterKind::Hostile {
+            configuration: parse_enemy_configuration(
+                payload.strip_prefix("e:").ok_or(SaveError::MalformedRecord)?,
+            )?,
+        },
+        3 => {
+            let values = payload
+                .strip_prefix("r:")
+                .ok_or(SaveError::MalformedRecord)?
+                .split(':')
+                .collect::<Vec<_>>();
+            if values.len() != 2 {
+                return Err(SaveError::MalformedRecord);
+            }
+            SpatialEncounterKind::Resource {
+                item: ItemId(parse_u32(values[0])?),
+                amount: parse_u32(values[1])?,
+            }
+        }
+        _ => return Err(SaveError::InvalidState),
+    };
+    let state = match parse_u32(fields[7])? {
+        0 => SpatialEncounterState::Pending,
+        1 => SpatialEncounterState::Active,
+        2 => SpatialEncounterState::Resolved,
+        _ => return Err(SaveError::InvalidState),
+    };
+    let encounter = SpatialEncounter {
+        id: EncounterId::new(parse_u32(fields[1])?),
+        kind,
+        position: vec3(fields, 3)?,
+        activation_radius: float(fields[6])?,
+        state,
+        spawned_enemy: match parse_u64(fields[9])? {
+            u64::MAX => None,
+            value => Some(EntityId::new(value)),
+        },
+    };
+    encounter.validate().map_err(|_| SaveError::InvalidState)?;
+    Ok(encounter)
+}
+
+fn parse_prefixed_u32(value: &str, prefix: char) -> Result<u32, SaveError> { 
+    let expected = format!("{prefix}:"); parse_u32(value.strip_prefix(&expected).ok_or(SaveError::MalformedRecord)?)
+}
+
+fn enemy_configuration(value: EnemyConfiguration) -> String { 
+    format!("{};{};{};{};{};{};{};{}", archetype(Some(value.archetype)), bits(value.position.x), bits(value.position.y), bits(value.position.z), value.maximum_health, weapon(value.weapon), optional_shield(value.shield), value.mobility) 
+}
+
+fn parse_enemy_configuration(value: &str) -> Result<EnemyConfiguration, SaveError> {
+    let fields = value.split(';').collect::<Vec<_>>();
+    if fields.len() != 8 {
+        return Err(SaveError::MalformedRecord);
+    }
+    let archetype = parse_archetype(fields[0])?.ok_or(SaveError::InvalidState)?;
+    let value = EnemyConfiguration {
+        archetype,
+        position: Vec3 {
+            x: float(fields[1])?,
+            y: float(fields[2])?,
+            z: float(fields[3])?,
+        },
+        maximum_health: parse_u32(fields[4])?,
+        weapon: parse_weapon(fields[5])?,
+        shield: parse_optional_shield(fields[6])?,
+        mobility: parse_u32(fields[7])?,
+    };
+    value.validate().map_err(|_| SaveError::InvalidState)?;
+    Ok(value)
+}
+
+fn derelict_state(value: DerelictState) -> u8 { 
+    match value { 
+        DerelictState::Undiscovered => 0, DerelictState::Discovered => 1, DerelictState::Exploring => 2, DerelictState::Resolved => 3 
+    } 
+}
+
+fn entity_ids(values: &[EntityId]) -> String { 
+    values.iter().map(|value| value.value().to_string()).collect::<Vec<_>>().join(",") 
+}
+
+fn derelict_rewards(values: &[DerelictReward]) -> String { 
+    values.iter().map(|value| format!("{}:{}", value.item.0, value.amount)).collect::<Vec<_>>().join(",") 
+}
+
+fn parse_derelict_rewards(value: &str) -> Result<Vec<DerelictReward>, SaveError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(',')
+        .map(|entry| {
+            let fields = entry.split(':').collect::<Vec<_>>();
+            if fields.len() != 2 {
+                return Err(SaveError::MalformedRecord);
+            }
+            Ok(DerelictReward {
+                item: ItemId(parse_u32(fields[0])?),
+                amount: parse_u32(fields[1])?,
+            })
+        })
+        .collect()
+}
+
+fn parse_entity_ids(value: &str) -> Result<Vec<EntityId>, SaveError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(',')
+        .map(|value| Ok(EntityId::new(parse_u64(value)?)))
+        .collect()
+}
+
+fn parse_derelict(fields: &[&str]) -> Result<Derelict, SaveError> {
+    let state = match parse_u32(fields[6])? {
+        0 => DerelictState::Undiscovered,
+        1 => DerelictState::Discovered,
+        2 => DerelictState::Exploring,
+        3 => DerelictState::Resolved,
+        _ => return Err(SaveError::InvalidState),
+    };
+    let associated_encounter = match parse_u32(fields[7])? {
+        u32::MAX => None,
+        value => Some(EncounterId::new(value)),
+    };
+    let value = Derelict {
+        id: crate::derelict::DerelictId::new(parse_u32(fields[1])?),
+        position: vec3(fields, 2)?,
+        interaction_range: float(fields[5])?,
+        state,
+        associated_encounter,
+        enemy_configuration: if fields[8] == "x" {
+            None
+        } else {
+            Some(parse_enemy_configuration(fields[8])?)
+        },
+        rewards: Vec::new(),
+        distribution: parse_distribution(fields[9])?,
+        spawned_enemy: match parse_u64(fields[10])? {
+            u64::MAX => None,
+            value => Some(EntityId::new(value)),
+        },
+        enemy_defeated: parse_bool(fields[11])?,
+        reward_collectibles: parse_entity_ids(fields[12])?,
+        reward_generated: parse_bool(fields[13])?,
+    };
+    value.validate().map_err(|_| SaveError::InvalidState)?;
+    Ok(value)
+}
+
+fn world_activity(value: &WorldActivity) -> String { 
+    match value { 
+        WorldActivity::Trade(market) => format!("t;{}", market.offers.iter().map(|offer| format!("{}:{}:{}:{}", offer.item.0, offer.buy_price, offer.sell_price, offer.stock)).collect::<Vec<_>>().join(",")), WorldActivity::Resource(site) => format!("r;{};{};{}", site.item.0, site.available, site.extraction_amount), WorldActivity::Combat(zone) => format!("c;{};{};{}", enemy_configuration(zone.configuration), zone.active_enemy.map_or(u64::MAX, EntityId::value), bool_value(zone.resolved)), WorldActivity::Story(site) => format!("s;{};{}", knowledge_target(site.target), bool_value(site.interacted)) 
+    } 
+}
+
+fn parse_world_activity(value: &str) -> Result<WorldActivity, SaveError> {
+    let fields = value.split(';').collect::<Vec<_>>();
+    match fields.first().copied() {
+        Some("t") => {
+            let offers = if fields.get(1).is_some_and(|value| !value.is_empty()) {
+                fields[1]
+                    .split(',')
+                    .map(|offer| {
+                        let values = offer.split(':').collect::<Vec<_>>();
+                        if values.len() != 4 {
+                            return Err(SaveError::MalformedRecord);
+                        }
+                        Ok(TradeOffer {
+                            item: ItemId(parse_u32(values[0])?),
+                            buy_price: parse_u64(values[1])?,
+                            sell_price: parse_u64(values[2])?,
+                            stock: parse_u32(values[3])?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, SaveError>>()?
+            } else {
+                Vec::new()
+            };
+            Ok(WorldActivity::Trade(TradeMarket { offers }))
+        }
+        Some("r") if fields.len() == 4 => Ok(WorldActivity::Resource(ResourceSite {
+            item: ItemId(parse_u32(fields[1])?),
+            available: parse_u32(fields[2])?,
+            extraction_amount: parse_u32(fields[3])?,
+        })),
+        Some("c") if fields.len() == 11 => Ok(WorldActivity::Combat(CombatZone {
+            configuration: parse_enemy_configuration(&fields[1..9].join(";"))?,
+            active_enemy: match parse_u64(fields[9])? {
+                u64::MAX => None,
+                value => Some(EntityId::new(value)),
+            },
+            resolved: parse_bool(fields[10])?,
+        })),
+        Some("s") if fields.len() == 3 => Ok(WorldActivity::Story(StorySite {
+            target: parse_knowledge_target(fields[1])?,
+            interacted: parse_bool(fields[2])?,
+        })),
+        _ => Err(SaveError::MalformedRecord),
+    }
+}
 
 pub(crate) fn validate_persisted_functional_world(value: &FunctionalWorld) -> Result<(), SaveError> {
     if value.destination.value() == 0 || !value.interaction_range.is_finite() || value.interaction_range <= 0.0 || value.activities.is_empty() { return Err(SaveError::InvalidState); }

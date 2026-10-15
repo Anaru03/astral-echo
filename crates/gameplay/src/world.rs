@@ -938,9 +938,9 @@ impl GameplayWorld {
                         *player,
                         TacticalAssignmentStatus::Blocked,
                         TacticalAssignmentReason::MissingWeapon,
-                        vec!["Configuracion de arma valida requerida".to_string()],
+                        vec!["Configuracion de arma válida requerida".to_string()],
                         vec![TacticalAssignmentEvidence {
-                            description: "La configuracion del arma no es valida".to_string(),
+                            description: "La configuración del arma no es válida".to_string(),
                             confirmed: true,
                         }],
                     ));
@@ -992,7 +992,7 @@ impl GameplayWorld {
                                 ammunition.item, ammunition.amount_per_attack, available
                             )],
                             vec![TacticalAssignmentEvidence {
-                                description: "La municion disponible no alcanza para un ataque".to_string(),
+                                description: "La munición disponible no alcanza para un ataque".to_string(),
                                 confirmed: true,
                             }],
                         ));
@@ -1012,7 +1012,7 @@ impl GameplayWorld {
                         TacticalAssignmentReason::AttackCooldown,
                         vec!["Enfriamiento de ataque pendiente".to_string()],
                         vec![TacticalAssignmentEvidence {
-                            description: "El comando de ataque rechazaria la accion por cooldown".to_string(),
+                            description: "El comando de ataque rechazaria la acción por cooldown".to_string(),
                             confirmed: true,
                         }],
                     ));
@@ -1025,9 +1025,9 @@ impl GameplayWorld {
                         *player,
                         TacticalAssignmentStatus::Blocked,
                         TacticalAssignmentReason::MissingAmmunition,
-                        vec!["El arma no esta lista para atacar".to_string()],
+                        vec!["El arma no está lista para atacar".to_string()],
                         vec![TacticalAssignmentEvidence {
-                            description: "La validacion publica de preparacion de arma rechazo la accion".to_string(),
+                            description: "La validación pública de preparación de arma rechazó la acción".to_string(),
                             confirmed: true,
                         }],
                     ));
@@ -1041,7 +1041,7 @@ impl GameplayWorld {
                     TacticalAssignmentReason::AssignedByDistance,
                     Vec::new(),
                     vec![TacticalAssignmentEvidence {
-                        description: "Jugador activo, armado, dentro de alcance y con municion valida".to_string(),
+                        description: "Jugador activo, armado, dentro de alcance y con munición válida".to_string(),
                         confirmed: true,
                     }],
                 ));
@@ -1105,7 +1105,7 @@ impl GameplayWorld {
                     },
                     preferred: false,
                     evidence: vec![TacticalAssignmentEvidence {
-                        description: "No hay una tarea tactica adicional asignada a este jugador".to_string(),
+                        description: "No hay una tarea táctica adicional asignada a este jugador".to_string(),
                         confirmed: !threats.is_empty(),
                     }],
                     missing_requirements: Vec::new(),
@@ -1202,7 +1202,7 @@ impl GameplayWorld {
                     status: SupportRecommendationStatus::Blocked,
                     reason: SupportRecommendationReason::ReceiverUnavailable,
                     evidence: vec![SupportEvidence {
-                        description: "El inventario del jugador no esta inicializado".to_string(),
+                        description: "El inventario del jugador no está inicializado".to_string(),
                         confirmed: true,
                     }],
                     missing_requirements: vec!["Inventario inicializado".to_string()],
@@ -1241,10 +1241,10 @@ impl GameplayWorld {
                     status: SupportRecommendationStatus::Blocked,
                     reason: SupportRecommendationReason::ItemDefinitionMissing,
                     evidence: vec![SupportEvidence {
-                        description: "La municion equipada no tiene una definicion registrada".to_string(),
+                        description: "La munición equipada no tiene una definición registrada".to_string(),
                         confirmed: true,
                     }],
-                    missing_requirements: vec!["Definicion de objeto valida".to_string()],
+                    missing_requirements: vec!["Definicion de objeto válida".to_string()],
                 });
                 continue;
             };
@@ -1336,11 +1336,11 @@ impl GameplayWorld {
                         description: if has_quantity {
                             "Hay companeros activos, pero ninguno puede cubrir la cantidad requerida".to_string()
                         } else {
-                            "No hay un companero activo con la municion requerida".to_string()
+                            "No hay un companero activo con la munición requerida".to_string()
                         },
                         confirmed: true,
                     }],
-                    missing_requirements: vec!["Transferencia completa de municion".to_string()],
+                    missing_requirements: vec!["Transferencia completa de munición".to_string()],
                 });
                 continue;
             };
@@ -1358,7 +1358,7 @@ impl GameplayWorld {
                         confirmed: true,
                     },
                     SupportEvidence {
-                        description: "La cantidad respeta capacidad, pila y definicion del objeto".to_string(),
+                        description: "La cantidad respeta capacidad, pila y definición del objeto".to_string(),
                         confirmed: true,
                     },
                 ],
@@ -1469,10 +1469,10 @@ impl GameplayWorld {
                         _ => None,
                     },
                     requirement: Some(requirement),
-                    description: format!("Requisito de preparacion faltante: {requirement:?}"),
+                    description: format!("Requisito de preparación faltante: {requirement:?}"),
                     support: None,
                     evidence: vec![SupportEvidence {
-                        description: format!("La evaluacion de preparacion informo {:?}", preparation.reason),
+                        description: format!("La evaluación de preparación informo {:?}", preparation.reason),
                         confirmed: true,
                     }],
                 });
@@ -1492,7 +1492,7 @@ impl GameplayWorld {
                     }
                     evidence.push(SupportEvidence {
                         description: format!(
-                            "El jugador {:?} puede ejecutar la tarea tactica {:?}",
+                            "El jugador {:?} puede ejecutar la tarea táctica {:?}",
                             recommendation.player, recommendation.action
                         ),
                         confirmed: true,
@@ -1516,7 +1516,7 @@ impl GameplayWorld {
                         player: recommendation.player,
                         threat: recommendation.threat,
                         requirement,
-                        description: format!("La tarea tactica esta bloqueada por {:?}", recommendation.reason),
+                        description: format!("La tarea táctica está bloqueada por {:?}", recommendation.reason),
                         support: None,
                         evidence: recommendation
                             .evidence
@@ -1900,7 +1900,7 @@ impl GameplayWorld {
                 preparation: None,
                 actions,
                 blockers: if ship_blocked {
-                    vec!["La nave no esta operativa para iniciar o continuar un viaje".to_string()]
+                    vec!["La nave no está operativa para iniciar o continuar un viaje".to_string()]
                 } else {
                     vec!["No hay un viaje o ruta activa que evaluar".to_string()]
                 },
@@ -1951,12 +1951,12 @@ impl GameplayWorld {
             });
         }
         if operational_blocked {
-            blockers.push("La nave no esta operativa para continuar el viaje".to_string());
+            blockers.push("La nave no está operativa para continuar el viaje".to_string());
             if let Some(ship) = ship {
                 actions.push(CooperativeNavigationAction::RepairShip(ship));
             }
             evidence.push(SupportEvidence {
-                description: "La validacion publica de operatividad de la nave rechazo la continuacion".to_string(),
+                description: "La validación pública de operatividad de la nave rechazó la continuación".to_string(),
                 confirmed: true,
             });
         } else if let (Some(current), Some(maximum)) = (integrity, maximum_integrity) {
@@ -2034,7 +2034,7 @@ impl GameplayWorld {
             Some(NavigationAdvice::ReplanAutopilot { destination }) if in_transit => {
                 evidence.push(SupportEvidence {
                     description: format!(
-                        "El piloto automatico ya esta en transito hacia {destination:?}; no se recomienda cambiar su ruta"
+                        "El piloto automatico ya está en transito hacia {destination:?}; no se recomienda cambiar su ruta"
                     ),
                     confirmed: true,
                 });
@@ -2231,7 +2231,7 @@ impl GameplayWorld {
             if let Some(ship) = ship {
                 actions.push(CooperativeNavigationContingencyAction::RepairShip(ship));
             }
-            blockers.push("La nave esta destruida o no operativa para la navegacion".to_string());
+            blockers.push("La nave está destruida o no operativa para la navegación".to_string());
         }
         if interrupted {
             if current_origin.is_none() || destination.is_none() {
@@ -2286,7 +2286,7 @@ impl GameplayWorld {
                     actions.push(CooperativeNavigationContingencyAction::MonitorAutopilot(destination));
                 }
                 evidence.push(SupportEvidence {
-                    description: "El viaje ya esta en transito y no admite una replanificacion incompatible".to_string(),
+                    description: "El viaje ya está en transito y no admite una replanificacion incompatible".to_string(),
                     confirmed: true,
                 });
             }
@@ -2426,7 +2426,7 @@ impl GameplayWorld {
                             },
                             Vec::new(),
                             vec![SupportEvidence {
-                                description: "El jugador seguido esta activo y puede ejecutar la accion de navegacion".to_string(),
+                                description: "El jugador seguido está activo y puede ejecutar la acción de navegación".to_string(),
                                 confirmed: active_players.contains(&companion.followed_player),
                             }],
                         ),
@@ -2452,7 +2452,7 @@ impl GameplayWorld {
                             CooperativeRecoveryTaskStatus::NotEvaluable,
                             vec!["La API de combustible no identifica un jugador ejecutor".to_string()],
                             vec![SupportEvidence {
-                                description: "El combustible puede gestionarse mediante una API de recursos, pero no se puede asignar un responsable individual con evidencia publica".to_string(),
+                                description: "El combustible puede gestionarse mediante una API de recursos, pero no se puede asignar un responsable individual con evidencia pública".to_string(),
                                 confirmed: true,
                             }],
                         ),
@@ -2461,9 +2461,9 @@ impl GameplayWorld {
                             CoordinationPriority::Critical,
                             None,
                             CooperativeRecoveryTaskStatus::NotEvaluable,
-                            vec!["La reparacion exige una estacion y condiciones que esta evaluacion no puede asignar".to_string()],
+                            vec!["La reparación exige una estacion y condiciones que está evaluación no puede asignar".to_string()],
                             vec![SupportEvidence {
-                                description: "La nave requiere reparacion, pero no se inventa un jugador elegible sin validar la estacion real".to_string(),
+                                description: "La nave requiere reparación, pero no se inventa un jugador elegible sin validar la estacion real".to_string(),
                                 confirmed: true,
                             }],
                         ),
@@ -2485,7 +2485,7 @@ impl GameplayWorld {
                             CooperativeRecoveryTaskStatus::NotEvaluable,
                             vec!["Intervencion del jugador requerida".to_string()],
                             vec![SupportEvidence {
-                                description: "No hay suficiente evidencia para asignar la accion a un jugador concreto".to_string(),
+                                description: "No hay suficiente evidencia para asignar la acción a un jugador concreto".to_string(),
                                 confirmed: false,
                             }],
                         ),
@@ -2500,7 +2500,7 @@ impl GameplayWorld {
                             },
                             Vec::new(),
                             vec![SupportEvidence {
-                                description: "La preparacion del encuentro requiere un jugador activo".to_string(),
+                                description: "La preparación del encuentro requiere un jugador activo".to_string(),
                                 confirmed: active_players.contains(&companion.followed_player),
                             }],
                         ),
@@ -2832,7 +2832,7 @@ impl GameplayWorld {
                         CooperativeTaskCompatibilityStatus::NotApplicable,
                         CooperativeTaskCompatibilityReason::TaskNotActionable,
                         vec![SupportEvidence {
-                            description: "Una de las tareas no esta lista para comenzar".to_string(),
+                            description: "Una de las tareas no está lista para comenzar".to_string(),
                             confirmed: true,
                         }],
                     )
@@ -3972,7 +3972,7 @@ impl GameplayWorld {
                     requirements: Vec::new(),
                     reason: CoordinationReason::FutureDependency,
                     priority: CoordinationPriority::Low,
-                    description: "Siguiente objetivo disponible segun la guia actual".to_string(),
+                    description: "Siguiente objetivo disponible segun la guía actual".to_string(),
                 });
             }
         }
@@ -4118,7 +4118,7 @@ impl GameplayWorld {
                 destination: attempted.as_ref().and_then(|step| step.destination),
                 entity: attempted.as_ref().and_then(|step| step.entity),
                 missing_requirements: preparation.missing_requirements.clone(),
-                evidence: "La evaluacion de preparacion reporta requisitos faltantes".to_string(),
+                evidence: "La evaluación de preparación reporta requisitos faltantes".to_string(),
             });
         } else if operational
             .as_ref()
@@ -4132,7 +4132,7 @@ impl GameplayWorld {
                 destination: None,
                 entity: operational.as_ref().map(|value| value.ship),
                 missing_requirements: Vec::new(),
-                evidence: "La integridad autoritativa de la nave esta destruida".to_string(),
+                evidence: "La integridad autoritativa de la nave está destruida".to_string(),
             });
         } else if let Some(tactical) = tactical.as_ref().filter(|value| {
             value.priority == TacticalPriority::Critical
@@ -4190,7 +4190,7 @@ impl GameplayWorld {
                     destination: target.destination,
                     entity: target.entity,
                     missing_requirements: Vec::new(),
-                    evidence: "La guia exige conocimiento que aun no esta registrado".to_string(),
+                    evidence: "La guía exige conocimiento que aun no está registrado".to_string(),
                 });
             }
         }
@@ -4214,22 +4214,22 @@ impl GameplayWorld {
             (
                 RecoveryStatus::Recoverable,
                 true,
-                "Existe una accion real conocida para recuperar la progresion".to_string(),
+                "Existe una acción real conocida para recuperar la progresion".to_string(),
             ),
             Some(_) => (
                 RecoveryStatus::Blocked,
                 false,
-                "El bloqueo requiere una decision o intervencion del jugador".to_string(),
+                "El bloqueo requiere una decisión o intervencion del jugador".to_string(),
             ),
             None if attempted.is_some() => (
                 RecoveryStatus::Actionable,
                 true,
-                "El siguiente paso esta respaldado por el estado actual".to_string(),
+                "El siguiente paso está respaldado por el estado actual".to_string(),
             ),
             None => (
                 RecoveryStatus::Satisfied,
                 false,
-                "No existe un objetivo pendiente en la guia actual".to_string(),
+                "No existe un objetivo pendiente en la guía actual".to_string(),
             ),
         };
         let missing_requirements = preparation
@@ -4535,7 +4535,7 @@ impl GameplayWorld {
                     severity: ContradictionSeverity::Critical,
                     category: ContradictionCategory::PreparationNavigation,
                     reason: ContradictionReason::CriticalPreparationConflict,
-                    explanation: "La coordinacion recomienda viajar aunque la preparacion confirma combustible insuficiente".to_string(),
+                    explanation: "La coordinación recomienda viajar aunque la preparación confirma combustible insuficiente".to_string(),
                     evidence: vec![ConsistencyEvidence {
                         category: ContradictionCategory::PreparationNavigation,
                         description: "El bloqueo de combustible y la recomendacion de viaje se refieren al mismo estado".to_string(),
@@ -4559,7 +4559,7 @@ impl GameplayWorld {
                     severity: ContradictionSeverity::Important,
                     category: ContradictionCategory::TacticalCoordination,
                     reason: ContradictionReason::ActiveThreatConflict,
-                    explanation: "La recuperacion confirma una amenaza activa, pero la coordinacion no recomienda resolverla".to_string(),
+                    explanation: "La RECUPERACIÓN confirma una amenaza activa, pero la coordinación no recomienda resolverla".to_string(),
                     evidence: vec![ConsistencyEvidence {
                         category: ContradictionCategory::TacticalCoordination,
                         description: blocker.evidence.clone(),
@@ -4582,7 +4582,7 @@ impl GameplayWorld {
                 severity: ContradictionSeverity::Important,
                 category: ContradictionCategory::ExplanationRecovery,
                 reason: ContradictionReason::BlockerStateConflict,
-                explanation: "La explicacion presenta el estado como resuelto aunque la recuperacion conserva un bloqueo".to_string(),
+                explanation: "La explicación presenta el estado como resuelto aunque la RECUPERACIÓN conserva un bloqueo".to_string(),
                 evidence: vec![ConsistencyEvidence {
                     category: ContradictionCategory::ExplanationRecovery,
                     description: recovery.explanation.clone(),
@@ -4605,7 +4605,7 @@ impl GameplayWorld {
                     severity: ContradictionSeverity::Important,
                     category: ContradictionCategory::ObjectiveGuidance,
                     reason: ContradictionReason::CompletedObjectiveStillRecommended,
-                    explanation: "La guia conserva como pendiente un objetivo que el mundo ya marca completado".to_string(),
+                    explanation: "La guía conserva como pendiente un objetivo que el mundo ya marca completado".to_string(),
                     evidence: vec![ConsistencyEvidence {
                         category: ContradictionCategory::ObjectiveGuidance,
                         description: "El estado del objetivo y el siguiente paso no coinciden".to_string(),
@@ -4628,7 +4628,7 @@ impl GameplayWorld {
                             severity: ContradictionSeverity::Important,
                             category: ContradictionCategory::RouteViability,
                             reason: ContradictionReason::InfeasibleRoutePresentedAsViable,
-                            explanation: "La evaluacion de ruta marca el trayecto como inviable, pero la coordinacion lo recomienda".to_string(),
+                            explanation: "La evaluación de ruta marca el trayecto como inviable, pero la coordinación lo recomienda".to_string(),
                             evidence: vec![ConsistencyEvidence {
                                 category: ContradictionCategory::RouteViability,
                                 description: "La comparacion de rutas no considera viable el trayecto actual".to_string(),
@@ -4654,7 +4654,7 @@ impl GameplayWorld {
         } else {
             informational.push(ConsistencyEvidence {
                 category: ContradictionCategory::InsufficientEvidence,
-                description: "No existe evaluacion operativa suficiente para contrastar navegacion".to_string(),
+                description: "No existe evaluación operativa suficiente para contrastar navegación".to_string(),
                 objective: coordination.objective,
                 destination: travel_action.and_then(|step| step.destination),
                 entity: None,
