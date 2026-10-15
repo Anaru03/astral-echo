@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Write};
-
 use engine::{Duration, EntityId, Vec3};
 mod visual;
+mod scenario_groups;
 use game::{
     cooperacion, ecos_anomalia, el_despertar, la_defensa_imposible, tormenta_gravitacional,
     ProjectEchoSession,
@@ -20817,62 +20817,9 @@ fn run_scenario() -> Result<(), String> {
         player,
         session.ids.first_ship
     );
-    run_integrated_scenario()?;
-    run_anomaly_mission_scenario()?;
-    run_end_to_end_coherence_scenario()?;
-    run_gravitational_storm_scenario()?;
-    run_shielded_enemy_scenario()?;
-    run_cooperative_revival_scenario()?;
-    run_cooperative_combat_scenario()?;
-    run_cooperative_progression_scenario()?;
-    run_player_count_scenario(1)?;
-    run_player_count_scenario(2)?;
-    run_player_count_scenario(3)?;
-    run_inventory_transfer_scenario()?;
-    run_reward_distribution_scenario()?;
-    run_autonomous_enemy_scenario()?;
-    run_integrated_tactical_combat_scenario()?;
-    run_integrated_cooperative_combat_recovery_scenario()?;
-    run_multi_enemy_cooperative_combat_scenario()?;
-    run_spatial_encounter_scenario()?;
-    run_dynamic_spatial_event_scenario()?;
-    run_spatial_encounter_consequence_scenario()?;
-    run_autopilot_scenario()?;
-    run_autopilot_interruption_recovery_scenario()?;
-    run_autopilot_spatial_encounter_scenario()?;
-    run_autopilot_spatial_encounter_interrupt_scenario()?;
-    run_autopilot_chained_encounters_scenario()?;
-    run_derelict_scenario()?;
-    run_derelict_exploration_flow_scenario()?;
-    run_exploration_continuity_scenario()?;
-    run_functional_world_scenario()?;
-    run_ship_upgrade_scenario()?;
-    run_resource_mission_integration_scenario()?;
-    run_integrated_expedition_scenario()?;
-    run_full_expedition_regression_scenario()?;
-    run_guidance_progression_scenario()?;
-    run_group_scaling_scenario()?;
-    run_cooperative_scaling_expedition_scenario()?;
-    run_survival_recovery_expedition_scenario()?;
-    run_persistence_scenario()?;
-    run_erick_companion_scenario()?;
-    run_erick_interaction_scenario()?;
-    run_erick_tactical_scenario()?;
-    run_erick_cooperative_tactical_scenario()?;
-    run_erick_cooperative_support_scenario()?;
-    run_erick_cooperative_readiness_scenario()?;
-    run_erick_cooperative_navigation_risk_scenario()?;
-    run_erick_integrated_recovery_scenario()?;
-    run_erick_task_compatibility_scenario()?;
-    run_erick_navigation_contingency_scenario()?;
-    run_erick_cooperative_recovery_assignment_scenario()?;
-    run_erick_navigation_scenario()?;
-    run_erick_route_risk_scenario()?;
-    run_erick_route_comparison_scenario()?;
-    run_erick_operational_scenario()?;
-    run_erick_exploration_coordination_scenario()?;
-    run_erick_preparation_scenario()?;
-    run_erick_coordination_scenario()?;
-    run_erick_recovery_scenario()?;
+    scenario_groups::run_combat_and_expeditions()?;
+    scenario_groups::run_navigation_and_exploration()?;
+    scenario_groups::run_progression_and_systems()?;
+    scenario_groups::run_erick()?;
     Ok(())
 }
