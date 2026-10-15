@@ -11,7 +11,7 @@ pub fn definition() -> Result<Mission, MissionDefinitionError> {
     let identify_signal = Objective::new(
         IDENTIFICAR_SENAL,
         PROGRESION_COOPERATIVA,
-        "Identificar la senal en equipo",
+        "Identificar la señal en equipo",
         true,
         ObjectiveTrigger::DestinationIdentified {
             destination: Some(SIGNAL_DESTINATION),
@@ -42,12 +42,12 @@ pub fn definition() -> Result<Mission, MissionDefinitionError> {
 
     Mission::new(
         PROGRESION_COOPERATIVA,
-        "Progresion cooperativa",
+        "Progresión cooperativa",
         vec![identify_signal, defeat_enemy, recover_reward],
     )
     .map(|mission| {
         mission.with_description(
-            "Dos tripulantes coordinan la identificacion, la defensa y la recuperacion de una senal.",
+            "Dos tripulantes coordinan la identificación, la defensa y la recuperación de una señal.",
         )
     })
 }

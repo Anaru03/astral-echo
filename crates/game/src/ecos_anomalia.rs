@@ -14,7 +14,7 @@ pub fn definition() -> Result<Mission, MissionDefinitionError> {
     let confirm_signal = Objective::new(
         CONFIRMAR_SENAL,
         ECOS_DE_LA_ANOMALIA,
-        "Confirmar la senal desconocida",
+        "Confirmar la señal desconocida",
         true,
         ObjectiveTrigger::DestinationIdentified {
             destination: Some(SIGNAL_DESTINATION),
@@ -44,7 +44,7 @@ pub fn definition() -> Result<Mission, MissionDefinitionError> {
     let recover_information = Objective::new(
         RECUPERAR_INFORMACION,
         ECOS_DE_LA_ANOMALIA,
-        "Recuperar informacion util",
+        "Recuperar información util",
         true,
         ObjectiveTrigger::ItemsCollected {
             item: gameplay::types::ItemId(3),
@@ -55,7 +55,7 @@ pub fn definition() -> Result<Mission, MissionDefinitionError> {
 
     Mission::new(
         ECOS_DE_LA_ANOMALIA,
-        "Ecos de la anomalia",
+        "Ecos de la anomalía",
         vec![
             confirm_signal,
             investigate_destination,
@@ -65,7 +65,7 @@ pub fn definition() -> Result<Mission, MissionDefinitionError> {
     )
     .map(|mission| {
         mission.with_description(
-            "ECHO-7 sigue una senal identificada para investigar una anomalia y recuperar informacion.",
+            "ECHO-7 sigue una señal identificada para investigar una anomalía y recuperar información.",
         )
     })
 }

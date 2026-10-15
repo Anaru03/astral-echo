@@ -52,6 +52,7 @@ impl EntityRegistry {
 
     pub fn create(&mut self) -> EntityId {
         let id = EntityId::new(self.next_id);
+        
         self.next_id = self.next_id.saturating_add(1);
         self.known.insert(id);
         self.active.insert(id);
@@ -70,6 +71,7 @@ impl EntityRegistry {
         if !self.known.contains(&entity) {
             return false;
         }
+
         self.active.insert(entity)
     }
 
@@ -91,20 +93,27 @@ impl EntityRegistry {
         if snapshot.next_id == 0 {
             return Err(EntityRegistrySnapshotError::InvalidNextId);
         }
+
         let known: BTreeSet<_> = snapshot.known.iter().copied().collect();
+
         if known.len() != snapshot.known.len() {
             return Err(EntityRegistrySnapshotError::DuplicateKnown);
         }
+
         let active: BTreeSet<_> = snapshot.active.iter().copied().collect();
+
         if active.len() != snapshot.active.len() {
             return Err(EntityRegistrySnapshotError::DuplicateActive);
         }
+
         if active.iter().any(|entity| !known.contains(entity)) {
             return Err(EntityRegistrySnapshotError::ActiveEntityUnknown);
         }
+
         if known.iter().any(|entity| entity.value() >= snapshot.next_id) {
             return Err(EntityRegistrySnapshotError::InvalidNextId);
         }
+
         Ok(Self {
             next_id: snapshot.next_id,
             known,

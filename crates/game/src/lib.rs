@@ -96,7 +96,7 @@ impl ProjectEchoSession {
                     3,
                 )),
             )
-            .expect("el consumible de reanimaciÃ³n debe registrarse una sola vez");
+            .expect("el consumible de reanimación debe registrarse una sola vez");
         world
             .register_enemy_reward(gameplay::EnemyReward::new(
                 gameplay::EnemyArchetype::Shielded,
@@ -105,7 +105,7 @@ impl ProjectEchoSession {
                     amount: 1,
                 }],
             ))
-            .expect("la recompensa del enemigo escudado debe ser vÃ¡lida");
+            .expect("la recompensa del enemigo escudado debe ser válida");
         world
             .register_enemy_reward(gameplay::EnemyReward::new(
                 gameplay::EnemyArchetype::Shooter,
@@ -114,7 +114,7 @@ impl ProjectEchoSession {
                     amount: 1,
                 }],
             ))
-            .expect("la recompensa del tirador debe ser vÃ¡lida");
+            .expect("la recompensa del tirador debe ser válida");
         world
             .register_enemy_reward(gameplay::EnemyReward::new(
                 gameplay::EnemyArchetype::Charger,
@@ -123,7 +123,7 @@ impl ProjectEchoSession {
                     amount: 2,
                 }],
             ))
-            .expect("la recompensa del embestidor debe ser vÃ¡lida");
+            .expect("la recompensa del embestidor debe ser válida");
         let first_ship = world.create_entity();
         world
             .initialize_navigation_ship(first_ship)
@@ -145,20 +145,20 @@ impl ProjectEchoSession {
             .register_mission(awakening)
             .expect("La misión El despertar debe registrarse una sola vez");
         let anomaly = ecos_anomalia::definition()
-            .expect("La mision Ecos de la anomalia debe tener una definicion valida");
+            .expect("La misión Ecos de la anomalía debe tener una definición válida");
         world
             .register_mission(anomaly)
-            .expect("La mision Ecos de la anomalia debe registrarse una sola vez");
+            .expect("La misión Ecos de la anomalía debe registrarse una sola vez");
         let storm = tormenta_gravitacional::definition()
-            .expect("La mision Tormenta gravitacional debe tener una definicion valida");
+            .expect("La misión Tormenta gravitacional debe tener una definición válida");
         world
             .register_mission(storm)
-            .expect("La mision Tormenta gravitacional debe registrarse una sola vez");
+            .expect("La misión Tormenta gravitacional debe registrarse una sola vez");
         let defense = la_defensa_imposible::definition()
-            .expect("La mision La defensa imposible debe tener una definicion valida");
+            .expect("La misión La defensa imposible debe tener una definición válida");
         world
             .register_mission(defense)
-            .expect("La mision La defensa imposible debe registrarse una sola vez");
+            .expect("La misión La defensa imposible debe registrarse una sola vez");
         let mut processor = GameplayProcessor::new();
         processor.add_system(PlayerSystem);
         processor.add_system(CompanionSystem::new());
