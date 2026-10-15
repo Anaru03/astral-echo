@@ -2,6 +2,12 @@ use std::io::{self, BufRead, Write};
 use engine::{Duration, EntityId, Vec3};
 mod visual;
 mod scenario_groups;
+mod runtime_types;
+mod runtime_mode;
+mod entry;
+mod scenario_support;
+use scenario_support::{expect_transfer_rejection, required_completed, run_command};
+use runtime_types::{ErickQuery, RuntimeCommand, RuntimeSession};
 use game::{
     cooperacion, ecos_anomalia, el_despertar, la_defensa_imposible, tormenta_gravitacional,
     ProjectEchoSession,
@@ -780,22 +786,6 @@ fn run_atomicity_regressions() -> Result<(), String> {
 
     println!("REGRESIONES DE ATOMICIDAD COMPLETADAS");
     Ok(())
-}
-
-fn run_command(
-    session: &mut ProjectEchoSession,
-    label: &str,
-    command: GameplayCommand,
-) -> Result<(), String> {
-    let result = session
-        .update([command])
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("{label}: no se devolvió resultado"))?;
-    match result.status {
-        gameplay::CommandStatus::Success { changed: true } => Ok(()),
-        status => Err(format!("{label}: resultado inesperado: {status:?}")),
-    }
 }
 
 fn run_derelict_scenario() -> Result<(), String> {
@@ -2264,46 +2254,6 @@ fn run_functional_world_scenario() -> Result<(), String> {
         session.world().player_currency(player_b).unwrap_or(0),
         session.world().player_currency(player_c).unwrap_or(0)
     );
-    Ok(())
-}
-
-fn expect_transfer_rejection(
-    session: &mut ProjectEchoSession,
-    from: EntityId,
-    to: EntityId,
-    item: ItemId,
-    amount: u32,
-    expected: CommandStatus,
-    label: &str,
-) -> Result<(), String> {
-    let before_from = session.world().inventory(from).cloned();
-    let before_to = session.world().inventory(to).cloned();
-    let before_active = session.world().entities().active_count();
-    let before_players = session.world().players().count();
-    let result = session
-        .update([GameplayCommand::TransferInventoryItem {
-            from,
-            to,
-            item,
-            amount,
-        }])
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("{label}: no se devolvió resultado"))?;
-    if result.status != expected {
-        return Err(format!(
-            "{label}: resultado inesperado: {:?}, esperado {:?}",
-            result.status, expected
-        ));
-    }
-    if session.world().inventory(from).cloned() != before_from
-        || session.world().inventory(to).cloned() != before_to
-        || session.world().entities().active_count() != before_active
-        || session.world().players().count() != before_players
-        || !session.world().events().is_empty()
-    {
-        return Err(format!("{label}: el rechazó dejó cambios parciales"));
-    }
     Ok(())
 }
 
@@ -9150,18 +9100,6 @@ fn run_player_count_scenario(player_count: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn required_completed(session: &ProjectEchoSession) -> Result<MissionProgress, String> {
-    let progress = session
-        .mission_progress(el_despertar::EL_DESPERTAR)
-        .ok_or_else(|| "no existe la misión El despertar".to_owned())?;
-    if progress.state != MissionState::Completed
-        || progress.required_completed != progress.required_total
-    {
-        return Err(format!("la misión no terminó: {progress:?}"));
-    }
-    Ok(progress)
-}
-
 fn run_erick_cooperative_support_scenario() -> Result<(), String> {
     let mut session = ProjectEchoSession::new();
     let needy = session.ids.first_player;
@@ -11293,137 +11231,6 @@ fn run_erick_cooperative_recovery_assignment_scenario() -> Result<(), String> {
         resolved.tasks.len()
     );
     Ok(())
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum RuntimeCommand {
-    Help,
-    Status,
-    Ship,
-    Players,
-    Inventory(Option<u64>),
-    Resources,
-    Economy,
-    Upgrades,
-    Missions,
-    Mission(u32),
-    Navigation,
-    Combat,
-    Pilot,
-    Plan {
-        origin: u32,
-        destination: u32,
-    },
-    SelectDestination(u32),
-    StartTravel,
-    StartAutopilot,
-    Encounter,
-    ActivateEncounter(Option<u64>),
-    ContinueAutopilot,
-    CancelAutopilot,
-    Attack {
-        enemy: u64,
-        player: Option<u64>,
-    },
-    Damage(u32),
-    Interact(u64),
-    Repair(u64),
-    EnemyAttack {
-        enemy: u64,
-        player: u64,
-    },
-    Revive {
-        helper: u64,
-        target: u64,
-        item: u32,
-    },
-    Heal {
-        player: u64,
-        item: u32,
-        amount: u32,
-    },
-    Extract(u32),
-    Transfer {
-        from: u64,
-        to: u64,
-        item: u32,
-        amount: u32,
-    },
-    Buy {
-        destination: u32,
-        item: u32,
-        amount: u32,
-    },
-    Sell {
-        destination: u32,
-        item: u32,
-        amount: u32,
-    },
-    InstallUpgrade {
-        destination: u32,
-        code: u8,
-    },
-    UnlockMission(u32),
-    StartMission(u32),
-    Scan,
-    Collectibles,
-    Collect {
-        collectible: u64,
-        amount: u32,
-        player: Option<u64>,
-    },
-    Erick(ErickQuery),
-    SetBreaker {
-        panel: u64,
-        breaker: u16,
-        on: bool,
-    },
-    SetOxygen {
-        panel: u64,
-        compartment: u16,
-        allocation: u32,
-    },
-    UnlockDoor(u64),
-    ReleaseStation(u64),
-    Equip(AttackType),
-    Spawn(EnemyArchetype),
-    Checkpoint,
-    CheckpointStatus,
-    RestoreCheckpoint,
-    Move {
-        direction: Vec3,
-        delta: u64,
-    },
-    Advance(u64),
-    Events,
-    Quit,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ErickQuery {
-    Status,
-    Navigation,
-    Tactical,
-    Support,
-    Recovery,
-    All,
-}
-
-struct RuntimeSession {
-    gameplay: ProjectEchoSession,
-    checkpoint: Option<String>,
-    pilot_station: EntityId,
-    engineering_station: EntityId,
-    campaign_status_console: EntityId,
-    campaign_electrical_panel: EntityId,
-    campaign_life_support_panel: EntityId,
-    campaign_bridge: EntityId,
-    campaign_engineering_station: EntityId,
-    erick: EntityId,
-    other_player: EntityId,
-    destination: DestinationId,
-    encounter: EncounterId,
-    campaign_encounter: EncounterId,
 }
 
 fn create_runtime_session() -> Result<RuntimeSession, String> {
@@ -14429,39 +14236,6 @@ fn run_runtime_cancel_recovery_scenario() -> Result<(), String> {
     Ok(())
 }
 
-fn run_runtime_mode() -> Result<(), String> {
-    let mut runtime = create_runtime_session()?;
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
-    let mut output = io::stdout();
-    write_runtime_help(&mut output)?;
-    loop {
-        write!(output, "astral> ").map_err(|error| format!("escribir prompt: {error}"))?;
-        output
-            .flush()
-            .map_err(|error| format!("vaciar prompt: {error}"))?;
-        let mut line = String::new();
-        let read = input
-            .read_line(&mut line)
-            .map_err(|error| format!("leer entrada: {error}"))?;
-        if read == 0 {
-            writeln!(output).map_err(|error| format!("escribir fin de entrada: {error}"))?;
-            return Ok(());
-        }
-        match parse_runtime_command(line.trim_end()) {
-            Ok(command) => {
-                if !execute_runtime_command(&mut runtime, &command, &mut output)? {
-                    return Ok(());
-                }
-            }
-            Err(error) => {
-                writeln!(output, "error: {error}")
-                    .map_err(|write_error| format!("escribir error de entrada: {write_error}"))?;
-            }
-        }
-    }
-}
-
 #[cfg(any())]
 fn visual_put_pixel(buffer: &mut [u32], width: usize, height: usize, x: i32, y: i32, color: u32) {
     if x >= 0 && y >= 0 && (x as usize) < width && (y as usize) < height {
@@ -14619,17 +14393,7 @@ fn run_visual_mode() -> Result<(), String> {
 }
 
 fn main() {
-    let mut arguments = std::env::args().skip(1);
-    let result = match arguments.next().as_deref() {
-        None => run_scenario(),
-        Some("--runtime") if arguments.next().is_none() => run_runtime_mode(),
-        Some("--visual") if arguments.next().is_none() => visual::run(),
-        Some(argument) => Err(format!("argumento no reconocido: {argument}")),
-    };
-    if let Err(error) = result {
-        eprintln!("ESCENARIO FALLIDO: {error}");
-        std::process::exit(1);
-    }
+    entry::run();
 }
 
 fn run_persistence_scenario() -> Result<(), String> {
