@@ -1,0 +1,22 @@
+pub(super) fn run() -> Result<(), String> {
+    super::super::run_erick_companion_scenario()?;
+    super::super::run_erick_interaction_scenario()?;
+    super::super::run_erick_tactical_scenario()?;
+    super::super::run_erick_cooperative_tactical_scenario()?;
+    super::super::run_erick_cooperative_support_scenario()?;
+    super::super::run_erick_cooperative_readiness_scenario()?;
+    super::super::run_erick_cooperative_navigation_risk_scenario()?;
+    super::super::run_erick_integrated_recovery_scenario()?;
+    super::super::run_erick_task_compatibility_scenario()?;
+    super::super::run_erick_navigation_contingency_scenario()?;
+    super::super::run_erick_cooperative_recovery_assignment_scenario()?;
+    super::super::run_erick_navigation_scenario()?;
+    super::super::run_erick_route_risk_scenario()?;
+    super::super::run_erick_route_comparison_scenario()?;
+    super::super::run_erick_operational_scenario()?;
+    super::super::run_erick_exploration_coordination_scenario()?;
+    super::super::run_erick_preparation_scenario()?;
+    super::super::run_erick_coordination_scenario()?;
+    super::super::run_erick_recovery_scenario()?;
+    Ok(())
+}
