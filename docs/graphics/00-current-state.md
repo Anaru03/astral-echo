@@ -1,7 +1,8 @@
 # 00 — Estado actual (F0 auditoría)
 
 Workspace: `astral-echo`, `resolver = "2"`, `edition 2021`.
-Miembros: `crates/engine`, `crates/gameplay`, `crates/game`, `crates/render-core`.
+Miembros: `crates/engine`, `crates/gameplay`, `crates/game`, `crates/render-core`,
+`crates/render-cpu`.
 
 ## `crates/engine` (`entity.rs`, `math.rs`, `time.rs`)
 - `math.rs`: solo `Vec3 {x,y,z:f32}` + `ZERO`. Sin `Mat4/Quat/Transform/AABB`.
@@ -20,5 +21,13 @@ pipeline de **lógica**, no gráfico). Sin networking en el árbol actual.
 
 ## `crates/render-core` (F1)
 `lib, math, transform, camera, bounds, mesh, material, scene, snapshot`.
-Deps: `engine + glam 0.32`. Sin tests (eliminados por pedido) ni comentarios
-en `.rs`; la documentación vive en `docs/graphics/`.
+Deps: `engine + glam 0.32`. La documentación vive en `docs/graphics/`.
+
+## `crates/render-cpu` (F2)
+`clip, color, error, framebuffer, geometry, image, rasterizer, viewport`.
+Deps: `render-core + glam 0.32 + png 0.18` (PNG solo para los goldens).
+Rasterizador CPU sin ventana, sin GPU y sin hilos: framebuffer RGBA8 con
+depth 0..1, recorte del near plane, rasterizado barycéntrico con color
+perspective-correct, winding configurable, test de profundidad y salida PNG.
+Reutiliza `Camera`/`Transform` del core. Documentación en
+`docs/graphics/07-cpu-rasterizer-basic.md`.
