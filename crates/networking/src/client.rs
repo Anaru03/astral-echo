@@ -1,16 +1,18 @@
 use crate::protocol::{
     decode_server, encode, ClientMessage, NetworkPlayerId, ServerMessage, PROTOCOL_VERSION,
 };
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::collections::VecDeque;
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-const MAX_MESSAGE_SIZE: u64 = 4096;
+const MAX_MESSAGE_SIZE: usize = 4096;
 
 pub struct GameClient {
     stream: TcpStream,
     reader: BufReader<TcpStream>,
     player_id: NetworkPlayerId,
+    pending_events: VecDeque<ServerMessage>,
 }
 
 impl GameClient {
@@ -27,6 +29,7 @@ impl GameClient {
             stream,
             reader,
             player_id: 0,
+            pending_events: VecDeque::new(),
         };
 
         client.send(&ClientMessage::Join {
@@ -62,14 +65,10 @@ impl GameClient {
         self.stream.flush()
     }
 
-    pub fn receive(&mut self) -> io::Result<ServerMessage> {
-        let mut line = String::new();
+    fn receive_from_network(&mut self) -> io::Result<ServerMessage> {
+        let mut line = Vec::new();
 
-        let bytes = self
-            .reader
-            .by_ref()
-            .take(MAX_MESSAGE_SIZE + 1)
-            .read_line(&mut line)?;
+        let bytes = self.reader.read_until(b'\n', &mut line)?;
 
         if bytes == 0 {
             return Err(io::Error::new(
@@ -78,26 +77,46 @@ impl GameClient {
             ));
         }
 
-        if bytes as u64 > MAX_MESSAGE_SIZE || !line.ends_with('\n') {
+        if bytes > MAX_MESSAGE_SIZE || !line.ends_with(b"\n") {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Mensaje demasiado largo o incompleto",
             ));
         }
 
-        decode_server(line.trim_end())
+        let text = std::str::from_utf8(&line)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+
+        decode_server(text.trim_end())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    pub fn receive(&mut self) -> io::Result<ServerMessage> {
+        if let Some(event) = self.pending_events.pop_front() {
+            return Ok(event);
+        }
+
+        self.receive_from_network()
     }
 
     pub fn ping(&mut self) -> io::Result<()> {
         self.send(&ClientMessage::Ping)?;
 
-        match self.receive()? {
-            ServerMessage::Pong => Ok(()),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Se esperaba una respuesta Pong",
-            )),
+        loop {
+            match self.receive_from_network()? {
+                ServerMessage::Pong => return Ok(()),
+
+                event @ (ServerMessage::PlayerJoined { .. } | ServerMessage::PlayerLeft { .. }) => {
+                    self.pending_events.push_back(event);
+                }
+
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Respuesta inesperada al Ping",
+                    ));
+                }
+            }
         }
     }
 
