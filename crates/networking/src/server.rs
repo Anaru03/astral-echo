@@ -69,6 +69,32 @@ impl GameServer {
         self.listener.local_addr()
     }
 
+    pub fn run_until(&self, shutdown: &std::sync::atomic::AtomicBool) -> io::Result<()> {
+        use std::sync::atomic::Ordering;
+
+        self.listener.set_nonblocking(true)?;
+
+        while !shutdown.load(Ordering::Relaxed) {
+            match self.listener.accept() {
+                Ok((stream, _)) => {
+                    let state = Arc::clone(&self.state);
+
+                    thread::spawn(move || {
+                        if let Err(error) = handle_client(stream, state) {
+                            eprintln!("Error de conexión: {error}");
+                        }
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn run(&self) -> io::Result<()> {
         println!("Servidor Astral Echo iniciado");
         println!("Escuchando en {}", self.local_addr()?);
