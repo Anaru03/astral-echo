@@ -44,14 +44,7 @@ pub fn assemble(
     match topology {
         Topology::TriangleList => {
             for chunk in indices.chunks_exact(3) {
-                push_triangle(
-                    chunk[0],
-                    chunk[1],
-                    chunk[2],
-                    vertex_count,
-                    &mut stats,
-                    out,
-                );
+                push_triangle(chunk[0], chunk[1], chunk[2], vertex_count, &mut stats, out);
             }
             if !indices.len().is_multiple_of(3) {
                 stats.invalid_indices += 1;

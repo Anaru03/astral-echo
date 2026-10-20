@@ -70,23 +70,41 @@ fn vertex_attributes_are_preserved() {
 fn non_finite_position_is_rejected() {
     let stage = VertexStage::new(Mat4::IDENTITY);
     let v = RasterVertex::new(Vec3::new(f32::NAN, 0.0, 0.0), Vec4::ONE);
-    assert_eq!(stage.transform(&v).unwrap_err(), RasterError::NonFiniteVertex);
+    assert_eq!(
+        stage.transform(&v).unwrap_err(),
+        RasterError::NonFiniteVertex
+    );
 }
 
 #[test]
 fn non_finite_color_is_rejected() {
     let stage = VertexStage::new(Mat4::IDENTITY);
     let v = RasterVertex::new(Vec3::ZERO, Vec4::new(f32::INFINITY, 0.0, 0.0, 1.0));
-    assert_eq!(stage.transform(&v).unwrap_err(), RasterError::NonFiniteVertex);
+    assert_eq!(
+        stage.transform(&v).unwrap_err(),
+        RasterError::NonFiniteVertex
+    );
 }
 
 #[test]
 fn non_finite_result_is_rejected() {
     let mvp = Mat4::from_cols_array(&[
-        f32::INFINITY, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, //
-        0.0, 0.0, 1.0, 0.0, //
-        0.0, 0.0, 0.0, 1.0, //
+        f32::INFINITY,
+        0.0,
+        0.0,
+        0.0, //
+        0.0,
+        1.0,
+        0.0,
+        0.0, //
+        0.0,
+        0.0,
+        1.0,
+        0.0, //
+        0.0,
+        0.0,
+        0.0,
+        1.0, //
     ]);
     let stage = VertexStage::new(mvp);
     assert_eq!(
@@ -100,22 +118,21 @@ fn transform_into_reuses_buffer() {
     let stage = VertexStage::new(Mat4::IDENTITY);
     let vertices = vec![vertex(0.0, 0.0, 0.0), vertex(1.0, 0.0, 0.0)];
     let mut out = Vec::new();
-    stage.transform_into(&vertices, &mut out).expect("transforms");
+    stage
+        .transform_into(&vertices, &mut out)
+        .expect("transforms");
     assert_eq!(out.len(), 2);
-    stage.transform_into(&vertices, &mut out).expect("transforms");
+    stage
+        .transform_into(&vertices, &mut out)
+        .expect("transforms");
     assert_eq!(out.len(), 2);
 }
 
 #[test]
 fn triangle_list_assembles_in_order() {
     let mut out = Vec::new();
-    let stats = assemble(
-        Topology::TriangleList,
-        &[0, 1, 2, 3, 4, 5],
-        6,
-        &mut out,
-    )
-    .expect("assembles");
+    let stats =
+        assemble(Topology::TriangleList, &[0, 1, 2, 3, 4, 5], 6, &mut out).expect("assembles");
     assert_eq!(stats.triangles, 2);
     assert_eq!(out[0].indices(), [0, 1, 2]);
     assert_eq!(out[1].indices(), [3, 4, 5]);
@@ -132,7 +149,8 @@ fn triangle_list_rejects_incomplete_group() {
 #[test]
 fn triangle_strip_alternates_winding() {
     let mut out = Vec::new();
-    let stats = assemble(Topology::TriangleStrip, &[0, 1, 2, 3, 4], 5, &mut out).expect("assembles");
+    let stats =
+        assemble(Topology::TriangleStrip, &[0, 1, 2, 3, 4], 5, &mut out).expect("assembles");
     assert_eq!(stats.triangles, 3);
     assert_eq!(out[0].indices(), [0, 1, 2]);
     assert_eq!(out[1].indices(), [2, 1, 3]);

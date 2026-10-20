@@ -1,2 +1,172 @@
 pub mod assembly;
+pub mod raster;
+pub mod stages;
 pub mod vertex;
+
+use glam::Mat4;
+
+use crate::clip::{clip_triangle, ClipVertex};
+use crate::error::RasterError;
+use crate::framebuffer::Framebuffer;
+use crate::geometry::RasterMesh;
+use crate::viewport::Viewport;
+
+pub use assembly::{assemble, AssemblyStats, Topology, Triangle};
+pub use raster::{
+    edge_function, raster_triangle, resolve_fragment, to_screen, FillRule, Fragment, RasterOutput,
+    ScreenVertex,
+};
+pub use stages::{PipelineConfig, PipelineError, PipelineStats, Stage, StageMetrics};
+pub use vertex::VertexStage;
+
+/// Pipeline CPU por etapas: vertex, assembly, clipping, raster, fragment y depth.
+pub struct CpuPipeline<'a> {
+    framebuffer: &'a mut Framebuffer,
+    viewport: Viewport,
+    config: PipelineConfig,
+    fill_rule: FillRule,
+    pub stats: PipelineStats,
+    clip_vertices: Vec<ClipVertex>,
+    triangles: Vec<Triangle>,
+    fragments: Vec<Fragment>,
+}
+
+impl<'a> CpuPipeline<'a> {
+    pub fn new(
+        framebuffer: &'a mut Framebuffer,
+        viewport: Viewport,
+        config: PipelineConfig,
+    ) -> Self {
+        Self {
+            framebuffer,
+            viewport,
+            config,
+            fill_rule: FillRule::TopLeft,
+            stats: PipelineStats::default(),
+            clip_vertices: Vec::new(),
+            triangles: Vec::new(),
+            fragments: Vec::new(),
+        }
+    }
+
+    pub fn with_fill_rule(mut self, rule: FillRule) -> Self {
+        self.fill_rule = rule;
+        self
+    }
+
+    pub fn framebuffer(&self) -> &Framebuffer {
+        self.framebuffer
+    }
+
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
+    }
+
+    /// Ejecuta el pipeline completo para una malla indexada.
+    pub fn draw_mesh(
+        &mut self,
+        mesh: &RasterMesh,
+        mvp: Mat4,
+        topology: Topology,
+    ) -> Result<PipelineStats, RasterError> {
+        self.stats.draws += 1;
+        let stage = VertexStage::new(mvp);
+        self.stats.metrics.vertices_in += mesh.vertices.len() as u32;
+        stage.transform_into(&mesh.vertices, &mut self.clip_vertices)?;
+        self.stats.metrics.vertices_out = self.clip_vertices.len() as u32;
+
+        let assembly = assemble(
+            topology,
+            &mesh.indices,
+            mesh.vertices.len() as u32,
+            &mut self.triangles,
+        )?;
+        self.stats.metrics.triangles_assembled += assembly.triangles;
+        self.stats.metrics.triangles_rejected +=
+            assembly.degenerate + assembly.invalid_indices + assembly.out_of_range;
+
+        for i in 0..self.triangles.len() {
+            let triangle = self.triangles[i];
+            self.draw_assembled_triangle(&triangle);
+        }
+        Ok(self.stats)
+    }
+
+    fn draw_assembled_triangle(&mut self, triangle: &Triangle) {
+        let indices = triangle.indices();
+        let (a, b, c) = match (
+            self.clip_vertices.get(indices[0] as usize),
+            self.clip_vertices.get(indices[1] as usize),
+            self.clip_vertices.get(indices[2] as usize),
+        ) {
+            (Some(a), Some(b), Some(c)) => (a, b, c),
+            _ => {
+                self.stats.metrics.triangles_rejected += 1;
+                return;
+            }
+        };
+        let clipped = match clip_triangle(*a, *b, *c) {
+            Ok(polygon) => polygon,
+            Err(_) => {
+                self.stats.record_error();
+                self.stats.metrics.triangles_rejected += 1;
+                return;
+            }
+        };
+        if clipped.len() < 3 {
+            self.stats.metrics.triangles_culled += 1;
+            return;
+        }
+        if clipped.len() != 3 {
+            self.stats.metrics.triangles_clipped += 1;
+        }
+        for i in 1..clipped.len() - 1 {
+            self.draw_clipped_triangle(&clipped[0], &clipped[i], &clipped[i + 1]);
+        }
+    }
+
+    fn draw_clipped_triangle(&mut self, a: &ClipVertex, b: &ClipVertex, c: &ClipVertex) {
+        let (va, vb, vc) = match (
+            to_screen(a, &self.viewport),
+            to_screen(b, &self.viewport),
+            to_screen(c, &self.viewport),
+        ) {
+            (Some(va), Some(vb), Some(vc)) => (va, vb, vc),
+            _ => {
+                self.stats.metrics.triangles_degenerate += 1;
+                return;
+            }
+        };
+        let area = edge_function(&va, &vb, &vc);
+        if !area.is_finite() || area.abs() < 1e-8 {
+            self.stats.metrics.triangles_degenerate += 1;
+            return;
+        }
+        let size = (self.framebuffer.width(), self.framebuffer.height());
+        self.fragments.clear();
+        let produced = raster_triangle(&va, &vb, &vc, size, self.fill_rule, &mut self.fragments);
+        self.stats.metrics.fragments_rasterized += produced;
+        if produced == 0 {
+            return;
+        }
+        self.stats.metrics.fragments_shaded += produced;
+        for fragment in self.fragments.iter() {
+            match resolve_fragment(
+                fragment,
+                self.framebuffer,
+                self.config.depth_test,
+                self.config.depth_write,
+            ) {
+                Ok(true) => {
+                    self.stats.metrics.pixels_written += 1;
+                }
+                Ok(false) => {
+                    self.stats.metrics.fragments_depth_rejected += 1;
+                }
+                Err(_) => {
+                    self.stats.record_error();
+                }
+            }
+        }
+    }
+}

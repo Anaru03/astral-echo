@@ -25,13 +25,8 @@ impl VertexStage {
         if !vertex.color.is_finite() {
             return Err(RasterError::NonFiniteVertex);
         }
-        let clip = self.mvp
-            * Vec4::new(
-                vertex.position.x,
-                vertex.position.y,
-                vertex.position.z,
-                1.0,
-            );
+        let clip =
+            self.mvp * Vec4::new(vertex.position.x, vertex.position.y, vertex.position.z, 1.0);
         if !clip.is_finite() {
             return Err(RasterError::NonFiniteVertex);
         }
