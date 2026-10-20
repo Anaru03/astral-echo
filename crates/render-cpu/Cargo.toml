@@ -1,0 +1,21 @@
+[package]
+name = "render-cpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+render-core.workspace = true
+glam = "0.32"
+png = "0.18"
+
+[dev-dependencies]
+png = "0.18"
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "render_demo"
+path = "examples/render_demo.rs"
+

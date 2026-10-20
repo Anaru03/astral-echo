@@ -4471,6 +4471,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "render-cpu"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "png",
+ "render-core",
+]
+
+[[package]]
 name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
