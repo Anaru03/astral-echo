@@ -3,6 +3,7 @@ members = [
     "crates/engine",
     "crates/gameplay",
     "crates/game",
+    "crates/render-core",
 ]
 resolver = "2"
 
@@ -14,3 +15,4 @@ license = "UNLICENSED"
 [workspace.dependencies]
 engine = { path = "crates/engine" }
 gameplay = { path = "crates/gameplay" }
+render-core = { path = "crates/render-core" }
