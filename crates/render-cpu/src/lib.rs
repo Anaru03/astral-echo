@@ -8,7 +8,9 @@ pub mod pipeline;
 pub mod rasterizer;
 pub mod viewport;
 
-pub use clip::{clip_polygon_near, clip_triangle_near, ClipVertex};
+pub use clip::{
+    clip_polygon, clip_polygon_near, clip_triangle, clip_triangle_near, ClipPlane, ClipVertex,
+};
 pub use color::{float_to_u8, lerp_color, vec3_to_rgb8, vec4_to_rgba8};
 pub use error::{ImageError, RasterError};
 pub use framebuffer::{Color, Framebuffer};
