@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 engine.workspace = true
 gameplay.workspace = true
+render-core.workspace = true
 bevy = "0.19"
 
 [lib]

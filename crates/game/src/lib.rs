@@ -2,17 +2,17 @@ pub mod cooperacion;
 pub mod ecos_anomalia;
 pub mod el_despertar;
 pub mod la_defensa_imposible;
+pub mod render_bridge;
 pub mod tormenta_gravitacional;
 
 use engine::EntityId;
 use gameplay::types::MissionId;
 use gameplay::{
     systems::{
-        CombatSystem, CompanionSystem, DoorSystem, ElectricalSystem, EnemyAiSystem,
-        EnvironmentalHazardSystem, HullIntegritySystem, InteractionSystem, InventorySystem,
-        LifeSupportSystem, NavigationSystem, PilotSystem, PlayerSystem, ResourceSystem,
-        ScannerSystem, StationSystem, DerelictSystem, FunctionalWorldSystem,
-        SpatialEncounterSystem,
+        CombatSystem, CompanionSystem, DerelictSystem, DoorSystem, ElectricalSystem, EnemyAiSystem,
+        EnvironmentalHazardSystem, FunctionalWorldSystem, HullIntegritySystem, InteractionSystem,
+        InventorySystem, LifeSupportSystem, NavigationSystem, PilotSystem, PlayerSystem,
+        ResourceSystem, ScannerSystem, SpatialEncounterSystem, StationSystem,
     },
     CommandResult, DoorAccessRequirement, GameplayCommand, GameplayProcessor, GameplayState,
     GameplayWorld,
