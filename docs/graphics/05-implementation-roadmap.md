@@ -5,8 +5,11 @@
   `render-cpu/`: framebuffer RGBA8 + depth 0..1, clip del near plane,
   raster barycéntrico con color perspective-correct, winding configurable,
   test de profundidad, salida PNG; goldens `triangle/cube.png`.
-- **F3 Pipeline CPU completo** — vertex/assembly/clipping/raster/fragment/z,
-  instrumentado por etapa.
+- **F3 Pipeline CPU completo** — HECHA (cierre en `08-cpu-pipeline-stages.md`):
+  vertex/assembly/clipping/raster/fragment/z instrumentados por etapa
+  (`StageTimings`, desactivable con `PipelineConfig::timing`), escena
+  compartida en `src/scene.rs`, demo ejecutable y benchmark propio offline
+  (`benches/pipeline_bench.rs`, sin Criterion).
 - **F4 Optimización CPU** — tiles + `rayon` + `winit/softbuffer`; LOW 30fps.
 - **F5 Backend GPU** — `render-gpu` (`wgpu 29`, WGSL PBR, `gltf`); fallback CPU.
 - **F6 Selección auto** — `--backend cpu|gpu|auto` en `entry.rs`.

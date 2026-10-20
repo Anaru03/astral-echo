@@ -33,6 +33,40 @@ impl Stage {
     }
 }
 
+/// Tiempo acumulado por etapa del pipeline, en nanosegundos.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StageTimings {
+    pub vertex_ns: u64,
+    pub assembly_ns: u64,
+    pub clipping_ns: u64,
+    pub raster_ns: u64,
+    pub fragment_ns: u64,
+    pub depth_ns: u64,
+}
+
+impl StageTimings {
+    pub fn total_ns(&self) -> u64 {
+        self.vertex_ns
+            + self.assembly_ns
+            + self.clipping_ns
+            + self.raster_ns
+            + self.fragment_ns
+            + self.depth_ns
+    }
+
+    /// Devuelve el tiempo de la etapa indicada, o `None` si no existe.
+    pub fn get(&self, stage: Stage) -> Option<u64> {
+        Some(match stage {
+            Stage::Vertex => self.vertex_ns,
+            Stage::Assembly => self.assembly_ns,
+            Stage::Clipping => self.clipping_ns,
+            Stage::Raster => self.raster_ns,
+            Stage::Fragment => self.fragment_ns,
+            Stage::Depth => self.depth_ns,
+        })
+    }
+}
+
 /// Contadores por etapa del pipeline.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StageMetrics {
@@ -58,6 +92,8 @@ pub struct StageMetrics {
     pub fragments_depth_rejected: u32,
     /// Píxeles escritos en el framebuffer.
     pub pixels_written: u32,
+    /// Tiempo acumulado por etapa.
+    pub timings: StageTimings,
 }
 
 impl StageMetrics {
@@ -73,6 +109,12 @@ impl StageMetrics {
         self.fragments_shaded += other.fragments_shaded;
         self.fragments_depth_rejected += other.fragments_depth_rejected;
         self.pixels_written += other.pixels_written;
+        self.timings.vertex_ns += other.timings.vertex_ns;
+        self.timings.assembly_ns += other.timings.assembly_ns;
+        self.timings.clipping_ns += other.timings.clipping_ns;
+        self.timings.raster_ns += other.timings.raster_ns;
+        self.timings.fragment_ns += other.timings.fragment_ns;
+        self.timings.depth_ns += other.timings.depth_ns;
     }
 }
 
@@ -83,6 +125,8 @@ pub struct PipelineConfig {
     pub depth_write: bool,
     /// Descarta triángulos con área de pantalla casi nula.
     pub cull_degenerate: bool,
+    /// Cronometra cada etapa del pipeline.
+    pub timing: bool,
 }
 
 impl Default for PipelineConfig {
@@ -91,6 +135,7 @@ impl Default for PipelineConfig {
             depth_test: true,
             depth_write: true,
             cull_degenerate: true,
+            timing: false,
         }
     }
 }

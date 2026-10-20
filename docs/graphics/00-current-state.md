@@ -23,11 +23,23 @@ pipeline de **lógica**, no gráfico). Sin networking en el árbol actual.
 `lib, math, transform, camera, bounds, mesh, material, scene, snapshot`.
 Deps: `engine + glam 0.32`. La documentación vive en `docs/graphics/`.
 
-## `crates/render-cpu` (F2)
-`clip, color, error, framebuffer, geometry, image, rasterizer, viewport`.
+## `crates/render-cpu` (F2 + F3)
+`clip, color, error, framebuffer, geometry, image, rasterizer, viewport` (F2) +
+`pipeline/{vertex,assembly,stages,raster}`, `scene` (F3).
 Deps: `render-core + glam 0.32 + png 0.18` (PNG solo para los goldens).
 Rasterizador CPU sin ventana, sin GPU y sin hilos: framebuffer RGBA8 con
 depth 0..1, recorte del near plane, rasterizado barycéntrico con color
 perspective-correct, winding configurable, test de profundidad y salida PNG.
 Reutiliza `Camera`/`Transform` del core. Documentación en
-`docs/graphics/07-cpu-rasterizer-basic.md`.
+`docs/graphics/07-cpu-rasterizer-basic.md` (F2) y
+`docs/graphics/08-cpu-pipeline-stages.md` (F3).
+
+### F3 — pipeline por etapas
+`CpuPipeline` encadena las seis etapas (vertex, assembly, clipping, raster,
+fragment, depth) con contadores por etapa (`StageMetrics`) y cronómetro por
+etapa (`StageTimings`, desactivable con `PipelineConfig::timing`). `src/scene.rs`
+define la escena de referencia compartida por el demo (`examples/render_demo.rs`)
+y el benchmark (`benches/pipeline_bench.rs`, `harness = false`, reloj
+`std::time::Instant`, sin dependencias externas). Línea base medida en
+`docs/graphics/08-cpu-pipeline-stages.md`: 1.14 ms/frame a 640×360 con 278
+triángulos, reparto ~52 % raster / ~28 % fragment / ~17 % depth.

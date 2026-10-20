@@ -6,6 +6,7 @@ pub mod geometry;
 pub mod image;
 pub mod pipeline;
 pub mod rasterizer;
+pub mod scene;
 pub mod viewport;
 
 pub use clip::{
@@ -18,10 +19,14 @@ pub use geometry::{RasterMesh, RasterVertex};
 pub use image::{write_png, write_png_bytes};
 pub use pipeline::assembly::{AssemblyStats, Topology, Triangle};
 pub use pipeline::raster::{FillRule, Fragment, ScreenVertex};
-pub use pipeline::stages::{PipelineConfig, PipelineStats, Stage, StageMetrics};
+pub use pipeline::stages::{PipelineConfig, PipelineStats, Stage, StageMetrics, StageTimings};
 pub use pipeline::vertex::VertexStage;
 pub use pipeline::CpuPipeline;
 pub use rasterizer::{RasterConfig, RasterStats, Rasterizer, Winding};
+pub use scene::{
+    demo_camera, demo_scene, grid_mesh, terrain_height, GRID_SUBDIVISIONS, TERRAIN_EXTENT,
+    TERRAIN_HEIGHT,
+};
 pub use viewport::Viewport;
 
 use std::path::Path;

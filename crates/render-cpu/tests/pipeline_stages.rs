@@ -1,8 +1,8 @@
 use glam::{Mat4, Vec3, Vec4};
-use render_cpu::pipeline::raster::{raster_triangle, to_screen, FillRule, Fragment, ScreenVertex};
+use render_cpu::pipeline::raster::{raster_triangle, to_screen, FillRule, ScreenVertex};
 use render_cpu::pipeline::CpuPipeline;
 use render_cpu::{
-    Color, Framebuffer, PipelineConfig, RasterMesh, RasterVertex, Topology, Viewport,
+    Color, Framebuffer, PipelineConfig, RasterMesh, RasterVertex, Stage, Topology, Viewport,
 };
 
 fn vertex(x: f32, y: f32, z: f32) -> RasterVertex {
@@ -268,4 +268,92 @@ fn pipeline_respects_depth_buffer_values() {
         .expect("draws");
     let depth = fb.depth_at(8, 8).expect("depth");
     assert!((depth - 0.25).abs() < 1e-3, "depth {depth}");
+}
+
+#[test]
+fn timing_disabled_leaves_stage_timings_at_zero() {
+    let mut fb = framebuffer();
+    let viewport = Viewport::from_size(16, 16).expect("viewport");
+    let mesh = RasterMesh::triangle(
+        vertex(-1.0, -1.0, 0.5),
+        vertex(1.0, -1.0, 0.5),
+        vertex(0.0, 1.0, 0.5),
+    );
+    let config = PipelineConfig {
+        timing: false,
+        ..PipelineConfig::default()
+    };
+    let mut pipeline = CpuPipeline::new(&mut fb, viewport, config);
+    let stats = pipeline
+        .draw_mesh(&mesh, Mat4::IDENTITY, Topology::TriangleList)
+        .expect("draws");
+    assert_eq!(stats.metrics.timings.total_ns(), 0);
+}
+
+#[test]
+fn timing_enabled_records_every_stage() {
+    let mut fb = framebuffer();
+    let viewport = Viewport::from_size(16, 16).expect("viewport");
+    let mesh = RasterMesh::triangle(
+        vertex(-1.0, -1.0, 0.5),
+        vertex(1.0, -1.0, 0.5),
+        vertex(0.0, 1.0, 0.5),
+    );
+    let config = PipelineConfig {
+        timing: true,
+        ..PipelineConfig::default()
+    };
+    let mut pipeline = CpuPipeline::new(&mut fb, viewport, config);
+    let stats = pipeline
+        .draw_mesh(&mesh, Mat4::IDENTITY, Topology::TriangleList)
+        .expect("draws");
+    let timings = stats.metrics.timings;
+    for stage in Stage::ALL {
+        assert!(
+            timings.get(stage).expect("stage") > 0,
+            "stage {} was not measured",
+            stage.name(),
+        );
+    }
+    assert!(timings.total_ns() > 0);
+}
+
+#[test]
+fn pipeline_clear_resets_color_and_depth() {
+    let mut fb = framebuffer();
+    let viewport = Viewport::from_size(16, 16).expect("viewport");
+    let mesh = RasterMesh::triangle(
+        vertex(-1.0, -1.0, 0.5),
+        vertex(1.0, -1.0, 0.5),
+        vertex(0.0, 1.0, 0.5),
+    );
+    let background = Color::new(3, 4, 5, 255);
+    {
+        let mut pipeline = CpuPipeline::new(&mut fb, viewport, PipelineConfig::default());
+        pipeline
+            .draw_mesh(&mesh, Mat4::IDENTITY, Topology::TriangleList)
+            .expect("draws");
+        pipeline.clear(background);
+    }
+    assert_eq!(fb.pixel(8, 8), Some(background));
+    assert_eq!(fb.depth_at(8, 8), Some(1.0));
+}
+
+#[test]
+fn pipeline_accumulates_vertices_out_across_draws() {
+    let mut fb = framebuffer();
+    let viewport = Viewport::from_size(16, 16).expect("viewport");
+    let mesh = RasterMesh::triangle(
+        vertex(-1.0, -1.0, 0.5),
+        vertex(1.0, -1.0, 0.5),
+        vertex(0.0, 1.0, 0.5),
+    );
+    let mut pipeline = CpuPipeline::new(&mut fb, viewport, PipelineConfig::default());
+    pipeline
+        .draw_mesh(&mesh, Mat4::IDENTITY, Topology::TriangleList)
+        .expect("draws");
+    let stats = pipeline
+        .draw_mesh(&mesh, Mat4::IDENTITY, Topology::TriangleList)
+        .expect("draws");
+    assert_eq!(stats.metrics.vertices_out, 6);
 }

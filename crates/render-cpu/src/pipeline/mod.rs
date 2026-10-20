@@ -4,17 +4,18 @@ pub mod stages;
 pub mod vertex;
 
 use glam::Mat4;
+use std::time::Instant;
 
 use crate::clip::{clip_triangle, ClipVertex};
 use crate::error::RasterError;
-use crate::framebuffer::Framebuffer;
+use crate::framebuffer::{Color, Framebuffer};
 use crate::geometry::RasterMesh;
 use crate::viewport::Viewport;
 
 pub use assembly::{assemble, AssemblyStats, Topology, Triangle};
 pub use raster::{
-    edge_function, raster_triangle, resolve_fragment, to_screen, FillRule, Fragment, RasterOutput,
-    ScreenVertex,
+    depth_resolve, edge_function, raster_triangle, resolve_fragment, shade_fragment, to_screen,
+    FillRule, Fragment, RasterOutput, ScreenVertex,
 };
 pub use stages::{PipelineConfig, PipelineError, PipelineStats, Stage, StageMetrics};
 pub use vertex::VertexStage;
@@ -29,6 +30,7 @@ pub struct CpuPipeline<'a> {
     clip_vertices: Vec<ClipVertex>,
     triangles: Vec<Triangle>,
     fragments: Vec<Fragment>,
+    shaded: Vec<Color>,
 }
 
 impl<'a> CpuPipeline<'a> {
@@ -46,6 +48,7 @@ impl<'a> CpuPipeline<'a> {
             clip_vertices: Vec::new(),
             triangles: Vec::new(),
             fragments: Vec::new(),
+            shaded: Vec::new(),
         }
     }
 
@@ -62,6 +65,11 @@ impl<'a> CpuPipeline<'a> {
         self.viewport
     }
 
+    /// Limpia el color y la profundidad del framebuffer asociado.
+    pub fn clear(&mut self, color: Color) {
+        self.framebuffer.clear(color);
+    }
+
     /// Ejecuta el pipeline completo para una malla indexada.
     pub fn draw_mesh(
         &mut self,
@@ -72,15 +80,19 @@ impl<'a> CpuPipeline<'a> {
         self.stats.draws += 1;
         let stage = VertexStage::new(mvp);
         self.stats.metrics.vertices_in += mesh.vertices.len() as u32;
+        let t0 = self.timer();
         stage.transform_into(&mesh.vertices, &mut self.clip_vertices)?;
-        self.stats.metrics.vertices_out = self.clip_vertices.len() as u32;
+        self.stats.metrics.vertices_out += self.clip_vertices.len() as u32;
+        let vertex_ns = self.elapsed(t0);
 
+        let t1 = self.timer();
         let assembly = assemble(
             topology,
             &mesh.indices,
             mesh.vertices.len() as u32,
             &mut self.triangles,
         )?;
+        let assembly_ns = self.elapsed(t1);
         self.stats.metrics.triangles_assembled += assembly.triangles;
         self.stats.metrics.triangles_rejected +=
             assembly.degenerate + assembly.invalid_indices + assembly.out_of_range;
@@ -89,7 +101,26 @@ impl<'a> CpuPipeline<'a> {
             let triangle = self.triangles[i];
             self.draw_assembled_triangle(&triangle);
         }
+        self.stats.metrics.timings.vertex_ns += vertex_ns;
+        self.stats.metrics.timings.assembly_ns += assembly_ns;
         Ok(self.stats)
+    }
+
+    /// Devuelve el instante actual si el cronometraje está activo.
+    fn timer(&self) -> Option<Instant> {
+        if self.config.timing {
+            Some(Instant::now())
+        } else {
+            None
+        }
+    }
+
+    /// Nanosegundos transcurridos desde `start`, o cero si no había cronómetro.
+    fn elapsed(&self, start: Option<Instant>) -> u64 {
+        match start {
+            Some(start) => start.elapsed().as_nanos() as u64,
+            None => 0,
+        }
     }
 
     fn draw_assembled_triangle(&mut self, triangle: &Triangle) {
@@ -105,6 +136,7 @@ impl<'a> CpuPipeline<'a> {
                 return;
             }
         };
+        let t0 = self.timer();
         let clipped = match clip_triangle(*a, *b, *c) {
             Ok(polygon) => polygon,
             Err(_) => {
@@ -113,6 +145,8 @@ impl<'a> CpuPipeline<'a> {
                 return;
             }
         };
+        let clipping_ns = self.elapsed(t0);
+        self.stats.metrics.timings.clipping_ns += clipping_ns;
         if clipped.len() < 3 {
             self.stats.metrics.triangles_culled += 1;
             return;
@@ -144,15 +178,27 @@ impl<'a> CpuPipeline<'a> {
         }
         let size = (self.framebuffer.width(), self.framebuffer.height());
         self.fragments.clear();
+        let t0 = self.timer();
         let produced = raster_triangle(&va, &vb, &vc, size, self.fill_rule, &mut self.fragments);
+        let raster_ns = self.elapsed(t0);
+        self.stats.metrics.timings.raster_ns += raster_ns;
         self.stats.metrics.fragments_rasterized += produced;
         if produced == 0 {
             return;
         }
         self.stats.metrics.fragments_shaded += produced;
-        for fragment in self.fragments.iter() {
-            match resolve_fragment(
+        // Etapa de fragment: sombreado y conversión de color.
+        let t1 = self.timer();
+        self.shaded.clear();
+        self.shaded
+            .extend(self.fragments.iter().map(shade_fragment));
+        let fragment_ns = self.elapsed(t1);
+        // Etapa de depth: test de profundidad y escritura en el framebuffer.
+        let t2 = self.timer();
+        for (fragment, color) in self.fragments.iter().zip(self.shaded.iter()) {
+            match depth_resolve(
                 fragment,
+                *color,
                 self.framebuffer,
                 self.config.depth_test,
                 self.config.depth_write,
@@ -168,5 +214,8 @@ impl<'a> CpuPipeline<'a> {
                 }
             }
         }
+        let depth_ns = self.elapsed(t2);
+        self.stats.metrics.timings.fragment_ns += fragment_ns;
+        self.stats.metrics.timings.depth_ns += depth_ns;
     }
 }

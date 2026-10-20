@@ -19,3 +19,8 @@ path = "src/lib.rs"
 name = "render_demo"
 path = "examples/render_demo.rs"
 
+[[bench]]
+name = "pipeline_bench"
+path = "benches/pipeline_bench.rs"
+harness = false
+

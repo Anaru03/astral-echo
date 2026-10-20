@@ -3,7 +3,7 @@ use glam::Vec4;
 use crate::clip::ClipVertex;
 use crate::color::vec4_to_rgba8;
 use crate::error::RasterError;
-use crate::framebuffer::Framebuffer;
+use crate::framebuffer::{Color, Framebuffer};
 use crate::viewport::Viewport;
 
 /// Vértice en espacio de pantalla.
@@ -205,9 +205,15 @@ pub fn raster_triangle(
     count
 }
 
+/// Convierte un fragmento a su color final (etapa de fragment/shading).
+pub fn shade_fragment(fragment: &Fragment) -> Color {
+    vec4_to_rgba8(fragment.color)
+}
+
 /// Aplica el test de profundidad y escribe el fragmento en el framebuffer.
-pub fn resolve_fragment(
+pub fn depth_resolve(
     fragment: &Fragment,
+    color: Color,
     framebuffer: &mut Framebuffer,
     depth_test: bool,
     depth_write: bool,
@@ -218,10 +224,25 @@ pub fn resolve_fragment(
             return Ok(false);
         }
     }
-    let rgba = vec4_to_rgba8(fragment.color);
-    framebuffer.set_pixel(fragment.x, fragment.y, rgba);
+    framebuffer.set_pixel(fragment.x, fragment.y, color);
     if depth_write {
         framebuffer.set_depth(fragment.x, fragment.y, fragment.depth);
     }
     Ok(true)
+}
+
+/// Aplica el test de profundidad y escribe el fragmento en el framebuffer.
+pub fn resolve_fragment(
+    fragment: &Fragment,
+    framebuffer: &mut Framebuffer,
+    depth_test: bool,
+    depth_write: bool,
+) -> Result<bool, RasterError> {
+    depth_resolve(
+        fragment,
+        shade_fragment(fragment),
+        framebuffer,
+        depth_test,
+        depth_write,
+    )
 }
