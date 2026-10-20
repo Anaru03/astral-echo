@@ -1,0 +1,20 @@
+pub(super) fn run() -> Result<(), String> {
+    super::super::run_integrated_scenario()?;
+    super::super::run_anomaly_mission_scenario()?;
+    super::super::run_end_to_end_coherence_scenario()?;
+    super::super::run_gravitational_storm_scenario()?;
+    super::super::run_shielded_enemy_scenario()?;
+    super::super::run_cooperative_revival_scenario()?;
+    super::super::run_cooperative_combat_scenario()?;
+    super::super::run_cooperative_progression_scenario()?;
+    super::super::run_player_count_scenario(1)?;
+    super::super::run_player_count_scenario(2)?;
+    super::super::run_player_count_scenario(3)?;
+    super::super::run_inventory_transfer_scenario()?;
+    super::super::run_reward_distribution_scenario()?;
+    super::super::run_autonomous_enemy_scenario()?;
+    super::super::run_integrated_tactical_combat_scenario()?;
+    super::super::run_integrated_cooperative_combat_recovery_scenario()?;
+    super::super::run_multi_enemy_cooperative_combat_scenario()?;
+    Ok(())
+}

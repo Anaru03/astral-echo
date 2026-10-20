@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "crates/engine",
+    "crates/gameplay",
+    "crates/game",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+engine = { path = "crates/engine" }
+gameplay = { path = "crates/gameplay" }
