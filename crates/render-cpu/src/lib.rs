@@ -4,6 +4,7 @@ pub mod error;
 pub mod framebuffer;
 pub mod geometry;
 pub mod image;
+pub mod pipeline;
 pub mod rasterizer;
 pub mod viewport;
 
@@ -13,6 +14,8 @@ pub use error::{ImageError, RasterError};
 pub use framebuffer::{Color, Framebuffer};
 pub use geometry::{RasterMesh, RasterVertex};
 pub use image::{write_png, write_png_bytes};
+pub use pipeline::assembly::{AssemblyStats, Topology, Triangle};
+pub use pipeline::vertex::VertexStage;
 pub use rasterizer::{RasterConfig, RasterStats, Rasterizer, Winding};
 pub use viewport::Viewport;
 
