@@ -8,9 +8,16 @@ pub type NetworkPlayerId = u64;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientMessage {
-    Join { version: u32, name: String },
+    Join {
+        version: u32,
+        name: String,
+    },
     Leave,
     Ping,
+    PlayerMove {
+        sequence: u64,
+        transform: crate::sync::PlayerTransform,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -31,6 +38,11 @@ pub enum ServerMessage {
         reason: String,
     },
     Pong,
+    PlayerMoved {
+        player_id: NetworkPlayerId,
+        sequence: u64,
+        transform: crate::sync::PlayerTransform,
+    },
 }
 
 #[derive(Debug)]
@@ -69,6 +81,7 @@ pub fn decode_server(data: &str) -> Result<ServerMessage, ProtocolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::{NetworkOrientation, NetworkVec3, PlayerTransform};
 
     #[test]
     fn test_join_message() {
@@ -132,6 +145,46 @@ mod tests {
         let pong = ServerMessage::Pong;
 
         assert_eq!(decode_client(&encode(&ping).unwrap()).unwrap(), ping);
+
         assert_eq!(decode_server(&encode(&pong).unwrap()).unwrap(), pong);
+    }
+
+    #[test]
+    fn test_player_move_message() {
+        let transform = PlayerTransform::new(
+            NetworkVec3::new(1.0, 2.0, 3.0),
+            NetworkOrientation::new(90.0, 15.0),
+            NetworkVec3::new(0.0, 0.0, 1.0),
+        );
+
+        let message = ClientMessage::PlayerMove {
+            sequence: 1,
+            transform,
+        };
+
+        let json = encode(&message).unwrap();
+        let decoded = decode_client(&json).unwrap();
+
+        assert_eq!(message, decoded);
+    }
+
+    #[test]
+    fn test_player_moved_message() {
+        let transform = PlayerTransform::new(
+            NetworkVec3::new(5.0, 0.0, 2.0),
+            NetworkOrientation::new(45.0, 0.0),
+            NetworkVec3::new(1.0, 0.0, 0.0),
+        );
+
+        let message = ServerMessage::PlayerMoved {
+            player_id: 2,
+            sequence: 10,
+            transform,
+        };
+
+        let json = encode(&message).unwrap();
+        let decoded = decode_server(&json).unwrap();
+
+        assert_eq!(message, decoded);
     }
 }
