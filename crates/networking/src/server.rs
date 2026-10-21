@@ -2,6 +2,7 @@ use crate::protocol::{
     decode_client, encode, ClientMessage, NetworkPlayerId, ServerMessage, MAX_PLAYERS,
     PROTOCOL_VERSION,
 };
+use crate::sync::PlayerTransform;
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -18,6 +19,7 @@ struct ServerState {
     next_id: NetworkPlayerId,
     players: BTreeMap<NetworkPlayerId, String>,
     connections: BTreeMap<NetworkPlayerId, TcpStream>,
+    last_sequences: BTreeMap<NetworkPlayerId, u64>,
 }
 
 impl ServerState {
@@ -45,11 +47,32 @@ impl ServerState {
 
     fn leave(&mut self, id: NetworkPlayerId) -> bool {
         self.connections.remove(&id);
+        self.last_sequences.remove(&id);
         self.players.remove(&id).is_some()
     }
 
     fn count(&self) -> usize {
         self.players.len()
+    }
+
+    fn accept_movement(
+        &mut self,
+        player_id: NetworkPlayerId,
+        sequence: u64,
+        transform: PlayerTransform,
+    ) -> bool {
+        if !self.players.contains_key(&player_id) || !transform.is_valid() {
+            return false;
+        }
+
+        if let Some(&previous) = self.last_sequences.get(&player_id) {
+            if sequence <= previous {
+                return false;
+            }
+        }
+
+        self.last_sequences.insert(player_id, sequence);
+        true
     }
 
     fn broadcast(&mut self, message: &ServerMessage, exclude: Option<NetworkPlayerId>) {
@@ -291,12 +314,25 @@ fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::R
                 }
 
                 ClientMessage::PlayerMove {
-                    sequence: _,
-                    transform: _,
+                    sequence,
+                    transform,
                 } => {
-                    // La recepción, validación y difusión
-                    // de movimientos se implementará
-                    // en la siguiente fase.
+                    if let Some(id) = player_id {
+                        let mut server = state
+                            .lock()
+                            .map_err(|_| io::Error::other("Estado del servidor no disponible"))?;
+
+                        if server.accept_movement(id, sequence, transform) {
+                            server.broadcast(
+                                &ServerMessage::PlayerMoved {
+                                    player_id: id,
+                                    sequence,
+                                    transform,
+                                },
+                                Some(id),
+                            );
+                        }
+                    }
                 }
 
                 ClientMessage::Ping => {
@@ -342,6 +378,15 @@ fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::{NetworkOrientation, NetworkVec3};
+
+    fn sample_transform() -> PlayerTransform {
+        PlayerTransform::new(
+            NetworkVec3::new(1.0, 2.0, 3.0),
+            NetworkOrientation::new(90.0, 0.0),
+            NetworkVec3::new(0.0, 0.0, 1.0),
+        )
+    }
 
     #[test]
     fn test_join_player() {
@@ -393,5 +438,57 @@ mod tests {
         let second = state.join("Jugador 2".to_string()).unwrap();
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn test_accept_valid_movement() {
+        let mut state = ServerState::default();
+        let id = state.join("Jugador 1".to_string()).unwrap();
+
+        assert!(state.accept_movement(id, 1, sample_transform()));
+    }
+
+    #[test]
+    fn test_reject_old_movement() {
+        let mut state = ServerState::default();
+        let id = state.join("Jugador 1".to_string()).unwrap();
+
+        let transform = sample_transform();
+
+        assert!(state.accept_movement(id, 5, transform));
+        assert!(!state.accept_movement(id, 3, transform));
+        assert!(!state.accept_movement(id, 5, transform));
+        assert!(state.accept_movement(id, 6, transform));
+    }
+
+    #[test]
+    fn test_reject_invalid_movement() {
+        let mut state = ServerState::default();
+        let id = state.join("Jugador 1".to_string()).unwrap();
+
+        let mut transform = sample_transform();
+        transform.position.x = f32::NAN;
+
+        assert!(!state.accept_movement(id, 1, transform));
+    }
+
+    #[test]
+    fn test_reject_unknown_player_movement() {
+        let mut state = ServerState::default();
+
+        assert!(!state.accept_movement(999, 1, sample_transform()));
+    }
+
+    #[test]
+    fn test_clear_sequence_on_leave() {
+        let mut state = ServerState::default();
+        let id = state.join("Jugador 1".to_string()).unwrap();
+
+        assert!(state.accept_movement(id, 10, sample_transform()));
+        assert!(state.last_sequences.contains_key(&id));
+
+        state.leave(id);
+
+        assert!(!state.last_sequences.contains_key(&id));
     }
 }
