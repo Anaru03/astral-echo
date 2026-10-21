@@ -14,7 +14,12 @@
 - **F4.2 Tiles + Rayon + Auto** — HECHA (cierre en `09-parallel-tiles.md`):
   bandas disjuntas, selección adaptativa, equivalencia exacta de RGBA/depth,
   127 tests CPU y 135 del workspace, matriz de 36 benchmarks. F4 completo
-  sigue pendiente; no se inicia F4.3 ni F5.
+  sigue pendiente fuera del alcance de esa entrega; no se inicia F5.
+- **F4.3 Presentación CPU en ventana** — IMPLEMENTADA (detalle y validación en
+  `11-cpu-window-presentation.md`): `render-present` con winit + softbuffer,
+  presets LOW/MEDIUM/HIGH, resize/DPI, nearest-neighbor, limitador sin busy
+  waiting, métricas separadas y tests headless. Inspección visual pendiente
+  en escritorio interactivo; no se inicia F5.
 - **F5 Backend GPU** — `render-gpu` (`wgpu 29`, WGSL PBR, `gltf`); fallback CPU.
 - **F6 Selección auto** — `--backend cpu|gpu|auto` en `entry.rs`.
 - **F7 Culling/LOD/Batching** — `Frustum` (ya en core) + instancing + LOD.

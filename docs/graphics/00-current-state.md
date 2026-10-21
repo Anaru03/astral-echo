@@ -42,7 +42,20 @@ Cerrada el 20 de octubre de 2026: bandas de filas disjuntas, kernel geométrico
 compartido, orden RGBA por píxel conservado, Auto con estimación de trabajo y
 coste de binning, 127 tests de render-cpu y 135 del workspace. Benchmark de
 36 casos con comparación exacta de color y profundidad. Resultados, límites y
-reproducción en `09-parallel-tiles.md`; no se ha iniciado F4.3 ni F5.
+reproducción en `09-parallel-tiles.md`. F4.3 se describe a continuación; F5
+no se ha iniciado.
+
+## `crates/render-present` (F4.3)
+
+Presentación del framebuffer CPU mediante winit + softbuffer, sin dependencias
+en Bevy ni wgpu. Presets LOW 640×360/30 FPS, MEDIUM 960×540/60 y HIGH
+1280×720/60; selección Sequential/Parallel/Auto de F4.2. Resize físico y DPI,
+escalado nearest-neighbor con proporción conservada, limitador con WaitUntil,
+métricas de render y presentación, demo `cpu_window` y exportación PNG.
+Las pruebas headless no crean ventanas. La ejecución nativa Windows permite
+resize/minimizar/restaurar/cerrar; la inspección visual de la ventana sigue
+pendiente por la limitación de captura de esta sesión. Detalle en
+`11-cpu-window-presentation.md`.
 
 ### F3 — pipeline por etapas
 `CpuPipeline` encadena las seis etapas (vertex, assembly, clipping, raster,
