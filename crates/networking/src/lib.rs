@@ -1,6 +1,7 @@
 pub mod client;
 pub mod protocol;
 pub mod server;
+pub mod sync;
 
 pub use client::GameClient;
 pub use protocol::{
@@ -8,3 +9,4 @@ pub use protocol::{
     ServerMessage, MAX_PLAYERS, PROTOCOL_VERSION,
 };
 pub use server::GameServer;
+pub use sync::{NetworkOrientation, NetworkVec3, PlayerTransform};
