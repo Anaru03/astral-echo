@@ -1,6 +1,7 @@
 pub mod assembly;
 pub mod raster;
 pub mod stages;
+pub mod tiles;
 pub mod vertex;
 
 use glam::Mat4;
@@ -18,6 +19,7 @@ pub use raster::{
     FillRule, Fragment, RasterOutput, ScreenVertex,
 };
 pub use stages::{PipelineConfig, PipelineError, PipelineStats, Stage, StageMetrics};
+pub use tiles::{RasterMode, TileConfig, TileGrid, TileRect, TileStats, rasterize_triangles_tiled};
 pub use vertex::VertexStage;
 
 /// Pipeline CPU por etapas: vertex, assembly, clipping, raster, fragment y depth.
@@ -26,6 +28,7 @@ pub struct CpuPipeline<'a> {
     viewport: Viewport,
     config: PipelineConfig,
     fill_rule: FillRule,
+    tile_config: TileConfig,
     pub stats: PipelineStats,
     clip_vertices: Vec<ClipVertex>,
     triangles: Vec<Triangle>,
@@ -44,6 +47,7 @@ impl<'a> CpuPipeline<'a> {
             viewport,
             config,
             fill_rule: FillRule::TopLeft,
+            tile_config: TileConfig::default(),
             stats: PipelineStats::default(),
             clip_vertices: Vec::new(),
             triangles: Vec::new(),
@@ -55,6 +59,15 @@ impl<'a> CpuPipeline<'a> {
     pub fn with_fill_rule(mut self, rule: FillRule) -> Self {
         self.fill_rule = rule;
         self
+    }
+
+    pub fn with_tile_config(mut self, config: TileConfig) -> Self {
+        self.tile_config = config;
+        self
+    }
+
+    pub fn tile_config(&self) -> TileConfig {
+        self.tile_config
     }
 
     pub fn framebuffer(&self) -> &Framebuffer {
@@ -97,13 +110,125 @@ impl<'a> CpuPipeline<'a> {
         self.stats.metrics.triangles_rejected +=
             assembly.degenerate + assembly.invalid_indices + assembly.out_of_range;
 
-        for i in 0..self.triangles.len() {
-            let triangle = self.triangles[i];
-            self.draw_assembled_triangle(&triangle);
+        match self.tile_config.mode {
+            RasterMode::Secuencial => {
+                for i in 0..self.triangles.len() {
+                    let triangle = self.triangles[i];
+                    self.draw_assembled_triangle(&triangle);
+                }
+            }
+            RasterMode::Paralelo => {
+                self.draw_mesh_tiled(
+                    &mesh.indices,
+                    mesh.vertices.len() as u32,
+                    vertex_ns,
+                    assembly_ns,
+                );
+            }
+            RasterMode::Auto => {
+                // Por defecto, Auto usa el camino secuencial original para
+                // mantener compatibilidad. La heurística de selección se
+                // activará cuando el modo Parallel se use explícitamente.
+                for i in 0..self.triangles.len() {
+                    let triangle = self.triangles[i];
+                    self.draw_assembled_triangle(&triangle);
+                }
+            }
         }
         self.stats.metrics.timings.vertex_ns += vertex_ns;
         self.stats.metrics.timings.assembly_ns += assembly_ns;
         Ok(self.stats)
+    }
+
+    /// Ruta de rasterización por tiles: procesa todos los triángulos del mesh
+    /// usando binned rasterization, opcionalmente en paralelo con Rayon.
+    fn draw_mesh_tiled(
+        &mut self,
+        _indices: &[u32],
+        _vertex_count: u32,
+        _vertex_ns: u64,
+        _assembly_ns: u64,
+    ) {
+        let mut screen_triangles: Vec<(ScreenVertex, ScreenVertex, ScreenVertex)> = Vec::new();
+
+        for i in 0..self.triangles.len() {
+            let triangle = self.triangles[i];
+            let indices_tri = triangle.indices();
+            let (a, b, c) = match (
+                self.clip_vertices.get(indices_tri[0] as usize),
+                self.clip_vertices.get(indices_tri[1] as usize),
+                self.clip_vertices.get(indices_tri[2] as usize),
+            ) {
+                (Some(a), Some(b), Some(c)) => (a, b, c),
+                _ => {
+                    self.stats.metrics.triangles_rejected += 1;
+                    continue;
+                }
+            };
+
+            let t0 = self.timer();
+            let clipped = match clip_triangle(*a, *b, *c) {
+                Ok(polygon) => polygon,
+                Err(_) => {
+                    self.stats.record_error();
+                    self.stats.metrics.triangles_rejected += 1;
+                    continue;
+                }
+            };
+            let clipping_ns = self.elapsed(t0);
+            self.stats.metrics.timings.clipping_ns += clipping_ns;
+
+            if clipped.len() < 3 {
+                self.stats.metrics.triangles_culled += 1;
+                continue;
+            }
+            if clipped.len() != 3 {
+                self.stats.metrics.triangles_clipped += 1;
+            }
+
+            for j in 1..clipped.len() - 1 {
+                match (
+                    to_screen(&clipped[0], &self.viewport),
+                    to_screen(&clipped[j], &self.viewport),
+                    to_screen(&clipped[j + 1], &self.viewport),
+                ) {
+                    (Some(va), Some(vb), Some(vc)) => {
+                        let area = edge_function(&va, &vb, &vc);
+                        if !area.is_finite() || area.abs() < 1e-8 {
+                            self.stats.metrics.triangles_degenerate += 1;
+                            continue;
+                        }
+                        screen_triangles.push((va, vb, vc));
+                    }
+                    _ => {
+                        self.stats.metrics.triangles_degenerate += 1;
+                    }
+                }
+            }
+        }
+
+        let t0 = self.timer();
+        let tile_stats = rasterize_triangles_tiled(
+            &screen_triangles,
+            self.framebuffer,
+            self.fill_rule,
+            self.config.depth_test,
+            self.config.depth_write,
+            self.tile_config,
+        );
+        let raster_ns = self.elapsed(t0);
+
+        self.stats.metrics.timings.raster_ns += raster_ns;
+        self.stats.metrics.fragments_rasterized += tile_stats.fragments_rasterized;
+        self.stats.metrics.pixels_written += tile_stats.pixels_written;
+        self.stats.metrics.triangles_degenerate += screen_triangles.len() as u32
+            - screen_triangles
+                .iter()
+                .filter(|_| true)
+                .count() as u32;
+        self.stats.metrics.fragments_shaded += tile_stats.fragments_rasterized;
+        self.stats.metrics.timings.fragment_ns += tile_stats.raster_ns / 2;
+        self.stats.metrics.timings.depth_ns += tile_stats.raster_ns / 2;
     }
 
     /// Devuelve el instante actual si el cronometraje está activo.

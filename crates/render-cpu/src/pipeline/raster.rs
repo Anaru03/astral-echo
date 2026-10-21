@@ -80,7 +80,7 @@ pub fn edge_function(a: &ScreenVertex, b: &ScreenVertex, c: &ScreenVertex) -> f3
     (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
 }
 
-fn is_top_left(from: &ScreenVertex, to: &ScreenVertex) -> bool {
+pub fn is_top_left(from: &ScreenVertex, to: &ScreenVertex) -> bool {
     let dx = to.x - from.x;
     let dy = to.y - from.y;
     if dy.abs() <= f32::EPSILON {

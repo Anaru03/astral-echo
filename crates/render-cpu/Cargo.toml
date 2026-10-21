@@ -8,6 +8,7 @@ license.workspace = true
 render-core.workspace = true
 glam = "0.32"
 png = "0.18"
+rayon = "1.10"
 
 [dev-dependencies]
 png = "0.18"

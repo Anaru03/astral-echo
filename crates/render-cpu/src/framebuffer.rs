@@ -86,6 +86,19 @@ impl Framebuffer {
         &self.color
     }
 
+    pub fn color_bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.color
+    }
+
+    pub fn depth_slice_mut(&mut self) -> &mut [f32] {
+        &mut self.depth
+    }
+
+    /// Devuelve slices mutables disjuntos de color y profundidad.
+    pub fn color_depth_slices_mut(&mut self) -> (&mut [u8], &mut [f32]) {
+        (&mut self.color, &mut self.depth)
+    }
+
     pub fn depth_at(&self, x: u32, y: u32) -> Option<f32> {
         if x >= self.width || y >= self.height {
             return None;

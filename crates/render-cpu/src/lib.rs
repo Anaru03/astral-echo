@@ -20,6 +20,9 @@ pub use image::{write_png, write_png_bytes};
 pub use pipeline::assembly::{AssemblyStats, Topology, Triangle};
 pub use pipeline::raster::{FillRule, Fragment, ScreenVertex};
 pub use pipeline::stages::{PipelineConfig, PipelineStats, Stage, StageMetrics, StageTimings};
+pub use pipeline::tiles::{
+    RasterMode, TileConfig, TileGrid, TileRect, TileStats, rasterize_triangles_tiled,
+};
 pub use pipeline::vertex::VertexStage;
 pub use pipeline::CpuPipeline;
 pub use rasterizer::{RasterConfig, RasterStats, Rasterizer, Winding};
