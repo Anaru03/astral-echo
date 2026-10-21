@@ -45,6 +45,14 @@ impl ClipPlane {
         ClipPlane::Far,
     ];
 
+    /// Planos laterales del frustum (sin near ni far).
+    pub const LATERAL: [ClipPlane; 4] = [
+        ClipPlane::Left,
+        ClipPlane::Right,
+        ClipPlane::Bottom,
+        ClipPlane::Top,
+    ];
+
     pub fn distance(self, clip: &Vec4) -> f32 {
         match self {
             ClipPlane::Left => clip.x + clip.w,

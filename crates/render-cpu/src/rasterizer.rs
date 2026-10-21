@@ -1,6 +1,6 @@
 use glam::{Mat4, Vec3, Vec4};
 
-use crate::clip::{clip_polygon_near, ClipVertex};
+use crate::clip::{clip_polygon, ClipPlane, ClipVertex, NEAR_EPS};
 use crate::color::vec4_to_rgba8;
 use crate::error::RasterError;
 use crate::framebuffer::Framebuffer;
@@ -114,7 +114,15 @@ impl<'a> Rasterizer<'a> {
                 return Err(RasterError::InvalidClip);
             }
         }
-        let clipped = clip_polygon_near(&clip)?;
+        // Un triángulo completamente fuera de uno de los planos laterales del
+        // frustum nunca puede producir fragmentos visibles. Antes del recorte
+        // de seis planos el rasterizador legacy lo descartaba al comprobar el
+        // bounding box en pantalla; se conserva esa contabilidad.
+        if fully_outside_lateral(&clip) {
+            self.stats.triangles_offscreen += 1;
+            return Ok(());
+        }
+        let clipped = clip_polygon(&clip)?;
         if clipped.len() < 3 {
             self.stats.triangles_clipped += 1;
             return Ok(());
@@ -268,6 +276,22 @@ impl<'a> Rasterizer<'a> {
             }
         }
     }
+}
+
+/// Indica si los tres vértices están completamente fuera de un mismo plano
+/// lateral del frustum (left, right, bottom o top).
+///
+/// Un triángulo así no puede generar fragmentos visibles dentro de la
+/// ventana, aunque parte de su geometría quede detrás de la cámara.
+fn fully_outside_lateral(clip: &[ClipVertex; 3]) -> bool {
+    // Sólo es válido con w > 0 en los tres vértices: con w negativo la
+    // proyección divide por w e invierte el sentido de los planos laterales.
+    if !clip.iter().all(|v| v.clip.w > NEAR_EPS) {
+        return false;
+    }
+    ClipPlane::LATERAL
+        .iter()
+        .any(|plane| clip.iter().all(|v| plane.distance(&v.clip) < 0.0))
 }
 
 fn edge_function(a: ScreenVertex, b: ScreenVertex, c: ScreenVertex) -> f32 {

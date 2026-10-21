@@ -91,31 +91,6 @@ fn is_top_left(from: &ScreenVertex, to: &ScreenVertex) -> bool {
     dy > 0.0
 }
 
-fn covers(
-    a: &ScreenVertex,
-    b: &ScreenVertex,
-    c: &ScreenVertex,
-    p: &ScreenVertex,
-    rule: FillRule,
-) -> bool {
-    let w0 = edge_function(b, c, p);
-    let w1 = edge_function(c, a, p);
-    let w2 = edge_function(a, b, p);
-    if rule == FillRule::All {
-        return w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0;
-    }
-    let edges = [(w0, b, c), (w1, c, a), (w2, a, b)];
-    for (w, from, to) in edges {
-        if w > 0.0 {
-            return false;
-        }
-        if w == 0.0 && !is_top_left(from, to) {
-            return false;
-        }
-    }
-    true
-}
-
 /// Rasteriza un triángulo en pantalla y produce sus fragmentos.
 ///
 /// Los fragmentos se acumulan en `out`; el test de profundidad y la escritura
@@ -135,6 +110,11 @@ pub fn raster_triangle(
     // Normaliza el winding para que el interior del triángulo quede en `w <= 0`
     // en las tres aristas, independientemente del orden de entrada.
     let (b, c) = if area > 0.0 { (c, b) } else { (b, c) };
+    // denom = w0 + w1 + w2 = area (constante por triángulo, no por píxel).
+    let denom = edge_function(a, b, c);
+    if denom.abs() < f32::EPSILON {
+        return 0;
+    }
     let (fb_w, fb_h) = framebuffer_size;
     let min_x = a.x.min(b.x).min(c.x);
     let max_x = a.x.max(b.x).max(c.x);
@@ -168,15 +148,29 @@ pub fn raster_triangle(
                 inv_w: 0.0,
                 color: Vec4::ZERO,
             };
-            if !covers(a, b, c, &p, rule) {
-                continue;
-            }
+            // Edge functions computadas una sola vez; se reusan para cobertura
+            // y para las coordenadas barícéntricas (evita recomputarlas como
+            // hacía la antigua llamada a covers() más el recálculo posterior).
             let w0 = edge_function(b, c, &p);
             let w1 = edge_function(c, a, &p);
             let w2 = edge_function(a, b, &p);
-            let denom = w0 + w1 + w2;
-            if denom.abs() < f32::EPSILON {
+            // Cobertura: descarta si el punto está estrictamente fuera de
+            // cualquier arista (equivalente a covers() con FillRule::All).
+            if w0 > 0.0 || w1 > 0.0 || w2 > 0.0 {
                 continue;
+            }
+            // FillRule::TopLeft: si el punto cae en una arista, solo se acepta
+            // si esa arista es superior o izquierda.
+            if rule == FillRule::TopLeft {
+                if w0 == 0.0 && !is_top_left(b, c) {
+                    continue;
+                }
+                if w1 == 0.0 && !is_top_left(c, a) {
+                    continue;
+                }
+                if w2 == 0.0 && !is_top_left(a, b) {
+                    continue;
+                }
             }
             let b0 = w0 / denom;
             let b1 = w1 / denom;
