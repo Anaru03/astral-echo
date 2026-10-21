@@ -3,7 +3,9 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use crate::framebuffer::Framebuffer;
-use crate::pipeline::raster::{raster_triangle_visit, shade_fragment, FillRule, ScreenVertex};
+use crate::pipeline::raster::{
+    edge_function, raster_triangle_visit, shade_fragment, FillRule, ScreenVertex,
+};
 
 /// Rectangle que representa un tile en la cuadrícula de tiles.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -105,6 +107,38 @@ pub enum RasterMode {
     Auto,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct RasterWorkload {
+    pub framebuffer_pixels: u64,
+    pub estimated_work: u64,
+    pub bin_entries: usize,
+    pub tile_count: usize,
+    pub active_bands: usize,
+    pub workers: usize,
+}
+
+impl RasterMode {
+    pub fn select(self, work: RasterWorkload) -> Self {
+        if self != Self::Auto {
+            return self;
+        }
+        let workers = work.workers.min(work.active_bands);
+        let minimum_work = 131_072 * workers.clamp(2, 4) as u64;
+        let bin_cost = (work.bin_entries as u64)
+            .saturating_mul(64)
+            .saturating_add((work.tile_count as u64).saturating_mul(8));
+        if workers > 1
+            && work.framebuffer_pixels >= 320 * 180
+            && work.estimated_work >= minimum_work
+            && work.estimated_work >= bin_cost.saturating_mul(2)
+        {
+            Self::Paralelo
+        } else {
+            Self::Secuencial
+        }
+    }
+}
+
 /// Configuración de tiling.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TileConfig {
@@ -134,6 +168,8 @@ pub struct TileStats {
     pub scratch_bytes: usize,
     pub estimated_work: u64,
     pub bin_entries: usize,
+    pub parallel_draws: u32,
+    pub sequential_draws: u32,
 }
 
 /// Rasteriza triángulos usando tiling.
@@ -154,12 +190,33 @@ pub fn rasterize_triangles_tiled(
     let start = Instant::now();
     let mut bins = vec![Vec::new(); grid.tile_count() as usize];
     for (index, (a, b, c)) in triangles.iter().enumerate() {
+        let area = edge_function(a, b, c);
+        if !area.is_finite() || area.abs() < 1e-8 {
+            continue;
+        }
         if let Some((min_col, min_row, max_col, max_row)) = grid.bbox_tiles(
             a.x.min(b.x).min(c.x),
             a.y.min(b.y).min(c.y),
             a.x.max(b.x).max(c.x),
             a.y.max(b.y).max(c.y),
         ) {
+            let x0 = a.x.min(b.x).min(c.x).max(0.0).floor() as u64;
+            let y0 = a.y.min(b.y).min(c.y).max(0.0).floor() as u64;
+            let x1 =
+                (a.x.max(b.x)
+                    .max(c.x)
+                    .min(grid.framebuffer_w as f32 - 1.0)
+                    .ceil() as u64)
+                    .min(u64::from(grid.framebuffer_w) - 1);
+            let y1 =
+                (a.y.max(b.y)
+                    .max(c.y)
+                    .min(grid.framebuffer_h as f32 - 1.0)
+                    .ceil() as u64)
+                    .min(u64::from(grid.framebuffer_h) - 1);
+            stats.estimated_work = stats
+                .estimated_work
+                .saturating_add((x1 - x0 + 1).saturating_mul(y1 - y0 + 1));
             for row in min_row..=max_row {
                 for col in min_col..=max_col {
                     bins[(row * grid.tiles_w + col) as usize].push(index);
@@ -168,16 +225,25 @@ pub fn rasterize_triangles_tiled(
             }
         }
     }
-    stats.bin_ns = start.elapsed().as_nanos() as u64;
     stats.scratch_bytes = bins.capacity() * std::mem::size_of::<Vec<usize>>()
         + bins
             .iter()
             .map(|bin| bin.capacity() * std::mem::size_of::<usize>())
             .sum::<usize>();
-    stats.selected_mode = match config.mode {
-        RasterMode::Paralelo => RasterMode::Paralelo,
-        _ => RasterMode::Secuencial,
-    };
+    stats.selected_mode = config.mode.select(RasterWorkload {
+        framebuffer_pixels: framebuffer.pixel_count(),
+        estimated_work: stats.estimated_work,
+        bin_entries: stats.bin_entries,
+        tile_count: bins.len(),
+        active_bands: bins
+            .chunks(grid.tiles_w as usize)
+            .filter(|row| row.iter().any(|bin| !bin.is_empty()))
+            .count(),
+        workers: rayon::current_num_threads(),
+    });
+    stats.parallel_draws = u32::from(stats.selected_mode == RasterMode::Paralelo);
+    stats.sequential_draws = u32::from(stats.selected_mode == RasterMode::Secuencial);
+    stats.bin_ns = start.elapsed().as_nanos() as u64;
     let job = RasterJob {
         triangles,
         bins: &bins,
@@ -250,6 +316,8 @@ impl TileStats {
         self.scratch_bytes = self.scratch_bytes.max(other.scratch_bytes);
         self.estimated_work += other.estimated_work;
         self.bin_entries += other.bin_entries;
+        self.parallel_draws += other.parallel_draws;
+        self.sequential_draws += other.sequential_draws;
     }
 }
 

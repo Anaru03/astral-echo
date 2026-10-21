@@ -19,7 +19,10 @@ pub use raster::{
     FillRule, Fragment, RasterOutput, ScreenVertex,
 };
 pub use stages::{PipelineConfig, PipelineError, PipelineStats, Stage, StageMetrics};
-pub use tiles::{rasterize_triangles_tiled, RasterMode, TileConfig, TileGrid, TileRect, TileStats};
+pub use tiles::{
+    rasterize_triangles_tiled, RasterMode, RasterWorkload, TileConfig, TileGrid, TileRect,
+    TileStats,
+};
 pub use vertex::VertexStage;
 
 /// Pipeline CPU por etapas: vertex, assembly, clipping, raster, fragment y depth.
@@ -28,7 +31,8 @@ pub struct CpuPipeline<'a> {
     viewport: Viewport,
     config: PipelineConfig,
     fill_rule: FillRule,
-    tile_config: TileConfig,
+    tile_config: Option<TileConfig>,
+    pub tile_stats: TileStats,
     pub stats: PipelineStats,
     clip_vertices: Vec<ClipVertex>,
     triangles: Vec<Triangle>,
@@ -47,7 +51,8 @@ impl<'a> CpuPipeline<'a> {
             viewport,
             config,
             fill_rule: FillRule::TopLeft,
-            tile_config: TileConfig::default(),
+            tile_config: None,
+            tile_stats: TileStats::default(),
             stats: PipelineStats::default(),
             clip_vertices: Vec::new(),
             triangles: Vec::new(),
@@ -62,12 +67,12 @@ impl<'a> CpuPipeline<'a> {
     }
 
     pub fn with_tile_config(mut self, config: TileConfig) -> Self {
-        self.tile_config = config;
+        self.tile_config = Some(config);
         self
     }
 
     pub fn tile_config(&self) -> TileConfig {
-        self.tile_config
+        self.tile_config.unwrap_or_default()
     }
 
     pub fn framebuffer(&self) -> &Framebuffer {
@@ -110,29 +115,12 @@ impl<'a> CpuPipeline<'a> {
         self.stats.metrics.triangles_rejected +=
             assembly.degenerate + assembly.invalid_indices + assembly.out_of_range;
 
-        match self.tile_config.mode {
-            RasterMode::Secuencial => {
-                for i in 0..self.triangles.len() {
-                    let triangle = self.triangles[i];
-                    self.draw_assembled_triangle(&triangle);
-                }
-            }
-            RasterMode::Paralelo => {
-                self.draw_mesh_tiled(
-                    &mesh.indices,
-                    mesh.vertices.len() as u32,
-                    vertex_ns,
-                    assembly_ns,
-                );
-            }
-            RasterMode::Auto => {
-                // Por defecto, Auto usa el camino secuencial original para
-                // mantener compatibilidad. La heurística de selección se
-                // activará cuando el modo Parallel se use explícitamente.
-                for i in 0..self.triangles.len() {
-                    let triangle = self.triangles[i];
-                    self.draw_assembled_triangle(&triangle);
-                }
+        if self.tile_config.is_some() {
+            self.draw_mesh_tiled();
+        } else {
+            for i in 0..self.triangles.len() {
+                let triangle = self.triangles[i];
+                self.draw_assembled_triangle(&triangle);
             }
         }
         self.stats.metrics.timings.vertex_ns += vertex_ns;
@@ -142,13 +130,7 @@ impl<'a> CpuPipeline<'a> {
 
     /// Ruta de rasterización por tiles: procesa todos los triángulos del mesh
     /// usando binned rasterization, opcionalmente en paralelo con Rayon.
-    fn draw_mesh_tiled(
-        &mut self,
-        _indices: &[u32],
-        _vertex_count: u32,
-        _vertex_ns: u64,
-        _assembly_ns: u64,
-    ) {
+    fn draw_mesh_tiled(&mut self) {
         let mut screen_triangles: Vec<(ScreenVertex, ScreenVertex, ScreenVertex)> = Vec::new();
 
         for i in 0..self.triangles.len() {
@@ -208,24 +190,28 @@ impl<'a> CpuPipeline<'a> {
         }
 
         let t0 = self.timer();
-        let tile_stats = rasterize_triangles_tiled(
+        let mut tile_stats = rasterize_triangles_tiled(
             &screen_triangles,
             self.framebuffer,
             self.fill_rule,
             self.config.depth_test,
             self.config.depth_write,
-            self.tile_config,
+            self.tile_config.unwrap_or_default(),
         );
         let raster_ns = self.elapsed(t0);
 
         self.stats.metrics.timings.raster_ns += raster_ns;
         self.stats.metrics.fragments_rasterized += tile_stats.fragments_rasterized;
         self.stats.metrics.pixels_written += tile_stats.pixels_written;
-        self.stats.metrics.triangles_degenerate +=
-            screen_triangles.len() as u32 - screen_triangles.iter().filter(|_| true).count() as u32;
         self.stats.metrics.fragments_shaded += tile_stats.fragments_rasterized;
-        self.stats.metrics.timings.fragment_ns += tile_stats.raster_ns / 2;
-        self.stats.metrics.timings.depth_ns += tile_stats.raster_ns / 2;
+        self.stats.metrics.fragments_depth_rejected += tile_stats.fragments_depth_rejected;
+        tile_stats.scratch_bytes += screen_triangles.capacity()
+            * std::mem::size_of::<(ScreenVertex, ScreenVertex, ScreenVertex)>();
+        if !self.config.timing {
+            tile_stats.bin_ns = 0;
+            tile_stats.raster_ns = 0;
+        }
+        self.tile_stats.merge(tile_stats);
     }
 
     /// Devuelve el instante actual si el cronometraje está activo.
