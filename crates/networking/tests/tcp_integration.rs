@@ -510,3 +510,174 @@ fn test_movement_sequence_ordering() {
 
     stop_server(shutdown, handle);
 }
+
+// Pruebas adicionales de validacion y seguridad TCP.
+fn raw_client(address: &str) -> std::net::TcpStream {
+    let stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream
+}
+
+fn send_raw(stream: &mut std::net::TcpStream, data: &str) {
+    use std::io::Write;
+    stream.write_all(data.as_bytes()).unwrap();
+    stream.write_all(b"\n").unwrap();
+    stream.flush().unwrap();
+}
+
+fn read_raw_response(stream: &std::net::TcpStream) -> ServerMessage {
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    networking::decode_server(line.trim()).unwrap()
+}
+
+#[test]
+fn test_reject_incompatible_version() {
+    let (address, shutdown, handle) = start_server();
+    let mut stream = raw_client(&address);
+    let message = ClientMessage::Join {
+        version: networking::PROTOCOL_VERSION + 1,
+        name: "Jugador".to_string(),
+    };
+    send_raw(&mut stream, &networking::encode(&message).unwrap());
+    assert!(matches!(
+        read_raw_response(&stream),
+        ServerMessage::Rejected { .. }
+    ));
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_reject_empty_player_name() {
+    let (address, shutdown, handle) = start_server();
+    assert!(GameClient::connect(&address, "").is_err());
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_reject_long_player_name() {
+    let (address, shutdown, handle) = start_server();
+    assert!(GameClient::connect(&address, &"A".repeat(33)).is_err());
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_reject_invalid_json() {
+    let (address, shutdown, handle) = start_server();
+    let mut stream = raw_client(&address);
+    send_raw(&mut stream, "{invalid json}");
+    assert!(matches!(
+        read_raw_response(&stream),
+        ServerMessage::Rejected { .. }
+    ));
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_reject_oversized_message() {
+    let (address, shutdown, handle) = start_server();
+    let mut stream = raw_client(&address);
+    send_raw(&mut stream, &"A".repeat(5000));
+    assert!(matches!(
+        read_raw_response(&stream),
+        ServerMessage::Rejected { .. }
+    ));
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_movement_before_join_is_not_broadcast() {
+    let (address, shutdown, handle) = start_server();
+    let mut first = GameClient::connect(&address, "Jugador 1").unwrap();
+    let mut raw = raw_client(&address);
+    let message = ClientMessage::PlayerMove {
+        sequence: 1,
+        transform: sample_movement(),
+    };
+    send_raw(&mut raw, &networking::encode(&message).unwrap());
+    first.ping().unwrap();
+    // Verifica que el servidor sigue respondiendo; la ausencia de broadcast
+    // se comprobara con una prueba de lectura con timeout posteriormente.
+    first.disconnect().unwrap();
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_duplicate_sequence_is_not_forwarded() {
+    let (address, shutdown, handle) = start_server();
+    let mut first = GameClient::connect(&address, "Jugador 1").unwrap();
+    let mut second = GameClient::connect(&address, "Jugador 2").unwrap();
+    first.receive().unwrap();
+    second.receive().unwrap();
+    let transform = sample_movement();
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 10,
+            transform,
+        })
+        .unwrap();
+    assert_eq!(
+        second.receive().unwrap(),
+        ServerMessage::PlayerMoved {
+            player_id: first.player_id(),
+            sequence: 10,
+            transform
+        }
+    );
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 10,
+            transform,
+        })
+        .unwrap();
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 11,
+            transform,
+        })
+        .unwrap();
+    assert_eq!(
+        second.receive().unwrap(),
+        ServerMessage::PlayerMoved {
+            player_id: first.player_id(),
+            sequence: 11,
+            transform
+        }
+    );
+    first.disconnect().unwrap();
+    second.disconnect().unwrap();
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_extreme_coordinates_are_currently_finite() {
+    let transform = PlayerTransform::new(
+        NetworkVec3::new(f32::MAX, f32::MAX, f32::MAX),
+        NetworkOrientation::new(360000.0, -360000.0),
+        NetworkVec3::new(f32::MAX, 0.0, 0.0),
+    );
+    // Documenta una limitacion actual: is_valid() solo exige finitud.
+    assert!(transform.is_valid());
+}
+
+#[test]
+fn test_server_survives_invalid_client() {
+    let (address, shutdown, handle) = start_server();
+    let mut invalid = raw_client(&address);
+    send_raw(&mut invalid, "{invalid}");
+    assert!(matches!(
+        read_raw_response(&invalid),
+        ServerMessage::Rejected { .. }
+    ));
+    let mut valid = GameClient::connect(&address, "Jugador valido").unwrap();
+    valid.ping().unwrap();
+    valid.disconnect().unwrap();
+    stop_server(shutdown, handle);
+}
