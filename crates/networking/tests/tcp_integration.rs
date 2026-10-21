@@ -1,4 +1,7 @@
-use networking::{GameClient, GameServer, ServerMessage, MAX_PLAYERS};
+use networking::{
+    ClientMessage, GameClient, GameServer, NetworkOrientation, NetworkVec3, PlayerTransform,
+    ServerMessage, MAX_PLAYERS,
+};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -25,6 +28,15 @@ fn start_server() -> (String, Arc<AtomicBool>, thread::JoinHandle<()>) {
 fn stop_server(shutdown: Arc<AtomicBool>, handle: thread::JoinHandle<()>) {
     shutdown.store(true, Ordering::Relaxed);
     handle.join().unwrap();
+}
+
+// Crear datos de movimiento para las pruebas.
+fn sample_movement() -> PlayerTransform {
+    PlayerTransform::new(
+        NetworkVec3::new(10.0, 2.0, 5.0),
+        NetworkOrientation::new(90.0, 15.0),
+        NetworkVec3::new(1.0, 0.0, 0.0),
+    )
 }
 
 // Verificar que un cliente pueda conectarse al servidor.
@@ -105,7 +117,6 @@ fn test_player_reconnection() {
     let first_id = first.player_id();
     first.disconnect().unwrap();
 
-    // Permitir que el servidor procese la desconexión.
     thread::sleep(Duration::from_millis(50));
 
     let mut second = GameClient::connect(&address, "Jugador 2").unwrap();
@@ -177,8 +188,7 @@ fn test_existing_players_notification() {
     stop_server(shutdown, handle);
 }
 
-// Verificar que se notifique cuando un jugador
-// abandona voluntariamente la partida.
+// Verificar la notificación de salida voluntaria.
 #[test]
 fn test_player_leave_notification() {
     let (address, shutdown, handle) = start_server();
@@ -186,7 +196,6 @@ fn test_player_leave_notification() {
     let mut first = GameClient::connect(&address, "Jugador 1").unwrap();
     let mut second = GameClient::connect(&address, "Jugador 2").unwrap();
 
-    // Consumir la notificación de entrada.
     assert!(matches!(
         first.receive().unwrap(),
         ServerMessage::PlayerJoined { .. }
@@ -207,8 +216,7 @@ fn test_player_leave_notification() {
     stop_server(shutdown, handle);
 }
 
-// Verificar que el servidor detecte una desconexión
-// inesperada y notifique a los demás jugadores.
+// Verificar una desconexión inesperada.
 #[test]
 fn test_unexpected_disconnect() {
     let (address, shutdown, handle) = start_server();
@@ -216,12 +224,10 @@ fn test_unexpected_disconnect() {
     let mut first = GameClient::connect(&address, "Jugador 1").unwrap();
     let second = GameClient::connect(&address, "Jugador 2").unwrap();
 
-    // Consumir la notificación de entrada.
     first.receive().unwrap();
 
     let second_id = second.player_id();
 
-    // Cerrar la conexión sin enviar Leave.
     drop(second);
 
     assert_eq!(
@@ -232,6 +238,139 @@ fn test_unexpected_disconnect() {
     );
 
     first.disconnect().unwrap();
+
+    stop_server(shutdown, handle);
+}
+
+// Verificar que el movimiento llegue a otro jugador.
+#[test]
+fn test_movement_broadcast() {
+    let (address, shutdown, handle) = start_server();
+
+    let mut first = GameClient::connect(&address, "Jugador 1").unwrap();
+    let mut second = GameClient::connect(&address, "Jugador 2").unwrap();
+
+    first.receive().unwrap();
+
+    let transform = sample_movement();
+
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 1,
+            transform,
+        })
+        .unwrap();
+
+    assert_eq!(
+        second.receive().unwrap(),
+        ServerMessage::PlayerJoined {
+            player_id: first.player_id(),
+            name: "Jugador 1".to_string(),
+        }
+    );
+
+    assert_eq!(
+        second.receive().unwrap(),
+        ServerMessage::PlayerMoved {
+            player_id: first.player_id(),
+            sequence: 1,
+            transform,
+        }
+    );
+
+    first.disconnect().unwrap();
+    second.disconnect().unwrap();
+
+    stop_server(shutdown, handle);
+}
+
+// Verificar que dos jugadores reciban el mismo movimiento.
+#[test]
+fn test_movement_reaches_two_players() {
+    let (address, shutdown, handle) = start_server();
+
+    let mut first = GameClient::connect(&address, "Jugador 1").unwrap();
+    let mut second = GameClient::connect(&address, "Jugador 2").unwrap();
+    let mut third = GameClient::connect(&address, "Jugador 3").unwrap();
+
+    // Consumir los eventos de entrada pendientes.
+    first.receive().unwrap();
+    first.receive().unwrap();
+
+    second.receive().unwrap();
+    second.receive().unwrap();
+
+    third.receive().unwrap();
+    third.receive().unwrap();
+
+    let transform = sample_movement();
+
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 1,
+            transform,
+        })
+        .unwrap();
+
+    let expected = ServerMessage::PlayerMoved {
+        player_id: first.player_id(),
+        sequence: 1,
+        transform,
+    };
+
+    assert_eq!(second.receive().unwrap(), expected);
+    assert_eq!(third.receive().unwrap(), expected);
+
+    first.disconnect().unwrap();
+    second.disconnect().unwrap();
+    third.disconnect().unwrap();
+
+    stop_server(shutdown, handle);
+}
+
+// Verificar que el servidor acepte movimientos nuevos
+// e ignore los que tienen una secuencia anterior.
+#[test]
+fn test_outdated_movement_is_ignored() {
+    let (address, shutdown, handle) = start_server();
+
+    let mut first = GameClient::connect(&address, "Jugador 1").unwrap();
+    let mut second = GameClient::connect(&address, "Jugador 2").unwrap();
+
+    first.receive().unwrap();
+    second.receive().unwrap();
+
+    let transform = sample_movement();
+
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 5,
+            transform,
+        })
+        .unwrap();
+
+    assert_eq!(
+        second.receive().unwrap(),
+        ServerMessage::PlayerMoved {
+            player_id: first.player_id(),
+            sequence: 5,
+            transform,
+        }
+    );
+
+    // Enviar una actualización antigua.
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 3,
+            transform,
+        })
+        .unwrap();
+
+    // Confirmar que el servidor sigue respondiendo.
+    second.ping().unwrap();
+
+    first.disconnect().unwrap();
+    second.disconnect().unwrap();
 
     stop_server(shutdown, handle);
 }
