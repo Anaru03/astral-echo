@@ -4538,7 +4538,6 @@ dependencies = [
 name = "render-present"
 version = "0.1.0"
 dependencies = [
- "render-core",
  "render-cpu",
  "softbuffer",
  "winit",
