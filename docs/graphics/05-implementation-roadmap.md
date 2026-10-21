@@ -11,6 +11,10 @@
   compartida en `src/scene.rs`, demo ejecutable y benchmark propio offline
   (`benches/pipeline_bench.rs`, sin Criterion).
 - **F4 Optimización CPU** — tiles + `rayon` + `winit/softbuffer`; LOW 30fps.
+- **F4.2 Tiles + Rayon + Auto** — HECHA (cierre en `09-parallel-tiles.md`):
+  bandas disjuntas, selección adaptativa, equivalencia exacta de RGBA/depth,
+  127 tests CPU y 135 del workspace, matriz de 36 benchmarks. F4 completo
+  sigue pendiente; no se inicia F4.3 ni F5.
 - **F5 Backend GPU** — `render-gpu` (`wgpu 29`, WGSL PBR, `gltf`); fallback CPU.
 - **F6 Selección auto** — `--backend cpu|gpu|auto` en `entry.rs`.
 - **F7 Culling/LOD/Batching** — `Frustum` (ya en core) + instancing + LOD.

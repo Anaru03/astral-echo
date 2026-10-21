@@ -23,16 +23,26 @@ pipeline de **lógica**, no gráfico). Sin networking en el árbol actual.
 `lib, math, transform, camera, bounds, mesh, material, scene, snapshot`.
 Deps: `engine + glam 0.32`. La documentación vive en `docs/graphics/`.
 
-## `crates/render-cpu` (F2 + F3)
+## `crates/render-cpu` (F2 + F3 + F4.2)
 `clip, color, error, framebuffer, geometry, image, rasterizer, viewport` (F2) +
-`pipeline/{vertex,assembly,stages,raster}`, `scene` (F3).
-Deps: `render-core + glam 0.32 + png 0.18` (PNG solo para los goldens).
-Rasterizador CPU sin ventana, sin GPU y sin hilos: framebuffer RGBA8 con
-depth 0..1, recorte del near plane, rasterizado barycéntrico con color
+`pipeline/{vertex,assembly,stages,raster}`, `scene` (F3) y `pipeline/tiles` (F4.2).
+Deps: `render-core + glam 0.32 + png 0.18 + rayon 1.12` (versión resuelta).
+Rasterizador CPU sin ventana y sin GPU, con modos secuencial, paralelo por
+bandas con Rayon y Auto: framebuffer RGBA8 con depth 0..1, recorte del
+frustum homogéneo de seis planos, rasterizado barycéntrico con color
 perspective-correct, winding configurable, test de profundidad y salida PNG.
 Reutiliza `Camera`/`Transform` del core. Documentación en
 `docs/graphics/07-cpu-rasterizer-basic.md` (F2) y
-`docs/graphics/08-cpu-pipeline-stages.md` (F3).
+`docs/graphics/08-cpu-pipeline-stages.md` (F3) y
+`docs/graphics/09-parallel-tiles.md` (F4.2).
+
+### F4.2 — tiles, Rayon y Auto
+
+Cerrada el 20 de octubre de 2026: bandas de filas disjuntas, kernel geométrico
+compartido, orden RGBA por píxel conservado, Auto con estimación de trabajo y
+coste de binning, 127 tests de render-cpu y 135 del workspace. Benchmark de
+36 casos con comparación exacta de color y profundidad. Resultados, límites y
+reproducción en `09-parallel-tiles.md`; no se ha iniciado F4.3 ni F5.
 
 ### F3 — pipeline por etapas
 `CpuPipeline` encadena las seis etapas (vertex, assembly, clipping, raster,
