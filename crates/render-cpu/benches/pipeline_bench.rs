@@ -1,230 +1,237 @@
-//! Benchmark del pipeline de rasterización CPU.
-//!
-//! No usa Criterion ni ninguna dependencia externa: el harness es `false` en
-//! `Cargo.toml` y las mediciones se hacen con `std::time::Instant`.
-//!
-//! Uso: `cargo bench -p render-cpu --offline` (200 iteraciones por escenario
-//! por defecto; se puede cambiar con un argumento, p. ej. `-- 500`).
-
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use glam::{Vec3, Vec4};
+use glam::Vec3;
+use rayon::ThreadPoolBuilder;
 use render_core::Transform;
 use render_cpu::{
-    demo_camera, demo_scene, grid_mesh, mvp, Color, CpuPipeline, Framebuffer, PipelineConfig,
-    RasterMesh, RasterVertex, Stage, StageTimings, Topology, Viewport,
+    demo_camera, demo_scene, grid_mesh, mvp, write_png, Color, CpuPipeline, Framebuffer,
+    PipelineConfig, RasterMesh, RasterMode, TileConfig, TileStats, Topology, Viewport,
 };
 
-/// Resultado de una medición repetida.
 struct Measurement {
-    name: String,
-    iterations: u32,
-    width: u32,
-    height: u32,
-    total: Duration,
-    min: Duration,
-    max: Duration,
-    p95: Duration,
-    timings: StageTimings,
-    pixels_written: u32,
-    fragments_rasterized: u32,
-    triangles: u32,
+    samples: Vec<Duration>,
+    bin_ns: u64,
+    raster_ns: u64,
+    scratch_bytes: usize,
+    workers_used: usize,
+    parallel_draws: u32,
+    sequential_draws: u32,
+    estimated_work: u64,
+    bin_entries: usize,
 }
 
 impl Measurement {
-    fn avg(&self) -> Duration {
-        self.total / self.iterations.max(1)
+    fn avg_ms(&self) -> f64 {
+        self.samples.iter().map(Duration::as_secs_f64).sum::<f64>() * 1000.0
+            / self.samples.len() as f64
     }
 
-    /// Milisegundos por megapíxel y por frame.
-    fn ms_per_megapixel(&self) -> f64 {
-        let megapixels = (self.width as f64 * self.height as f64) / 1_000_000.0;
-        if megapixels <= 0.0 {
-            return 0.0;
-        }
-        self.avg().as_secs_f64() * 1e3 / megapixels
+    fn percentile_ms(&self, percent: usize) -> f64 {
+        let mut samples = self.samples.clone();
+        samples.sort_unstable();
+        let index = (samples.len() * percent).div_ceil(100).saturating_sub(1);
+        samples[index].as_secs_f64() * 1000.0
     }
 }
 
-/// Percentil 95 de una lista de duraciones (ordenada ascendentemente).
-fn percentile95(samples: &[Duration]) -> Duration {
-    if samples.is_empty() {
-        return Duration::ZERO;
-    }
-    let mut sorted = samples.to_vec();
-    sorted.sort_unstable();
-    let index = ((sorted.len() as f64 * 0.95).ceil() as usize).saturating_sub(1);
-    sorted[index.min(sorted.len() - 1)]
-}
-
-/// Ejecuta `iterations` renders de la escena y acumula las métricas.
 fn measure(
-    name: &str,
-    iterations: u32,
-    width: u32,
-    height: u32,
     scene: &[(RasterMesh, Transform)],
-) -> Measurement {
-    let viewport = Viewport::from_size(width, height).expect("valid viewport");
-    let camera = demo_camera(width as f32 / height as f32).expect("valid camera");
-    let mut framebuffer = Framebuffer::new(width, height).expect("valid framebuffer");
-    let config = PipelineConfig {
-        depth_test: true,
-        depth_write: true,
-        cull_degenerate: true,
-        timing: true,
+    size: (u32, u32),
+    mode: Option<RasterMode>,
+    iterations: usize,
+) -> (Measurement, Framebuffer) {
+    let camera = demo_camera(size.0 as f32 / size.1 as f32).unwrap();
+    let viewport = Viewport::from_size(size.0, size.1).unwrap();
+    let mut framebuffer = Framebuffer::new(size.0, size.1).unwrap();
+    let mut measurement = Measurement {
+        samples: Vec::with_capacity(iterations),
+        bin_ns: 0,
+        raster_ns: 0,
+        scratch_bytes: 0,
+        workers_used: 0,
+        parallel_draws: 0,
+        sequential_draws: 0,
+        estimated_work: 0,
+        bin_entries: 0,
     };
-    let mut pipeline = CpuPipeline::new(&mut framebuffer, viewport, config);
-
-    // Frame de calentamiento: evita medir el coste de la primera asignación.
-    pipeline.clear(Color::new(8, 10, 18, 255));
-    for (mesh, transform) in scene {
-        pipeline
-            .draw_mesh(mesh, mvp(&camera, *transform), Topology::TriangleList)
-            .expect("warmup draw");
-    }
-    pipeline.stats = Default::default();
-
-    let mut min = Duration::MAX;
-    let mut max = Duration::ZERO;
-    let mut total = Duration::ZERO;
-    let mut samples: Vec<Duration> = Vec::with_capacity(iterations as usize);
-    for _ in 0..iterations {
-        pipeline.clear(Color::new(8, 10, 18, 255));
-        let start = Instant::now();
-        for (mesh, transform) in scene {
-            pipeline
-                .draw_mesh(mesh, mvp(&camera, *transform), Topology::TriangleList)
-                .expect("draw");
+    {
+        let mut pipeline = CpuPipeline::new(
+            &mut framebuffer,
+            viewport,
+            PipelineConfig {
+                timing: true,
+                ..PipelineConfig::default()
+            },
+        );
+        if let Some(mode) = mode {
+            pipeline = pipeline.with_tile_config(TileConfig {
+                tile_size: 16,
+                mode,
+            });
         }
-        let elapsed = start.elapsed();
-        total += elapsed;
-        min = min.min(elapsed);
-        max = max.max(elapsed);
-        samples.push(elapsed);
+        for iteration in 0..iterations + 3 {
+            pipeline.clear(Color::new(8, 10, 18, 255));
+            pipeline.stats = Default::default();
+            pipeline.tile_stats = TileStats::default();
+            let start = Instant::now();
+            for (mesh, transform) in scene {
+                pipeline
+                    .draw_mesh(mesh, mvp(&camera, *transform), Topology::TriangleList)
+                    .unwrap();
+            }
+            let elapsed = start.elapsed();
+            assert_eq!(pipeline.stats.errors, 0);
+            if iteration < 3 {
+                continue;
+            }
+            measurement.samples.push(elapsed);
+            measurement.scratch_bytes = measurement.scratch_bytes.max(pipeline.scratch_bytes());
+            measurement.workers_used = measurement
+                .workers_used
+                .max(pipeline.tile_stats.workers_used.max(1));
+            measurement.bin_ns += pipeline.tile_stats.bin_ns;
+            measurement.estimated_work += pipeline.tile_stats.estimated_work;
+            measurement.bin_entries += pipeline.tile_stats.bin_entries;
+            measurement.raster_ns += if mode.is_some() {
+                pipeline.tile_stats.raster_ns
+            } else {
+                let t = pipeline.stats.metrics.timings;
+                t.raster_ns + t.fragment_ns + t.depth_ns
+            };
+            measurement.parallel_draws += pipeline.tile_stats.parallel_draws;
+            measurement.sequential_draws += pipeline.tile_stats.sequential_draws;
+        }
     }
-    let stats = pipeline.stats;
-    Measurement {
-        name: name.to_string(),
-        iterations,
-        width,
-        height,
-        total,
-        min,
-        max,
-        p95: percentile95(&samples),
-        timings: stats.metrics.timings,
-        pixels_written: stats.metrics.pixels_written,
-        fragments_rasterized: stats.metrics.fragments_rasterized,
-        triangles: stats.metrics.triangles_assembled,
-    }
+    (measurement, framebuffer)
 }
 
-fn report(m: &Measurement) {
-    let iters = m.iterations.max(1);
-    println!(
-        "  {:<26} iters={:<4} avg={:>8.3} ms  p95={:>8.3} ms  min={:>8.3} ms  max={:>8.3} ms  \
-ms/Mpx={:>6.3}  tris/f={:<5} px/f={:<7} frag/f={}",
-        m.name,
-        m.iterations,
-        m.avg().as_secs_f64() * 1e3,
-        m.p95.as_secs_f64() * 1e3,
-        m.min.as_secs_f64() * 1e3,
-        m.max.as_secs_f64() * 1e3,
-        m.ms_per_megapixel(),
-        m.triangles / iters,
-        m.pixels_written / iters,
-        m.fragments_rasterized / iters,
-    );
-    let t = &m.timings;
-    println!(
-        "      ns/frame: vertex={} assembly={} clipping={} raster={} fragment={} depth={} total={}",
-        t.vertex_ns / iters as u64,
-        t.assembly_ns / iters as u64,
-        t.clipping_ns / iters as u64,
-        t.raster_ns / iters as u64,
-        t.fragment_ns / iters as u64,
-        t.depth_ns / iters as u64,
-        t.total_ns() / iters as u64,
-    );
-    let total = t.total_ns().max(1) as f64;
-    let mut parts = Vec::new();
-    for stage in [
-        Stage::Vertex,
-        Stage::Assembly,
-        Stage::Clipping,
-        Stage::Raster,
-        Stage::Fragment,
-        Stage::Depth,
-    ] {
-        let ns = t.get(stage).unwrap_or(0);
-        parts.push(format!(
-            "{}={:.1}%",
-            stage.name(),
-            ns as f64 / total * 100.0
-        ));
+fn overdraw_scene() -> Vec<(RasterMesh, Transform)> {
+    let base = grid_mesh(8, 22.0, 3.0);
+    let mut mesh = RasterMesh::default();
+    for _ in 0..32 {
+        let offset = mesh.vertices.len() as u32;
+        mesh.vertices.extend_from_slice(&base.vertices);
+        mesh.indices
+            .extend(base.indices.iter().map(|index| index + offset));
     }
-    println!("      share: {}", parts.join("  "));
+    vec![(mesh, Transform::from_translation(Vec3::new(0.0, -1.0, 0.0)))]
+}
+
+fn compare(a: &Framebuffer, b: &Framebuffer) -> (usize, usize) {
+    let colors = a
+        .color_bytes()
+        .chunks_exact(4)
+        .zip(b.color_bytes().chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    let mut depths = 0;
+    for y in 0..a.height() {
+        for x in 0..a.width() {
+            depths += usize::from(
+                a.depth_at(x, y).unwrap().to_bits() != b.depth_at(x, y).unwrap().to_bits(),
+            );
+        }
+    }
+    (colors, depths)
+}
+
+fn hash(framebuffer: &Framebuffer) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &byte in framebuffer.color_bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    for y in 0..framebuffer.height() {
+        for x in 0..framebuffer.width() {
+            for byte in framebuffer.depth_at(x, y).unwrap().to_bits().to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+    hash
 }
 
 fn main() {
-    let iterations: u32 = std::env::args()
-        .nth(1)
-        .and_then(|a| a.parse().ok())
-        .unwrap_or(200);
-
-    println!("Astral Echo — benchmark del pipeline CPU");
-    println!("iteraciones por escenario: {iterations}");
-    println!("perfil: release, sin GPU, reloj std::time::Instant\n");
-
-    let reference = demo_scene();
-
-    println!("Escena de referencia (terreno + 12 cubos + 6 triangulos):");
-    let reference_m = measure("640x360 full scene", iterations, 640, 360, &reference);
-    report(&reference_m);
-
-    println!("\nEscalado de resolucion (misma escena):");
-    for (w, h) in [(320u32, 180u32), (640, 360), (1280, 720)] {
-        let m = measure(&format!("{w}x{h}"), iterations, w, h, &reference);
-        report(&m);
-    }
-
-    println!("\nEscena minima (1 triangulo): coste puro del pipeline");
-    let minimal = vec![(
-        RasterMesh::triangle(
-            RasterVertex::new(Vec3::new(-0.6, -0.5, 0.0), Vec4::new(1.0, 0.3, 0.2, 1.0)),
-            RasterVertex::new(Vec3::new(0.6, -0.5, 0.0), Vec4::new(0.2, 1.0, 0.4, 1.0)),
-            RasterVertex::new(Vec3::new(0.0, 0.6, 0.0), Vec4::new(0.4, 0.5, 1.0, 1.0)),
+    let iterations = std::env::var("ASTRAL_BENCH_ITERATIONS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .or_else(|| std::env::args().skip(1).find_map(|s| s.parse().ok()))
+        .unwrap_or(50)
+        .max(1);
+    let available = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    let workers = std::env::var("ASTRAL_BENCH_WORKERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(available.min(8))
+        .max(1);
+    let output = std::env::var_os("ASTRAL_BENCH_OUTPUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/f42-bench")
+        });
+    std::fs::create_dir_all(&output).unwrap();
+    println!("F4.2; samples={iterations}; warmup=3; pool_workers={workers}; available_workers={available}; os={}; arch={}", std::env::consts::OS, std::env::consts::ARCH);
+    println!("scratch_bytes counts renderer-owned vector capacities; excludes framebuffer, input mesh, allocator metadata and Rayon runtime; clear/validation/export excluded from frame time");
+    let modes = [
+        ("original", None),
+        ("tiled_seq", Some(RasterMode::Secuencial)),
+        ("tiled_parallel", Some(RasterMode::Paralelo)),
+        ("auto", Some(RasterMode::Auto)),
+    ];
+    let scenes = [
+        ("f3", demo_scene()),
+        (
+            "geometry",
+            vec![(
+                grid_mesh(128, 22.0, 3.0),
+                Transform::from_translation(Vec3::new(0.0, -1.0, 0.0)),
+            )],
         ),
-        Transform::IDENTITY,
-    )];
-    let m = measure("1 triangle 640x360", iterations, 640, 360, &minimal);
-    report(&m);
-
-    println!("\nEscalado de carga (subdivision del terreno, 640x360):");
-    for subdivisions in [8u32, 16, 32] {
-        let scene = vec![(
-            grid_mesh(subdivisions, 22.0, 3.0),
-            Transform::from_translation(Vec3::new(0.0, -1.0, 0.0)),
-        )];
-        let m = measure(
-            &format!("grid {subdivisions}x{subdivisions}"),
-            iterations,
-            640,
-            360,
-            &scene,
-        );
-        report(&m);
-    }
-
-    println!("\nResumen (escena de referencia 640x360):");
-    let avg = reference_m.avg();
-    println!(
-        "  avg={:.3} ms/frame  p95={:.3} ms  min={:.3} ms  max={:.3} ms  => {:.1} fps (avg)",
-        avg.as_secs_f64() * 1e3,
-        reference_m.p95.as_secs_f64() * 1e3,
-        reference_m.min.as_secs_f64() * 1e3,
-        reference_m.max.as_secs_f64() * 1e3,
-        1.0 / avg.as_secs_f64(),
-    );
+        ("overdraw", overdraw_scene()),
+    ];
+    let mut csv = String::from("scene,width,height,mode,iterations,pool_workers,used_workers,avg_ms,p95_ms,min_ms,max_ms,speedup_original,speedup_tiled_seq,scratch_bytes,delta_scratch_original_bytes,bin_avg_ms,raster_avg_ms,parallel_draws_per_frame,sequential_draws_per_frame,color_mismatches,depth_mismatches,image_depth_hash,estimated_work_per_frame,bin_entries_per_frame\n");
+    let mut samples_csv = String::from("scene,width,height,mode,sample,ms\n");
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .unwrap();
+    pool.install(|| {
+        for (scene_name, scene) in &scenes {
+            for size in [(320, 180), (640, 360), (1280, 720)] {
+                let mut measurements = Vec::new();
+                let mut reference = None;
+                for (name, mode) in modes {
+                    let (measurement, framebuffer) = measure(scene, size, mode, iterations);
+                    let (colors, depths) = reference.as_ref().map(|expected| compare(expected, &framebuffer)).unwrap_or((0, 0));
+                    assert_eq!((colors, depths), (0, 0), "{scene_name} {size:?} {name}");
+                    write_png(&output.join(format!("{scene_name}-{}x{}-{name}.png", size.0, size.1)), &framebuffer).unwrap();
+                    let image_hash = hash(&framebuffer);
+                    if reference.is_none() { reference = Some(framebuffer); }
+                    measurements.push((name, measurement, image_hash));
+                }
+                let original_ms = measurements[0].1.avg_ms();
+                let tiled_ms = measurements[1].1.avg_ms();
+                let original_scratch = measurements[0].1.scratch_bytes;
+                for (name, m, image_hash) in measurements {
+                    let average = m.avg_ms();
+                    let row = format!("{scene_name},{},{},{name},{iterations},{workers},{},{average:.6},{:.6},{:.6},{:.6},{:.4},{:.4},{},{},{:.6},{:.6},{:.2},{:.2},0,0,{image_hash:016x},{:.2},{:.2}\n",
+                        size.0, size.1, m.workers_used, m.percentile_ms(95), m.percentile_ms(0), m.percentile_ms(100),
+                        original_ms / average, tiled_ms / average, m.scratch_bytes, m.scratch_bytes as i128 - original_scratch as i128,
+                        m.bin_ns as f64 / iterations as f64 / 1e6, m.raster_ns as f64 / iterations as f64 / 1e6,
+                        m.parallel_draws as f64 / iterations as f64, m.sequential_draws as f64 / iterations as f64,
+                        m.estimated_work as f64 / iterations as f64, m.bin_entries as f64 / iterations as f64);
+                    print!("{row}");
+                    csv.push_str(&row);
+                    for (index, sample) in m.samples.iter().enumerate() {
+                        samples_csv.push_str(&format!("{scene_name},{},{},{name},{index},{:.6}\n", size.0, size.1, sample.as_secs_f64() * 1000.0));
+                    }
+                }
+            }
+        }
+    });
+    std::fs::write(output.join("summary.csv"), csv).unwrap();
+    std::fs::write(output.join("samples.csv"), samples_csv).unwrap();
+    println!("results={}", output.display());
 }

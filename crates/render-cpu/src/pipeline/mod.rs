@@ -75,6 +75,14 @@ impl<'a> CpuPipeline<'a> {
         self.tile_config.unwrap_or_default()
     }
 
+    pub fn scratch_bytes(&self) -> usize {
+        self.clip_vertices.capacity() * std::mem::size_of::<ClipVertex>()
+            + self.triangles.capacity() * std::mem::size_of::<Triangle>()
+            + self.fragments.capacity() * std::mem::size_of::<Fragment>()
+            + self.shaded.capacity() * std::mem::size_of::<Color>()
+            + self.tile_stats.scratch_bytes
+    }
+
     pub fn framebuffer(&self) -> &Framebuffer {
         self.framebuffer
     }
