@@ -65,8 +65,6 @@ impl ServerState {
             }
         }
 
-        // La conexión fallida se retira del canal de envío.
-        // Su hilo liberará el registro cuando detecte la salida.
         for id in failed {
             self.connections.remove(&id);
         }
@@ -123,8 +121,6 @@ impl GameServer {
         println!("Escuchando en {}", self.local_addr()?);
         println!("Máximo de jugadores: {}", MAX_PLAYERS);
 
-        // Funciona tanto si el listener es bloqueante como
-        // si run_until() lo configuró como no bloqueante.
         loop {
             match self.listener.accept() {
                 Ok((stream, _)) => {
@@ -168,8 +164,6 @@ fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::R
         loop {
             let mut line = Vec::new();
 
-            // Limitar la lectura para no aceptar mensajes
-            // arbitrariamente grandes.
             let bytes = reader
                 .by_ref()
                 .take((MAX_MESSAGE_SIZE + 1) as u64)
@@ -252,8 +246,6 @@ fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::R
                         }
                     };
 
-                    // Registrar el identificador inmediatamente
-                    // garantiza su limpieza si falla una escritura.
                     player_id = Some(id);
 
                     send_message(
@@ -264,8 +256,6 @@ fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::R
                         },
                     )?;
 
-                    // Informar al nuevo cliente de los jugadores
-                    // que ya estaban conectados.
                     let existing = server
                         .players
                         .iter()
@@ -283,8 +273,6 @@ fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::R
                         )?;
                     }
 
-                    // Guardar un canal de escritura para enviar
-                    // notificaciones a este jugador.
                     server.connections.insert(id, stream.try_clone()?);
 
                     server.broadcast(
@@ -302,9 +290,17 @@ fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::R
                     break;
                 }
 
+                ClientMessage::PlayerMove {
+                    sequence: _,
+                    transform: _,
+                } => {
+                    // La recepción, validación y difusión
+                    // de movimientos se implementará
+                    // en la siguiente fase.
+                }
+
                 ClientMessage::Ping => {
                     if let Some(id) = player_id {
-                        // Serializar las escrituras con los broadcasts.
                         let mut server = state
                             .lock()
                             .map_err(|_| io::Error::other("Estado del servidor no disponible"))?;
@@ -324,8 +320,6 @@ fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::R
         Ok(())
     })();
 
-    // Ejecutar siempre la limpieza, incluso si ocurre
-    // un error de lectura, escritura o protocolo.
     if let Some(id) = player_id {
         let mut server = match state.lock() {
             Ok(server) => server,
