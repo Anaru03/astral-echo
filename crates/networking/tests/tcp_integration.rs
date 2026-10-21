@@ -293,7 +293,6 @@ fn test_movement_reaches_two_players() {
     let mut second = GameClient::connect(&address, "Jugador 2").unwrap();
     let mut third = GameClient::connect(&address, "Jugador 3").unwrap();
 
-    // Consumir los eventos de entrada pendientes.
     first.receive().unwrap();
     first.receive().unwrap();
 
@@ -328,8 +327,7 @@ fn test_movement_reaches_two_players() {
     stop_server(shutdown, handle);
 }
 
-// Verificar que el servidor acepte movimientos nuevos
-// e ignore los que tienen una secuencia anterior.
+// Verificar que el servidor ignore una actualización antigua.
 #[test]
 fn test_outdated_movement_is_ignored() {
     let (address, shutdown, handle) = start_server();
@@ -358,7 +356,6 @@ fn test_outdated_movement_is_ignored() {
         }
     );
 
-    // Enviar una actualización antigua.
     first
         .send(&ClientMessage::PlayerMove {
             sequence: 3,
@@ -366,8 +363,147 @@ fn test_outdated_movement_is_ignored() {
         })
         .unwrap();
 
-    // Confirmar que el servidor sigue respondiendo.
     second.ping().unwrap();
+
+    first.disconnect().unwrap();
+    second.disconnect().unwrap();
+
+    stop_server(shutdown, handle);
+}
+
+// Verificar que el movimiento del emisor llegue al receptor,
+// sin que el servidor lo reenvíe al jugador original.
+#[test]
+fn test_sender_does_not_receive_own_movement() {
+    let (address, shutdown, handle) = start_server();
+
+    let mut first = GameClient::connect(&address, "Jugador 1").unwrap();
+    let mut second = GameClient::connect(&address, "Jugador 2").unwrap();
+
+    first.receive().unwrap();
+    second.receive().unwrap();
+
+    let transform = sample_movement();
+
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 1,
+            transform,
+        })
+        .unwrap();
+
+    assert_eq!(
+        second.receive().unwrap(),
+        ServerMessage::PlayerMoved {
+            player_id: first.player_id(),
+            sequence: 1,
+            transform,
+        }
+    );
+
+    // Sincronizar la respuesta del servidor.
+    first.ping().unwrap();
+
+    first.disconnect().unwrap();
+    second.disconnect().unwrap();
+
+    stop_server(shutdown, handle);
+}
+
+// Verificar que Ping conserve los movimientos pendientes.
+#[test]
+fn test_ping_preserves_movement_events() {
+    let (address, shutdown, handle) = start_server();
+
+    let mut first = GameClient::connect(&address, "Jugador 1").unwrap();
+    let mut second = GameClient::connect(&address, "Jugador 2").unwrap();
+
+    first.receive().unwrap();
+    second.receive().unwrap();
+
+    let transform = sample_movement();
+
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 1,
+            transform,
+        })
+        .unwrap();
+
+    // Confirmar que el servidor procesó el movimiento.
+    first.ping().unwrap();
+
+    // El cliente debe conservar el evento al recibir Pong.
+    second.ping().unwrap();
+
+    assert_eq!(
+        second.receive().unwrap(),
+        ServerMessage::PlayerMoved {
+            player_id: first.player_id(),
+            sequence: 1,
+            transform,
+        }
+    );
+
+    first.disconnect().unwrap();
+    second.disconnect().unwrap();
+
+    stop_server(shutdown, handle);
+}
+
+// Verificar que los movimientos antiguos no se distribuyan.
+#[test]
+fn test_movement_sequence_ordering() {
+    let (address, shutdown, handle) = start_server();
+
+    let mut first = GameClient::connect(&address, "Jugador 1").unwrap();
+    let mut second = GameClient::connect(&address, "Jugador 2").unwrap();
+
+    first.receive().unwrap();
+    second.receive().unwrap();
+
+    let transform = sample_movement();
+
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 10,
+            transform,
+        })
+        .unwrap();
+
+    assert_eq!(
+        second.receive().unwrap(),
+        ServerMessage::PlayerMoved {
+            player_id: first.player_id(),
+            sequence: 10,
+            transform,
+        }
+    );
+
+    // Enviar primero un movimiento antiguo y después uno nuevo.
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 5,
+            transform,
+        })
+        .unwrap();
+
+    first
+        .send(&ClientMessage::PlayerMove {
+            sequence: 11,
+            transform,
+        })
+        .unwrap();
+
+    // El siguiente evento debe corresponder al movimiento nuevo.
+    assert_eq!(
+        second.receive().unwrap(),
+        ServerMessage::PlayerMoved {
+            player_id: first.player_id(),
+            sequence: 11,
+            transform,
+        }
+    );
 
     first.disconnect().unwrap();
     second.disconnect().unwrap();
