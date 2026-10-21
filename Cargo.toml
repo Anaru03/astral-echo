@@ -5,6 +5,7 @@ members = [
     "crates/game",
     "crates/render-core",
     "crates/render-cpu",
+    "crates/render-present",
 ]
 resolver = "2"
 

@@ -1,0 +1,14 @@
+[package]
+name = "render-present"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+render-cpu = { path = "../render-cpu" }
+winit = "0.30.13"
+softbuffer = { version = "0.4.8", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
+
+[dev-dependencies]
+render-core.workspace = true
+
