@@ -106,7 +106,9 @@ impl GameClient {
             match self.receive_from_network()? {
                 ServerMessage::Pong => return Ok(()),
 
-                event @ (ServerMessage::PlayerJoined { .. } | ServerMessage::PlayerLeft { .. }) => {
+                event @ (ServerMessage::PlayerJoined { .. }
+                | ServerMessage::PlayerLeft { .. }
+                | ServerMessage::PlayerMoved { .. }) => {
                     self.pending_events.push_back(event);
                 }
 
