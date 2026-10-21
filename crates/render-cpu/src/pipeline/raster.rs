@@ -103,6 +103,40 @@ pub fn raster_triangle(
     rule: FillRule,
     out: &mut Vec<Fragment>,
 ) -> u32 {
+    raster_triangle_in_rect(
+        a,
+        b,
+        c,
+        framebuffer_size,
+        rule,
+        out,
+        (0, 0, framebuffer_size.0, framebuffer_size.1),
+    )
+}
+
+pub(crate) fn raster_triangle_in_rect(
+    a: &ScreenVertex,
+    b: &ScreenVertex,
+    c: &ScreenVertex,
+    framebuffer_size: (u32, u32),
+    rule: FillRule,
+    out: &mut Vec<Fragment>,
+    bounds: (u32, u32, u32, u32),
+) -> u32 {
+    raster_triangle_visit(a, b, c, framebuffer_size, rule, bounds, |fragment| {
+        out.push(fragment)
+    })
+}
+
+pub(crate) fn raster_triangle_visit(
+    a: &ScreenVertex,
+    b: &ScreenVertex,
+    c: &ScreenVertex,
+    framebuffer_size: (u32, u32),
+    rule: FillRule,
+    bounds: (u32, u32, u32, u32),
+    mut emit: impl FnMut(Fragment),
+) -> u32 {
     let area = edge_function(a, b, c);
     if !area.is_finite() || area.abs() < 1e-8 {
         return 0;
@@ -123,10 +157,10 @@ pub fn raster_triangle(
     if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
         return 0;
     }
-    let x0 = min_x.max(0.0).floor() as i64;
-    let x1 = max_x.min(fb_w as f32 - 1.0).ceil() as i64;
-    let y0 = min_y.max(0.0).floor() as i64;
-    let y1 = max_y.min(fb_h as f32 - 1.0).ceil() as i64;
+    let x0 = (min_x.max(0.0).floor() as i64).max(i64::from(bounds.0));
+    let x1 = (max_x.min(fb_w as f32 - 1.0).ceil() as i64).min(i64::from(bounds.2) - 1);
+    let y0 = (min_y.max(0.0).floor() as i64).max(i64::from(bounds.1));
+    let y1 = (max_y.min(fb_h as f32 - 1.0).ceil() as i64).min(i64::from(bounds.3) - 1);
     if x1 < x0 || y1 < y0 {
         return 0;
     }
@@ -187,7 +221,7 @@ pub fn raster_triangle(
             let w1p = b1 * b.inv_w / inv_w;
             let w2p = b2 * c.inv_w / inv_w;
             let color = a.color * w0p + b.color * w1p + c.color * w2p;
-            out.push(Fragment {
+            emit(Fragment {
                 x: px as u32,
                 y: py as u32,
                 depth: depth.clamp(0.0, 1.0),

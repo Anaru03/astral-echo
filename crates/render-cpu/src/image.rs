@@ -16,15 +16,11 @@ pub fn write_png(path: &Path, framebuffer: &Framebuffer) -> Result<(), ImageErro
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_compression(png::Compression::default());
-    let mut writer = encoder
-        .write_header()
-        .map_err(|e| ImageError::Encode(png::EncodingError::from(e)))?;
+    let mut writer = encoder.write_header().map_err(ImageError::Encode)?;
     writer
         .write_image_data(framebuffer.color_bytes())
-        .map_err(|e| ImageError::Encode(png::EncodingError::from(e)))?;
-    writer
-        .finish()
-        .map_err(|e| ImageError::Encode(png::EncodingError::from(e)))?;
+        .map_err(ImageError::Encode)?;
+    writer.finish().map_err(ImageError::Encode)?;
     Ok(())
 }
 
@@ -35,15 +31,11 @@ pub fn write_png_bytes(framebuffer: &Framebuffer) -> Result<Vec<u8>, ImageError>
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_compression(png::Compression::default());
-        let mut writer = encoder
-            .write_header()
-            .map_err(|e| ImageError::Encode(png::EncodingError::from(e)))?;
+        let mut writer = encoder.write_header().map_err(ImageError::Encode)?;
         writer
             .write_image_data(framebuffer.color_bytes())
-            .map_err(|e| ImageError::Encode(png::EncodingError::from(e)))?;
-        writer
-            .finish()
-            .map_err(|e| ImageError::Encode(png::EncodingError::from(e)))?;
+            .map_err(ImageError::Encode)?;
+        writer.finish().map_err(ImageError::Encode)?;
     }
     Ok(buffer)
 }

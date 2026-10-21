@@ -63,7 +63,7 @@ fn mvp_depth_matches_distance_to_camera() {
         * Vec4::new(0.0, 0.0, 0.0, 1.0);
     let near_z = near.z / near.w;
     let far_z = far.z / far.w;
-    assert!(near_z >= 0.0 && near_z <= 1.0);
+    assert!((0.0..=1.0).contains(&near_z));
     assert!(far_z > near_z);
 }
 

@@ -102,6 +102,6 @@ fn push_triangle(
     out.push(Triangle::new(a, b, c));
 }
 
-pub fn vertex_at<'a>(vertices: &'a [RasterVertex], index: u32) -> Option<&'a RasterVertex> {
+pub fn vertex_at(vertices: &[RasterVertex], index: u32) -> Option<&RasterVertex> {
     vertices.get(index as usize)
 }

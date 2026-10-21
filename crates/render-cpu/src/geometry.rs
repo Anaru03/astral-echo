@@ -101,8 +101,6 @@ impl RasterMesh {
     }
 
     pub fn triangle_indices(&self) -> impl Iterator<Item = (u32, u32, u32)> + '_ {
-        self.indices
-            .chunks_exact(3)
-            .filter_map(|c| Some((c[0], c[1], c[2])))
+        self.indices.chunks_exact(3).map(|c| (c[0], c[1], c[2]))
     }
 }

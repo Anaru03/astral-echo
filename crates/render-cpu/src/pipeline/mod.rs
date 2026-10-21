@@ -19,7 +19,7 @@ pub use raster::{
     FillRule, Fragment, RasterOutput, ScreenVertex,
 };
 pub use stages::{PipelineConfig, PipelineError, PipelineStats, Stage, StageMetrics};
-pub use tiles::{RasterMode, TileConfig, TileGrid, TileRect, TileStats, rasterize_triangles_tiled};
+pub use tiles::{rasterize_triangles_tiled, RasterMode, TileConfig, TileGrid, TileRect, TileStats};
 pub use vertex::VertexStage;
 
 /// Pipeline CPU por etapas: vertex, assembly, clipping, raster, fragment y depth.
@@ -221,11 +221,8 @@ impl<'a> CpuPipeline<'a> {
         self.stats.metrics.timings.raster_ns += raster_ns;
         self.stats.metrics.fragments_rasterized += tile_stats.fragments_rasterized;
         self.stats.metrics.pixels_written += tile_stats.pixels_written;
-        self.stats.metrics.triangles_degenerate += screen_triangles.len() as u32
-            - screen_triangles
-                .iter()
-                .filter(|_| true)
-                .count() as u32;
+        self.stats.metrics.triangles_degenerate +=
+            screen_triangles.len() as u32 - screen_triangles.iter().filter(|_| true).count() as u32;
         self.stats.metrics.fragments_shaded += tile_stats.fragments_rasterized;
         self.stats.metrics.timings.fragment_ns += tile_stats.raster_ns / 2;
         self.stats.metrics.timings.depth_ns += tile_stats.raster_ns / 2;
