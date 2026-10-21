@@ -123,9 +123,9 @@ impl RasterMode {
             return self;
         }
         let workers = work.workers.min(work.active_bands);
-        let minimum_work = 131_072 * workers.clamp(2, 4) as u64;
+        let minimum_work = 262_144 + 32_768 * workers.clamp(2, 4).saturating_sub(2) as u64;
         let bin_cost = (work.bin_entries as u64)
-            .saturating_mul(64)
+            .saturating_mul(16)
             .saturating_add((work.tile_count as u64).saturating_mul(8));
         if workers > 1
             && work.framebuffer_pixels >= 320 * 180
