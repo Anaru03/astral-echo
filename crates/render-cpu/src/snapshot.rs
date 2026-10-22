@@ -10,6 +10,19 @@ pub fn render_snapshot_scene(
     scene: &SnapshotScene,
     mode: RasterMode,
 ) -> Result<PipelineStats, RasterError> {
+    let prepared = scene.prepare(render_core::CullingConfig {
+        width: framebuffer.width(),
+        height: framebuffer.height(),
+        ..Default::default()
+    });
+    render_prepared_scene(framebuffer, &prepared, scene.view_projection(), mode)
+}
+
+pub fn render_snapshot_scene_reference(
+    framebuffer: &mut Framebuffer,
+    scene: &SnapshotScene,
+    mode: RasterMode,
+) -> Result<PipelineStats, RasterError> {
     let viewport = Viewport::from_size(framebuffer.width(), framebuffer.height())?;
     let mut pipeline = CpuPipeline::new(framebuffer, viewport, PipelineConfig::default())
         .with_tile_config(TileConfig {

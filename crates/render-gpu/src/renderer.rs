@@ -92,6 +92,13 @@ pub struct GpuRenderer {
     stride: u32,
     format: wgpu::TextureFormat,
     stats: ResourceStats,
+    prepared_meshes: Vec<Arc<RasterMesh>>,
+    prepared_keys: Vec<(
+        SnapshotId,
+        MeshHandle,
+        MaterialHandle,
+        render_core::LodLevel,
+    )>,
     snapshot_keys: Option<Vec<(SnapshotId, MeshHandle, MaterialHandle)>>,
 }
 
@@ -263,6 +270,8 @@ impl GpuRenderer {
             format,
             stats,
             snapshot_keys: None,
+            prepared_keys: Vec::new(),
+            prepared_meshes: Vec::new(),
         })
     }
 
@@ -282,7 +291,35 @@ impl GpuRenderer {
     }
 
     pub fn from_prepared(gpu: Arc<GpuContext>, scene: &PreparedScene) -> Result<Self, GpuError> {
-        Self::new(gpu, wgpu::TextureFormat::Rgba8Unorm, &scene.owned_draws())
+        let mut renderer = Self::new(gpu, wgpu::TextureFormat::Rgba8Unorm, &[])?;
+        renderer.sync_prepared(scene)?;
+        Ok(renderer)
+    }
+
+    pub fn sync_prepared(&mut self, scene: &PreparedScene) -> Result<bool, GpuError> {
+        let keys: Vec<_> = scene
+            .draws()
+            .map(|d| (d.node.entity, d.node.mesh, d.node.material, d.lod))
+            .collect();
+        let rebuild = self.snapshot_keys.is_some()
+            || self.prepared_keys != keys
+            || self.draws.len() != scene.visible
+            || !scene
+                .draws()
+                .map(|d| &d.mesh)
+                .zip(&self.prepared_meshes)
+                .all(|(a, b)| Arc::ptr_eq(a, b));
+        if rebuild {
+            let mut renderer = Self::new(self.gpu.clone(), self.format, &scene.owned_draws())?;
+            renderer.prepared_keys = keys;
+            renderer.prepared_meshes = scene.draws().map(|d| d.mesh.clone()).collect();
+            *self = renderer;
+        } else {
+            for (index, draw) in scene.draws().enumerate() {
+                self.set_transform(index, draw.node.transform)?;
+            }
+        }
+        Ok(rebuild)
     }
 
     pub fn sync_snapshot(&mut self, scene: &SnapshotScene) -> Result<bool, GpuError> {

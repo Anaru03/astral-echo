@@ -92,11 +92,8 @@ impl OffscreenTarget {
         scene: &PreparedScene,
         view_projection: Mat4,
     ) -> Result<(), GpuError> {
-        if renderer.resources().draw_count != scene.visible {
-            return Err(GpuError::InvalidInput(
-                "prepared scene topology differs from renderer".into(),
-            ));
-        }
+        self.validate_renderer(renderer)?;
+        renderer.sync_prepared(scene)?;
         self.render_matrix(renderer, view_projection)
     }
 

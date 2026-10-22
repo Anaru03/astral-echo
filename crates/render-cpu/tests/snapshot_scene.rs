@@ -31,7 +31,7 @@ fn all_cpu_modes_render_the_same_snapshot_and_clear_removed_objects() {
 
 #[test]
 fn prepared_scene_reports_culling_and_lod_work() {
-    let scene = SnapshotScene::default();
+    let scene = SnapshotScene::procedural_lod_fixture();
     let prepared = scene.prepare(CullingConfig {
         width: 640,
         height: 360,
@@ -41,4 +41,66 @@ fn prepared_scene_reports_culling_and_lod_work() {
     assert_eq!(prepared.considered, 0);
     assert_eq!(prepared.visible, 0);
     assert_eq!(prepared.discarded, 0);
+}
+
+#[test]
+fn optimized_color_and_depth_match_reference_with_low_and_partial_objects() {
+    let mut scene = SnapshotScene::procedural_lod_fixture();
+    let mut snapshot = RenderSnapshot::minimal_demo();
+    snapshot.view = render_core::Mat4::IDENTITY;
+    snapshot.camera_position = Vec3::ZERO;
+    snapshot.projection =
+        render_core::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 321.0 / 181.0, 1.0, 1000.0);
+    snapshot.nodes[0].transform.translation = Vec3::new(18.0, 0.0, -10.0);
+    snapshot.nodes[1].transform.translation = Vec3::new(0.0, 0.0, -10.0);
+
+    let mut outside = snapshot.nodes[0];
+    outside.entity = render_core::SnapshotId::Destination(100);
+    outside.transform.translation.x = 10000.0;
+    snapshot.nodes.push(outside);
+    let mut far = snapshot.nodes[0];
+    far.entity = render_core::SnapshotId::Destination(101);
+    far.transform.translation = Vec3::new(0.0, 0.0, -300.0);
+    snapshot.nodes.push(far);
+    scene.update(&snapshot).unwrap();
+    let before = scene.snapshot().clone();
+    let prepared = scene.prepare(CullingConfig {
+        width: 321,
+        height: 181,
+        ..Default::default()
+    });
+    assert!(prepared.discarded > 0);
+    assert!(prepared
+        .draws()
+        .any(|d| d.visibility == render_core::VisibilityClass::Partial));
+    assert!(prepared
+        .draws()
+        .any(|d| d.lod == render_core::LodLevel::Low));
+    let mut reference = Framebuffer::new(321, 181).unwrap();
+    render_cpu::render_snapshot_scene_reference(&mut reference, &scene, RasterMode::Secuencial)
+        .unwrap();
+    let mut optimized = Framebuffer::new(321, 181).unwrap();
+    render_cpu::render_prepared_scene(
+        &mut optimized,
+        &prepared,
+        scene.view_projection(),
+        RasterMode::Secuencial,
+    )
+    .unwrap();
+    let max_color = reference
+        .color_bytes()
+        .iter()
+        .zip(optimized.color_bytes())
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap();
+    let max_depth = reference
+        .depth_slice_mut()
+        .iter()
+        .zip(optimized.depth_slice_mut().iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f32::max);
+    assert!(max_color <= 1, "color delta {max_color}");
+    assert!(max_depth < 0.00001, "depth delta {max_depth}");
+    assert_eq!(scene.snapshot(), &before);
 }

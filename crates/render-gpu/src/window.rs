@@ -95,7 +95,12 @@ impl SurfaceRenderer {
     }
 
     pub fn present_snapshot(&mut self, scene: &SnapshotScene) -> Result<bool, GpuError> {
-        self.renderer.sync_snapshot(scene)?;
+        let prepared = scene.prepare(render_core::CullingConfig {
+            width: self.config.width,
+            height: self.config.height,
+            ..Default::default()
+        });
+        self.renderer.sync_prepared(&prepared)?;
         self.present_matrix(scene.view_projection())
     }
 
