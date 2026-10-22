@@ -1,5 +1,7 @@
 pub mod bounds;
 pub mod camera;
+pub mod demo;
+pub mod geometry;
 pub mod material;
 pub mod math;
 pub mod mesh;
@@ -17,3 +19,9 @@ pub use mesh::{MeshHandle, Vertex};
 pub use scene::{RenderCamera, RenderLight, RenderLightKind, RenderNode, RenderScene};
 pub use snapshot::{RenderSnapshot, SnapshotLight, SnapshotNode};
 pub use transform::Transform;
+
+pub use demo::{
+    demo_camera, demo_scene, grid_mesh, terrain_height, GRID_SUBDIVISIONS, TERRAIN_EXTENT,
+    TERRAIN_HEIGHT,
+};
+pub use geometry::{RasterMesh, RasterVertex};
