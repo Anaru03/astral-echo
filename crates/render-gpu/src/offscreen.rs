@@ -1,6 +1,6 @@
 use std::sync::{mpsc, Arc};
 
-use render_core::Camera;
+use render_core::{Camera, Mat4, SnapshotScene};
 
 use crate::renderer::{validate_extent, DepthTarget};
 use crate::{GpuContext, GpuError, GpuImage, GpuRenderer, ReadbackLayout};
@@ -73,6 +73,20 @@ impl OffscreenTarget {
     }
 
     pub fn render(&self, renderer: &mut GpuRenderer, camera: &Camera) -> Result<(), GpuError> {
+        self.render_matrix(renderer, camera.view_projection_matrix())
+    }
+
+    pub fn render_snapshot(
+        &self,
+        renderer: &mut GpuRenderer,
+        scene: &SnapshotScene,
+    ) -> Result<(), GpuError> {
+        self.validate_renderer(renderer)?;
+        renderer.sync_snapshot(scene)?;
+        self.render_matrix(renderer, scene.view_projection())
+    }
+
+    fn validate_renderer(&self, renderer: &GpuRenderer) -> Result<(), GpuError> {
         if renderer.color_format() != wgpu::TextureFormat::Rgba8Unorm {
             return Err(GpuError::InvalidInput(
                 "offscreen target requires Rgba8Unorm pipeline".into(),
@@ -83,7 +97,12 @@ impl OffscreenTarget {
                 "target and renderer belong to different contexts".into(),
             ));
         }
-        renderer.render_to_view(&self.color_view, &self.depth.view, camera)?;
+        Ok(())
+    }
+
+    pub fn render_matrix(&self, renderer: &mut GpuRenderer, vp: Mat4) -> Result<(), GpuError> {
+        self.validate_renderer(renderer)?;
+        renderer.render_to_view_matrix(&self.color_view, &self.depth.view, vp)?;
         Ok(())
     }
 

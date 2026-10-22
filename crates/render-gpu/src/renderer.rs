@@ -3,7 +3,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use render_core::{Camera, RasterMesh, Transform};
+use render_core::{
+    Camera, Mat4, MaterialHandle, MeshHandle, RasterMesh, SnapshotId, SnapshotScene, Transform,
+};
 use wgpu::util::DeviceExt;
 
 use crate::{block_on, GpuContext, GpuError};
@@ -89,6 +91,7 @@ pub struct GpuRenderer {
     stride: u32,
     format: wgpu::TextureFormat,
     stats: ResourceStats,
+    snapshot_keys: Option<Vec<(SnapshotId, MeshHandle, MaterialHandle)>>,
 }
 
 impl GpuRenderer {
@@ -258,11 +261,45 @@ impl GpuRenderer {
             stride,
             format,
             stats,
+            snapshot_keys: None,
         })
     }
 
     pub fn resources(&self) -> ResourceStats {
         self.stats
+    }
+
+    pub fn from_snapshot(gpu: Arc<GpuContext>, scene: &SnapshotScene) -> Result<Self, GpuError> {
+        let mut renderer = Self::new(gpu, wgpu::TextureFormat::Rgba8Unorm, &scene.owned_draws())?;
+        renderer.snapshot_keys = Some(
+            scene
+                .visible_nodes()
+                .map(|n| (n.entity, n.mesh, n.material))
+                .collect(),
+        );
+        Ok(renderer)
+    }
+
+    pub fn sync_snapshot(&mut self, scene: &SnapshotScene) -> Result<bool, GpuError> {
+        let keys = || {
+            scene
+                .visible_nodes()
+                .map(|n| (n.entity, n.mesh, n.material))
+        };
+        let rebuild = self
+            .snapshot_keys
+            .as_ref()
+            .is_none_or(|existing| !keys().eq(existing.iter().copied()));
+        if rebuild {
+            let mut renderer = Self::new(self.gpu.clone(), self.format, &scene.owned_draws())?;
+            renderer.snapshot_keys = Some(keys().collect());
+            *self = renderer;
+        } else {
+            for (index, node) in scene.visible_nodes().enumerate() {
+                self.set_transform(index, node.transform)?;
+            }
+        }
+        Ok(rebuild)
     }
 
     pub fn color_format(&self) -> wgpu::TextureFormat {
@@ -287,8 +324,16 @@ impl GpuRenderer {
         depth: &wgpu::TextureView,
         camera: &Camera,
     ) -> Result<wgpu::SubmissionIndex, GpuError> {
+        self.render_to_view_matrix(color, depth, camera.view_projection_matrix())
+    }
+
+    pub fn render_to_view_matrix(
+        &mut self,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        vp: Mat4,
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
         self.gpu.check()?;
-        let vp = camera.view_projection_matrix();
         if !vp.is_finite() {
             return Err(GpuError::InvalidInput("non-finite camera matrix".into()));
         }
