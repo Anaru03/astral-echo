@@ -179,13 +179,13 @@ impl SnapshotScene {
     }
 
     pub fn owned_draws(&self) -> Vec<(RasterMesh, Transform)> {
-        self.visible_nodes()
-            .map(|n| {
-                (
-                    self.assets.meshes[&(n.mesh, n.material)].clone(),
-                    n.transform,
-                )
-            })
+        self.draws()
+            .map(|(node, mesh)| (mesh.clone(), node.transform))
             .collect()
+    }
+
+    pub fn draws(&self) -> impl Iterator<Item = (&SnapshotNode, &RasterMesh)> {
+        self.visible_nodes()
+            .map(|node| (node, &self.assets.meshes[&(node.mesh, node.material)]))
     }
 }
