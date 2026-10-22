@@ -3,6 +3,7 @@ use crate::protocol::{
     PROTOCOL_VERSION,
 };
 use crate::sync::PlayerTransform;
+use crate::{ServerEvent, ServerEventQueue};
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -99,6 +100,27 @@ pub struct GameServer {
     state: Arc<Mutex<ServerState>>,
 }
 
+#[derive(Clone)]
+pub struct GameServerHandle {
+    state: Arc<Mutex<ServerState>>,
+}
+
+impl GameServerHandle {
+    pub fn broadcast(&self, message: &ServerMessage) {
+        self.broadcast_except(message, None);
+    }
+
+    pub fn broadcast_except(
+        &self,
+        message: &ServerMessage,
+        exclude: Option<NetworkPlayerId>,
+    ) {
+        if let Ok(mut server) = self.state.lock() {
+            server.broadcast(message, exclude);
+        }
+    }
+}
+
 impl GameServer {
     pub fn bind(address: &str) -> io::Result<Self> {
         let listener = TcpListener::bind(address)?;
@@ -113,16 +135,35 @@ impl GameServer {
         self.listener.local_addr()
     }
 
+    pub fn handle(&self) -> GameServerHandle {
+        GameServerHandle {
+            state: Arc::clone(&self.state),
+        }
+    }
+
+    pub fn event_queue(&self) -> ServerEventQueue {
+        ServerEventQueue::new()
+    }
+
     pub fn run_until(&self, shutdown: &AtomicBool) -> io::Result<()> {
+        self.run_until_with_events(shutdown, None)
+    }
+
+    pub fn run_until_with_events(
+        &self,
+        shutdown: &AtomicBool,
+        events: Option<ServerEventQueue>,
+    ) -> io::Result<()> {
         self.listener.set_nonblocking(true)?;
 
         while !shutdown.load(Ordering::Relaxed) {
             match self.listener.accept() {
                 Ok((stream, _)) => {
                     let state = Arc::clone(&self.state);
+                    let events = events.clone();
 
                     thread::spawn(move || {
-                        if let Err(error) = handle_client(stream, state) {
+                        if let Err(error) = handle_client(stream, state, events) {
                             eprintln!("Error de conexión: {error}");
                         }
                     });
@@ -150,7 +191,7 @@ impl GameServer {
                     let state = Arc::clone(&self.state);
 
                     thread::spawn(move || {
-                        if let Err(error) = handle_client(stream, state) {
+                        if let Err(error) = handle_client(stream, state, None) {
                             eprintln!("Error de conexión: {error}");
                         }
                     });
@@ -175,7 +216,11 @@ fn send_message(stream: &mut TcpStream, message: &ServerMessage) -> io::Result<(
     stream.flush()
 }
 
-fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::Result<()> {
+fn handle_client(
+    mut stream: TcpStream,
+    state: Arc<Mutex<ServerState>>,
+    events: Option<ServerEventQueue>,
+) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     stream.set_nodelay(true)?;
@@ -306,6 +351,13 @@ fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::R
                         Some(id),
                     );
 
+                    if let Some(events) = &events {
+                        events.push(ServerEvent::PlayerJoined {
+                            player_id: id,
+                            name: name.trim().to_string(),
+                        });
+                    }
+
                     println!("Jugador {id} conectado: {name}");
                 }
 
@@ -323,14 +375,23 @@ fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::R
                             .map_err(|_| io::Error::other("Estado del servidor no disponible"))?;
 
                         if server.accept_movement(id, sequence, transform) {
-                            server.broadcast(
-                                &ServerMessage::PlayerMoved {
-                                    player_id: id,
-                                    sequence,
-                                    transform,
-                                },
-                                Some(id),
-                            );
+                            let message = ServerMessage::PlayerMoved {
+                                player_id: id,
+                                sequence,
+                                transform,
+                            };
+                            if events.is_some() {
+                                drop(server);
+                                if let Some(events) = &events {
+                                    events.push(ServerEvent::PlayerMoved {
+                                        player_id: id,
+                                        sequence,
+                                        transform,
+                                    });
+                                }
+                            } else {
+                                server.broadcast(&message, Some(id));
+                            }
                         }
                     }
                 }
@@ -364,6 +425,10 @@ fn handle_client(mut stream: TcpStream, state: Arc<Mutex<ServerState>>) -> io::R
 
         if server.leave(id) {
             server.broadcast(&ServerMessage::PlayerLeft { player_id: id }, Some(id));
+
+            if let Some(events) = &events {
+                events.push(ServerEvent::PlayerLeft { player_id: id });
+            }
 
             println!(
                 "Jugador {id} desconectado. Jugadores activos: {}",
