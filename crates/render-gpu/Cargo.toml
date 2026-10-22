@@ -29,3 +29,7 @@ harness = false
 [[bench]]
 name = "lighting_bench"
 harness = false
+
+[[bench]]
+name = "shadows_bench"
+harness = false
