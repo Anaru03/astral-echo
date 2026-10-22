@@ -122,7 +122,7 @@ impl Frustum {
             Plane::from_vec4(rows[3] - rows[0]),
             Plane::from_vec4(rows[3] + rows[1]),
             Plane::from_vec4(rows[3] - rows[1]),
-            Plane::from_vec4(rows[3] + rows[2]),
+            Plane::from_vec4(rows[2]),
             Plane::from_vec4(rows[3] - rows[2]),
         ];
         Self { planes }
@@ -147,7 +147,8 @@ impl Frustum {
                     aabb.min.z
                 },
             );
-            if plane.distance(p) < 0.0 {
+            let tolerance = 8.0 * f32::EPSILON * (1.0 + p.abs().max_element() + plane.d.abs());
+            if plane.distance(p) < -tolerance {
                 return false;
             }
         }

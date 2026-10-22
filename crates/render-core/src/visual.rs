@@ -1,9 +1,11 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 
 use crate::{
     Aabb, Camera, Frustum, Mat4, MaterialHandle, MeshHandle, RasterMesh, RasterVertex,
-    RenderSnapshot, SnapshotNode, Transform, Vec3, Vec4,
+    RenderSnapshot, SnapshotId, SnapshotNode, Transform, Vec3, Vec4,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,7 +43,7 @@ impl Default for CullingConfig {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedDraw {
     pub node: SnapshotNode,
-    pub mesh: RasterMesh,
+    pub mesh: Arc<RasterMesh>,
     pub lod: LodLevel,
     pub visibility: VisibilityClass,
     pub projected_size_px: f32,
@@ -63,7 +65,7 @@ impl PreparedScene {
     pub fn owned_draws(&self) -> Vec<(RasterMesh, Transform)> {
         self.draws
             .iter()
-            .map(|draw| (draw.mesh.clone(), draw.node.transform))
+            .map(|draw| ((*draw.mesh).clone(), draw.node.transform))
             .collect()
     }
 }
@@ -84,7 +86,9 @@ impl fmt::Display for VisualError {
 impl std::error::Error for VisualError {}
 
 pub struct VisualAssets {
-    meshes: BTreeMap<(MeshHandle, MaterialHandle), RasterMesh>,
+    meshes: BTreeMap<(MeshHandle, MaterialHandle), Arc<RasterMesh>>,
+    low: BTreeMap<(MeshHandle, MaterialHandle), Arc<RasterMesh>>,
+    bounds: BTreeMap<(MeshHandle, MaterialHandle), Aabb>,
 }
 
 impl VisualAssets {
@@ -101,35 +105,8 @@ impl VisualAssets {
     ) -> Result<&RasterMesh, VisualError> {
         self.meshes
             .get(&(mesh, material))
+            .map(Arc::as_ref)
             .ok_or(VisualError::UnknownAsset(mesh, material))
-    }
-
-    fn low_mesh(mesh: &RasterMesh) -> RasterMesh {
-        let mut min = Vec3::splat(f32::INFINITY);
-        let mut max = Vec3::splat(f32::NEG_INFINITY);
-        for vertex in &mesh.vertices {
-            min = min.min(vertex.position);
-            max = max.max(vertex.position);
-        }
-        let center = (min + max) * 0.5;
-        let radius = (max - min).length() * 0.5;
-        let color = mesh.vertices.first().map_or(Vec4::ONE, |v| v.color);
-        let p = [
-            center + Vec3::X * radius,
-            center - Vec3::X * radius,
-            center + Vec3::Y * radius,
-            center - Vec3::Y * radius,
-            center + Vec3::Z * radius,
-            center - Vec3::Z * radius,
-        ];
-        RasterMesh::new(
-            p.into_iter()
-                .map(|position| RasterVertex::new(position, color))
-                .collect(),
-            vec![
-                2, 0, 4, 2, 4, 1, 2, 1, 5, 2, 5, 0, 3, 4, 0, 3, 1, 4, 3, 5, 1, 3, 0, 5,
-            ],
-        )
     }
 }
 
@@ -160,31 +137,62 @@ impl Default for VisualAssets {
                 ],
             )
         };
+        let low: BTreeMap<_, _> = BTreeMap::from([
+            (
+                (MeshHandle::SHIP_PLACEHOLDER, Self::SHIP),
+                cuboid(Vec3::new(4.0, 1.2, 7.0), Vec4::new(0.03, 0.5, 1.0, 1.0)),
+            ),
+            (
+                (MeshHandle::CUBE, Self::PLAYER),
+                cuboid(Vec3::new(1.2, 2.4, 1.2), Vec4::new(0.9, 0.9, 1.0, 1.0)),
+            ),
+            (
+                (MeshHandle::ENEMY_PLACEHOLDER, Self::ENEMY),
+                diamond(1.8, Vec4::new(0.9, 0.03, 0.1, 1.0)),
+            ),
+            (
+                (MeshHandle::DESTINATION_PLACEHOLDER, Self::DESTINATION),
+                diamond(3.0, Vec4::new(0.07, 0.85, 0.35, 1.0)),
+            ),
+            (
+                (MeshHandle::COLLECTIBLE_PLACEHOLDER, Self::COLLECTIBLE),
+                diamond(0.7, Vec4::new(1.0, 0.7, 0.05, 1.0)),
+            ),
+        ])
+        .into_iter()
+        .map(|(key, mesh)| (key, Arc::new(mesh)))
+        .collect();
+        let bounds = low
+            .iter()
+            .map(|(key, mesh)| (*key, mesh_bounds(mesh)))
+            .collect();
+        let meshes = low.clone();
         Self {
-            meshes: BTreeMap::from([
-                (
-                    (MeshHandle::SHIP_PLACEHOLDER, Self::SHIP),
-                    cuboid(Vec3::new(4.0, 1.2, 7.0), Vec4::new(0.03, 0.5, 1.0, 1.0)),
-                ),
-                (
-                    (MeshHandle::CUBE, Self::PLAYER),
-                    cuboid(Vec3::new(1.2, 2.4, 1.2), Vec4::new(0.9, 0.9, 1.0, 1.0)),
-                ),
-                (
-                    (MeshHandle::ENEMY_PLACEHOLDER, Self::ENEMY),
-                    diamond(1.8, Vec4::new(0.9, 0.03, 0.1, 1.0)),
-                ),
-                (
-                    (MeshHandle::DESTINATION_PLACEHOLDER, Self::DESTINATION),
-                    diamond(3.0, Vec4::new(0.07, 0.85, 0.35, 1.0)),
-                ),
-                (
-                    (MeshHandle::COLLECTIBLE_PLACEHOLDER, Self::COLLECTIBLE),
-                    diamond(0.7, Vec4::new(1.0, 0.7, 0.05, 1.0)),
-                ),
-            ]),
+            meshes,
+            low,
+            bounds,
         }
     }
+}
+
+fn subdivide(mesh: &RasterMesh) -> RasterMesh {
+    let mut result = RasterMesh::default();
+    for triangle in mesh.indices.chunks_exact(3) {
+        let a = mesh.vertices[triangle[0] as usize];
+        let b = mesh.vertices[triangle[1] as usize];
+        let c = mesh.vertices[triangle[2] as usize];
+        let midpoint = |a: RasterVertex, b: RasterVertex| {
+            RasterVertex::new((a.position + b.position) * 0.5, (a.color + b.color) * 0.5)
+        };
+        let base = result.vertices.len() as u32;
+        result
+            .vertices
+            .extend([a, b, c, midpoint(a, b), midpoint(b, c), midpoint(c, a)]);
+        result
+            .indices
+            .extend([0, 3, 5, 3, 1, 4, 5, 4, 2, 3, 4, 5].map(|i| base + i));
+    }
+    result
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -197,6 +205,7 @@ pub struct SceneUpdate {
 pub struct SnapshotScene {
     assets: VisualAssets,
     snapshot: RenderSnapshot,
+    lod_history: RefCell<BTreeMap<SnapshotId, (MeshHandle, MaterialHandle, LodLevel)>>,
 }
 
 impl Default for SnapshotScene {
@@ -204,6 +213,7 @@ impl Default for SnapshotScene {
         let camera = Camera::demo();
         Self {
             assets: VisualAssets::default(),
+            lod_history: RefCell::default(),
             snapshot: RenderSnapshot::new(
                 engine::Tick(0),
                 camera.position(),
@@ -215,6 +225,17 @@ impl Default for SnapshotScene {
 }
 
 impl SnapshotScene {
+    pub fn procedural_lod_fixture() -> Self {
+        let mut scene = Self::default();
+        scene.assets.meshes = scene
+            .assets
+            .low
+            .iter()
+            .map(|(key, mesh)| (*key, Arc::new(subdivide(mesh))))
+            .collect();
+        scene
+    }
+
     pub fn update(&mut self, snapshot: &RenderSnapshot) -> Result<SceneUpdate, VisualError> {
         if !snapshot.view.is_finite()
             || !snapshot.projection.is_finite()
@@ -247,6 +268,9 @@ impl SnapshotScene {
                 .filter(|n| old.get(&n.entity).is_some_and(|previous| **previous != **n))
                 .count(),
         };
+        self.lod_history
+            .borrow_mut()
+            .retain(|id, _| seen.contains(id));
         self.snapshot.clone_from(snapshot);
         self.snapshot.nodes.sort_by_key(|n| n.entity);
         Ok(update)
@@ -275,8 +299,12 @@ impl SnapshotScene {
     }
 
     pub fn draws(&self) -> impl Iterator<Item = (&SnapshotNode, &RasterMesh)> {
-        self.visible_nodes()
-            .map(|node| (node, &self.assets.meshes[&(node.mesh, node.material)]))
+        self.visible_nodes().map(|node| {
+            (
+                node,
+                self.assets.meshes[&(node.mesh, node.material)].as_ref(),
+            )
+        })
     }
 
     pub fn prepare(&self, config: CullingConfig) -> PreparedScene {
@@ -284,32 +312,31 @@ impl SnapshotScene {
             considered: self.snapshot.nodes.len(),
             ..Default::default()
         };
+        let mut history = self.lod_history.borrow_mut();
+        let vp = self.view_projection();
         let frustum = Frustum::from_view_projection(self.view_projection());
         for node in self.snapshot.nodes.iter().filter(|node| node.visible) {
             let high = &self.assets.meshes[&(node.mesh, node.material)];
-            let local = mesh_bounds(high);
+            let local = self.assets.bounds[&(node.mesh, node.material)];
             let transformed = local.transformed(node.transform.matrix());
             let visibility = classify_bounds(transformed, frustum);
             if visibility == VisibilityClass::Outside {
                 prepared.discarded += 1;
                 continue;
             }
-            let center = transformed.center();
-            let radius = transformed.extents().length();
-            let projected = projected_size(
-                center,
-                radius,
-                self.view_projection(),
-                config.width,
-                config.height,
-            );
-            let lod = if projected < config.low_threshold_px {
-                LodLevel::Low
-            } else {
-                LodLevel::High
+            let projected = projected_size(transformed, vp, config.width, config.height);
+            let previous = history
+                .get(&node.entity)
+                .filter(|(mesh, material, _)| *mesh == node.mesh && *material == node.material)
+                .map(|(_, _, lod)| *lod);
+            let lod = match previous {
+                Some(LodLevel::Low) if projected < config.high_threshold_px => LodLevel::Low,
+                _ if projected < config.low_threshold_px => LodLevel::Low,
+                _ => LodLevel::High,
             };
+            history.insert(node.entity, (node.mesh, node.material, lod));
             let mesh = if lod == LodLevel::Low {
-                VisualAssets::low_mesh(high)
+                self.assets.low[&(node.mesh, node.material)].clone()
             } else {
                 high.clone()
             };
@@ -358,11 +385,18 @@ fn classify_bounds(aabb: Aabb, frustum: Frustum) -> VisibilityClass {
     }
 }
 
-fn projected_size(center: Vec3, radius: f32, vp: Mat4, width: u32, height: u32) -> f32 {
-    let clip = vp * center.extend(1.0);
-    if clip.w.abs() <= f32::EPSILON {
-        return f32::INFINITY;
+fn projected_size(bounds: Aabb, vp: Mat4, width: u32, height: u32) -> f32 {
+    let mut min = crate::Vec2::splat(f32::INFINITY);
+    let mut max = crate::Vec2::splat(f32::NEG_INFINITY);
+    for corner in bounds.corners() {
+        let clip = vp * corner.extend(1.0);
+        if clip.w <= f32::EPSILON || clip.z <= 0.0 {
+            return f32::INFINITY;
+        }
+        let point = crate::Vec2::new(clip.x, clip.y) / clip.w;
+        min = min.min(point);
+        max = max.max(point);
     }
-    let scale = (width.max(height) as f32) / clip.w.abs();
-    radius * scale * 2.0
+    let pixels = (max - min) * crate::Vec2::new(width as f32, height as f32) * 0.5;
+    pixels.max_element()
 }
