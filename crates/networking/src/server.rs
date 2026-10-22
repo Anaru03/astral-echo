@@ -7,10 +7,10 @@ use crate::{ServerEvent, ServerEventQueue};
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 const MAX_MESSAGE_SIZE: usize = 4096;
@@ -19,8 +19,23 @@ const MAX_MESSAGE_SIZE: usize = 4096;
 struct ServerState {
     next_id: NetworkPlayerId,
     players: BTreeMap<NetworkPlayerId, String>,
-    connections: BTreeMap<NetworkPlayerId, TcpStream>,
+    connections: BTreeMap<NetworkPlayerId, Connection>,
     last_sequences: BTreeMap<NetworkPlayerId, u64>,
+}
+
+#[derive(Debug)]
+struct Connection {
+    stream: TcpStream,
+    write_lock: Arc<Mutex<()>>,
+}
+
+impl Connection {
+    fn new(stream: TcpStream) -> Self {
+        Self {
+            stream,
+            write_lock: Arc::new(Mutex::new(())),
+        }
+    }
 }
 
 impl ServerState {
@@ -76,23 +91,79 @@ impl ServerState {
         true
     }
 
-    fn broadcast(&mut self, message: &ServerMessage, exclude: Option<NetworkPlayerId>) {
-        let mut failed = Vec::new();
+}
 
-        for (&id, stream) in &mut self.connections {
-            if Some(id) == exclude {
-                continue;
-            }
+fn broadcast_state(
+    state: &Arc<Mutex<ServerState>>,
+    message: &ServerMessage,
+    exclude: Option<NetworkPlayerId>,
+) -> Vec<NetworkPlayerId> {
+    let targets = match state.lock() {
+        Ok(server) => server
+            .connections
+            .iter()
+            .filter(|(id, _)| Some(**id) != exclude)
+            .filter_map(|(&id, connection)| {
+                connection
+                    .stream
+                    .try_clone()
+                    .ok()
+                    .map(|stream| (id, stream, Arc::clone(&connection.write_lock)))
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => return Vec::new(),
+    };
 
-            if send_message(stream, message).is_err() {
-                failed.push(id);
-            }
-        }
+    let failed = targets
+        .into_iter()
+        .filter_map(|(id, mut stream, write_lock)| {
+            let _guard = write_lock.lock().ok()?;
+            send_message(&mut stream, message).err().map(|_| id)
+        })
+        .collect::<Vec<_>>();
 
+    let mut disconnected = Vec::new();
+    if let Ok(mut server) = state.lock() {
         for id in failed {
-            self.connections.remove(&id);
+            if server.leave(id) {
+                disconnected.push(id);
+            }
         }
     }
+    disconnected
+}
+
+fn publish_disconnections(events: Option<&ServerEventQueue>, player_ids: Vec<NetworkPlayerId>) {
+    if let Some(events) = events {
+        for player_id in player_ids {
+            events.push(ServerEvent::PlayerLeft { player_id });
+        }
+    }
+}
+
+fn disconnect_player(
+    state: &Arc<Mutex<ServerState>>,
+    events: Option<&ServerEventQueue>,
+    player_id: NetworkPlayerId,
+) -> bool {
+    let removed = state
+        .lock()
+        .map(|mut server| server.leave(player_id))
+        .unwrap_or(false);
+    if !removed {
+        return false;
+    }
+
+    let disconnected = broadcast_state(
+        state,
+        &ServerMessage::PlayerLeft { player_id },
+        Some(player_id),
+    );
+    publish_disconnections(events, disconnected);
+    if let Some(events) = events {
+        events.push(ServerEvent::PlayerLeft { player_id });
+    }
+    true
 }
 
 pub struct GameServer {
@@ -100,9 +171,55 @@ pub struct GameServer {
     state: Arc<Mutex<ServerState>>,
 }
 
+#[derive(Default)]
+struct ActiveConnections {
+    closing: AtomicBool,
+    next_id: AtomicU64,
+    streams: Mutex<BTreeMap<u64, TcpStream>>,
+}
+
+impl ActiveConnections {
+    fn register(&self, stream: &TcpStream) -> io::Result<u64> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let stream = stream.try_clone()?;
+        let mut streams = self
+            .streams
+            .lock()
+            .map_err(|_| io::Error::other("Registro de conexiones no disponible"))?;
+        streams.insert(id, stream);
+        Ok(id)
+    }
+
+    fn remove(&self, id: u64) {
+        if let Ok(mut streams) = self.streams.lock() {
+            streams.remove(&id);
+        }
+    }
+
+    fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::Acquire)
+    }
+
+    fn shutdown_all(&self) {
+        self.closing.store(true, Ordering::Release);
+        let streams = self
+            .streams
+            .lock()
+            .map(|mut streams| {
+                std::mem::take(&mut *streams).into_values().collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        for stream in streams {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct GameServerHandle {
     state: Arc<Mutex<ServerState>>,
+    events: Option<ServerEventQueue>,
 }
 
 impl GameServerHandle {
@@ -115,9 +232,8 @@ impl GameServerHandle {
         message: &ServerMessage,
         exclude: Option<NetworkPlayerId>,
     ) {
-        if let Ok(mut server) = self.state.lock() {
-            server.broadcast(message, exclude);
-        }
+        let disconnected = broadcast_state(&self.state, message, exclude);
+        publish_disconnections(self.events.as_ref(), disconnected);
     }
 }
 
@@ -138,6 +254,14 @@ impl GameServer {
     pub fn handle(&self) -> GameServerHandle {
         GameServerHandle {
             state: Arc::clone(&self.state),
+            events: None,
+        }
+    }
+
+    pub fn handle_with_events(&self, events: ServerEventQueue) -> GameServerHandle {
+        GameServerHandle {
+            state: Arc::clone(&self.state),
+            events: Some(events),
         }
     }
 
@@ -155,29 +279,57 @@ impl GameServer {
         events: Option<ServerEventQueue>,
     ) -> io::Result<()> {
         self.listener.set_nonblocking(true)?;
+        let active_connections = Arc::new(ActiveConnections::default());
+        let mut client_threads: Vec<JoinHandle<()>> = Vec::new();
+        let mut server_error = None;
 
         while !shutdown.load(Ordering::Relaxed) {
             match self.listener.accept() {
                 Ok((stream, _)) => {
+                    let connection_id = match active_connections.register(&stream) {
+                        Ok(connection_id) => connection_id,
+                        Err(error) => {
+                            server_error = Some(error);
+                            break;
+                        }
+                    };
                     let state = Arc::clone(&self.state);
                     let events = events.clone();
+                    let active_connections = Arc::clone(&active_connections);
 
-                    thread::spawn(move || {
-                        if let Err(error) = handle_client(stream, state, events) {
+                    client_threads.push(thread::spawn(move || {
+                        if let Err(error) = handle_client(
+                            stream,
+                            state,
+                            events,
+                            Some(Arc::clone(&active_connections)),
+                        ) {
                             eprintln!("Error de conexión: {error}");
                         }
-                    });
+                        active_connections.remove(connection_id);
+                    }));
                 }
 
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(10));
                 }
 
-                Err(error) => return Err(error),
+                Err(_error) if shutdown.load(Ordering::Relaxed) => break,
+                Err(error) => {
+                    server_error = Some(error);
+                    break;
+                }
             }
         }
 
-        Ok(())
+        active_connections.shutdown_all();
+        for client_thread in client_threads {
+            client_thread
+                .join()
+                .map_err(|_| io::Error::other("El hilo de cliente terminó inesperadamente"))?;
+        }
+
+        server_error.map_or(Ok(()), Err)
     }
 
     pub fn run(&self) -> io::Result<()> {
@@ -191,7 +343,7 @@ impl GameServer {
                     let state = Arc::clone(&self.state);
 
                     thread::spawn(move || {
-                        if let Err(error) = handle_client(stream, state, None) {
+                        if let Err(error) = handle_client(stream, state, None, None) {
                             eprintln!("Error de conexión: {error}");
                         }
                     });
@@ -220,8 +372,15 @@ fn handle_client(
     mut stream: TcpStream,
     state: Arc<Mutex<ServerState>>,
     events: Option<ServerEventQueue>,
+    active_connections: Option<Arc<ActiveConnections>>,
 ) -> io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_nonblocking(false)?;
+    let read_timeout = if active_connections.is_some() {
+        Duration::from_millis(100)
+    } else {
+        Duration::from_secs(30)
+    };
+    stream.set_read_timeout(Some(read_timeout))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     stream.set_nodelay(true)?;
 
@@ -232,10 +391,30 @@ fn handle_client(
         loop {
             let mut line = Vec::new();
 
-            let bytes = reader
+            let bytes = match reader
                 .by_ref()
                 .take((MAX_MESSAGE_SIZE + 1) as u64)
-                .read_until(b'\n', &mut line)?;
+                .read_until(b'\n', &mut line)
+            {
+                Ok(bytes) => bytes,
+                Err(error)
+                    if error.kind() == io::ErrorKind::TimedOut
+                        && active_connections
+                            .as_ref()
+                            .is_some_and(|connections| !connections.is_closing()) =>
+                {
+                    continue;
+                }
+                Err(error)
+                    if error.kind() == io::ErrorKind::TimedOut
+                        && active_connections
+                            .as_ref()
+                            .is_some_and(|connections| connections.is_closing()) =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
 
             if bytes == 0 {
                 break;
@@ -315,15 +494,6 @@ fn handle_client(
                     };
 
                     player_id = Some(id);
-
-                    send_message(
-                        &mut stream,
-                        &ServerMessage::Welcome {
-                            player_id: id,
-                            max_players: MAX_PLAYERS,
-                        },
-                    )?;
-
                     let existing = server
                         .players
                         .iter()
@@ -331,6 +501,21 @@ fn handle_client(
                         .map(|(&other_id, other_name)| (other_id, other_name.clone()))
                         .collect::<Vec<_>>();
 
+                    let connection = Connection::new(stream.try_clone()?);
+                    let write_lock = Arc::clone(&connection.write_lock);
+                    server.connections.insert(id, connection);
+                    drop(server);
+
+                    let _guard = write_lock
+                        .lock()
+                        .map_err(|_| io::Error::other("Lock de escritura no disponible"))?;
+                    send_message(
+                        &mut stream,
+                        &ServerMessage::Welcome {
+                            player_id: id,
+                            max_players: MAX_PLAYERS,
+                        },
+                    )?;
                     for (other_id, other_name) in existing {
                         send_message(
                             &mut stream,
@@ -340,16 +525,17 @@ fn handle_client(
                             },
                         )?;
                     }
+                    drop(_guard);
 
-                    server.connections.insert(id, stream.try_clone()?);
-
-                    server.broadcast(
+                    let disconnected = broadcast_state(
+                        &state,
                         &ServerMessage::PlayerJoined {
                             player_id: id,
                             name: name.trim().to_string(),
                         },
                         Some(id),
                     );
+                    publish_disconnections(events.as_ref(), disconnected);
 
                     if let Some(events) = &events {
                         events.push(ServerEvent::PlayerJoined {
@@ -370,18 +556,18 @@ fn handle_client(
                     transform,
                 } => {
                     if let Some(id) = player_id {
-                        let mut server = state
+                        let accepted = state
                             .lock()
-                            .map_err(|_| io::Error::other("Estado del servidor no disponible"))?;
+                            .map_err(|_| io::Error::other("Estado del servidor no disponible"))?
+                            .accept_movement(id, sequence, transform);
 
-                        if server.accept_movement(id, sequence, transform) {
+                        if accepted {
                             let message = ServerMessage::PlayerMoved {
                                 player_id: id,
                                 sequence,
                                 transform,
                             };
                             if events.is_some() {
-                                drop(server);
                                 if let Some(events) = &events {
                                     events.push(ServerEvent::PlayerMoved {
                                         player_id: id,
@@ -390,7 +576,8 @@ fn handle_client(
                                     });
                                 }
                             } else {
-                                server.broadcast(&message, Some(id));
+                                let disconnected = broadcast_state(&state, &message, Some(id));
+                                publish_disconnections(events.as_ref(), disconnected);
                             }
                         }
                     }
@@ -398,12 +585,28 @@ fn handle_client(
 
                 ClientMessage::Ping => {
                     if let Some(id) = player_id {
-                        let mut server = state
+                        let connection = state
                             .lock()
-                            .map_err(|_| io::Error::other("Estado del servidor no disponible"))?;
+                            .map_err(|_| io::Error::other("Estado del servidor no disponible"))?
+                            .connections
+                            .get(&id)
+                            .and_then(|connection| {
+                                connection
+                                    .stream
+                                    .try_clone()
+                                    .ok()
+                                    .map(|stream| (stream, Arc::clone(&connection.write_lock)))
+                            });
 
-                        if let Some(connection) = server.connections.get_mut(&id) {
-                            send_message(connection, &ServerMessage::Pong)?;
+                        if let Some((mut connection, write_lock)) = connection {
+                            let _guard = write_lock
+                                .lock()
+                                .map_err(|_| io::Error::other("Lock de escritura no disponible"))?;
+                            if let Err(error) = send_message(&mut connection, &ServerMessage::Pong)
+                            {
+                                disconnect_player(&state, events.as_ref(), id);
+                                return Err(error);
+                            }
                         } else {
                             send_message(&mut stream, &ServerMessage::Pong)?;
                         }
@@ -418,22 +621,9 @@ fn handle_client(
     })();
 
     if let Some(id) = player_id {
-        let mut server = match state.lock() {
-            Ok(server) => server,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-
-        if server.leave(id) {
-            server.broadcast(&ServerMessage::PlayerLeft { player_id: id }, Some(id));
-
-            if let Some(events) = &events {
-                events.push(ServerEvent::PlayerLeft { player_id: id });
-            }
-
-            println!(
-                "Jugador {id} desconectado. Jugadores activos: {}",
-                server.count()
-            );
+        if disconnect_player(&state, events.as_ref(), id) {
+            let count = state.lock().map(|server| server.count()).unwrap_or(0);
+            println!("Jugador {id} desconectado. Jugadores activos: {count}");
         }
     }
 
@@ -555,5 +745,64 @@ mod tests {
         state.leave(id);
 
         assert!(!state.last_sequences.contains_key(&id));
+    }
+
+    #[test]
+    fn test_broadcast_failure_cleans_player_once_and_preserves_healthy_client() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let healthy_client = TcpStream::connect(address).unwrap();
+        let (healthy_server, _) = listener.accept().unwrap();
+        let failed_client = TcpStream::connect(address).unwrap();
+        let (failed_server, _) = listener.accept().unwrap();
+        failed_server.shutdown(Shutdown::Both).unwrap();
+
+        let mut initial = ServerState::default();
+        let healthy_id = initial.join("Jugador sano".to_string()).unwrap();
+        let failed_id = initial.join("Jugador fallido".to_string()).unwrap();
+        initial
+            .connections
+            .insert(healthy_id, Connection::new(healthy_server));
+        initial
+            .connections
+            .insert(failed_id, Connection::new(failed_server));
+        let state = Arc::new(Mutex::new(initial));
+        let events = ServerEventQueue::new();
+        let handle = GameServerHandle {
+            state: Arc::clone(&state),
+            events: Some(events.clone()),
+        };
+
+        handle.broadcast(&ServerMessage::PlayerJoined {
+            player_id: healthy_id,
+            name: "Jugador sano".to_string(),
+        });
+
+        let mut reader = BufReader::new(healthy_client);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(
+            crate::decode_server(line.trim()).unwrap(),
+            ServerMessage::PlayerJoined {
+                player_id: healthy_id,
+                name: "Jugador sano".to_string(),
+            }
+        );
+
+        let server = state.lock().unwrap();
+        assert!(server.players.contains_key(&healthy_id));
+        assert!(!server.players.contains_key(&failed_id));
+        assert!(!server.connections.contains_key(&failed_id));
+        drop(server);
+
+        assert_eq!(
+            events.pop(),
+            Some(ServerEvent::PlayerLeft {
+                player_id: failed_id,
+            })
+        );
+        assert_eq!(events.pop(), None);
+        assert!(!disconnect_player(&state, Some(&events), failed_id));
+        drop(failed_client);
     }
 }

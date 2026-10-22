@@ -681,3 +681,58 @@ fn test_server_survives_invalid_client() {
     valid.disconnect().unwrap();
     stop_server(shutdown, handle);
 }
+
+#[test]
+fn test_server_shutdown_is_bounded_with_idle_and_joined_clients() {
+    use std::io::Read;
+    use std::sync::mpsc;
+
+    let server = GameServer::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap().to_string();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let signal = Arc::clone(&shutdown);
+    let (done_sender, done_receiver) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let result = server.run_until(&signal);
+        done_sender.send(result).unwrap();
+    });
+
+    let mut idle = raw_client(&address);
+    let mut joined = raw_client(&address);
+    send_raw(
+        &mut joined,
+        &networking::encode(&ClientMessage::Join {
+            version: networking::PROTOCOL_VERSION,
+            name: "Jugador activo".to_string(),
+        })
+        .unwrap(),
+    );
+    assert!(matches!(
+        read_raw_response(&joined),
+        ServerMessage::Welcome { .. }
+    ));
+
+    shutdown.store(true, Ordering::Relaxed);
+    assert!(done_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()
+        .is_ok());
+    handle.join().unwrap();
+
+    for stream in [&mut idle, &mut joined] {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut buffer = [0_u8; 1];
+        assert_eq!(stream.read(&mut buffer).unwrap(), 0);
+    }
+}
+
+#[test]
+fn test_server_shutdown_without_clients_is_idempotent() {
+    let (_address, shutdown, handle) = start_server();
+
+    shutdown.store(true, Ordering::Relaxed);
+    shutdown.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+}
