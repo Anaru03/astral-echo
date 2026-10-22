@@ -41,6 +41,11 @@ struct Batch {
 pub(crate) struct InstancedScene {
     pipeline: wgpu::RenderPipeline,
     lighting: Option<crate::lighting::LightingPass>,
+    shadows: Option<crate::shadows::ShadowPass>,
+    shadow_sources: Vec<InstanceSource>,
+    next_shadow_sources: Vec<InstanceSource>,
+    shadow_batches: Vec<Batch>,
+    shadow_dirty: bool,
     format: wgpu::TextureFormat,
     cache: BTreeMap<(MeshHandle, LodLevel), Vec<usize>>,
     geometries: Vec<Geometry>,
@@ -68,6 +73,11 @@ impl InstancedScene {
         Self {
             pipeline: color_pipeline(gpu, format, layout, shader, true),
             lighting: None,
+            shadows: None,
+            shadow_sources: Vec::new(),
+            next_shadow_sources: Vec::new(),
+            shadow_batches: Vec::new(),
+            shadow_dirty: false,
             format,
             cache: BTreeMap::new(),
             geometries: Vec::new(),
@@ -174,6 +184,10 @@ impl InstancedScene {
         scene: &PreparedScene,
     ) -> Result<bool, GpuError> {
         gpu.check()?;
+        let shadow_vp = scene
+            .lighting
+            .shadow_view_projection()
+            .map_err(|_| GpuError::InvalidInput("invalid shadow configuration".into()))?;
         self.next_sources.clear();
         self.batches.clear();
         for draw in scene.draws() {
@@ -276,6 +290,78 @@ impl InstancedScene {
         } else if let Some(lighting) = &mut self.lighting {
             lighting.active = false;
         }
+        self.next_shadow_sources.clear();
+        self.shadow_batches.clear();
+        if let Some(vp) = shadow_vp {
+            for draw in scene.shadow_draws() {
+                let key = (draw.node.mesh, draw.lod);
+                let geometry = self.geometry(gpu, key, &draw.mesh)?;
+                let first = u32::try_from(self.next_shadow_sources.len())
+                    .map_err(|e| GpuError::InvalidInput(e.to_string()))?;
+                self.next_shadow_sources.push(InstanceSource {
+                    key,
+                    id: draw.node.entity,
+                    geometry,
+                    material: draw.node.material,
+                    transform: draw.node.transform,
+                });
+                if self.geometries[geometry].index_count == 0 {
+                    continue;
+                }
+                if let Some(last) = self.shadow_batches.last_mut().filter(|last| {
+                    last.key == key
+                        && last.geometry == geometry
+                        && last.material == draw.node.material
+                        && last.instances.end == first
+                }) {
+                    last.instances.end = first + 1;
+                } else {
+                    self.shadow_batches.push(Batch {
+                        key,
+                        geometry,
+                        material: draw.node.material,
+                        instances: first..first + 1,
+                    });
+                }
+            }
+            let instances_changed =
+                self.shadow_dirty || self.shadow_sources != self.next_shadow_sources;
+            std::mem::swap(&mut self.shadow_sources, &mut self.next_shadow_sources);
+            let lighting = self.lighting.as_ref().expect("active shadow lighting");
+            if self.shadows.is_none() {
+                self.shadows = Some(crate::shadows::ShadowPass::new(
+                    gpu,
+                    self.format,
+                    &lighting.layout,
+                    scene.lighting.shadows,
+                )?);
+            }
+            let direction = scene
+                .lighting
+                .lights()
+                .iter()
+                .find_map(|light| match light.kind {
+                    render_core::RenderLightKind::Directional { direction }
+                        if light.casts_shadow =>
+                    {
+                        Some(direction)
+                    }
+                    _ => None,
+                })
+                .expect("shadow directional light");
+            self.shadows.as_mut().expect("shadow resources").sync(
+                gpu,
+                scene.lighting.shadows,
+                vp,
+                direction,
+                instances_changed,
+                self.shadow_sources.iter().map(|source| source.transform),
+            )?;
+        } else if let Some(shadows) = &mut self.shadows {
+            shadows.active = false;
+            self.shadow_sources.clear();
+        }
+        self.shadow_dirty = false;
         let changed = self.sources != self.next_sources;
         self.dirty |= changed;
         std::mem::swap(&mut self.sources, &mut self.next_sources);
@@ -297,10 +383,28 @@ impl InstancedScene {
         if let Some(lighting) = &mut self.lighting {
             lighting.set_transform(index, transform);
         }
+        for caster in &mut self.shadow_sources {
+            if caster.id == source.id {
+                self.shadow_dirty |= caster.transform != transform;
+                caster.transform = transform;
+            }
+        }
         Ok(())
     }
 
     pub(crate) fn update(&mut self, gpu: &GpuContext, vp: Mat4) -> Result<(), GpuError> {
+        if let Some(shadows) = self
+            .shadows
+            .as_mut()
+            .filter(|s| s.active && self.shadow_dirty)
+        {
+            shadows.update_instances(
+                gpu,
+                shadows.view_projection(),
+                self.shadow_sources.iter().map(|source| source.transform),
+            )?;
+            self.shadow_dirty = false;
+        }
         if let Some(lighting) = self.lighting.as_mut().filter(|lighting| lighting.active) {
             return lighting.update(gpu, vp);
         }
@@ -343,6 +447,9 @@ impl InstancedScene {
         let lighting = self.lighting.as_ref().filter(|lighting| lighting.active);
         if let Some(lighting) = lighting {
             lighting.bind(pass);
+            if let Some(shadows) = self.shadows.as_ref().filter(|s| s.active) {
+                shadows.bind_color(pass);
+            }
         } else {
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(1, self.instances.slice(..));
@@ -361,6 +468,46 @@ impl InstancedScene {
         }
     }
 
+    pub(crate) fn lighting_cold_setup_ms(&self) -> Option<[f64; 3]> {
+        self.lighting.as_ref().map(|lighting| lighting.cold_setup)
+    }
+
+    pub(crate) fn shadows_active(&self) -> bool {
+        self.shadows.as_ref().is_some_and(|s| s.active)
+    }
+
+    pub(crate) fn encode_shadow(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) {
+        let Some(shadows) = self.shadows.as_ref().filter(|s| s.active) else {
+            return;
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("directional shadow pass"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &shadows.view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes,
+            ..Default::default()
+        });
+        pass.set_pipeline(&shadows.depth_pipeline);
+        pass.set_vertex_buffer(1, shadows.instances.slice(..));
+        for batch in &self.shadow_batches {
+            let geometry = &self.geometries[batch.geometry];
+            pass.set_vertex_buffer(0, geometry.vertices.slice(..));
+            pass.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..geometry.index_count, 0, batch.instances.clone());
+        }
+    }
+
     pub(crate) fn resources(&self, base: ResourceStats) -> ResourceStats {
         ResourceStats {
             vertex_bytes: base.vertex_bytes
@@ -371,14 +518,17 @@ impl InstancedScene {
                     .sum::<u64>(),
             index_bytes: base.index_bytes
                 + self.geometries.iter().map(|g| g.index_bytes).sum::<u64>(),
-            uniform_bytes: base.uniform_bytes + if self.lighting.is_some() { 288 } else { 0 },
+            uniform_bytes: base.uniform_bytes
+                + if self.lighting.is_some() { 288 } else { 0 }
+                + if self.shadows.is_some() { 96 } else { 0 },
             draw_count: self.batches.len(),
             instance_count: self.sources.len(),
             instance_bytes: self.capacity as u64 * 64
                 + self
                     .lighting
                     .as_ref()
-                    .map_or(0, |lighting| lighting.instance_bytes()),
+                    .map_or(0, |lighting| lighting.instance_bytes())
+                + self.shadows.as_ref().map_or(0, |s| s.instance_bytes()),
             geometry_uploads: base.geometry_uploads + self.geometries.len() as u64,
             buffer_rebuilds: base.buffer_rebuilds
                 + self.geometries.len() as u64
@@ -391,13 +541,22 @@ impl InstancedScene {
                 + self
                     .lighting
                     .as_ref()
-                    .map_or(0, |lighting| lighting.reallocations),
+                    .map_or(0, |lighting| lighting.reallocations)
+                + self.shadows.as_ref().map_or(0, |s| s.reallocations),
             dynamic_bytes_written: base.dynamic_bytes_written
                 + self.bytes_written
                 + self
                     .lighting
                     .as_ref()
-                    .map_or(0, |lighting| lighting.bytes_written),
+                    .map_or(0, |lighting| lighting.bytes_written)
+                + self.shadows.as_ref().map_or(0, |s| s.bytes_written),
+            shadow_map_bytes: self.shadows.as_ref().map_or(0, |s| s.texture_bytes()),
+            shadow_map_allocations: self.shadows.as_ref().map_or(0, |s| s.allocations),
+            shadow_draw_count: if self.shadows_active() {
+                self.shadow_batches.len()
+            } else {
+                0
+            },
         }
     }
 }

@@ -83,6 +83,9 @@ pub struct ResourceStats {
     pub geometry_uploads: u64,
     pub buffer_rebuilds: u64,
     pub dynamic_bytes_written: u64,
+    pub shadow_map_bytes: u64,
+    pub shadow_map_allocations: u64,
+    pub shadow_draw_count: usize,
 }
 
 pub struct GpuRenderer {
@@ -91,6 +94,7 @@ pub struct GpuRenderer {
     pipeline_layout: wgpu::PipelineLayout,
     shader: wgpu::ShaderModule,
     instanced: Option<crate::instancing::InstancedScene>,
+    timer: Option<crate::timing::GpuTimer>,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     uniforms: wgpu::Buffer,
@@ -142,6 +146,9 @@ impl GpuRenderer {
             geometry_uploads: packed.draws.len() as u64,
             buffer_rebuilds: 1,
             dynamic_bytes_written: 0,
+            shadow_map_bytes: 0,
+            shadow_map_allocations: 0,
+            shadow_draw_count: 0,
         };
         let max = gpu.device.limits().max_buffer_size;
         if [stats.vertex_bytes, stats.index_bytes, stats.uniform_bytes]
@@ -233,6 +240,7 @@ impl GpuRenderer {
             pipeline_layout,
             shader,
             instanced: None,
+            timer: None,
             vertices,
             indices,
             uniforms,
@@ -246,6 +254,25 @@ impl GpuRenderer {
             prepared_keys: Vec::new(),
             prepared_meshes: Vec::new(),
         })
+    }
+
+    pub fn enable_gpu_timing(&mut self) -> bool {
+        if self.timer.is_none() {
+            self.timer = crate::timing::GpuTimer::new(&self.gpu);
+        }
+        self.timer.is_some()
+    }
+
+    pub fn read_gpu_timings(&self) -> Result<Option<crate::FrameGpuTimings>, GpuError> {
+        self.timer
+            .as_ref()
+            .map_or(Ok(None), |timer| timer.read(&self.gpu))
+    }
+
+    pub fn lighting_cold_setup_ms(&self) -> Option<[f64; 3]> {
+        self.instanced
+            .as_ref()
+            .and_then(|scene| scene.lighting_cold_setup_ms())
     }
 
     pub fn resources(&self) -> ResourceStats {
@@ -405,6 +432,12 @@ impl GpuRenderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("color frame"),
             });
+        if let Some(instanced) = &self.instanced {
+            instanced.encode_shadow(
+                &mut encoder,
+                self.timer.as_ref().map(|timer| timer.writes(true)),
+            );
+        }
         {
             let channel = |v: u8| {
                 let v = f64::from(v) / 255.0;
@@ -420,6 +453,7 @@ impl GpuRenderer {
             };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("color and depth"),
+                timestamp_writes: self.timer.as_ref().map(|timer| timer.writes(false)),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: color,
                     depth_slice: None,
@@ -456,6 +490,14 @@ impl GpuRenderer {
                     pass.draw_indexed(indices.clone(), 0, 0..1);
                 }
             }
+        }
+        if let Some(timer) = &mut self.timer {
+            timer.resolve(
+                &mut encoder,
+                self.instanced
+                    .as_ref()
+                    .is_some_and(|scene| scene.shadows_active()),
+            );
         }
         Ok(self.gpu.queue.submit([encoder.finish()]))
     }

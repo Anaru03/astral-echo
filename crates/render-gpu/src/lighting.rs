@@ -33,6 +33,8 @@ struct EnvironmentData {
 pub(crate) struct LightingPass {
     pub active: bool,
     pipeline: wgpu::RenderPipeline,
+    pub layout: wgpu::BindGroupLayout,
+    pub cold_setup: [f64; 3],
     bind_group: wgpu::BindGroup,
     uniform: wgpu::Buffer,
     instances: wgpu::Buffer,
@@ -89,30 +91,29 @@ impl LightingPass {
                 bind_group_layouts: &[Some(&layout)],
                 immediate_size: 0,
             });
+        let shader_start = std::time::Instant::now();
         let shader = gpu
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Lambert Blinn GGX"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("lighting.wgsl").into()),
             });
-        let pipeline = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label:Some("instanced lighting"),layout:Some(&pipeline_layout),
-            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_lighting"),compilation_options:Default::default(),buffers:&[
-                wgpu::VertexBufferLayout {array_stride:28,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0 => Float32x3,1 => Float32x4]},
-                wgpu::VertexBufferLayout {array_stride:INSTANCE_BYTES,step_mode:wgpu::VertexStepMode::Instance,attributes:&wgpu::vertex_attr_array![3 => Float32x4,4 => Float32x4,5 => Float32x4,6 => Float32x4,7 => Float32x4,8 => Float32x4,9 => Float32x4,10 => Float32x4,11 => Float32x4,12 => Float32x4,13 => Float32x4,14 => Float32x4,15 => Float32x4]},
-                wgpu::VertexBufferLayout {array_stride:12,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![2 => Float32x3]},
-            ]},
-            primitive:wgpu::PrimitiveState {cull_mode:None,..Default::default()},
-            depth_stencil:Some(wgpu::DepthStencilState {format:crate::renderer::DEPTH_FORMAT,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::Less),stencil:Default::default(),bias:Default::default()}),
-            multisample:Default::default(),
-            fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some("fs_lighting"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),
-            multiview_mask:None,cache:None,
-        });
+        let shader_ms = shader_start.elapsed().as_secs_f64() * 1000.0;
+        let pipeline_start = std::time::Instant::now();
+        let pipeline = lighting_pipeline(gpu, format, &pipeline_layout, &shader, false);
+        let pipeline_ms = pipeline_start.elapsed().as_secs_f64() * 1000.0;
+        let validation_start = std::time::Instant::now();
         if let Some(error) = block_on(scope.pop()) {
             return Err(GpuError::Backend(error.to_string()));
         }
         Ok(Self {
             active: true,
+            layout,
+            cold_setup: [
+                shader_ms,
+                pipeline_ms,
+                validation_start.elapsed().as_secs_f64() * 1000.0,
+            ],
             pipeline,
             bind_group,
             uniform,
@@ -270,4 +271,26 @@ fn instance_buffer(gpu: &GpuContext, capacity: usize) -> wgpu::Buffer {
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
+}
+
+pub(crate) fn lighting_pipeline(
+    gpu: &GpuContext,
+    format: wgpu::TextureFormat,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    shadow: bool,
+) -> wgpu::RenderPipeline {
+    gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:Some("instanced lighting"),layout:Some(pipeline_layout),
+            vertex:wgpu::VertexState {module:shader,entry_point:Some(if shadow { "vs_shadow_lighting" } else { "vs_lighting" }),compilation_options:Default::default(),buffers:&[
+                wgpu::VertexBufferLayout {array_stride:28,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0 => Float32x3,1 => Float32x4]},
+                wgpu::VertexBufferLayout {array_stride:INSTANCE_BYTES,step_mode:wgpu::VertexStepMode::Instance,attributes:&wgpu::vertex_attr_array![3 => Float32x4,4 => Float32x4,5 => Float32x4,6 => Float32x4,7 => Float32x4,8 => Float32x4,9 => Float32x4,10 => Float32x4,11 => Float32x4,12 => Float32x4,13 => Float32x4,14 => Float32x4,15 => Float32x4]},
+                wgpu::VertexBufferLayout {array_stride:12,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![2 => Float32x3]},
+            ]},
+            primitive:wgpu::PrimitiveState {cull_mode:None,..Default::default()},
+            depth_stencil:Some(wgpu::DepthStencilState {format:crate::renderer::DEPTH_FORMAT,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::Less),stencil:Default::default(),bias:Default::default()}),
+            multisample:Default::default(),
+            fragment:Some(wgpu::FragmentState {module:shader,entry_point:Some(if shadow { "fs_shadow_lighting" } else { "fs_lighting" }),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),
+            multiview_mask:None,cache:None,
+        })
 }

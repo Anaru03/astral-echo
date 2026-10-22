@@ -8,7 +8,7 @@ fn safe_normalize(v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(0.0);
 }
 
-fn shade(color: vec4<f32>, albedo: vec4<f32>, params: vec4<f32>, emissive: vec3<f32>, position: vec3<f32>, normal_input: vec3<f32>, mode: f32) -> vec4<f32> {
+fn shade_visibility(color: vec4<f32>, albedo: vec4<f32>, params: vec4<f32>, emissive: vec3<f32>, position: vec3<f32>, normal_input: vec3<f32>, mode: f32, shadow_visibility: f32) -> vec4<f32> {
     let base = color*albedo;
     let normal = safe_normalize(normal_input);
     let view = safe_normalize(environment.camera.xyz-position);
@@ -24,6 +24,7 @@ fn shade(color: vec4<f32>, albedo: vec4<f32>, params: vec4<f32>, emissive: vec3<
             let falloff = clamp(1.0-distance_squared/(light.range.x*light.range.x),0.0,1.0);
             attenuation = falloff*falloff/(1.0+distance_squared);
         }
+        if light.vector.w < 0.5 { attenuation *= shadow_visibility; }
         let nl = max(dot(normal,direction),0.0);
         if nl <= 0.0 { continue; }
         let half_vector = safe_normalize(view+direction);
@@ -48,6 +49,10 @@ fn shade(color: vec4<f32>, albedo: vec4<f32>, params: vec4<f32>, emissive: vec3<
         result += reflected*light.color.rgb*light.color.w*attenuation*nl;
     }
     return vec4<f32>(clamp(result,vec3<f32>(0.0),vec3<f32>(1.0)),clamp(base.a,0.0,1.0));
+}
+
+fn shade(color: vec4<f32>, albedo: vec4<f32>, params: vec4<f32>, emissive: vec3<f32>, position: vec3<f32>, normal: vec3<f32>, mode: f32) -> vec4<f32> {
+    return shade_visibility(color,albedo,params,emissive,position,normal,mode,1.0);
 }
 
 struct LitVertex {
@@ -79,8 +84,7 @@ struct LitOutput {
     @location(5) @interpolate(flat) emissive: vec3<f32>,
 }
 
-@vertex
-fn vs_lighting(input: LitVertex) -> LitOutput {
+fn lighting_vertex(input: LitVertex) -> LitOutput {
     var result: LitOutput;
     let p = vec4<f32>(input.position,1.0);
     result.clip = mat4x4<f32>(input.c0,input.c1,input.c2,input.c3)*p;
@@ -106,3 +110,5 @@ fn fs_lighting(input: LitOutput) -> @location(0) vec4<f32> {
     }
     return color;
 }
+
+@vertex fn vs_lighting(input: LitVertex) -> LitOutput { return lighting_vertex(input); }

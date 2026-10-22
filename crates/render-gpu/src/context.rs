@@ -99,6 +99,7 @@ impl GpuContext {
         .map_err(|e| GpuError::Unavailable(e.to_string()))?;
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Astral Echo GPU"),
+            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
             ..Default::default()
         }))
         .map_err(|e| GpuError::Backend(e.to_string()))?;
