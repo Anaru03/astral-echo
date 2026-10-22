@@ -50,12 +50,6 @@ pub fn render_prepared_scene(
             mode,
         });
     pipeline.clear(Color::new(8, 10, 18, 255));
-    for draw in scene.draws() {
-        pipeline.draw_mesh(
-            &draw.mesh,
-            view_projection * draw.node.transform.matrix(),
-            Topology::TriangleList,
-        )?;
-    }
+    pipeline.draw_prepared_scene(scene, view_projection)?;
     Ok(pipeline.stats)
 }

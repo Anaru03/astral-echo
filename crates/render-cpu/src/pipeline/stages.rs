@@ -145,6 +145,7 @@ impl Default for PipelineConfig {
 pub struct PipelineStats {
     pub metrics: StageMetrics,
     pub draws: u32,
+    pub assembly_cache_hits: u32,
     pub errors: u32,
 }
 

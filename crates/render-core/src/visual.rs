@@ -8,7 +8,7 @@ use crate::{
     RenderSnapshot, SnapshotId, SnapshotNode, Transform, Vec3, Vec4,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LodLevel {
     Low,
     High,
@@ -59,6 +59,16 @@ pub struct PreparedScene {
 }
 
 impl PreparedScene {
+    pub fn from_draws(draws: Vec<PreparedDraw>) -> Self {
+        Self {
+            considered: draws.len(),
+            visible: draws.len(),
+            discarded: 0,
+            triangles: draws.iter().map(|draw| draw.mesh.indices.len() / 3).sum(),
+            draws,
+        }
+    }
+
     pub fn draws(&self) -> impl Iterator<Item = &PreparedDraw> {
         self.draws.iter()
     }

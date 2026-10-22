@@ -5,6 +5,7 @@ pub mod tiles;
 pub mod vertex;
 
 use glam::Mat4;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::clip::{clip_triangle, ClipVertex};
@@ -38,6 +39,7 @@ pub struct CpuPipeline<'a> {
     triangles: Vec<Triangle>,
     fragments: Vec<Fragment>,
     shaded: Vec<Color>,
+    assembly: AssemblyStats,
 }
 
 impl<'a> CpuPipeline<'a> {
@@ -58,6 +60,7 @@ impl<'a> CpuPipeline<'a> {
             triangles: Vec::new(),
             fragments: Vec::new(),
             shaded: Vec::new(),
+            assembly: AssemblyStats::default(),
         }
     }
 
@@ -103,6 +106,52 @@ impl<'a> CpuPipeline<'a> {
         mvp: Mat4,
         topology: Topology,
     ) -> Result<PipelineStats, RasterError> {
+        self.draw_mesh_inner(mesh, mvp, topology, false)
+    }
+
+    pub fn draw_mesh_instances(
+        &mut self,
+        mesh: &RasterMesh,
+        matrices: impl IntoIterator<Item = Mat4>,
+        topology: Topology,
+    ) -> Result<PipelineStats, RasterError> {
+        let mut reuse = false;
+        for mvp in matrices {
+            self.draw_mesh_inner(mesh, mvp, topology, reuse)?;
+            reuse = true;
+        }
+        Ok(self.stats)
+    }
+
+    pub fn draw_prepared_scene(
+        &mut self,
+        scene: &render_core::PreparedScene,
+        vp: Mat4,
+    ) -> Result<PipelineStats, RasterError> {
+        let mut draws = scene.draws().peekable();
+        while let Some(first) = draws.next() {
+            let matrices = std::iter::once(vp * first.node.transform.matrix()).chain(
+                std::iter::from_fn(|| {
+                    let next = draws.peek()?;
+                    if !Arc::ptr_eq(&first.mesh, &next.mesh) {
+                        return None;
+                    }
+                    let next = draws.next()?;
+                    Some(vp * next.node.transform.matrix())
+                }),
+            );
+            self.draw_mesh_instances(&first.mesh, matrices, Topology::TriangleList)?;
+        }
+        Ok(self.stats)
+    }
+
+    fn draw_mesh_inner(
+        &mut self,
+        mesh: &RasterMesh,
+        mvp: Mat4,
+        topology: Topology,
+        reuse: bool,
+    ) -> Result<PipelineStats, RasterError> {
         self.stats.draws += 1;
         let stage = VertexStage::new(mvp);
         self.stats.metrics.vertices_in += mesh.vertices.len() as u32;
@@ -112,12 +161,16 @@ impl<'a> CpuPipeline<'a> {
         let vertex_ns = self.elapsed(t0);
 
         let t1 = self.timer();
-        let assembly = assemble(
-            topology,
-            &mesh.indices,
-            mesh.vertices.len() as u32,
-            &mut self.triangles,
-        )?;
+        if !reuse {
+            self.assembly = assemble(
+                topology,
+                &mesh.indices,
+                mesh.vertices.len() as u32,
+                &mut self.triangles,
+            )?;
+        }
+        self.stats.assembly_cache_hits += u32::from(reuse);
+        let assembly = self.assembly;
         let assembly_ns = self.elapsed(t1);
         self.stats.metrics.triangles_assembled += assembly.triangles;
         self.stats.metrics.triangles_rejected +=
