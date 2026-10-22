@@ -2,9 +2,71 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::{
-    Camera, Mat4, MaterialHandle, MeshHandle, RasterMesh, RasterVertex, RenderSnapshot,
-    SnapshotNode, Transform, Vec3, Vec4,
+    Aabb, Camera, Frustum, Mat4, MaterialHandle, MeshHandle, RasterMesh, RasterVertex,
+    RenderSnapshot, SnapshotNode, Transform, Vec3, Vec4,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LodLevel {
+    Low,
+    High,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VisibilityClass {
+    Outside,
+    Partial,
+    Inside,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CullingConfig {
+    pub width: u32,
+    pub height: u32,
+    pub low_threshold_px: f32,
+    pub high_threshold_px: f32,
+}
+
+impl Default for CullingConfig {
+    fn default() -> Self {
+        Self {
+            width: 640,
+            height: 360,
+            low_threshold_px: 12.0,
+            high_threshold_px: 18.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedDraw {
+    pub node: SnapshotNode,
+    pub mesh: RasterMesh,
+    pub lod: LodLevel,
+    pub visibility: VisibilityClass,
+    pub projected_size_px: f32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PreparedScene {
+    draws: Vec<PreparedDraw>,
+    pub considered: usize,
+    pub visible: usize,
+    pub discarded: usize,
+    pub triangles: usize,
+}
+
+impl PreparedScene {
+    pub fn draws(&self) -> impl Iterator<Item = &PreparedDraw> {
+        self.draws.iter()
+    }
+    pub fn owned_draws(&self) -> Vec<(RasterMesh, Transform)> {
+        self.draws
+            .iter()
+            .map(|draw| (draw.mesh.clone(), draw.node.transform))
+            .collect()
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VisualError {
@@ -40,6 +102,34 @@ impl VisualAssets {
         self.meshes
             .get(&(mesh, material))
             .ok_or(VisualError::UnknownAsset(mesh, material))
+    }
+
+    fn low_mesh(mesh: &RasterMesh) -> RasterMesh {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for vertex in &mesh.vertices {
+            min = min.min(vertex.position);
+            max = max.max(vertex.position);
+        }
+        let center = (min + max) * 0.5;
+        let radius = (max - min).length() * 0.5;
+        let color = mesh.vertices.first().map_or(Vec4::ONE, |v| v.color);
+        let p = [
+            center + Vec3::X * radius,
+            center - Vec3::X * radius,
+            center + Vec3::Y * radius,
+            center - Vec3::Y * radius,
+            center + Vec3::Z * radius,
+            center - Vec3::Z * radius,
+        ];
+        RasterMesh::new(
+            p.into_iter()
+                .map(|position| RasterVertex::new(position, color))
+                .collect(),
+            vec![
+                2, 0, 4, 2, 4, 1, 2, 1, 5, 2, 5, 0, 3, 4, 0, 3, 1, 4, 3, 5, 1, 3, 0, 5,
+            ],
+        )
     }
 }
 
@@ -188,4 +278,91 @@ impl SnapshotScene {
         self.visible_nodes()
             .map(|node| (node, &self.assets.meshes[&(node.mesh, node.material)]))
     }
+
+    pub fn prepare(&self, config: CullingConfig) -> PreparedScene {
+        let mut prepared = PreparedScene {
+            considered: self.snapshot.nodes.len(),
+            ..Default::default()
+        };
+        let frustum = Frustum::from_view_projection(self.view_projection());
+        for node in self.snapshot.nodes.iter().filter(|node| node.visible) {
+            let high = &self.assets.meshes[&(node.mesh, node.material)];
+            let local = mesh_bounds(high);
+            let transformed = local.transformed(node.transform.matrix());
+            let visibility = classify_bounds(transformed, frustum);
+            if visibility == VisibilityClass::Outside {
+                prepared.discarded += 1;
+                continue;
+            }
+            let center = transformed.center();
+            let radius = transformed.extents().length();
+            let projected = projected_size(
+                center,
+                radius,
+                self.view_projection(),
+                config.width,
+                config.height,
+            );
+            let lod = if projected < config.low_threshold_px {
+                LodLevel::Low
+            } else {
+                LodLevel::High
+            };
+            let mesh = if lod == LodLevel::Low {
+                VisualAssets::low_mesh(high)
+            } else {
+                high.clone()
+            };
+            prepared.triangles += mesh.indices.len() / 3;
+            prepared.visible += 1;
+            prepared.draws.push(PreparedDraw {
+                node: *node,
+                mesh,
+                lod,
+                visibility,
+                projected_size_px: projected,
+            });
+        }
+        prepared.discarded += self
+            .snapshot
+            .nodes
+            .iter()
+            .filter(|node| !node.visible)
+            .count();
+        prepared
+    }
+}
+
+fn mesh_bounds(mesh: &RasterMesh) -> Aabb {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for vertex in &mesh.vertices {
+        min = min.min(vertex.position);
+        max = max.max(vertex.position);
+    }
+    Aabb { min, max }
+}
+
+fn classify_bounds(aabb: Aabb, frustum: Frustum) -> VisibilityClass {
+    if !frustum.intersects_aabb(aabb) {
+        return VisibilityClass::Outside;
+    }
+    if aabb
+        .corners()
+        .into_iter()
+        .all(|corner| frustum.contains_point(corner))
+    {
+        VisibilityClass::Inside
+    } else {
+        VisibilityClass::Partial
+    }
+}
+
+fn projected_size(center: Vec3, radius: f32, vp: Mat4, width: u32, height: u32) -> f32 {
+    let clip = vp * center.extend(1.0);
+    if clip.w.abs() <= f32::EPSILON {
+        return f32::INFINITY;
+    }
+    let scale = (width.max(height) as f32) / clip.w.abs();
+    radius * scale * 2.0
 }
