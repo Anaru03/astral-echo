@@ -4,6 +4,7 @@ pub mod el_despertar;
 pub mod la_defensa_imposible;
 pub mod multiplayer;
 pub mod render_bridge;
+pub mod render_backend;
 pub mod tormenta_gravitacional;
 
 use engine::EntityId;

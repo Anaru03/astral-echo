@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use game::render_backend::{select_backend, BackendDecision, BackendRequest};
 use render_core::SnapshotScene;
-use render_gpu::{GpuContext, GpuError, GpuRenderer, OffscreenTarget};
+use render_gpu::{GpuContext, GpuRenderer, OffscreenTarget};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut backend = String::from("cpu");
@@ -30,16 +31,26 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--output" => output = Some(PathBuf::from(args.next().ok_or("missing PNG path")?)),
             "--help" => {
                 println!(
-                    "gameplay_visual [--backend cpu|gpu] [--window] [--frames N] [--output PATH]"
+                    "gameplay_visual [--backend cpu|gpu|auto] [--window] [--frames N] [--output PATH]"
                 );
                 return Ok(());
             }
             _ => return Err(format!("unknown option {option}").into()),
         }
     }
-    if backend != "cpu" && backend != "gpu" {
-        return Err("backend must be cpu or gpu".into());
-    }
+    let requested = BackendRequest::parse(&backend)?;
+    let decision = select_backend(requested, || {
+        GpuContext::new(Default::default())
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    })?;
+    println!(
+        "backend requested={} selected={} reason={}",
+        backend,
+        decision.selected(),
+        decision.reason().unwrap_or("none")
+    );
+    backend = decision.selected().into();
     if window && output.is_some() {
         return Err("PNG output uses offscreen mode; omit --window".into());
     }
@@ -47,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tick = world.time().tick;
     println!("F5B read-only world tick={} ship={:?} players={} enemies={} destinations={} collectibles={}",tick.0,world.navigation().ship_id(),world.players().count(),world.enemies().count(),world.destinations().count(),world.collectibles().count());
     if window {
-        if backend == "cpu" {
+        if matches!(decision, BackendDecision::Cpu { .. }) {
             let mut scene = SnapshotScene::default();
             let config = render_present::WindowConfig {
                 max_frames: frames,
@@ -72,14 +83,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 report.metrics.average_presentation().as_secs_f64() * 1000.0
             );
         } else {
-            match render_gpu::run_snapshot_window(
+            let report = render_gpu::run_snapshot_window(
                 move |width, height| Ok(support::snapshot(&world, width, height)),
                 frames.map(NonZeroU64::get),
-            ) {
-                Ok(report) => println!("GPU window {report:?}"),
-                Err(GpuError::Unavailable(reason)) => println!("SKIP GPU: {reason}"),
-                Err(error) => return Err(error.into()),
-            }
+            )?;
+            println!("GPU window {report:?}");
         }
         return Ok(());
     }
@@ -88,7 +96,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     scene.update(&support::snapshot(&world, width, height))?;
     let count = frames.map(NonZeroU64::get).unwrap_or(1);
     let path = output.unwrap_or_else(|| PathBuf::from(format!("target/f5b-output/{backend}.png")));
-    if backend == "cpu" {
+    if matches!(decision, BackendDecision::Cpu { .. }) {
         let mut framebuffer = render_cpu::Framebuffer::new(width, height)?;
         let start = Instant::now();
         for _ in 0..count {
@@ -102,14 +110,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         render_cpu::write_png(&path, &framebuffer)?;
         println!("CPU frames={count} render_avg_ms={render_ms:.3}");
     } else {
-        let gpu = match GpuContext::new(Default::default()) {
-            Ok(gpu) => Arc::new(gpu),
-            Err(GpuError::Unavailable(reason)) => {
-                println!("SKIP GPU: {reason}");
-                return Ok(());
-            }
-            Err(error) => return Err(error.into()),
-        };
+        let gpu = Arc::new(GpuContext::new(Default::default())?);
         println!("ADAPTER {:?}", gpu.adapter_info());
         let mut renderer = GpuRenderer::from_snapshot(gpu.clone(), &scene)?;
         let target = OffscreenTarget::new(gpu.clone(), width, height)?;
