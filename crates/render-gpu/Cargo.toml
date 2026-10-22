@@ -1,0 +1,16 @@
+[package]
+name = "render-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+render-core.workspace = true
+wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "vulkan", "metal", "wgsl"] }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+winit = "0.30.13"
+png = "0.18"
+
+[dev-dependencies]
+render-cpu = { path = "../render-cpu" }
+
