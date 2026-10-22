@@ -8,6 +8,7 @@ license.workspace = true
 engine.workspace = true
 gameplay.workspace = true
 networking = { path = "../networking" }
+render-core.workspace = true
 bevy = "0.19"
 
 [lib]
