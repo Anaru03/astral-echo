@@ -4,6 +4,14 @@ use crate::clip::ClipVertex;
 use crate::error::RasterError;
 use crate::geometry::RasterVertex;
 
+pub(super) struct VertexLighting<'a> {
+    pub model: Mat4,
+    pub normal_matrix: Mat4,
+    pub normals: &'a [Vec3],
+    pub material: render_core::MaterialInfo,
+    pub environment: &'a render_core::LightingEnvironment,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VertexStage {
     mvp: Mat4,
@@ -31,6 +39,36 @@ impl VertexStage {
             return Err(RasterError::NonFiniteVertex);
         }
         Ok(ClipVertex::new(clip, vertex.color))
+    }
+
+    pub(super) fn transform_lit_into(
+        &self,
+        vertices: &[RasterVertex],
+        lighting: &VertexLighting<'_>,
+        out: &mut Vec<ClipVertex>,
+    ) -> Result<(), RasterError> {
+        if !lighting.environment.camera_position.is_finite()
+            || !lighting.environment.ambient.is_finite()
+        {
+            return Err(RasterError::NonFiniteVertex);
+        }
+        out.clear();
+        out.reserve(vertices.len());
+        for (vertex, normal) in vertices.iter().zip(lighting.normals) {
+            let mut transformed = self.transform(vertex)?;
+            let position = lighting.model.transform_point3(vertex.position);
+            let normal =
+                render_core::normalize_direction(lighting.normal_matrix.transform_vector3(*normal));
+            transformed.color = render_core::shade_surface(
+                lighting.environment,
+                lighting.material,
+                vertex.color,
+                position,
+                normal,
+            );
+            out.push(transformed);
+        }
+        Ok(())
     }
 
     pub fn transform_into(

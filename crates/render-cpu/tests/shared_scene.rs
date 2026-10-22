@@ -95,3 +95,39 @@ fn shared_assembly_matches_reference_and_invalidates_on_mesh_topology_and_plain_
     assert_eq!(Arc::strong_count(&cube), 1);
     assert_eq!(Arc::strong_count(&other), 1);
 }
+
+#[test]
+fn lit_normals_materials_and_depth_work_without_gpu() {
+    use render_core::{LightingMode, Mat4, Vec3};
+    use render_cpu::{Framebuffer, RasterMode};
+    let mut scene = render_core::material_fixture();
+    let mut draws: Vec<_> = scene.draws().cloned().collect();
+    draws[0].node.transform.scale = Vec3::new(-1.2, 0.4, 2.0);
+    draws[0].node.transform.rotation = render_core::Quat::from_rotation_y(0.5);
+    let mut changed = render_core::PreparedScene::from_draws(draws);
+    changed.lighting = scene.lighting.clone();
+    for draw in scene.draws() {
+        changed.set_material(draw.node.material, scene.material(draw.node.material));
+    }
+    scene = changed;
+    let vp = Mat4::perspective_rh(1.0, 160.0 / 90.0, 0.1, 100.0);
+    let mut unlit = Framebuffer::new(160, 90).unwrap();
+    scene.lighting.mode = LightingMode::Unlit;
+    render_cpu::render_prepared_scene(&mut unlit, &scene, vp, RasterMode::Secuencial).unwrap();
+    for mode in [
+        LightingMode::Lambert,
+        LightingMode::BlinnPhong,
+        LightingMode::Pbr,
+    ] {
+        scene.lighting.mode = mode;
+        let mut lit = Framebuffer::new(160, 90).unwrap();
+        render_cpu::render_prepared_scene(&mut lit, &scene, vp, RasterMode::Secuencial).unwrap();
+        assert_ne!(lit.color_bytes(), unlit.color_bytes());
+        assert_eq!(lit.depth_slice_mut(), unlit.depth_slice_mut());
+        for raster in [RasterMode::Paralelo, RasterMode::Auto] {
+            let mut other = Framebuffer::new(160, 90).unwrap();
+            render_cpu::render_prepared_scene(&mut other, &scene, vp, raster).unwrap();
+            assert_eq!(lit, other);
+        }
+    }
+}
