@@ -2,7 +2,7 @@ use crate::protocol::{
     decode_server, encode, ClientMessage, NetworkPlayerId, ServerMessage, PROTOCOL_VERSION,
 };
 use std::collections::VecDeque;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
@@ -68,7 +68,11 @@ impl GameClient {
     fn receive_from_network(&mut self) -> io::Result<ServerMessage> {
         let mut line = Vec::new();
 
-        let bytes = self.reader.read_until(b'\n', &mut line)?;
+        let bytes = self
+            .reader
+            .by_ref()
+            .take((MAX_MESSAGE_SIZE + 1) as u64)
+            .read_until(b'\n', &mut line)?;
 
         if bytes == 0 {
             return Err(io::Error::new(
@@ -124,5 +128,37 @@ impl GameClient {
 
     pub fn disconnect(&mut self) -> io::Result<()> {
         self.send(&ClientMessage::Leave)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn receive_rejects_oversized_server_message() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let writer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(&vec![b'A'; MAX_MESSAGE_SIZE + 1]).unwrap();
+            stream.write_all(b"\n").unwrap();
+        });
+
+        let stream = TcpStream::connect(address).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let reader = BufReader::new(stream.try_clone().unwrap());
+        let mut client = GameClient {
+            stream,
+            reader,
+            player_id: 0,
+            pending_events: VecDeque::new(),
+        };
+
+        let error = client.receive().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        writer.join().unwrap();
     }
 }

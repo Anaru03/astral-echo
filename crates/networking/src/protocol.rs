@@ -6,6 +6,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub type NetworkPlayerId = u64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientMessage {
     Join {
@@ -135,6 +136,15 @@ mod tests {
     #[test]
     fn test_invalid_message() {
         let result = decode_client("mensaje invalido");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unknown_client_fields_are_rejected() {
+        let result = decode_client(
+            r#"{"type":"Join","data":{"version":1,"name":"Jugador","unexpected":"not allowed"}}"#,
+        );
 
         assert!(result.is_err());
     }

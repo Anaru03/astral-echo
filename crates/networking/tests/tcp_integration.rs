@@ -4,7 +4,7 @@ use networking::{
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Barrier,
 };
 use std::thread;
 use std::time::Duration;
@@ -555,6 +555,26 @@ fn test_reject_incompatible_version() {
 }
 
 #[test]
+fn test_reject_zero_version_without_creating_player() {
+    let (address, shutdown, handle) = start_server();
+    let mut invalid = raw_client(&address);
+    let message = ClientMessage::Join {
+        version: 0,
+        name: "Jugador incompatible".to_string(),
+    };
+    send_raw(&mut invalid, &networking::encode(&message).unwrap());
+    assert!(matches!(
+        read_raw_response(&invalid),
+        ServerMessage::Rejected { .. }
+    ));
+
+    let mut valid = GameClient::connect(&address, "Jugador valido").unwrap();
+    assert!(valid.player_id() > 0);
+    valid.disconnect().unwrap();
+    stop_server(shutdown, handle);
+}
+
+#[test]
 fn test_reject_empty_player_name() {
     let (address, shutdown, handle) = start_server();
     assert!(GameClient::connect(&address, "").is_err());
@@ -577,6 +597,56 @@ fn test_reject_invalid_json() {
         read_raw_response(&stream),
         ServerMessage::Rejected { .. }
     ));
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_incomplete_message_is_rejected_when_client_closes() {
+    let (address, shutdown, handle) = start_server();
+    let mut stream = raw_client(&address);
+    use std::net::Shutdown;
+    use std::io::Write;
+    stream.write_all(br#"{"type":"Ping"}"#).unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+
+    assert!(matches!(
+        read_raw_response(&stream),
+        ServerMessage::Rejected { .. }
+    ));
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_actions_before_join_are_rejected() {
+    let (address, shutdown, handle) = start_server();
+    let mut stream = raw_client(&address);
+    send_raw(&mut stream, &networking::encode(&ClientMessage::Ping).unwrap());
+
+    assert!(matches!(
+        read_raw_response(&stream),
+        ServerMessage::Rejected { .. }
+    ));
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_second_join_is_rejected_without_replacing_identity() {
+    let (address, shutdown, handle) = start_server();
+    let mut client = GameClient::connect(&address, "Jugador 1").unwrap();
+    let first_id = client.player_id();
+    client
+        .send(&ClientMessage::Join {
+            version: networking::PROTOCOL_VERSION,
+            name: "Jugador 2".to_string(),
+        })
+        .unwrap();
+
+    assert!(matches!(
+        client.receive().unwrap(),
+        ServerMessage::Rejected { .. }
+    ));
+    assert_eq!(client.player_id(), first_id);
+    client.disconnect().unwrap();
     stop_server(shutdown, handle);
 }
 
@@ -680,4 +750,217 @@ fn test_server_survives_invalid_client() {
     valid.ping().unwrap();
     valid.disconnect().unwrap();
     stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_server_shutdown_is_bounded_with_idle_and_joined_clients() {
+    use std::io::Read;
+    use std::sync::mpsc;
+
+    let server = GameServer::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap().to_string();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let signal = Arc::clone(&shutdown);
+    let (done_sender, done_receiver) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let result = server.run_until(&signal);
+        done_sender.send(result).unwrap();
+    });
+
+    let mut idle = raw_client(&address);
+    let mut joined = raw_client(&address);
+    send_raw(
+        &mut joined,
+        &networking::encode(&ClientMessage::Join {
+            version: networking::PROTOCOL_VERSION,
+            name: "Jugador activo".to_string(),
+        })
+        .unwrap(),
+    );
+    assert!(matches!(
+        read_raw_response(&joined),
+        ServerMessage::Welcome { .. }
+    ));
+
+    shutdown.store(true, Ordering::Relaxed);
+    assert!(done_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()
+        .is_ok());
+    handle.join().unwrap();
+
+    for stream in [&mut idle, &mut joined] {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut buffer = [0_u8; 1];
+        assert_eq!(stream.read(&mut buffer).unwrap(), 0);
+    }
+}
+
+#[test]
+fn test_server_shutdown_without_clients_is_idempotent() {
+    let (_address, shutdown, handle) = start_server();
+
+    shutdown.store(true, Ordering::Relaxed);
+    shutdown.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+}
+
+#[test]
+fn test_concurrent_connections_and_disconnects_at_configured_limit() {
+    use std::sync::mpsc;
+
+    let (address, shutdown, handle) = start_server();
+    let barrier = Arc::new(Barrier::new(MAX_PLAYERS));
+    let (sender, receiver) = mpsc::channel();
+    let mut threads = Vec::new();
+
+    for index in 0..MAX_PLAYERS {
+        let barrier = Arc::clone(&barrier);
+        let sender = sender.clone();
+        let address = address.clone();
+        threads.push(thread::spawn(move || {
+            barrier.wait();
+            let client = GameClient::connect(&address, &format!("Concurrente {index}"));
+            sender.send(client).unwrap();
+        }));
+    }
+    drop(sender);
+
+    let mut clients = Vec::new();
+    for _ in 0..MAX_PLAYERS {
+        clients.push(receiver.recv_timeout(Duration::from_secs(2)).unwrap().unwrap());
+    }
+    for thread in threads {
+        thread.join().unwrap();
+    }
+
+    let mut ids = clients.iter().map(GameClient::player_id).collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), MAX_PLAYERS);
+
+    for client in &mut clients {
+        client.disconnect().unwrap();
+    }
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_simultaneous_movements_keep_messages_valid_for_healthy_clients() {
+    use std::collections::BTreeSet;
+    use std::sync::mpsc;
+
+    let (address, shutdown, handle) = start_server();
+    let mut clients = Vec::new();
+    for index in 0..MAX_PLAYERS {
+        clients.push(GameClient::connect(&address, &format!("Movimiento {index}" )).unwrap());
+    }
+    for client in &mut clients {
+        for _ in 0..(MAX_PLAYERS - 1) {
+            assert!(matches!(client.receive().unwrap(), ServerMessage::PlayerJoined { .. }));
+        }
+    }
+
+    let barrier = Arc::new(Barrier::new(MAX_PLAYERS));
+    let (sender, receiver) = mpsc::channel();
+    let mut threads = Vec::new();
+    for (index, mut client) in clients.into_iter().enumerate() {
+        let barrier = Arc::clone(&barrier);
+        let sender = sender.clone();
+        threads.push(thread::spawn(move || {
+            barrier.wait();
+            client
+                .send(&ClientMessage::PlayerMove {
+                    sequence: 1,
+                    transform: PlayerTransform::new(
+                        NetworkVec3::new(index as f32, 0.0, 0.0),
+                        NetworkOrientation::new(0.0, 0.0),
+                        NetworkVec3::new(1.0, 0.0, 0.0),
+                    ),
+                })
+                .unwrap();
+            sender.send(client).unwrap();
+        }));
+    }
+    drop(sender);
+
+    let mut clients = Vec::new();
+    for _ in 0..MAX_PLAYERS {
+        clients.push(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+    }
+    for thread in threads {
+        thread.join().unwrap();
+    }
+
+    for client in &mut clients {
+        let mut senders = BTreeSet::new();
+        for _ in 0..(MAX_PLAYERS - 1) {
+            if let ServerMessage::PlayerMoved {
+                player_id,
+                sequence,
+                ..
+            } = client.receive().unwrap()
+            {
+                assert_eq!(sequence, 1);
+                assert!(senders.insert(player_id));
+            } else {
+                panic!("se recibió un mensaje distinto de PlayerMoved");
+            }
+        }
+        assert_eq!(senders.len(), MAX_PLAYERS - 1);
+        client.disconnect().unwrap();
+    }
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_shutdown_during_concurrent_broadcast_finishes_all_handlers() {
+    use std::sync::mpsc;
+
+    let server = GameServer::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap().to_string();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let signal = Arc::clone(&shutdown);
+    let (done_sender, done_receiver) = mpsc::channel();
+    let server_thread = thread::spawn(move || {
+        done_sender.send(server.run_until(&signal)).unwrap();
+    });
+
+    let mut clients = Vec::new();
+    for index in 0..MAX_PLAYERS {
+        clients.push(GameClient::connect(&address, &format!("Cierre {index}" )).unwrap());
+    }
+    let barrier = Arc::new(Barrier::new(MAX_PLAYERS + 1));
+    let mut client_threads = Vec::new();
+    for (index, mut client) in clients.into_iter().enumerate() {
+        let barrier = Arc::clone(&barrier);
+        client_threads.push(thread::spawn(move || {
+            barrier.wait();
+            for sequence in 1..=8 {
+                if client
+                    .send(&ClientMessage::PlayerMove {
+                        sequence,
+                        transform: sample_movement(),
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                let _ = index;
+            }
+        }));
+    }
+
+    barrier.wait();
+    shutdown.store(true, Ordering::Relaxed);
+    assert!(done_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()
+        .is_ok());
+    server_thread.join().unwrap();
+    for thread in client_threads {
+        thread.join().unwrap();
+    }
 }

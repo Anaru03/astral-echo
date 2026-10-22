@@ -1,4 +1,7 @@
 use std::io::{self, BufRead, Write};
+use std::thread;
+use std::time::Duration as StdDuration;
+use std::sync::mpsc;
 use engine::{Duration, EntityId, Vec3};
 mod visual;
 mod scenario_groups;
@@ -30,6 +33,39 @@ use gameplay::{Derelict, DerelictId, DerelictReward, DerelictState};
 use gameplay::{
     CombatZone, FunctionalWorld, ResourceSite, StorySite, TradeMarket, TradeOffer, WorldActivity,
 };
+use game::multiplayer::MultiplayerSession;
+
+pub(crate) fn run_multiplayer(address: &str) -> Result<(), String> {
+    let mut session = MultiplayerSession::bind(address)
+        .map_err(|error| format!("iniciar sesión multijugador: {error}"))?;
+    println!("Sesión multijugador escuchando en {}", session.local_addr().map_err(|error| error.to_string())?);
+    println!("Escribe 'quit' para salir.");
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        let mut input = stdin.lock();
+        loop {
+            let mut line = String::new();
+            if input.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    loop {
+        session
+            .update()
+            .map_err(|error| format!("actualizar sesión multijugador: {error}"))?;
+        match receiver.recv_timeout(StdDuration::from_millis(10)) {
+            Ok(line) if line.trim() == "quit" => return Ok(()),
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
 
 fn run_guidance_progression_scenario() -> Result<(), String> {
     let mut session = ProjectEchoSession::new();
