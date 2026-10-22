@@ -69,7 +69,7 @@ impl PreparedScene {
         }
     }
 
-    pub fn draws(&self) -> impl Iterator<Item = &PreparedDraw> {
+    pub fn draws(&self) -> impl DoubleEndedIterator<Item = &PreparedDraw> {
         self.draws.iter()
     }
     pub fn owned_draws(&self) -> Vec<(RasterMesh, Transform)> {

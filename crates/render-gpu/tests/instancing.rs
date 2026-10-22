@@ -300,9 +300,7 @@ fn batches_preserve_material_boundaries_coplanar_winners_alpha_and_mesh_versions
         &first.rgba[(45 * 160 + 80) * 4..(45 * 160 + 80) * 4 + 4],
         &[255, 0, 0, 255]
     );
-    let mut reversed: Vec<_> = prepared.draws().cloned().collect();
-    reversed.reverse();
-    let reversed = PreparedScene::from_draws(reversed);
+    let reversed = PreparedScene::from_draws(prepared.draws().cloned().rev().collect());
     compare(gpu, &mut renderer, &target, &reversed, vp);
     target.render_matrix(&mut renderer, vp).unwrap();
     let reversed_image = target.readback().unwrap();
