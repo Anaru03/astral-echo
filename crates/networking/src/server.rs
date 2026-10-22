@@ -141,6 +141,27 @@ fn publish_disconnections(events: Option<&ServerEventQueue>, player_ids: Vec<Net
     }
 }
 
+fn broadcast_disconnections(
+    state: &Arc<Mutex<ServerState>>,
+    events: Option<&ServerEventQueue>,
+    player_ids: Vec<NetworkPlayerId>,
+) {
+    let mut pending = player_ids;
+    let mut index = 0;
+
+    while index < pending.len() {
+        let player_id = pending[index];
+        index += 1;
+        let failed = broadcast_state(
+            state,
+            &ServerMessage::PlayerLeft { player_id },
+            Some(player_id),
+        );
+        pending.extend(failed);
+        publish_disconnections(events, vec![player_id]);
+    }
+}
+
 fn disconnect_player(
     state: &Arc<Mutex<ServerState>>,
     events: Option<&ServerEventQueue>,
@@ -154,15 +175,7 @@ fn disconnect_player(
         return false;
     }
 
-    let disconnected = broadcast_state(
-        state,
-        &ServerMessage::PlayerLeft { player_id },
-        Some(player_id),
-    );
-    publish_disconnections(events, disconnected);
-    if let Some(events) = events {
-        events.push(ServerEvent::PlayerLeft { player_id });
-    }
+    broadcast_disconnections(state, events, vec![player_id]);
     true
 }
 
@@ -233,7 +246,7 @@ impl GameServerHandle {
         exclude: Option<NetworkPlayerId>,
     ) {
         let disconnected = broadcast_state(&self.state, message, exclude);
-        publish_disconnections(self.events.as_ref(), disconnected);
+        broadcast_disconnections(&self.state, self.events.as_ref(), disconnected);
     }
 }
 
@@ -368,6 +381,35 @@ fn send_message(stream: &mut TcpStream, message: &ServerMessage) -> io::Result<(
     stream.flush()
 }
 
+#[cfg(test)]
+struct ControlledWrite {
+    started: std::sync::mpsc::Sender<()>,
+    cancel: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+impl ControlledWrite {
+    fn run(self) -> io::Result<()> {
+        self.started
+            .send(())
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "test start signal closed"))?;
+        self.cancel
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|error| match error {
+                std::sync::mpsc::RecvTimeoutError::Timeout => {
+                    io::Error::new(io::ErrorKind::TimedOut, "test write cancellation timed out")
+                }
+                std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                    io::Error::new(io::ErrorKind::Interrupted, "test write cancelled")
+                }
+            })?;
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "test write cancelled",
+        ))
+    }
+}
+
 fn handle_client(
     mut stream: TcpStream,
     state: Arc<Mutex<ServerState>>,
@@ -456,6 +498,16 @@ fn handle_client(
                 }
             };
 
+            if player_id.is_none() && !matches!(message, ClientMessage::Join { .. }) {
+                send_message(
+                    &mut stream,
+                    &ServerMessage::Rejected {
+                        reason: "Debes ingresar antes de enviar acciones".to_string(),
+                    },
+                )?;
+                break;
+            }
+
             match message {
                 ClientMessage::Join { version, name } => {
                     if player_id.is_some() {
@@ -535,7 +587,7 @@ fn handle_client(
                         },
                         Some(id),
                     );
-                    publish_disconnections(events.as_ref(), disconnected);
+                    broadcast_disconnections(&state, events.as_ref(), disconnected);
 
                     if let Some(events) = &events {
                         events.push(ServerEvent::PlayerJoined {
@@ -577,7 +629,7 @@ fn handle_client(
                                 }
                             } else {
                                 let disconnected = broadcast_state(&state, &message, Some(id));
-                                publish_disconnections(events.as_ref(), disconnected);
+                                broadcast_disconnections(&state, events.as_ref(), disconnected);
                             }
                         }
                     }
@@ -753,6 +805,9 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let healthy_client = TcpStream::connect(address).unwrap();
         let (healthy_server, _) = listener.accept().unwrap();
+        healthy_client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
         let failed_client = TcpStream::connect(address).unwrap();
         let (failed_server, _) = listener.accept().unwrap();
         failed_server.shutdown(Shutdown::Both).unwrap();
@@ -795,6 +850,22 @@ mod tests {
                 name: "Jugador sano".to_string(),
             }
         );
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(
+            crate::decode_server(line.trim()).unwrap(),
+            ServerMessage::PlayerLeft {
+                player_id: failed_id,
+            }
+        );
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(
+            crate::decode_server(line.trim()).unwrap(),
+            ServerMessage::PlayerLeft {
+                player_id: failed_id_2,
+            }
+        );
 
         let server = state.lock().unwrap();
         assert!(server.players.contains_key(&healthy_id));
@@ -828,5 +899,30 @@ mod tests {
         assert!(!disconnect_player(&state, Some(&events), failed_id_2));
         drop(failed_client);
         drop(failed_client_2);
+    }
+
+    #[test]
+    fn test_controlled_write_cancellation_is_joinable() {
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let (cancel_sender, cancel_receiver) = std::sync::mpsc::channel();
+        let writer = thread::spawn(move || {
+            ControlledWrite {
+                started: started_sender,
+                cancel: cancel_receiver,
+            }
+            .run()
+        });
+
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("la escritura controlada no alcanzó el punto de bloqueo");
+        cancel_sender
+            .send(())
+            .expect("el cierre de prueba no pudo cancelar la escritura");
+
+        let result = writer
+            .join()
+            .expect("el hilo de escritura controlada no terminó");
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
     }
 }

@@ -555,6 +555,26 @@ fn test_reject_incompatible_version() {
 }
 
 #[test]
+fn test_reject_zero_version_without_creating_player() {
+    let (address, shutdown, handle) = start_server();
+    let mut invalid = raw_client(&address);
+    let message = ClientMessage::Join {
+        version: 0,
+        name: "Jugador incompatible".to_string(),
+    };
+    send_raw(&mut invalid, &networking::encode(&message).unwrap());
+    assert!(matches!(
+        read_raw_response(&invalid),
+        ServerMessage::Rejected { .. }
+    ));
+
+    let mut valid = GameClient::connect(&address, "Jugador valido").unwrap();
+    assert!(valid.player_id() > 0);
+    valid.disconnect().unwrap();
+    stop_server(shutdown, handle);
+}
+
+#[test]
 fn test_reject_empty_player_name() {
     let (address, shutdown, handle) = start_server();
     assert!(GameClient::connect(&address, "").is_err());
@@ -577,6 +597,56 @@ fn test_reject_invalid_json() {
         read_raw_response(&stream),
         ServerMessage::Rejected { .. }
     ));
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_incomplete_message_is_rejected_when_client_closes() {
+    let (address, shutdown, handle) = start_server();
+    let mut stream = raw_client(&address);
+    use std::net::Shutdown;
+    use std::io::Write;
+    stream.write_all(br#"{"type":"Ping"}"#).unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+
+    assert!(matches!(
+        read_raw_response(&stream),
+        ServerMessage::Rejected { .. }
+    ));
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_actions_before_join_are_rejected() {
+    let (address, shutdown, handle) = start_server();
+    let mut stream = raw_client(&address);
+    send_raw(&mut stream, &networking::encode(&ClientMessage::Ping).unwrap());
+
+    assert!(matches!(
+        read_raw_response(&stream),
+        ServerMessage::Rejected { .. }
+    ));
+    stop_server(shutdown, handle);
+}
+
+#[test]
+fn test_second_join_is_rejected_without_replacing_identity() {
+    let (address, shutdown, handle) = start_server();
+    let mut client = GameClient::connect(&address, "Jugador 1").unwrap();
+    let first_id = client.player_id();
+    client
+        .send(&ClientMessage::Join {
+            version: networking::PROTOCOL_VERSION,
+            name: "Jugador 2".to_string(),
+        })
+        .unwrap();
+
+    assert!(matches!(
+        client.receive().unwrap(),
+        ServerMessage::Rejected { .. }
+    ));
+    assert_eq!(client.player_id(), first_id);
+    client.disconnect().unwrap();
     stop_server(shutdown, handle);
 }
 
