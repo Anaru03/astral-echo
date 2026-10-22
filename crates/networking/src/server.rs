@@ -748,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn test_broadcast_failure_cleans_player_once_and_preserves_healthy_client() {
+    fn test_simultaneous_broadcast_failures_clean_each_player_once() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let healthy_client = TcpStream::connect(address).unwrap();
@@ -756,16 +756,23 @@ mod tests {
         let failed_client = TcpStream::connect(address).unwrap();
         let (failed_server, _) = listener.accept().unwrap();
         failed_server.shutdown(Shutdown::Both).unwrap();
+        let failed_client_2 = TcpStream::connect(address).unwrap();
+        let (failed_server_2, _) = listener.accept().unwrap();
+        failed_server_2.shutdown(Shutdown::Both).unwrap();
 
         let mut initial = ServerState::default();
         let healthy_id = initial.join("Jugador sano".to_string()).unwrap();
         let failed_id = initial.join("Jugador fallido".to_string()).unwrap();
+        let failed_id_2 = initial.join("Jugador fallido 2".to_string()).unwrap();
         initial
             .connections
             .insert(healthy_id, Connection::new(healthy_server));
         initial
             .connections
             .insert(failed_id, Connection::new(failed_server));
+        initial
+            .connections
+            .insert(failed_id_2, Connection::new(failed_server_2));
         let state = Arc::new(Mutex::new(initial));
         let events = ServerEventQueue::new();
         let handle = GameServerHandle {
@@ -792,17 +799,34 @@ mod tests {
         let server = state.lock().unwrap();
         assert!(server.players.contains_key(&healthy_id));
         assert!(!server.players.contains_key(&failed_id));
+        assert!(!server.players.contains_key(&failed_id_2));
         assert!(!server.connections.contains_key(&failed_id));
+        assert!(!server.connections.contains_key(&failed_id_2));
         drop(server);
 
+        let mut disconnected = vec![
+            events.pop().unwrap().clone(),
+            events.pop().unwrap().clone(),
+        ];
+        disconnected.sort_by_key(|event| match event {
+            ServerEvent::PlayerLeft { player_id } => *player_id,
+            _ => 0,
+        });
         assert_eq!(
-            events.pop(),
-            Some(ServerEvent::PlayerLeft {
-                player_id: failed_id,
-            })
+            disconnected,
+            vec![
+                ServerEvent::PlayerLeft {
+                    player_id: failed_id,
+                },
+                ServerEvent::PlayerLeft {
+                    player_id: failed_id_2,
+                },
+            ]
         );
         assert_eq!(events.pop(), None);
         assert!(!disconnect_player(&state, Some(&events), failed_id));
+        assert!(!disconnect_player(&state, Some(&events), failed_id_2));
         drop(failed_client);
+        drop(failed_client_2);
     }
 }

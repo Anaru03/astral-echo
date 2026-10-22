@@ -77,8 +77,8 @@ impl MultiplayerSession {
     pub fn bind(address: &str) -> Result<Self, MultiplayerError> {
         let server = GameServer::bind(address)?;
         let local_address = server.local_addr()?;
-        let server_handle = server.handle();
         let events = server.event_queue();
+        let server_handle = server.handle_with_events(events.clone());
         let shutdown = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&shutdown);
         let server_events = events.clone();
