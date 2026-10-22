@@ -1,6 +1,6 @@
 use std::sync::{mpsc, Arc};
 
-use render_core::{Camera, Mat4, SnapshotScene};
+use render_core::{Camera, Mat4, PreparedScene, SnapshotScene};
 
 use crate::renderer::{validate_extent, DepthTarget};
 use crate::{GpuContext, GpuError, GpuImage, GpuRenderer, ReadbackLayout};
@@ -84,6 +84,20 @@ impl OffscreenTarget {
         self.validate_renderer(renderer)?;
         renderer.sync_snapshot(scene)?;
         self.render_matrix(renderer, scene.view_projection())
+    }
+
+    pub fn render_prepared(
+        &self,
+        renderer: &mut GpuRenderer,
+        scene: &PreparedScene,
+        view_projection: Mat4,
+    ) -> Result<(), GpuError> {
+        if renderer.resources().draw_count != scene.visible {
+            return Err(GpuError::InvalidInput(
+                "prepared scene topology differs from renderer".into(),
+            ));
+        }
+        self.render_matrix(renderer, view_projection)
     }
 
     fn validate_renderer(&self, renderer: &GpuRenderer) -> Result<(), GpuError> {

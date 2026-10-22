@@ -9,7 +9,7 @@ pub mod rasterizer;
 pub mod scene;
 mod snapshot;
 pub mod viewport;
-pub use snapshot::render_snapshot_scene;
+pub use snapshot::{render_prepared_scene, render_snapshot_scene};
 
 pub use clip::{
     clip_polygon, clip_polygon_near, clip_triangle, clip_triangle_near, ClipPlane, ClipVertex,

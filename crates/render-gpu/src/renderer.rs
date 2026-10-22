@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use render_core::{
-    Camera, Mat4, MaterialHandle, MeshHandle, RasterMesh, SnapshotId, SnapshotScene, Transform,
+    Camera, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh, SnapshotId, SnapshotScene,
+    Transform,
 };
 use wgpu::util::DeviceExt;
 
@@ -278,6 +279,10 @@ impl GpuRenderer {
                 .collect(),
         );
         Ok(renderer)
+    }
+
+    pub fn from_prepared(gpu: Arc<GpuContext>, scene: &PreparedScene) -> Result<Self, GpuError> {
+        Self::new(gpu, wgpu::TextureFormat::Rgba8Unorm, &scene.owned_draws())
     }
 
     pub fn sync_snapshot(&mut self, scene: &SnapshotScene) -> Result<bool, GpuError> {
