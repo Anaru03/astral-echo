@@ -2,6 +2,7 @@ pub mod cooperacion;
 pub mod ecos_anomalia;
 pub mod el_despertar;
 pub mod la_defensa_imposible;
+pub mod multiplayer;
 pub mod tormenta_gravitacional;
 
 use engine::EntityId;

@@ -4,6 +4,10 @@ pub(crate) fn run() {
         None => super::run_scenario(),
         Some("--runtime") if arguments.next().is_none() => super::runtime_mode::run(),
         Some("--visual") if arguments.next().is_none() => super::visual::run(),
+        Some("--multiplayer") => match (arguments.next(), arguments.next()) {
+            (Some(address), None) => super::run_multiplayer(&address),
+            _ => Err("uso: --multiplayer <dirección>".to_owned()),
+        },
         Some(argument) => Err(format!("argumento no reconocido: {argument}")),
     };
     if let Err(error) = result {
