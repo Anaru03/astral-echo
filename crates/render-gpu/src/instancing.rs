@@ -12,6 +12,8 @@ use crate::{GpuContext, GpuError};
 
 struct Geometry {
     source: Arc<RasterMesh>,
+    normals: Option<wgpu::Buffer>,
+    normal_bytes: u64,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
@@ -38,6 +40,8 @@ struct Batch {
 
 pub(crate) struct InstancedScene {
     pipeline: wgpu::RenderPipeline,
+    lighting: Option<crate::lighting::LightingPass>,
+    format: wgpu::TextureFormat,
     cache: BTreeMap<(MeshHandle, LodLevel), Vec<usize>>,
     geometries: Vec<Geometry>,
     sources: Vec<InstanceSource>,
@@ -63,6 +67,8 @@ impl InstancedScene {
     ) -> Self {
         Self {
             pipeline: color_pipeline(gpu, format, layout, shader, true),
+            lighting: None,
+            format,
             cache: BTreeMap::new(),
             geometries: Vec::new(),
             sources: Vec::new(),
@@ -139,6 +145,8 @@ impl InstancedScene {
         };
         let geometry = Geometry {
             source: mesh.clone(),
+            normals: None,
+            normal_bytes: 0,
             vertices: create(
                 "cached mesh vertices",
                 bytemuck::cast_slice(&vertices),
@@ -197,6 +205,8 @@ impl InstancedScene {
             }
             if let Some(last) = self.batches.last_mut().filter(|last| {
                 self.geometries[geometry].opaque
+                    && (scene.lighting.mode == render_core::LightingMode::Unlit
+                        || scene.material(draw.node.material).base_color.w == 1.0)
                     && last.key == key
                     && last.geometry == geometry
                     && last.material == draw.node.material
@@ -227,6 +237,45 @@ impl InstancedScene {
             self.force_write = true;
             self.reallocations += 1;
         }
+        if scene.lighting.mode != render_core::LightingMode::Unlit {
+            if self.lighting.is_none() {
+                self.lighting = Some(crate::lighting::LightingPass::new(gpu, self.format)?);
+            }
+            for source in &self.next_sources {
+                let geometry = &mut self.geometries[source.geometry];
+                if geometry.normals.is_none() {
+                    let normals: Vec<_> = geometry
+                        .source
+                        .resolved_normals()
+                        .into_iter()
+                        .map(|n| n.to_array())
+                        .collect();
+                    geometry.normal_bytes = (normals.len() as u64 * 12).max(4);
+                    if geometry.normal_bytes > gpu.device.limits().max_buffer_size {
+                        return Err(GpuError::InvalidInput(
+                            "normal buffer exceeds device limit".into(),
+                        ));
+                    }
+                    geometry.normals = Some(gpu.device.create_buffer_init(
+                        &wgpu::util::BufferInitDescriptor {
+                            label: Some("cached mesh normals"),
+                            contents: if normals.is_empty() {
+                                &[0; 4]
+                            } else {
+                                bytemuck::cast_slice(&normals)
+                            },
+                            usage: wgpu::BufferUsages::VERTEX,
+                        },
+                    ));
+                }
+            }
+            self.lighting
+                .as_mut()
+                .expect("initialized lighting")
+                .sync(gpu, scene)?;
+        } else if let Some(lighting) = &mut self.lighting {
+            lighting.active = false;
+        }
         let changed = self.sources != self.next_sources;
         self.dirty |= changed;
         std::mem::swap(&mut self.sources, &mut self.next_sources);
@@ -245,10 +294,16 @@ impl InstancedScene {
             .ok_or_else(|| GpuError::InvalidInput("draw index out of range".into()))?;
         self.dirty |= source.transform != transform;
         source.transform = transform;
+        if let Some(lighting) = &mut self.lighting {
+            lighting.set_transform(index, transform);
+        }
         Ok(())
     }
 
     pub(crate) fn update(&mut self, gpu: &GpuContext, vp: Mat4) -> Result<(), GpuError> {
+        if let Some(lighting) = self.lighting.as_mut().filter(|lighting| lighting.active) {
+            return lighting.update(gpu, vp);
+        }
         if !self.dirty && !self.force_write && self.last_vp == Some(vp) {
             return Ok(());
         }
@@ -285,11 +340,22 @@ impl InstancedScene {
     }
 
     pub(crate) fn encode(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(1, self.instances.slice(..));
+        let lighting = self.lighting.as_ref().filter(|lighting| lighting.active);
+        if let Some(lighting) = lighting {
+            lighting.bind(pass);
+        } else {
+            pass.set_pipeline(&self.pipeline);
+            pass.set_vertex_buffer(1, self.instances.slice(..));
+        }
         for batch in &self.batches {
             let geometry = &self.geometries[batch.geometry];
             pass.set_vertex_buffer(0, geometry.vertices.slice(..));
+            if lighting.is_some() {
+                pass.set_vertex_buffer(
+                    2,
+                    geometry.normals.as_ref().expect("cached normals").slice(..),
+                );
+            }
             pass.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..geometry.index_count, 0, batch.instances.clone());
         }
@@ -298,18 +364,40 @@ impl InstancedScene {
     pub(crate) fn resources(&self, base: ResourceStats) -> ResourceStats {
         ResourceStats {
             vertex_bytes: base.vertex_bytes
-                + self.geometries.iter().map(|g| g.vertex_bytes).sum::<u64>(),
+                + self
+                    .geometries
+                    .iter()
+                    .map(|g| g.vertex_bytes + g.normal_bytes)
+                    .sum::<u64>(),
             index_bytes: base.index_bytes
                 + self.geometries.iter().map(|g| g.index_bytes).sum::<u64>(),
-            uniform_bytes: base.uniform_bytes,
+            uniform_bytes: base.uniform_bytes + if self.lighting.is_some() { 288 } else { 0 },
             draw_count: self.batches.len(),
             instance_count: self.sources.len(),
-            instance_bytes: self.capacity as u64 * 64,
+            instance_bytes: self.capacity as u64 * 64
+                + self
+                    .lighting
+                    .as_ref()
+                    .map_or(0, |lighting| lighting.instance_bytes()),
             geometry_uploads: base.geometry_uploads + self.geometries.len() as u64,
             buffer_rebuilds: base.buffer_rebuilds
                 + self.geometries.len() as u64
-                + self.reallocations,
-            dynamic_bytes_written: base.dynamic_bytes_written + self.bytes_written,
+                + self.reallocations
+                + self
+                    .geometries
+                    .iter()
+                    .filter(|geometry| geometry.normals.is_some())
+                    .count() as u64
+                + self
+                    .lighting
+                    .as_ref()
+                    .map_or(0, |lighting| lighting.reallocations),
+            dynamic_bytes_written: base.dynamic_bytes_written
+                + self.bytes_written
+                + self
+                    .lighting
+                    .as_ref()
+                    .map_or(0, |lighting| lighting.bytes_written),
         }
     }
 }
