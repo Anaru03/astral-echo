@@ -52,6 +52,7 @@ pub struct PreparedDraw {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PreparedScene {
     draws: Vec<PreparedDraw>,
+    shadow_draws: Option<Vec<PreparedDraw>>,
     pub lighting: crate::LightingEnvironment,
     materials: BTreeMap<MaterialHandle, crate::MaterialInfo>,
     pub considered: usize,
@@ -68,6 +69,7 @@ impl PreparedScene {
             discarded: 0,
             triangles: draws.iter().map(|draw| draw.mesh.indices.len() / 3).sum(),
             draws,
+            shadow_draws: None,
             lighting: crate::LightingEnvironment::default(),
             materials: BTreeMap::new(),
         }
@@ -84,6 +86,10 @@ impl PreparedScene {
     pub fn draws(&self) -> impl DoubleEndedIterator<Item = &PreparedDraw> {
         self.draws.iter()
     }
+    pub fn shadow_draws(&self) -> impl Iterator<Item = &PreparedDraw> {
+        self.shadow_draws.as_deref().unwrap_or(&self.draws).iter()
+    }
+
     pub fn owned_draws(&self) -> Vec<(RasterMesh, Transform)> {
         self.draws
             .iter()
@@ -230,6 +236,7 @@ pub struct SnapshotScene {
     assets: VisualAssets,
     snapshot: RenderSnapshot,
     lighting_mode: crate::LightingMode,
+    shadow_config: crate::ShadowConfig,
     materials: BTreeMap<MaterialHandle, crate::MaterialInfo>,
     lod_history: RefCell<BTreeMap<SnapshotId, (MeshHandle, MaterialHandle, LodLevel)>>,
 }
@@ -241,6 +248,7 @@ impl Default for SnapshotScene {
             assets: VisualAssets::default(),
             lod_history: RefCell::default(),
             lighting_mode: crate::LightingMode::Unlit,
+            shadow_config: crate::ShadowConfig::default(),
             materials: BTreeMap::new(),
             snapshot: RenderSnapshot::new(
                 engine::Tick(0),
@@ -255,6 +263,10 @@ impl Default for SnapshotScene {
 impl SnapshotScene {
     pub fn set_lighting_mode(&mut self, mode: crate::LightingMode) {
         self.lighting_mode = mode;
+    }
+
+    pub fn set_shadow_config(&mut self, config: crate::ShadowConfig) {
+        self.shadow_config = config;
     }
 
     pub fn set_material(&mut self, handle: MaterialHandle, material: crate::MaterialInfo) {
@@ -350,6 +362,16 @@ impl SnapshotScene {
             materials: self.materials.clone(),
             ..Default::default()
         };
+        prepared.lighting.shadows = self.shadow_config;
+        let shadow_frustum = prepared
+            .lighting
+            .shadow_view_projection()
+            .ok()
+            .flatten()
+            .map(Frustum::from_view_projection);
+        if shadow_frustum.is_some() {
+            prepared.shadow_draws = Some(Vec::new());
+        }
         let mut history = self.lod_history.borrow_mut();
         let vp = self.view_projection();
         let frustum = Frustum::from_view_projection(self.view_projection());
@@ -360,6 +382,30 @@ impl SnapshotScene {
             let visibility = classify_bounds(transformed, frustum);
             if visibility == VisibilityClass::Outside {
                 prepared.discarded += 1;
+                if shadow_frustum.is_some_and(|frustum| frustum.intersects_aabb(transformed)) {
+                    let lod = history
+                        .get(&node.entity)
+                        .filter(|(mesh, material, _)| {
+                            *mesh == node.mesh && *material == node.material
+                        })
+                        .map_or(LodLevel::High, |(_, _, lod)| *lod);
+                    let mesh = if lod == LodLevel::Low {
+                        self.assets.low[&(node.mesh, node.material)].clone()
+                    } else {
+                        high.clone()
+                    };
+                    prepared
+                        .shadow_draws
+                        .as_mut()
+                        .expect("shadow list")
+                        .push(PreparedDraw {
+                            node: *node,
+                            mesh,
+                            lod,
+                            visibility,
+                            projected_size_px: 0.0,
+                        });
+                }
                 continue;
             }
             let projected = projected_size(transformed, vp, config.width, config.height);
@@ -380,13 +426,21 @@ impl SnapshotScene {
             };
             prepared.triangles += mesh.indices.len() / 3;
             prepared.visible += 1;
-            prepared.draws.push(PreparedDraw {
+            let draw = PreparedDraw {
                 node: *node,
                 mesh,
                 lod,
                 visibility,
                 projected_size_px: projected,
-            });
+            };
+            if shadow_frustum.is_some_and(|frustum| frustum.intersects_aabb(transformed)) {
+                prepared
+                    .shadow_draws
+                    .as_mut()
+                    .expect("shadow list")
+                    .push(draw.clone());
+            }
+            prepared.draws.push(draw);
         }
         prepared.discarded += self
             .snapshot

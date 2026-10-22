@@ -15,6 +15,7 @@ pub enum LightingMode {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LightingEnvironment {
     pub mode: LightingMode,
+    pub shadows: crate::ShadowConfig,
     pub camera_position: Vec3,
     pub ambient: Vec3,
     lights: Vec<RenderLight>,
@@ -24,6 +25,7 @@ impl Default for LightingEnvironment {
     fn default() -> Self {
         Self {
             mode: LightingMode::Unlit,
+            shadows: crate::ShadowConfig::default(),
             camera_position: Vec3::ZERO,
             ambient: Vec3::splat(0.03),
             lights: Vec::new(),

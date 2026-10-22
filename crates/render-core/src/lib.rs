@@ -7,6 +7,7 @@ pub mod material;
 pub mod math;
 pub mod mesh;
 pub mod scene;
+pub mod shadows;
 pub mod snapshot;
 pub mod transform;
 pub mod visual;
@@ -36,3 +37,5 @@ pub use geometry::{RasterMesh, RasterVertex};
 pub use lighting::{
     material_fixture, shade_surface, LightingEnvironment, LightingMode, MAX_POINT_LIGHTS,
 };
+
+pub use shadows::{shadow_fixture, ShadowConfig, ShadowConfigError, ShadowResolution};
