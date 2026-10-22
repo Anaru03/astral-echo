@@ -2,6 +2,7 @@ pub mod bounds;
 pub mod camera;
 pub mod demo;
 pub mod geometry;
+pub mod lighting;
 pub mod material;
 pub mod math;
 pub mod mesh;
@@ -14,7 +15,8 @@ pub use bounds::{Aabb, AabbError, Frustum, Plane};
 pub use camera::{Camera, CameraError, Projection};
 pub use material::{MaterialHandle, MaterialInfo};
 pub use math::{
-    from_engine, perspective_rh_wgpu, to_engine, transform_normal, Mat4, Quat, Vec2, Vec3, Vec4,
+    from_engine, normal_matrix, normalize_direction, perspective_rh_wgpu, to_engine,
+    transform_normal, Mat4, Quat, Vec2, Vec3, Vec4,
 };
 pub use mesh::{MeshHandle, Vertex};
 pub use scene::{RenderCamera, RenderLight, RenderLightKind, RenderNode, RenderScene};
@@ -30,3 +32,7 @@ pub use demo::{
     TERRAIN_HEIGHT,
 };
 pub use geometry::{RasterMesh, RasterVertex};
+
+pub use lighting::{
+    material_fixture, shade_surface, LightingEnvironment, LightingMode, MAX_POINT_LIGHTS,
+};

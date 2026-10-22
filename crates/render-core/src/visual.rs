@@ -52,6 +52,8 @@ pub struct PreparedDraw {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PreparedScene {
     draws: Vec<PreparedDraw>,
+    pub lighting: crate::LightingEnvironment,
+    materials: BTreeMap<MaterialHandle, crate::MaterialInfo>,
     pub considered: usize,
     pub visible: usize,
     pub discarded: usize,
@@ -66,7 +68,17 @@ impl PreparedScene {
             discarded: 0,
             triangles: draws.iter().map(|draw| draw.mesh.indices.len() / 3).sum(),
             draws,
+            lighting: crate::LightingEnvironment::default(),
+            materials: BTreeMap::new(),
         }
+    }
+
+    pub fn material(&self, handle: MaterialHandle) -> crate::MaterialInfo {
+        self.materials.get(&handle).copied().unwrap_or_default()
+    }
+
+    pub fn set_material(&mut self, handle: MaterialHandle, material: crate::MaterialInfo) {
+        self.materials.insert(handle, material.sanitized());
     }
 
     pub fn draws(&self) -> impl DoubleEndedIterator<Item = &PreparedDraw> {
@@ -187,12 +199,14 @@ impl Default for VisualAssets {
 
 fn subdivide(mesh: &RasterMesh) -> RasterMesh {
     let mut result = RasterMesh::default();
+    let normals = mesh.resolved_normals();
     for triangle in mesh.indices.chunks_exact(3) {
-        let a = mesh.vertices[triangle[0] as usize];
-        let b = mesh.vertices[triangle[1] as usize];
-        let c = mesh.vertices[triangle[2] as usize];
+        let a = mesh.vertices[triangle[0] as usize].with_normal(normals[triangle[0] as usize]);
+        let b = mesh.vertices[triangle[1] as usize].with_normal(normals[triangle[1] as usize]);
+        let c = mesh.vertices[triangle[2] as usize].with_normal(normals[triangle[2] as usize]);
         let midpoint = |a: RasterVertex, b: RasterVertex| {
             RasterVertex::new((a.position + b.position) * 0.5, (a.color + b.color) * 0.5)
+                .with_normal((a.normal + b.normal) * 0.5)
         };
         let base = result.vertices.len() as u32;
         result
@@ -215,6 +229,8 @@ pub struct SceneUpdate {
 pub struct SnapshotScene {
     assets: VisualAssets,
     snapshot: RenderSnapshot,
+    lighting_mode: crate::LightingMode,
+    materials: BTreeMap<MaterialHandle, crate::MaterialInfo>,
     lod_history: RefCell<BTreeMap<SnapshotId, (MeshHandle, MaterialHandle, LodLevel)>>,
 }
 
@@ -224,6 +240,8 @@ impl Default for SnapshotScene {
         Self {
             assets: VisualAssets::default(),
             lod_history: RefCell::default(),
+            lighting_mode: crate::LightingMode::Unlit,
+            materials: BTreeMap::new(),
             snapshot: RenderSnapshot::new(
                 engine::Tick(0),
                 camera.position(),
@@ -235,6 +253,14 @@ impl Default for SnapshotScene {
 }
 
 impl SnapshotScene {
+    pub fn set_lighting_mode(&mut self, mode: crate::LightingMode) {
+        self.lighting_mode = mode;
+    }
+
+    pub fn set_material(&mut self, handle: MaterialHandle, material: crate::MaterialInfo) {
+        self.materials.insert(handle, material.sanitized());
+    }
+
     pub fn procedural_lod_fixture() -> Self {
         let mut scene = Self::default();
         scene.assets.meshes = scene
@@ -320,6 +346,8 @@ impl SnapshotScene {
     pub fn prepare(&self, config: CullingConfig) -> PreparedScene {
         let mut prepared = PreparedScene {
             considered: self.snapshot.nodes.len(),
+            lighting: crate::LightingEnvironment::from_snapshot(&self.snapshot, self.lighting_mode),
+            materials: self.materials.clone(),
             ..Default::default()
         };
         let mut history = self.lod_history.borrow_mut();
