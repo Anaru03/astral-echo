@@ -94,9 +94,11 @@ fn shared_preparation_matches_cpu_and_updates_same_count_lod_and_identity() {
     let coarse = coarse_scene.prepare(config);
     let high_bytes = renderer.resources().index_bytes;
     assert!(renderer.sync_prepared(&coarse).unwrap());
-    assert!(renderer.resources().index_bytes < high_bytes);
+    assert!(renderer.resources().index_bytes > high_bytes);
+    let cached_uploads = renderer.resources().geometry_uploads;
     assert!(renderer.sync_prepared(&prepared).unwrap());
     assert!(!renderer.sync_prepared(&prepared).unwrap());
+    assert_eq!(renderer.resources().geometry_uploads, cached_uploads);
 
     for frame in 0..4 {
         if frame == 1 {

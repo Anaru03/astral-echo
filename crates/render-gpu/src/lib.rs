@@ -1,5 +1,6 @@
 mod context;
 mod image;
+mod instancing;
 mod offscreen;
 mod renderer;
 mod window;
