@@ -2687,6 +2687,9 @@ dependencies = [
  "gameplay",
  "networking",
  "render-core",
+ "render-cpu",
+ "render-gpu",
+ "render-present",
 ]
 
 [[package]]

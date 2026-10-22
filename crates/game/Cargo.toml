@@ -13,3 +13,8 @@ bevy = "0.19"
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+render-cpu = { path = "../render-cpu" }
+render-gpu = { path = "../render-gpu" }
+render-present = { path = "../render-present" }
