@@ -22,7 +22,7 @@ pub struct HotSwapState<T> {
     gpu_error: Option<String>,
 }
 
-impl<T: Clone> HotSwapState<T> {
+impl<T> HotSwapState<T> {
     pub fn new(backend: BackendKind, snapshot: BackendSnapshot<T>) -> Self {
         Self {
             backend,
