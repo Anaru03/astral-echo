@@ -208,7 +208,7 @@ impl ApplicationHandler for Host {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match code {
                         KeyCode::KeyG => self.toggle(),
-                        KeyCode::F9 => self.capture_debug("marked"),
+                        KeyCode::F9 | KeyCode::KeyM => self.capture_debug("marked"),
                         KeyCode::KeyS => self.config.raster_mode = RasterMode::Secuencial,
                         KeyCode::KeyP => self.config.raster_mode = RasterMode::Paralelo,
                         KeyCode::KeyA => self.config.raster_mode = RasterMode::Auto,
@@ -340,7 +340,9 @@ impl Host {
             ..Default::default()
         });
         let text = format!("reason={reason}\nbackend={:?}\nphysical={}x{}\ninternal={}x{}\ntick={}\nnodes={} visible={} discarded={} triangles={} draws={} buffer={}\n", state.backend.backend(), size.width, size.height, state.framebuffer.width(), state.framebuffer.height(), state.snapshot.snapshot().tick.0, state.snapshot.snapshot().nodes.len(), prepared.visible, prepared.discarded, prepared.triangles, prepared.draws().count(), state.buffer.len());
-        let _ = std::fs::write(path, text);
+        if std::fs::write(&path, text).is_ok() {
+            println!("graphics-debug capture={}", path.display());
+        }
     }
 
     fn new_cpu_surface(state: &HostState) -> Option<Surface<Arc<Window>, Arc<Window>>> {
