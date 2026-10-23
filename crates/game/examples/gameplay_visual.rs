@@ -16,10 +16,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut window = false;
     let mut frames = None;
     let mut output = None;
+    let mut graphics_debug = false;
     let mut args = std::env::args().skip(1);
     while let Some(option) = args.next() {
         match option.as_str() {
             "--window" => window = true,
+            "--graphics-debug" => graphics_debug = true,
             "--backend" => backend = args.next().ok_or("missing backend")?,
             "--frames" => {
                 frames = Some(
@@ -64,10 +66,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             ..Default::default()
         };
         let start_gpu = matches!(decision, BackendDecision::Gpu);
-        let report = render_present::run_hot_swap_window(
+        let debug = render_present::GraphicsDebugConfig {
+            directory: graphics_debug.then(|| PathBuf::from("target/graphics-debug")),
+        };
+        let report = render_present::run_hot_swap_window_with_debug(
             config,
             Box::new(move |width, height| Ok(support::snapshot(&world, width, height))),
             start_gpu,
+            debug,
         )?;
         println!(
             "hot-swap transitions={} last_transition_ms={:?} gpu_error={:?}",

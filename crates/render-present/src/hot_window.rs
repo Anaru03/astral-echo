@@ -18,10 +18,24 @@ use crate::{copy_nearest_rgba, BackendKind, BackendSnapshot, HotSwapState, Prese
 
 pub type SnapshotSource = Box<dyn FnMut(u32, u32) -> Result<RenderSnapshot, String>>;
 
+#[derive(Clone, Debug, Default)]
+pub struct GraphicsDebugConfig {
+    pub directory: Option<std::path::PathBuf>,
+}
+
 pub fn run_hot_swap_window(
     config: WindowConfig,
     source: SnapshotSource,
     start_gpu: bool,
+) -> Result<HotSwapReport, String> {
+    run_hot_swap_window_with_debug(config, source, start_gpu, GraphicsDebugConfig::default())
+}
+
+pub fn run_hot_swap_window_with_debug(
+    config: WindowConfig,
+    source: SnapshotSource,
+    start_gpu: bool,
+    debug: GraphicsDebugConfig,
 ) -> Result<HotSwapReport, String> {
     let mut app = Host {
         config,
@@ -34,6 +48,8 @@ pub fn run_hot_swap_window(
             last_transition_ms: None,
             gpu_error: None,
         },
+        debug,
+        debug_frame: 0,
     };
     EventLoop::new()
         .map_err(|e| e.to_string())?
@@ -55,6 +71,8 @@ struct Host {
     state: Option<HostState>,
     failure: Option<String>,
     report: HotSwapReport,
+    debug: GraphicsDebugConfig,
+    debug_frame: u64,
 }
 
 struct HostState {
@@ -190,6 +208,7 @@ impl ApplicationHandler for Host {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match code {
                         KeyCode::KeyG => self.toggle(),
+                        KeyCode::F9 => self.capture_debug("marked"),
                         KeyCode::KeyS => self.config.raster_mode = RasterMode::Secuencial,
                         KeyCode::KeyP => self.config.raster_mode = RasterMode::Paralelo,
                         KeyCode::KeyA => self.config.raster_mode = RasterMode::Auto,
@@ -277,8 +296,9 @@ impl Host {
             state.surface = released_surface;
             state.gpu = previous_gpu;
         }
-        if let Err(error) = result {
-            self.report_gpu_error(error);
+        let transition_error = result.err();
+        if let Some(error) = &transition_error {
+            println!("hot-swap error={error}");
         } else {
             self.report.transitions = state.backend.transitions();
             self.report.last_transition_ms = state
@@ -293,9 +313,34 @@ impl Host {
                 self.report.last_transition_ms.unwrap_or_default()
             );
         }
+        let _ = state;
+        if let Some(error) = transition_error {
+            self.report_gpu_error(error);
+        }
+        self.capture_debug("transition");
     }
     fn report_gpu_error(&mut self, error: String) {
         self.report.gpu_error = Some(error);
+    }
+
+    fn capture_debug(&mut self, reason: &str) {
+        let Some(directory) = self.debug.directory.as_ref() else {
+            return;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(directory);
+        let path = directory.join(format!("frame-{:04}-{}.log", self.debug_frame, reason));
+        self.debug_frame += 1;
+        let size = state.window.inner_size();
+        let prepared = state.snapshot.prepare(render_core::CullingConfig {
+            width: size.width,
+            height: size.height,
+            ..Default::default()
+        });
+        let text = format!("reason={reason}\nbackend={:?}\nphysical={}x{}\ninternal={}x{}\ntick={}\nnodes={} visible={} discarded={} triangles={} draws={} buffer={}\n", state.backend.backend(), size.width, size.height, state.framebuffer.width(), state.framebuffer.height(), state.snapshot.snapshot().tick.0, state.snapshot.snapshot().nodes.len(), prepared.visible, prepared.discarded, prepared.triangles, prepared.draws().count(), state.buffer.len());
+        let _ = std::fs::write(path, text);
     }
 
     fn new_cpu_surface(state: &HostState) -> Option<Surface<Arc<Window>, Arc<Window>>> {
