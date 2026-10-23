@@ -15,6 +15,13 @@ recibir el mismo `RenderSnapshot` producido por `sample`, incluso después de un
 hot-swap. Los tests cubren determinismo, orden temporal, capacidad y teletransporte.
 La medición de latencia y frame time requiere ejecutar la demo con display.
 
+## Regresión F9/F6.1
+
+La causa confirmada de figuras ausentes era mantener simultáneamente las superficies
+CPU y Vulkan sobre la misma ventana. El host libera la superficie CPU antes de crear
+GPU y la recrea al volver a CPU, solicita redraw y conserva la última escena válida.
+También registra nodos y tamaño del buffer durante cada transición.
+
 ## F9B
 
 `run_hot_swap_window` publica snapshots con un reloj monotónico y consume `sample`
