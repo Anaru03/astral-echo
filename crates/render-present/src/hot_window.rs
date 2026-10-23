@@ -59,7 +59,7 @@ struct Host {
 
 struct HostState {
     window: Arc<Window>,
-    surface: Surface<Arc<Window>, Arc<Window>>,
+    surface: Option<Surface<Arc<Window>, Arc<Window>>>,
     _context: Context<Arc<Window>>,
     framebuffer: Framebuffer,
     snapshot: Rc<SnapshotScene>,
@@ -147,7 +147,7 @@ impl ApplicationHandler for Host {
         );
         self.state = Some(HostState {
             window,
-            surface,
+            surface: Some(surface),
             _context: context,
             framebuffer,
             snapshot,
@@ -177,10 +177,12 @@ impl ApplicationHandler for Host {
                 let _ = state
                     .framebuffer
                     .resize(size.width.max(1), size.height.max(1));
-                let _ = state.surface.resize(
-                    NonZeroU32::new(size.width.max(1)).unwrap(),
-                    NonZeroU32::new(size.height.max(1)).unwrap(),
-                );
+                if let Some(surface) = &mut state.surface {
+                    let _ = surface.resize(
+                        NonZeroU32::new(size.width.max(1)).unwrap(),
+                        NonZeroU32::new(size.height.max(1)).unwrap(),
+                    );
+                }
                 if let Some(gpu) = &mut state.gpu {
                     let _ = gpu.resize(size.width, size.height);
                 }
@@ -243,6 +245,11 @@ impl Host {
         } else {
             BackendKind::Cpu
         };
+        let released_surface = if target == BackendKind::Gpu {
+            state.surface.take()
+        } else {
+            None
+        };
         let gpu = if target == BackendKind::Gpu {
             let mut gpu = match SurfaceRenderer::new(
                 state.window.clone(),
@@ -251,6 +258,7 @@ impl Host {
             ) {
                 Ok(gpu) => gpu,
                 Err(error) => {
+                    state.surface = released_surface;
                     self.report_gpu_error(error.to_string());
                     return;
                 }
@@ -260,11 +268,15 @@ impl Host {
             }
             Some(gpu)
         } else {
+            state.surface = Surface::new(&state._context, state.window.clone()).ok();
             None
         };
         let result = state.backend.try_switch(target, |_| Ok(()));
         if result.is_ok() {
             state.gpu = gpu;
+            state.window.request_redraw();
+        } else if target == BackendKind::Gpu {
+            state.surface = released_surface;
         }
         if let Err(error) = result {
             self.report_gpu_error(error);
@@ -274,6 +286,13 @@ impl Host {
                 .backend
                 .last_transition()
                 .map(|d| d.as_secs_f64() * 1000.0);
+            println!(
+                "hot-swap backend={:?} nodes={} buffer={} transition_ms={:.3}",
+                target,
+                state.snapshot.snapshot().nodes.len(),
+                state.buffer.len(),
+                self.report.last_transition_ms.unwrap_or_default()
+            );
         }
     }
     fn report_gpu_error(&mut self, error: String) {
@@ -315,7 +334,10 @@ impl Host {
             &state.snapshot,
             self.config.raster_mode,
         );
-        if let Ok(mut buffer) = state.surface.buffer_mut() {
+        if let Some(surface) = &mut state.surface {
+            let Ok(mut buffer) = surface.buffer_mut() else {
+                return;
+            };
             let _ = copy_nearest_rgba(
                 state.framebuffer.color_bytes(),
                 (state.framebuffer.width(), state.framebuffer.height()),
