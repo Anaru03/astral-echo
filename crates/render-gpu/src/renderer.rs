@@ -124,6 +124,7 @@ impl GpuRenderer {
         if !matches!(
             format,
             wgpu::TextureFormat::Rgba8Unorm
+                | wgpu::TextureFormat::Rgba16Float
                 | wgpu::TextureFormat::Bgra8Unorm
                 | wgpu::TextureFormat::Rgba8UnormSrgb
                 | wgpu::TextureFormat::Bgra8UnormSrgb
@@ -296,6 +297,15 @@ impl GpuRenderer {
 
     pub fn from_prepared(gpu: Arc<GpuContext>, scene: &PreparedScene) -> Result<Self, GpuError> {
         let mut renderer = Self::new(gpu, wgpu::TextureFormat::Rgba8Unorm, &[])?;
+        renderer.sync_prepared(scene)?;
+        Ok(renderer)
+    }
+
+    pub fn from_prepared_hdr(
+        gpu: Arc<GpuContext>,
+        scene: &PreparedScene,
+    ) -> Result<Self, GpuError> {
+        let mut renderer = Self::new(gpu, wgpu::TextureFormat::Rgba16Float, &[])?;
         renderer.sync_prepared(scene)?;
         Ok(renderer)
     }

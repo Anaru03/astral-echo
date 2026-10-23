@@ -30,7 +30,7 @@ fn shadow_visibility(position: vec3<f32>, normal_input: vec3<f32>) -> f32 {
 @fragment fn fs_shadow_lighting(input: LitOutput) -> @location(0) vec4<f32> {
     var color = shade_visibility(input.color,input.albedo,input.params,input.emissive,input.world,input.normal,environment.camera.w,shadow_visibility(input.world,input.normal));
     if environment.ambient.w > 0.5 {
-        let c=clamp(color.rgb,vec3<f32>(0.0),vec3<f32>(1.0));
+        let c=max(color.rgb,vec3<f32>(0.0));
         color=vec4<f32>(select(pow((c+0.055)/1.055,vec3<f32>(2.4)),c/12.92,c<=vec3<f32>(0.04045)),color.a);
     }
     return color;

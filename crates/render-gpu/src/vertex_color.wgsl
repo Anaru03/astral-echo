@@ -19,7 +19,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> { return input.color; 
 
 @fragment
 fn fs_srgb(input: VertexOutput) -> @location(0) vec4<f32> {
-    let c = clamp(input.color.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let c = max(input.color.rgb, vec3<f32>(0.0));
     let linear = select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
     return vec4<f32>(linear, input.color.a);
 }

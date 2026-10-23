@@ -48,7 +48,7 @@ fn shade_visibility(color: vec4<f32>, albedo: vec4<f32>, params: vec4<f32>, emis
         }
         result += reflected*light.color.rgb*light.color.w*attenuation*nl;
     }
-    return vec4<f32>(clamp(result,vec3<f32>(0.0),vec3<f32>(1.0)),clamp(base.a,0.0,1.0));
+    return vec4<f32>(max(result,vec3<f32>(0.0)),clamp(base.a,0.0,1.0));
 }
 
 fn shade(color: vec4<f32>, albedo: vec4<f32>, params: vec4<f32>, emissive: vec3<f32>, position: vec3<f32>, normal: vec3<f32>, mode: f32) -> vec4<f32> {
@@ -105,7 +105,7 @@ fn fs_lighting(input: LitOutput) -> @location(0) vec4<f32> {
         color=shade(input.color,input.albedo,input.params,input.emissive,input.world,input.normal,environment.camera.w);
     }
     if environment.ambient.w > 0.5 {
-        let c=clamp(color.rgb,vec3<f32>(0.0),vec3<f32>(1.0));
+        let c=max(color.rgb,vec3<f32>(0.0));
         color=vec4<f32>(select(pow((c+0.055)/1.055,vec3<f32>(2.4)),c/12.92,c<=vec3<f32>(0.04045)),color.a);
     }
     return color;

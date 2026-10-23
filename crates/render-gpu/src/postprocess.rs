@@ -82,6 +82,7 @@ pub(crate) struct PostProcessPass {
     layout: wgpu::BindGroupLayout,
     source: wgpu::Texture,
     source_view: wgpu::TextureView,
+    source_format: wgpu::TextureFormat,
     width: u32,
     height: u32,
     config: PostProcessConfig,
@@ -92,6 +93,7 @@ impl PostProcessPass {
     pub fn new(
         gpu: &GpuContext,
         format: wgpu::TextureFormat,
+        source_format: wgpu::TextureFormat,
         width: u32,
         height: u32,
     ) -> Result<Self, GpuError> {
@@ -104,7 +106,7 @@ impl PostProcessPass {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
@@ -113,7 +115,7 @@ impl PostProcessPass {
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
@@ -129,8 +131,8 @@ impl PostProcessPass {
                 ],
             });
         let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -179,7 +181,7 @@ impl PostProcessPass {
                 multiview_mask: None,
                 cache: None,
             });
-        let (source, source_view) = source_texture(gpu, width, height);
+        let (source, source_view) = source_texture(gpu, source_format, width, height);
         let bind_group = bind(gpu, &layout, &source_view, &sampler, &uniform);
         Ok(Self {
             pipeline,
@@ -189,6 +191,7 @@ impl PostProcessPass {
             layout,
             source,
             source_view,
+            source_format,
             width,
             height,
             config: PostProcessConfig::default(),
@@ -196,7 +199,12 @@ impl PostProcessPass {
         })
     }
     pub fn resources(&self) -> (u32, u32, u64) {
-        let _ = (&self.sampler, &self.layout, &self.source);
+        let _ = (
+            &self.sampler,
+            &self.layout,
+            &self.source,
+            self.source_format,
+        );
         (self.width, self.height, self.allocations)
     }
     pub fn set_config(&mut self, config: PostProcessConfig) -> Result<(), GpuError> {
@@ -247,7 +255,12 @@ impl PostProcessPass {
     }
 }
 
-fn source_texture(gpu: &GpuContext, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
+fn source_texture(
+    gpu: &GpuContext,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("persistent HDR source"),
         size: wgpu::Extent3d {
@@ -258,7 +271,7 @@ fn source_texture(gpu: &GpuContext, width: u32, height: u32) -> (wgpu::Texture, 
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });

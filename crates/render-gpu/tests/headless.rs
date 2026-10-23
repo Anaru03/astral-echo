@@ -186,7 +186,7 @@ fn invalid_formats_extents_and_transforms_do_not_poison_device() {
     let Some(gpu) = adapter() else {
         return;
     };
-    assert!(GpuRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba16Float, &[]).is_err());
+    assert!(GpuRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba16Float, &[]).is_ok());
     assert!(OffscreenTarget::new(gpu.clone(), u32::MAX, 1).is_err());
     let target = OffscreenTarget::new(gpu.clone(), 32, 32).unwrap();
     let mut incompatible = GpuRenderer::new(
