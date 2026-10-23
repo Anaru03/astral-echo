@@ -11,6 +11,10 @@ CPU; presets superiores activan la composición GPU cuando el adaptador está di
 La validación automática cubre el host y las rutas headless; la comprobación visual
 CPU→GPU→CPU requiere un display compatible y no se ejecutó en este entorno.
 
+`gameplay_visual --window` ya usa este host. El mundo se consulta mediante el
+adaptador de snapshot existente y no se avanza el tick. La selección inicial respeta
+`--backend cpu|gpu|auto`; `G` permite repetir CPU→GPU→CPU durante la misma sesión.
+
 La transición real con `G` en la misma ventana queda bloqueada por las APIs actuales:
 `render-present::run_window` posee el event loop y la superficie `softbuffer`, mientras
 `render-gpu::SurfaceRenderer` crea y posee su propia superficie `wgpu` y su ciclo de
