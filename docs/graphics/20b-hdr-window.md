@@ -27,3 +27,17 @@ Esto conserva depth, culling, cámara y la composición ACES/bloom/FXAA. Las pru
 headless GPU pasan salvo una regresión preexistente de equivalencia Lambert (`904`
 outliers frente al umbral `30`); no se atribuye a este cambio. La validación visual
 Windows/Vulkan sigue pendiente sin display.
+## Regresiones de hot-swap
+
+Se confirmaron dos causas independientes. CPU redimensionaba el framebuffer interno
+al tamaño físico de la ventana durante `Resized`; eso anulaba el escalador
+`copy_nearest_rgba` al regresar desde GPU. Ahora solo se redimensiona la superficie;
+la resolución interna permanece controlada por el preset.
+
+En HDR, `SurfaceRenderer` renderizaba en `hdr_view`, pero `PostProcessPass` mantenía
+un bind group apuntando a otra textura HDR interna, por lo que ACES/bloom/FXAA
+componían una imagen vacía. El pass ahora enlaza explícitamente la vista que recibe
+el render HDR antes de componer hacia SDR.
+
+Las pruebas offscreen de postprocesado pasan y verifican color/depth. La prueba visual
+Windows/Vulkan con hot-swap y DPI queda pendiente si no hay display disponible.
