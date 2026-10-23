@@ -53,3 +53,15 @@ que dos presentadores compitan por la misma ventana.
 Los tests headless mantienen snapshots no vacíos y transiciones sin errores. La
 comparación de píxeles y depth en una ventana Windows/Vulkan queda pendiente sin
 display disponible.
+## Auditoría de estabilidad
+
+Se añadió un estrés determinista de 100 cambios CPU/GPU que verifica que el snapshot
+no cambie. También se mantienen logs compactos de backend, nodos, buffer y latencia.
+La ruta de transición libera el presentador anterior antes de crear el siguiente y
+los tests de superficie cubren resize y minimización.
+
+El estrés headless no reproduce corrupción ni pérdida de identidad. No se ha demostrado
+una causa adicional corregible sin una ejecución Windows/Vulkan: la auditoría offscreen
+no puede inspeccionar la surface nativa, bind groups presentados ni píxeles de ventana.
+La validación nativa de 100 transiciones queda pendiente y no se declara estabilidad
+completa únicamente por los tests headless.
