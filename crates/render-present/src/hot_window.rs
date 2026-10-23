@@ -268,7 +268,7 @@ impl Host {
             }
             Some(gpu)
         } else {
-            state.surface = Surface::new(&state._context, state.window.clone()).ok();
+            state.surface = Self::new_cpu_surface(state);
             None
         };
         let result = state.backend.try_switch(target, |_| Ok(()));
@@ -298,6 +298,19 @@ impl Host {
     fn report_gpu_error(&mut self, error: String) {
         self.report.gpu_error = Some(error);
     }
+
+    fn new_cpu_surface(state: &HostState) -> Option<Surface<Arc<Window>, Arc<Window>>> {
+        let size = state.window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return None;
+        }
+        let mut surface = Surface::new(&state._context, state.window.clone()).ok()?;
+        surface
+            .resize(NonZeroU32::new(size.width)?, NonZeroU32::new(size.height)?)
+            .ok()?;
+        Some(surface)
+    }
+
     fn draw(&mut self) {
         let Some(state) = self.state.as_mut() else {
             return;
@@ -306,6 +319,9 @@ impl Host {
             return;
         }
         let size = state.window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
         if let Ok(snapshot) = (self.source)(size.width, size.height) {
             let timestamp = state.started.elapsed().as_secs_f32();
             let _ = state.buffer.push(snapshot, timestamp);
