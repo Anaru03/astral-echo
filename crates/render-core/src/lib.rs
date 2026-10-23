@@ -2,6 +2,7 @@ pub mod bounds;
 pub mod camera;
 pub mod demo;
 pub mod geometry;
+pub mod interpolation;
 pub mod lighting;
 pub mod material;
 pub mod math;
@@ -14,6 +15,7 @@ pub mod visual;
 
 pub use bounds::{Aabb, AabbError, Frustum, Plane};
 pub use camera::{Camera, CameraError, Projection};
+pub use interpolation::{InterpolationConfig, SnapshotBuffer};
 pub use material::{MaterialHandle, MaterialInfo};
 pub use math::{
     from_engine, normal_matrix, normalize_direction, perspective_rh_wgpu, to_engine,
