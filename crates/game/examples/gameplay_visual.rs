@@ -58,37 +58,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tick = world.time().tick;
     println!("F5B read-only world tick={} ship={:?} players={} enemies={} destinations={} collectibles={}",tick.0,world.navigation().ship_id(),world.players().count(),world.enemies().count(),world.destinations().count(),world.collectibles().count());
     if window {
-        if matches!(decision, BackendDecision::Cpu { .. }) {
-            let mut scene = SnapshotScene::default();
-            let config = render_present::WindowConfig {
-                max_frames: frames,
-                title: "Astral Echo - Gameplay CPU".into(),
-                ..Default::default()
-            };
-            let report = render_present::run_window(config, move |framebuffer, mode| {
+        let config = render_present::WindowConfig {
+            max_frames: frames,
+            title: "Astral Echo - CPU/GPU Hot-Swap".into(),
+            ..Default::default()
+        };
+        let start_gpu = matches!(decision, BackendDecision::Gpu);
+        let report = render_present::run_hot_swap_window(
+            config,
+            Box::new(move |width, height| {
+                let mut scene = SnapshotScene::default();
                 scene
-                    .update(&support::snapshot(
-                        &world,
-                        framebuffer.width(),
-                        framebuffer.height(),
-                    ))
-                    .map_err(|_| render_cpu::RasterError::InvalidClip)?;
-                render_cpu::render_snapshot_scene(framebuffer, &scene, mode)?;
-                Ok(())
-            })?;
-            println!(
-                "CPU window frames={} render_avg_ms={:.3} present_avg_ms={:.3}",
-                report.metrics.frames,
-                report.metrics.average_render().as_secs_f64() * 1000.0,
-                report.metrics.average_presentation().as_secs_f64() * 1000.0
-            );
-        } else {
-            let report = render_gpu::run_snapshot_window(
-                move |width, height| Ok(support::snapshot(&world, width, height)),
-                frames.map(NonZeroU64::get),
-            )?;
-            println!("GPU window {report:?}");
-        }
+                    .update(&support::snapshot(&world, width, height))
+                    .map_err(|error| error.to_string())?;
+                Ok(scene)
+            }),
+            start_gpu,
+        )?;
+        println!(
+            "hot-swap transitions={} last_transition_ms={:?} gpu_error={:?}",
+            report.transitions, report.last_transition_ms, report.gpu_error
+        );
         return Ok(());
     }
     let (width, height) = (640, 360);
