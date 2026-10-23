@@ -238,11 +238,7 @@ impl Host {
             state.preset = preset;
             let (width, height) = preset.resolution();
             let _ = state.framebuffer.resize(width, height);
-            let _ = state
-                .window
-                .request_inner_size(LogicalSize::new(width, height));
             if let Some(gpu) = &mut state.gpu {
-                let _ = gpu.resize(width, height);
                 if preset == Preset::Low {
                     let _ = gpu.set_postprocess(render_gpu::PostProcessConfig::default());
                 } else {
