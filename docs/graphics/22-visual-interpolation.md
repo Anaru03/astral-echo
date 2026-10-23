@@ -14,3 +14,16 @@ La capa es independiente de `GameplayWorld`, networking y Bevy. CPU y GPU deben
 recibir el mismo `RenderSnapshot` producido por `sample`, incluso después de un
 hot-swap. Los tests cubren determinismo, orden temporal, capacidad y teletransporte.
 La medición de latencia y frame time requiere ejecutar la demo con display.
+
+## F9B
+
+`run_hot_swap_window` publica snapshots con un reloj monotónico y consume `sample`
+antes de cada frame. La misma `SnapshotScene` interpolada se entrega a CPU y GPU;
+`G` solo cambia el presentador. `gameplay_visual --window` conserva el bridge de
+solo lectura y no modifica el tick autoritativo. El buffer mantiene una capacidad de
+8 snapshots y el retraso por defecto es 16,67 ms.
+
+La validación headless de render-present y la compilación del ejemplo pasan. La
+prueba visual de movimiento continuo, resize y recuperación tras minimizar requiere
+un display; no se declara validada aquí. Clippy completo de `game` queda bloqueado
+por advertencias preexistentes en gameplay/networking ajenas a esta integración.
