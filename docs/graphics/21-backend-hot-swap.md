@@ -41,3 +41,15 @@ minimización se omite la presentación mientras alguna dimensión sea cero; al 
 la ventana, el evento de resize vuelve a dimensionar la superficie. Esto evita el panic
 `Must set size of surface before calling buffer_mut()` sin ocultarlo mediante
 `catch_unwind`.
+## Regresión de geometría tras el cambio
+
+La instrumentación del host conserva el último `SnapshotScene` y muestra tick,
+nodos, objetos considerados/visibles/descartados y triángulos preparados en cada
+frame. La causa adicional confirmada era retener `SurfaceRenderer` GPU mientras se
+creaba la superficie softbuffer al volver a CPU. Ahora el renderer GPU se libera
+primero; después se crea y dimensiona softbuffer y se solicita redraw. El orden evita
+que dos presentadores compitan por la misma ventana.
+
+Los tests headless mantienen snapshots no vacíos y transiciones sin errores. La
+comparación de píxeles y depth en una ventana Windows/Vulkan queda pendiente sin
+display disponible.
