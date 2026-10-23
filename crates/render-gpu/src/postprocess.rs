@@ -207,6 +207,23 @@ impl PostProcessPass {
         );
         (self.width, self.height, self.allocations)
     }
+    pub fn resize(&mut self, gpu: &GpuContext, width: u32, height: u32) {
+        if (width, height) != (self.width, self.height) {
+            let (source, view) = source_texture(gpu, self.source_format, width, height);
+            self.source = source;
+            self.source_view = view;
+            self.width = width;
+            self.height = height;
+            self.bind_group = bind(
+                gpu,
+                &self.layout,
+                &self.source_view,
+                &self.sampler,
+                &self.uniform,
+            );
+            self.allocations += 1;
+        }
+    }
     pub fn set_config(&mut self, config: PostProcessConfig) -> Result<(), GpuError> {
         config.validate()?;
         self.config = config;
