@@ -221,15 +221,16 @@ impl SurfaceRenderer {
             }
         };
         let view = texture.texture.create_view(&Default::default());
-        if let (Some(hdr), Some(pass), Some(hdr_view)) = (
-            &mut self.hdr_renderer,
-            self.postprocess.as_ref().filter(|p| p.is_enabled()),
-            self.hdr_view.as_ref(),
-        ) {
-            hdr.render_to_view_matrix(hdr_view, &depth.view, vp)?;
-            let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
-            pass.encode(&self.gpu, &mut encoder, &view);
-            self.gpu.queue.submit([encoder.finish()]);
+        if let (Some(hdr), Some(hdr_view)) = (&mut self.hdr_renderer, self.hdr_view.as_ref()) {
+            if let Some(pass) = self.postprocess.as_mut().filter(|p| p.is_enabled()) {
+                pass.set_source_view(&self.gpu, hdr_view);
+                hdr.render_to_view_matrix(hdr_view, &depth.view, vp)?;
+                let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+                pass.encode(&self.gpu, &mut encoder, &view);
+                self.gpu.queue.submit([encoder.finish()]);
+            } else {
+                hdr.render_to_view_matrix(hdr_view, &depth.view, vp)?;
+            }
         } else {
             self.renderer
                 .render_to_view_matrix(&view, &depth.view, vp)?;

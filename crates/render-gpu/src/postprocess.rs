@@ -232,6 +232,10 @@ impl PostProcessPass {
     pub fn source_view(&self) -> &wgpu::TextureView {
         &self.source_view
     }
+
+    pub(crate) fn set_source_view(&mut self, gpu: &GpuContext, view: &wgpu::TextureView) {
+        self.bind_group = bind(gpu, &self.layout, view, &self.sampler, &self.uniform);
+    }
     pub fn config(&self) -> PostProcessConfig {
         self.config
     }
