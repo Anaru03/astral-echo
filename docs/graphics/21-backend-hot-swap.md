@@ -33,3 +33,11 @@ ventana proporcionadas por un event loop común, y mover la propiedad del event 
 una capa de presentación compartida. Después se puede conectar `G` sin duplicar
 postprocesado, presets ni snapshots. Hasta entonces no se declara validada la
 transición visual real ni se inventan mediciones de frame/memoria.
+## Corrección de recreación CPU
+
+Al regresar de GPU, la superficie `softbuffer` se crea y se dimensiona inmediatamente
+con el tamaño físico no nulo de la ventana antes de llamar a `buffer_mut`. Durante una
+minimización se omite la presentación mientras alguna dimensión sea cero; al restaurar
+la ventana, el evento de resize vuelve a dimensionar la superficie. Esto evita el panic
+`Must set size of surface before calling buffer_mut()` sin ocultarlo mediante
+`catch_unwind`.
