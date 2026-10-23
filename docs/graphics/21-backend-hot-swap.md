@@ -79,3 +79,12 @@ tick, nodos, culling, triángulos, draws y tamaño del buffer. `F9` marca manual
 un frame sin interferir con `G`, `S/P/A` ni `1/2/3`. Compartir los logs junto con
 capturas PNG de la ventana si el fallo aparece; la captura GPU continua no se activa
 para no alterar el timing.
+## Corrección de escala tras GPU→CPU
+
+El host estaba actualizando snapshots y cámara con el tamaño físico de la ventana,
+mientras el rasterizador CPU usaba la resolución interna del preset. Después de
+varios cambios, esa mezcla podía dejar el encuadre y el escalador con referencias
+distintas. Ahora la fuente de snapshots recibe siempre `Framebuffer::width/height`;
+el tamaño físico se usa exclusivamente para `softbuffer` y `copy_nearest_rgba`.
+La prueba headless de resize y escalado sigue pasando. La confirmación visual en
+Windows con DPI distinto requiere display.
