@@ -2,6 +2,15 @@
 
 ## Estado
 
+Se añadió `run_hot_swap_window`: un host winit único conserva la ventana y el event
+loop, presenta CPU mediante softbuffer y crea/libera `SurfaceRenderer` GPU sobre la
+misma ventana al pulsar `G`. `S/P/A` conservan los modos CPU; la fuente de snapshot
+se actualiza antes de cada frame y los cambios registran latencia. La ruta LOW usa
+CPU; presets superiores activan la composición GPU cuando el adaptador está disponible.
+
+La validación automática cubre el host y las rutas headless; la comprobación visual
+CPU→GPU→CPU requiere un display compatible y no se ejecutó en este entorno.
+
 La transición real con `G` en la misma ventana queda bloqueada por las APIs actuales:
 `render-present::run_window` posee el event loop y la superficie `softbuffer`, mientras
 `render-gpu::SurfaceRenderer` crea y posee su propia superficie `wgpu` y su ciclo de
