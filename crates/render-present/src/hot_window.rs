@@ -158,6 +158,9 @@ impl ApplicationHandler for Host {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Occluded(v) => state.occluded = v,
             WindowEvent::Resized(size) => {
+                let _ = state
+                    .framebuffer
+                    .resize(size.width.max(1), size.height.max(1));
                 let _ = state.surface.resize(
                     NonZeroU32::new(size.width.max(1)).unwrap(),
                     NonZeroU32::new(size.height.max(1)).unwrap(),
@@ -175,6 +178,9 @@ impl ApplicationHandler for Host {
                         KeyCode::KeyS => self.config.raster_mode = RasterMode::Secuencial,
                         KeyCode::KeyP => self.config.raster_mode = RasterMode::Paralelo,
                         KeyCode::KeyA => self.config.raster_mode = RasterMode::Auto,
+                        KeyCode::Digit1 => self.set_preset(Preset::Low),
+                        KeyCode::Digit2 => self.set_preset(Preset::Medium),
+                        KeyCode::Digit3 => self.set_preset(Preset::High),
                         _ => {}
                     }
                 }
@@ -192,6 +198,26 @@ impl ApplicationHandler for Host {
 }
 
 impl Host {
+    fn set_preset(&mut self, preset: Preset) {
+        self.config.preset = preset;
+        if let Some(state) = &mut self.state {
+            state.preset = preset;
+            let (width, height) = preset.resolution();
+            let _ = state.framebuffer.resize(width, height);
+            let _ = state
+                .window
+                .request_inner_size(LogicalSize::new(width, height));
+            if let Some(gpu) = &mut state.gpu {
+                let _ = gpu.resize(width, height);
+                if preset == Preset::Low {
+                    let _ = gpu.set_postprocess(render_gpu::PostProcessConfig::default());
+                } else {
+                    let _ = gpu.set_postprocess_preset(render_gpu::PostProcessPreset::High);
+                }
+            }
+        }
+    }
+
     fn toggle(&mut self) {
         let Some(state) = self.state.as_mut() else {
             return;
