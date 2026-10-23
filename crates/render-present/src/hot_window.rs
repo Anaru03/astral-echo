@@ -373,7 +373,8 @@ impl Host {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        if let Ok(snapshot) = (self.source)(size.width, size.height) {
+        let internal = (state.framebuffer.width(), state.framebuffer.height());
+        if let Ok(snapshot) = (self.source)(internal.0, internal.1) {
             let timestamp = state.started.elapsed().as_secs_f32();
             let _ = state.buffer.push(snapshot, timestamp);
             if let Some(interpolated) = state.buffer.sample(timestamp) {
