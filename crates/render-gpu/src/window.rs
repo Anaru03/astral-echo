@@ -164,6 +164,18 @@ impl SurfaceRenderer {
         self.postprocess.as_ref().map(|pass| pass.config())
     }
 
+    pub fn diagnostic_state(&self) -> (wgpu::TextureFormat, bool, bool, u32, u32) {
+        (
+            self.config.format,
+            self.hdr_view.is_some(),
+            self.postprocess
+                .as_ref()
+                .is_some_and(|pass| pass.is_enabled()),
+            self.config.width,
+            self.config.height,
+        )
+    }
+
     pub fn present(&mut self, camera: &Camera) -> Result<bool, GpuError> {
         self.present_matrix(camera.view_projection_matrix())
     }

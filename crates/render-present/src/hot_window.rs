@@ -339,7 +339,12 @@ impl Host {
             height: size.height,
             ..Default::default()
         });
+        let gpu_state = state.gpu.as_ref().map(|gpu| {
+            let (format, hdr, postprocess, width, height) = gpu.diagnostic_state();
+            format!("gpu_format={format:?} hdr={hdr} postprocess={postprocess} gpu_size={width}x{height}")
+        }).unwrap_or_else(|| "gpu_format=none hdr=false postprocess=false gpu_size=0x0".into());
         let text = format!("reason={reason}\nbackend={:?}\nphysical={}x{}\ninternal={}x{}\ntick={}\nnodes={} visible={} discarded={} triangles={} draws={} buffer={}\n", state.backend.backend(), size.width, size.height, state.framebuffer.width(), state.framebuffer.height(), state.snapshot.snapshot().tick.0, state.snapshot.snapshot().nodes.len(), prepared.visible, prepared.discarded, prepared.triangles, prepared.draws().count(), state.buffer.len());
+        let text = format!("preset={:?}\n{gpu_state}\n{text}", state.preset);
         if std::fs::write(&path, text).is_ok() {
             println!("graphics-debug capture={}", path.display());
         }
