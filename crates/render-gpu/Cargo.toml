@@ -33,3 +33,7 @@ harness = false
 [[bench]]
 name = "shadows_bench"
 harness = false
+
+[[bench]]
+name = "postprocess_bench"
+harness = false

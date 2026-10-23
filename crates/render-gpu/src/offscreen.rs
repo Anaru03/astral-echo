@@ -2,6 +2,7 @@ use std::sync::{mpsc, Arc};
 
 use render_core::{Camera, Mat4, PreparedScene, SnapshotScene};
 
+use crate::postprocess::{PostProcessConfig, PostProcessPass};
 use crate::renderer::{validate_extent, DepthTarget};
 use crate::{GpuContext, GpuError, GpuImage, GpuRenderer, ReadbackLayout};
 
@@ -13,6 +14,7 @@ pub struct OffscreenTarget {
     color_readback: wgpu::Buffer,
     depth_readback: wgpu::Buffer,
     layout: ReadbackLayout,
+    postprocess: Option<PostProcessPass>,
 }
 
 impl OffscreenTarget {
@@ -58,6 +60,7 @@ impl OffscreenTarget {
             color_readback,
             depth_readback,
             layout,
+            postprocess: None,
         })
     }
 
@@ -67,9 +70,41 @@ impl OffscreenTarget {
 
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
         if self.size() != (width, height) {
+            let config = self.postprocess.as_ref().map(|pass| pass.config());
             *self = Self::new(self.gpu.clone(), width, height)?;
+            if let Some(config) = config {
+                self.set_postprocess(config)?;
+            }
         }
         Ok(())
+    }
+
+    pub fn set_postprocess(&mut self, config: PostProcessConfig) -> Result<(), GpuError> {
+        config.validate()?;
+        if config.enabled {
+            if self.postprocess.is_none() {
+                self.postprocess = Some(PostProcessPass::new(
+                    &self.gpu,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    self.layout.width,
+                    self.layout.height,
+                )?);
+            }
+            self.postprocess
+                .as_mut()
+                .expect("postprocess")
+                .set_config(config)?;
+        } else if let Some(pass) = &mut self.postprocess {
+            pass.set_config(config)?;
+        }
+        Ok(())
+    }
+
+    pub fn postprocess_config(&self) -> Option<PostProcessConfig> {
+        self.postprocess.as_ref().map(|pass| pass.config())
+    }
+    pub fn postprocess_resources(&self) -> Option<(u32, u32, u64)> {
+        self.postprocess.as_ref().map(|pass| pass.resources())
     }
 
     pub fn render(&self, renderer: &mut GpuRenderer, camera: &Camera) -> Result<(), GpuError> {
@@ -113,7 +148,14 @@ impl OffscreenTarget {
 
     pub fn render_matrix(&self, renderer: &mut GpuRenderer, vp: Mat4) -> Result<(), GpuError> {
         self.validate_renderer(renderer)?;
-        renderer.render_to_view_matrix(&self.color_view, &self.depth.view, vp)?;
+        let Some(pass) = self.postprocess.as_ref().filter(|pass| pass.is_enabled()) else {
+            renderer.render_to_view_matrix(&self.color_view, &self.depth.view, vp)?;
+            return Ok(());
+        };
+        renderer.render_to_view_matrix(pass.source_view(), &self.depth.view, vp)?;
+        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+        pass.encode(&self.gpu, &mut encoder, &self.color_view);
+        self.gpu.queue.submit([encoder.finish()]);
         Ok(())
     }
 

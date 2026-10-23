@@ -1,0 +1,7 @@
+struct Params { exposure: f32, threshold: f32, strength: f32, bloom: f32, fxaa: f32, pad0: f32, pad1: f32, pad2: f32 }
+@group(0) @binding(0) var source: texture_2d<f32>;
+@group(0) @binding(1) var source_sampler: sampler;
+@group(0) @binding(2) var<uniform> params: Params;
+@vertex fn vs_fullscreen(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> { let p = array<vec2<f32>,3>(vec2(-1.0,-1.0),vec2(3.0,-1.0),vec2(-1.0,3.0))[index]; return vec4(p,0.0,1.0); }
+fn aces(x: vec3<f32>) -> vec3<f32> { return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),vec3(0.0),vec3(1.0)); }
+@fragment fn fs_postprocess(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> { let dimensions = vec2<f32>(textureDimensions(source)); let uv = position.xy/dimensions; var color = textureSampleLevel(source,source_sampler,uv,0.0).rgb*params.exposure; if params.bloom > 0.5 { var glow = vec3(0.0); for (var y=-1; y<=1; y+=1) { for (var x=-1; x<=1; x+=1) { let sample = textureSampleLevel(source,source_sampler,uv+vec2<f32>(f32(x),f32(y))/dimensions,0.0).rgb*params.exposure; let l = max(max(sample.r,sample.g),sample.b); glow += max(l-params.threshold,0.0); } } color += glow/9.0*params.strength; } color = aces(color); if params.fxaa > 0.5 { let left = textureSampleLevel(source,source_sampler,uv-vec2(1.0,0.0)/dimensions,0.0).rgb; let right = textureSampleLevel(source,source_sampler,uv+vec2(1.0,0.0)/dimensions,0.0).rgb; color = mix(color,aces((left+right)*0.5*params.exposure),0.15); } return vec4(color,1.0); }
