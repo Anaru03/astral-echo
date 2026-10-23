@@ -65,3 +65,17 @@ una causa adicional corregible sin una ejecución Windows/Vulkan: la auditoría 
 no puede inspeccionar la surface nativa, bind groups presentados ni píxeles de ventana.
 La validación nativa de 100 transiciones queda pendiente y no se declara estabilidad
 completa únicamente por los tests headless.
+## Diagnóstico nativo Windows/Vulkan
+
+Ejecutar:
+
+```text
+cargo run -p game --example gameplay_visual -- --window --backend cpu --graphics-debug
+```
+
+`--graphics-debug` está desactivado por defecto y escribe en `target/graphics-debug/`.
+Cada transición genera un log compacto con backend, dimensiones físicas e internas,
+tick, nodos, culling, triángulos, draws y tamaño del buffer. `F9` marca manualmente
+un frame sin interferir con `G`, `S/P/A` ni `1/2/3`. Compartir los logs junto con
+capturas PNG de la ventana si el fallo aparece; la captura GPU continua no se activa
+para no alterar el timing.
