@@ -128,4 +128,26 @@ mod tests {
             })
             .unwrap());
     }
+
+    #[test]
+    fn deterministic_stress_keeps_snapshot_across_one_hundred_switches() {
+        let mut state = state();
+        let expected = state.snapshot().clone();
+        let mut seed = 0x5eed_u32;
+        for step in 0..100 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let target = if seed & 1 == 0 {
+                BackendKind::Gpu
+            } else {
+                BackendKind::Cpu
+            };
+            let _ = state.try_switch(target, |_| Ok(()));
+            assert_eq!(
+                state.snapshot(),
+                &expected,
+                "snapshot changed at transition {step}"
+            );
+        }
+        assert!(state.transitions() <= 100);
+    }
 }
