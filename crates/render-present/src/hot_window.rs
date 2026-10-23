@@ -245,6 +245,7 @@ impl Host {
         } else {
             BackendKind::Cpu
         };
+        let previous_gpu = state.gpu.take();
         let released_surface = if target == BackendKind::Gpu {
             state.surface.take()
         } else {
@@ -277,6 +278,7 @@ impl Host {
             state.window.request_redraw();
         } else if target == BackendKind::Gpu {
             state.surface = released_surface;
+            state.gpu = previous_gpu;
         }
         if let Err(error) = result {
             self.report_gpu_error(error);
@@ -339,6 +341,21 @@ impl Host {
                 });
             }
         }
+        let prepared = state.snapshot.prepare(render_core::CullingConfig {
+            width: size.width,
+            height: size.height,
+            ..Default::default()
+        });
+        println!(
+            "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
+            state.backend.backend(),
+            state.snapshot.snapshot().tick.0,
+            state.snapshot.snapshot().nodes.len(),
+            prepared.considered,
+            prepared.visible,
+            prepared.discarded,
+            prepared.triangles
+        );
         if state.backend.backend() == BackendKind::Gpu {
             if let Some(gpu) = &mut state.gpu {
                 let _ = gpu.present_snapshot(&state.snapshot);
