@@ -66,13 +66,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let start_gpu = matches!(decision, BackendDecision::Gpu);
         let report = render_present::run_hot_swap_window(
             config,
-            Box::new(move |width, height| {
-                let mut scene = SnapshotScene::default();
-                scene
-                    .update(&support::snapshot(&world, width, height))
-                    .map_err(|error| error.to_string())?;
-                Ok(scene)
-            }),
+            Box::new(move |width, height| Ok(support::snapshot(&world, width, height))),
             start_gpu,
         )?;
         println!(

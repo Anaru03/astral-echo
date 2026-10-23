@@ -1,8 +1,9 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
-use render_core::SnapshotScene;
+use render_core::{InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene};
 use render_cpu::{render_snapshot_scene, Framebuffer, RasterMode};
 use render_gpu::{GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
@@ -15,7 +16,7 @@ use winit::window::{Window, WindowId};
 
 use crate::{copy_nearest_rgba, BackendKind, BackendSnapshot, HotSwapState, Preset, WindowConfig};
 
-pub type SnapshotSource = Box<dyn FnMut(u32, u32) -> Result<SnapshotScene, String>>;
+pub type SnapshotSource = Box<dyn FnMut(u32, u32) -> Result<RenderSnapshot, String>>;
 
 pub fn run_hot_swap_window(
     config: WindowConfig,
@@ -63,6 +64,8 @@ struct HostState {
     framebuffer: Framebuffer,
     snapshot: Rc<SnapshotScene>,
     backend: HotSwapState<Rc<SnapshotScene>>,
+    buffer: SnapshotBuffer,
+    started: Instant,
     gpu: Option<SurfaceRenderer>,
     occluded: bool,
     preset: Preset,
@@ -122,7 +125,18 @@ impl ApplicationHandler for Host {
             NonZeroU32::new(size.0).unwrap(),
             NonZeroU32::new(size.1).unwrap(),
         );
-        let snapshot = Rc::new(snapshot);
+        let mut buffer = SnapshotBuffer::new(InterpolationConfig::default());
+        let _ = buffer.push(snapshot, 0.0);
+        let snapshot = buffer
+            .sample(0.0)
+            .ok_or_else(|| "initial snapshot unavailable".to_string())
+            .unwrap();
+        let mut scene = SnapshotScene::default();
+        scene
+            .update(&snapshot)
+            .map_err(|error| error.to_string())
+            .unwrap();
+        let snapshot = Rc::new(scene);
         let backend = HotSwapState::new(
             BackendKind::Cpu,
             BackendSnapshot {
@@ -141,6 +155,8 @@ impl ApplicationHandler for Host {
             gpu: None,
             occluded: false,
             preset: self.config.preset,
+            buffer,
+            started: Instant::now(),
         });
         if self.start_gpu {
             self.toggle();
@@ -271,14 +287,22 @@ impl Host {
             return;
         }
         let size = state.window.inner_size();
-        if let Ok(scene) = (self.source)(size.width, size.height) {
-            let scene = Rc::new(scene);
-            state.snapshot = scene.clone();
-            state.backend.update_snapshot(BackendSnapshot {
-                value: scene,
-                width: size.width,
-                height: size.height,
-            });
+        if let Ok(snapshot) = (self.source)(size.width, size.height) {
+            let timestamp = state.started.elapsed().as_secs_f32();
+            let _ = state.buffer.push(snapshot, timestamp);
+            if let Some(interpolated) = state.buffer.sample(timestamp) {
+                let mut scene = SnapshotScene::default();
+                if scene.update(&interpolated).is_err() {
+                    return;
+                }
+                let scene = Rc::new(scene);
+                state.snapshot = scene.clone();
+                state.backend.update_snapshot(BackendSnapshot {
+                    value: scene,
+                    width: size.width,
+                    height: size.height,
+                });
+            }
         }
         if state.backend.backend() == BackendKind::Gpu {
             if let Some(gpu) = &mut state.gpu {
