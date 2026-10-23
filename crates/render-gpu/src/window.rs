@@ -169,6 +169,16 @@ impl SurfaceRenderer {
     }
 
     pub fn present_snapshot(&mut self, scene: &SnapshotScene) -> Result<bool, GpuError> {
+        if self
+            .postprocess
+            .as_ref()
+            .is_some_and(|pass| pass.is_enabled())
+            && self.hdr_view.is_none()
+            && self.config.width > 0
+            && self.config.height > 0
+        {
+            self.resize(self.config.width, self.config.height)?;
+        }
         let prepared = scene.prepare(render_core::CullingConfig {
             width: self.config.width,
             height: self.config.height,
