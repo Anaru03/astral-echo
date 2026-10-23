@@ -174,9 +174,6 @@ impl ApplicationHandler for Host {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Occluded(v) => state.occluded = v,
             WindowEvent::Resized(size) => {
-                let _ = state
-                    .framebuffer
-                    .resize(size.width.max(1), size.height.max(1));
                 if let Some(surface) = &mut state.surface {
                     let _ = surface.resize(
                         NonZeroU32::new(size.width.max(1)).unwrap(),
