@@ -9,7 +9,15 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     let world = support::fixture_world();
     let before = format!("{world:?}");
     let snapshot = snapshot_from_world(&world, Default::default());
-    assert_eq!(snapshot.nodes.len(), 6);
+    assert_eq!(snapshot.nodes.len(), 10);
+    assert_eq!(
+        snapshot
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.entity, SnapshotId::Entity(id) if SURFACE_OBJECT_IDS.contains(&id)))
+            .count(),
+        4
+    );
     assert!(snapshot
         .nodes
         .iter()
@@ -119,7 +127,7 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
     scene
         .update(&snapshot_from_world(&world, Default::default()))
         .unwrap();
-    assert_eq!(scene.visible_nodes().count(), 3);
+    assert_eq!(scene.visible_nodes().count(), 7);
     assert!(scene.snapshot().nodes.iter().filter(|n| matches!(n.entity,SnapshotId::Entity(id) if id==enemy || id==collectible || id==new_player)).all(|n| !n.visible));
     let empty = gameplay::GameplayWorld::new();
     assert_eq!(
@@ -127,7 +135,7 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
             .update(&snapshot_from_world(&empty, Default::default()))
             .unwrap()
             .removed,
-        7
+        11
     );
     assert!(scene.snapshot().nodes.is_empty());
 }
@@ -158,6 +166,7 @@ fn destination_filter_collectibles_and_camera_are_respected() {
             .visible
     );
     let ids = vec![gameplay::DestinationId::new(1)];
+    let collectible = world.collectibles().next().unwrap().entity;
     let filtered = snapshot_from_world(
         &world,
         BridgeParams {
@@ -168,7 +177,7 @@ fn destination_filter_collectibles_and_camera_are_respected() {
     assert!(!filtered
         .nodes
         .iter()
-        .any(|n| n.mesh == COLLECTIBLE_MESH || n.entity == SnapshotId::Destination(2)));
+        .any(|n| n.entity == SnapshotId::Destination(2) || n.entity == SnapshotId::Entity(collectible)));
     let camera = render_core::demo_camera(1.0).unwrap();
     let custom = snapshot_from_world_with_camera(&world, Default::default(), &camera);
     assert_eq!(custom.projection, camera.projection_matrix());
@@ -221,6 +230,43 @@ fn academic_planet_orbit_and_rotation_are_absolute_and_do_not_mutate_world() {
         .find(|node| node.entity == SnapshotId::Destination(1))
         .unwrap();
     assert_eq!(initial_planet.transform, repeated_planet.transform);
+    assert_eq!(before, format!("{world:?}"));
+}
+
+#[test]
+fn academic_surface_objects_are_four_deterministic_exterior_visual_nodes() {
+    let world = support::fixture_world();
+    let before = format!("{world:?}");
+    let first = academic_surface_objects(0.0);
+    let repeated = academic_surface_objects(0.0);
+    let later = academic_surface_objects(4.0);
+    assert_eq!(first, repeated);
+    assert_eq!(first.len(), 4);
+    assert!(first.iter().all(|node| {
+        node.visible
+            && node.transform.matrix().is_finite()
+            && node.transform.scale.min_element() > 0.0
+    }));
+    let planet = academic_planet_transform(0.0);
+    let later_planet = academic_planet_transform(4.0);
+    for (node, later_node) in first.iter().zip(later.iter()) {
+        let radius = (node.transform.translation - planet.translation).length();
+        let later_radius =
+            (later_node.transform.translation - later_planet.translation).length();
+        assert!(radius > PLANET_SURFACE_RADIUS);
+        assert!((radius - later_radius).abs() < 0.0001);
+        assert_ne!(node.transform, later_node.transform);
+        assert!(node.mesh != PLANET_MESH);
+    }
+    let snapshot = snapshot_from_world(&world, Default::default());
+    assert_eq!(
+        snapshot
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.entity, SnapshotId::Entity(id) if SURFACE_OBJECT_IDS.contains(&id)))
+            .count(),
+        4
+    );
     assert_eq!(before, format!("{world:?}"));
 }
 

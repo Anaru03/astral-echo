@@ -10,7 +10,7 @@ use gameplay::{
     NavigationRouteState, SpatialEncounter, SpatialEncounterKind, StationType, WeaponAmmunition,
     WeaponConfiguration,
 };
-use render_core::{LightingMode, MaterialInfo, SnapshotScene, VisualAssets};
+use render_core::{LightingMode, MaterialInfo, VisualAssets};
 use render_present::{
     run_hot_swap_window_with_input_and_scene, GraphicsDebugConfig, KeyCode, Preset, WindowConfig,
 };
@@ -364,7 +364,7 @@ pub fn run() -> Result<(), String> {
                 Default::default(),
                 &camera,
             ))
-        },
+        }),
         true,
         move |key| input_runtime.borrow_mut().handle_key(key),
         |scene| {
@@ -382,4 +382,3 @@ pub fn run() -> Result<(), String> {
     })
     .map_err(|error| format!("ventana visual propia: {error}"))
 }
-
