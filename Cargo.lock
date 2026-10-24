@@ -2687,6 +2687,9 @@ dependencies = [
  "gameplay",
  "networking",
  "render-core",
+ "render-cpu",
+ "render-gpu",
+ "render-present",
 ]
 
 [[package]]
@@ -4559,7 +4562,9 @@ dependencies = [
 name = "render-present"
 version = "0.1.0"
 dependencies = [
+ "render-core",
  "render-cpu",
+ "render-gpu",
  "softbuffer",
  "winit",
 ]

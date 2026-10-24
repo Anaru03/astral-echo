@@ -5,6 +5,7 @@ pub mod tiles;
 pub mod vertex;
 
 use glam::Mat4;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::clip::{clip_triangle, ClipVertex};
@@ -23,6 +24,7 @@ pub use tiles::{
     rasterize_triangles_tiled, RasterMode, RasterWorkload, TileConfig, TileGrid, TileRect,
     TileStats,
 };
+use vertex::VertexLighting;
 pub use vertex::VertexStage;
 
 /// Pipeline CPU por etapas: vertex, assembly, clipping, raster, fragment y depth.
@@ -38,6 +40,7 @@ pub struct CpuPipeline<'a> {
     triangles: Vec<Triangle>,
     fragments: Vec<Fragment>,
     shaded: Vec<Color>,
+    assembly: AssemblyStats,
 }
 
 impl<'a> CpuPipeline<'a> {
@@ -58,6 +61,7 @@ impl<'a> CpuPipeline<'a> {
             triangles: Vec::new(),
             fragments: Vec::new(),
             shaded: Vec::new(),
+            assembly: AssemblyStats::default(),
         }
     }
 
@@ -103,21 +107,118 @@ impl<'a> CpuPipeline<'a> {
         mvp: Mat4,
         topology: Topology,
     ) -> Result<PipelineStats, RasterError> {
+        self.draw_mesh_inner(mesh, mvp, topology, false, None)
+    }
+
+    pub fn draw_mesh_instances(
+        &mut self,
+        mesh: &RasterMesh,
+        matrices: impl IntoIterator<Item = Mat4>,
+        topology: Topology,
+    ) -> Result<PipelineStats, RasterError> {
+        let mut reuse = false;
+        for mvp in matrices {
+            self.draw_mesh_inner(mesh, mvp, topology, reuse, None)?;
+            reuse = true;
+        }
+        Ok(self.stats)
+    }
+
+    pub fn draw_prepared_scene(
+        &mut self,
+        scene: &render_core::PreparedScene,
+        vp: Mat4,
+    ) -> Result<PipelineStats, RasterError> {
+        if scene.lighting.mode != render_core::LightingMode::Unlit {
+            return self.draw_lit_scene(scene, vp);
+        }
+        let mut draws = scene.draws().peekable();
+        while let Some(first) = draws.next() {
+            let matrices = std::iter::once(vp * first.node.transform.matrix()).chain(
+                std::iter::from_fn(|| {
+                    let next = draws.peek()?;
+                    if !Arc::ptr_eq(&first.mesh, &next.mesh) {
+                        return None;
+                    }
+                    let next = draws.next()?;
+                    Some(vp * next.node.transform.matrix())
+                }),
+            );
+            self.draw_mesh_instances(&first.mesh, matrices, Topology::TriangleList)?;
+        }
+        Ok(self.stats)
+    }
+
+    fn draw_lit_scene(
+        &mut self,
+        scene: &render_core::PreparedScene,
+        vp: Mat4,
+    ) -> Result<PipelineStats, RasterError> {
+        let mut draws = scene.draws().peekable();
+        while let Some(first) = draws.next() {
+            let normals = first.mesh.resolved_normals();
+            let mut draw = first;
+            let mut reuse = false;
+            loop {
+                let model = draw.node.transform.matrix();
+                let lighting = VertexLighting {
+                    model,
+                    normal_matrix: render_core::normal_matrix(model),
+                    normals: &normals,
+                    material: scene.material(draw.node.material),
+                    environment: &scene.lighting,
+                };
+                self.draw_mesh_inner(
+                    &draw.mesh,
+                    vp * model,
+                    Topology::TriangleList,
+                    reuse,
+                    Some(&lighting),
+                )?;
+                reuse = true;
+                if !draws
+                    .peek()
+                    .is_some_and(|next| Arc::ptr_eq(&first.mesh, &next.mesh))
+                {
+                    break;
+                }
+                draw = draws.next().expect("peeked draw");
+            }
+        }
+        Ok(self.stats)
+    }
+
+    fn draw_mesh_inner(
+        &mut self,
+        mesh: &RasterMesh,
+        mvp: Mat4,
+        topology: Topology,
+        reuse: bool,
+        lighting: Option<&VertexLighting<'_>>,
+    ) -> Result<PipelineStats, RasterError> {
         self.stats.draws += 1;
         let stage = VertexStage::new(mvp);
         self.stats.metrics.vertices_in += mesh.vertices.len() as u32;
         let t0 = self.timer();
-        stage.transform_into(&mesh.vertices, &mut self.clip_vertices)?;
+        if let Some(lighting) = lighting {
+            stage.transform_lit_into(&mesh.vertices, lighting, &mut self.clip_vertices)?;
+        } else {
+            stage.transform_into(&mesh.vertices, &mut self.clip_vertices)?;
+        }
         self.stats.metrics.vertices_out += self.clip_vertices.len() as u32;
         let vertex_ns = self.elapsed(t0);
 
         let t1 = self.timer();
-        let assembly = assemble(
-            topology,
-            &mesh.indices,
-            mesh.vertices.len() as u32,
-            &mut self.triangles,
-        )?;
+        if !reuse {
+            self.assembly = assemble(
+                topology,
+                &mesh.indices,
+                mesh.vertices.len() as u32,
+                &mut self.triangles,
+            )?;
+        }
+        self.stats.assembly_cache_hits += u32::from(reuse);
+        let assembly = self.assembly;
         let assembly_ns = self.elapsed(t1);
         self.stats.metrics.triangles_assembled += assembly.triangles;
         self.stats.metrics.triangles_rejected +=

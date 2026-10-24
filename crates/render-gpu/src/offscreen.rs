@@ -1,7 +1,8 @@
 use std::sync::{mpsc, Arc};
 
-use render_core::Camera;
+use render_core::{Camera, Mat4, PreparedScene, SnapshotScene};
 
+use crate::postprocess::{PostProcessConfig, PostProcessPass};
 use crate::renderer::{validate_extent, DepthTarget};
 use crate::{GpuContext, GpuError, GpuImage, GpuRenderer, ReadbackLayout};
 
@@ -13,10 +14,25 @@ pub struct OffscreenTarget {
     color_readback: wgpu::Buffer,
     depth_readback: wgpu::Buffer,
     layout: ReadbackLayout,
+    postprocess: Option<PostProcessPass>,
+    source_format: wgpu::TextureFormat,
 }
 
 impl OffscreenTarget {
     pub fn new(gpu: Arc<GpuContext>, width: u32, height: u32) -> Result<Self, GpuError> {
+        Self::new_with_source_format(gpu, width, height, wgpu::TextureFormat::Rgba8Unorm)
+    }
+
+    pub fn new_hdr(gpu: Arc<GpuContext>, width: u32, height: u32) -> Result<Self, GpuError> {
+        Self::new_with_source_format(gpu, width, height, wgpu::TextureFormat::Rgba16Float)
+    }
+
+    fn new_with_source_format(
+        gpu: Arc<GpuContext>,
+        width: u32,
+        height: u32,
+        source_format: wgpu::TextureFormat,
+    ) -> Result<Self, GpuError> {
         validate_extent(&gpu, width, height)?;
         let layout = ReadbackLayout::new(width, height)?;
         if layout.buffer_size > gpu.device.limits().max_buffer_size {
@@ -58,6 +74,8 @@ impl OffscreenTarget {
             color_readback,
             depth_readback,
             layout,
+            postprocess: None,
+            source_format,
         })
     }
 
@@ -67,13 +85,74 @@ impl OffscreenTarget {
 
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
         if self.size() != (width, height) {
-            *self = Self::new(self.gpu.clone(), width, height)?;
+            let config = self.postprocess.as_ref().map(|pass| pass.config());
+            let source_format = self.source_format;
+            *self = Self::new_with_source_format(self.gpu.clone(), width, height, source_format)?;
+            if let Some(config) = config {
+                self.set_postprocess(config)?;
+            }
         }
         Ok(())
     }
 
+    pub fn set_postprocess(&mut self, config: PostProcessConfig) -> Result<(), GpuError> {
+        config.validate()?;
+        if config.enabled {
+            if self.postprocess.is_none() {
+                self.postprocess = Some(PostProcessPass::new(
+                    &self.gpu,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    self.source_format,
+                    self.layout.width,
+                    self.layout.height,
+                )?);
+            }
+            self.postprocess
+                .as_mut()
+                .expect("postprocess")
+                .set_config(config)?;
+        } else if let Some(pass) = &mut self.postprocess {
+            pass.set_config(config)?;
+        }
+        Ok(())
+    }
+
+    pub fn postprocess_config(&self) -> Option<PostProcessConfig> {
+        self.postprocess.as_ref().map(|pass| pass.config())
+    }
+    pub fn postprocess_resources(&self) -> Option<(u32, u32, u64)> {
+        self.postprocess.as_ref().map(|pass| pass.resources())
+    }
+
     pub fn render(&self, renderer: &mut GpuRenderer, camera: &Camera) -> Result<(), GpuError> {
-        if renderer.color_format() != wgpu::TextureFormat::Rgba8Unorm {
+        self.render_matrix(renderer, camera.view_projection_matrix())
+    }
+
+    pub fn render_snapshot(
+        &self,
+        renderer: &mut GpuRenderer,
+        scene: &SnapshotScene,
+    ) -> Result<(), GpuError> {
+        self.validate_renderer(renderer)?;
+        renderer.sync_snapshot(scene)?;
+        self.render_matrix(renderer, scene.view_projection())
+    }
+
+    pub fn render_prepared(
+        &self,
+        renderer: &mut GpuRenderer,
+        scene: &PreparedScene,
+        view_projection: Mat4,
+    ) -> Result<(), GpuError> {
+        self.validate_renderer(renderer)?;
+        renderer.sync_prepared(scene)?;
+        self.render_matrix(renderer, view_projection)
+    }
+
+    fn validate_renderer(&self, renderer: &GpuRenderer) -> Result<(), GpuError> {
+        if renderer.color_format() != wgpu::TextureFormat::Rgba8Unorm
+            && renderer.color_format() != wgpu::TextureFormat::Rgba16Float
+        {
             return Err(GpuError::InvalidInput(
                 "offscreen target requires Rgba8Unorm pipeline".into(),
             ));
@@ -83,7 +162,19 @@ impl OffscreenTarget {
                 "target and renderer belong to different contexts".into(),
             ));
         }
-        renderer.render_to_view(&self.color_view, &self.depth.view, camera)?;
+        Ok(())
+    }
+
+    pub fn render_matrix(&self, renderer: &mut GpuRenderer, vp: Mat4) -> Result<(), GpuError> {
+        self.validate_renderer(renderer)?;
+        let Some(pass) = self.postprocess.as_ref().filter(|pass| pass.is_enabled()) else {
+            renderer.render_to_view_matrix(&self.color_view, &self.depth.view, vp)?;
+            return Ok(());
+        };
+        renderer.render_to_view_matrix(pass.source_view(), &self.depth.view, vp)?;
+        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+        pass.encode(&self.gpu, &mut encoder, &self.color_view);
+        self.gpu.queue.submit([encoder.finish()]);
         Ok(())
     }
 

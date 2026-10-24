@@ -1,14 +1,15 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use render_core::{Camera, RasterMesh, Transform};
+use render_core::{Camera, Mat4, RasterMesh, RenderSnapshot, SnapshotScene, Transform};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+use crate::postprocess::PostProcessPass;
 use crate::renderer::DepthTarget;
-use crate::{GpuContext, GpuError, GpuOptions, GpuRenderer};
+use crate::{GpuContext, GpuError, GpuOptions, GpuRenderer, PostProcessConfig, PostProcessPreset};
 
 pub struct SurfaceRenderer {
     surface: wgpu::Surface<'static>,
@@ -17,6 +18,11 @@ pub struct SurfaceRenderer {
     renderer: GpuRenderer,
     config: wgpu::SurfaceConfiguration,
     depth: Option<DepthTarget>,
+    scene: Vec<(RasterMesh, Transform)>,
+    hdr_renderer: Option<GpuRenderer>,
+    postprocess: Option<PostProcessPass>,
+    hdr_texture: Option<wgpu::Texture>,
+    hdr_view: Option<wgpu::TextureView>,
 }
 
 impl SurfaceRenderer {
@@ -71,6 +77,11 @@ impl SurfaceRenderer {
             renderer,
             config,
             depth: None,
+            scene: scene.to_vec(),
+            hdr_renderer: None,
+            postprocess: None,
+            hdr_texture: None,
+            hdr_view: None,
         };
         result.resize(size.width, size.height)?;
         Ok(result)
@@ -82,6 +93,29 @@ impl SurfaceRenderer {
             return Ok(());
         }
         let depth = DepthTarget::new(&self.gpu, width, height)?;
+        if self.postprocess.is_some() {
+            let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("persistent window HDR"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            self.hdr_texture = Some(texture);
+            self.hdr_view = Some(view);
+            if let Some(pass) = &mut self.postprocess {
+                pass.resize(&self.gpu, width, height);
+            }
+        }
         self.config.width = width;
         self.config.height = height;
         self.gpu.wait()?;
@@ -90,7 +124,86 @@ impl SurfaceRenderer {
         self.gpu.check()
     }
 
+    pub fn set_postprocess_preset(&mut self, preset: PostProcessPreset) -> Result<(), GpuError> {
+        self.set_postprocess(PostProcessConfig::preset(preset))
+    }
+
+    pub fn set_postprocess(&mut self, config: PostProcessConfig) -> Result<(), GpuError> {
+        config.validate()?;
+        if config.enabled {
+            if self.hdr_renderer.is_none() {
+                self.hdr_renderer = Some(GpuRenderer::new(
+                    self.gpu.clone(),
+                    wgpu::TextureFormat::Rgba16Float,
+                    &self.scene,
+                )?);
+            }
+            if self.postprocess.is_none() {
+                self.postprocess = Some(PostProcessPass::new(
+                    &self.gpu,
+                    self.config.format,
+                    wgpu::TextureFormat::Rgba16Float,
+                    self.config.width,
+                    self.config.height,
+                )?);
+            }
+            self.postprocess
+                .as_mut()
+                .expect("postprocess")
+                .set_config(config)?;
+            if self.hdr_texture.is_none() && self.config.width > 0 && self.config.height > 0 {
+                self.resize(self.config.width, self.config.height)?;
+            }
+        } else if let Some(pass) = &mut self.postprocess {
+            pass.set_config(config)?;
+        }
+        Ok(())
+    }
+
+    pub fn postprocess_config(&self) -> Option<PostProcessConfig> {
+        self.postprocess.as_ref().map(|pass| pass.config())
+    }
+
+    pub fn diagnostic_state(&self) -> (wgpu::TextureFormat, bool, bool, u32, u32) {
+        (
+            self.config.format,
+            self.hdr_view.is_some(),
+            self.postprocess
+                .as_ref()
+                .is_some_and(|pass| pass.is_enabled()),
+            self.config.width,
+            self.config.height,
+        )
+    }
+
     pub fn present(&mut self, camera: &Camera) -> Result<bool, GpuError> {
+        self.present_matrix(camera.view_projection_matrix())
+    }
+
+    pub fn present_snapshot(&mut self, scene: &SnapshotScene) -> Result<bool, GpuError> {
+        if self
+            .postprocess
+            .as_ref()
+            .is_some_and(|pass| pass.is_enabled())
+            && self.hdr_view.is_none()
+            && self.config.width > 0
+            && self.config.height > 0
+        {
+            self.resize(self.config.width, self.config.height)?;
+        }
+        let prepared = scene.prepare(render_core::CullingConfig {
+            width: self.config.width,
+            height: self.config.height,
+            ..Default::default()
+        });
+        self.renderer.sync_prepared(&prepared)?;
+        if let Some(renderer) = &mut self.hdr_renderer {
+            renderer.sync_prepared(&prepared)?;
+        }
+        self.present_matrix(scene.view_projection())
+    }
+
+    fn present_matrix(&mut self, vp: Mat4) -> Result<bool, GpuError> {
         self.gpu.check()?;
         let Some(depth) = &self.depth else {
             return Ok(false);
@@ -120,7 +233,20 @@ impl SurfaceRenderer {
             }
         };
         let view = texture.texture.create_view(&Default::default());
-        self.renderer.render_to_view(&view, &depth.view, camera)?;
+        if let (Some(hdr), Some(pass), Some(hdr_view)) = (
+            &mut self.hdr_renderer,
+            self.postprocess.as_mut().filter(|p| p.is_enabled()),
+            self.hdr_view.as_ref(),
+        ) {
+            pass.set_source_view(&self.gpu, hdr_view);
+            hdr.render_to_view_matrix(hdr_view, &depth.view, vp)?;
+            let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+            pass.encode(&self.gpu, &mut encoder, &view);
+            self.gpu.queue.submit([encoder.finish()]);
+        } else {
+            self.renderer
+                .render_to_view_matrix(&view, &depth.view, vp)?;
+        }
         self.window.pre_present_notify();
         texture.present();
         if reconfigure {
@@ -142,6 +268,30 @@ pub fn run_window(
     camera: Camera,
     max_frames: Option<u64>,
 ) -> Result<WindowReport, GpuError> {
+    run_app(scene, camera, max_frames, None)
+}
+
+type SnapshotSource = Box<dyn FnMut(u32, u32) -> Result<RenderSnapshot, GpuError>>;
+
+pub fn run_snapshot_window(
+    source: impl FnMut(u32, u32) -> Result<RenderSnapshot, GpuError> + 'static,
+    max_frames: Option<u64>,
+) -> Result<WindowReport, GpuError> {
+    let mut source: SnapshotSource = Box::new(source);
+    let mut scene = SnapshotScene::default();
+    scene
+        .update(&source(960, 540)?)
+        .map_err(|e| GpuError::InvalidInput(e.to_string()))?;
+    let draws = scene.owned_draws();
+    run_app(draws, Camera::demo(), max_frames, Some((scene, source)))
+}
+
+fn run_app(
+    scene: Vec<(RasterMesh, Transform)>,
+    camera: Camera,
+    max_frames: Option<u64>,
+    snapshot: Option<(SnapshotScene, SnapshotSource)>,
+) -> Result<WindowReport, GpuError> {
     if max_frames == Some(0) {
         return Err(GpuError::InvalidInput("zero frame limit".into()));
     }
@@ -156,6 +306,7 @@ pub fn run_window(
         next: Instant::now(),
         max_frames,
         occluded: false,
+        snapshot,
     };
     event_loop
         .run_app(&mut app)
@@ -177,6 +328,7 @@ struct App {
     next: Instant,
     max_frames: Option<u64>,
     occluded: bool,
+    snapshot: Option<(SnapshotScene, SnapshotSource)>,
 }
 
 impl App {
@@ -243,7 +395,17 @@ impl ApplicationHandler for App {
                 {
                     return;
                 }
-                match surface.present(&self.camera) {
+                let frame = if let Some((scene, source)) = &mut self.snapshot {
+                    source(size.width, size.height).and_then(|snapshot| {
+                        scene
+                            .update(&snapshot)
+                            .map_err(|e| GpuError::InvalidInput(e.to_string()))?;
+                        surface.present_snapshot(scene)
+                    })
+                } else {
+                    surface.present(&self.camera)
+                };
+                match frame {
                     Ok(presented) => {
                         self.report.frames += u64::from(presented);
                         if self.max_frames.is_some_and(|n| self.report.frames >= n) {

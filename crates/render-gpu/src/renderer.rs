@@ -3,7 +3,10 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use render_core::{Camera, RasterMesh, Transform};
+use render_core::{
+    Camera, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh, SnapshotId, SnapshotScene,
+    Transform,
+};
 use wgpu::util::DeviceExt;
 
 use crate::{block_on, GpuContext, GpuError};
@@ -75,11 +78,23 @@ pub struct ResourceStats {
     pub index_bytes: u64,
     pub uniform_bytes: u64,
     pub draw_count: usize,
+    pub instance_count: usize,
+    pub instance_bytes: u64,
+    pub geometry_uploads: u64,
+    pub buffer_rebuilds: u64,
+    pub dynamic_bytes_written: u64,
+    pub shadow_map_bytes: u64,
+    pub shadow_map_allocations: u64,
+    pub shadow_draw_count: usize,
 }
 
 pub struct GpuRenderer {
     pub(crate) gpu: Arc<GpuContext>,
     pipeline: wgpu::RenderPipeline,
+    pipeline_layout: wgpu::PipelineLayout,
+    shader: wgpu::ShaderModule,
+    instanced: Option<crate::instancing::InstancedScene>,
+    timer: Option<crate::timing::GpuTimer>,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     uniforms: wgpu::Buffer,
@@ -89,6 +104,14 @@ pub struct GpuRenderer {
     stride: u32,
     format: wgpu::TextureFormat,
     stats: ResourceStats,
+    prepared_meshes: Vec<Arc<RasterMesh>>,
+    prepared_keys: Vec<(
+        SnapshotId,
+        MeshHandle,
+        MaterialHandle,
+        render_core::LodLevel,
+    )>,
+    snapshot_keys: Option<Vec<(SnapshotId, MeshHandle, MaterialHandle)>>,
 }
 
 impl GpuRenderer {
@@ -101,6 +124,7 @@ impl GpuRenderer {
         if !matches!(
             format,
             wgpu::TextureFormat::Rgba8Unorm
+                | wgpu::TextureFormat::Rgba16Float
                 | wgpu::TextureFormat::Bgra8Unorm
                 | wgpu::TextureFormat::Rgba8UnormSrgb
                 | wgpu::TextureFormat::Bgra8UnormSrgb
@@ -118,6 +142,14 @@ impl GpuRenderer {
             index_bytes: (packed.indices.len() * 4).max(4) as u64,
             uniform_bytes: packed.draws.len().max(1) as u64 * u64::from(stride),
             draw_count: packed.draws.len(),
+            instance_count: packed.draws.len(),
+            instance_bytes: 0,
+            geometry_uploads: packed.draws.len() as u64,
+            buffer_rebuilds: 1,
+            dynamic_bytes_written: 0,
+            shadow_map_bytes: 0,
+            shadow_map_allocations: 0,
+            shadow_draw_count: 0,
         };
         let max = gpu.device.limits().max_buffer_size;
         if [stats.vertex_bytes, stats.index_bytes, stats.uniform_bytes]
@@ -198,50 +230,7 @@ impl GpuRenderer {
                 label: Some("Astral Echo vertex colors"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("vertex_color.wgsl").into()),
             });
-        let pipeline = gpu
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Astral Echo indexed color/depth"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: 28,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4],
-                    }],
-                },
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(if format.is_srgb() {
-                        "fs_srgb"
-                    } else {
-                        "fs_main"
-                    }),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
+        let pipeline = color_pipeline(&gpu, format, &pipeline_layout, &shader, false);
         if let Some(error) = block_on(scope.pop()) {
             return Err(GpuError::Backend(error.to_string()));
         }
@@ -249,6 +238,10 @@ impl GpuRenderer {
         Ok(Self {
             gpu,
             pipeline,
+            pipeline_layout,
+            shader,
+            instanced: None,
+            timer: None,
             vertices,
             indices,
             uniforms,
@@ -258,11 +251,134 @@ impl GpuRenderer {
             stride,
             format,
             stats,
+            snapshot_keys: None,
+            prepared_keys: Vec::new(),
+            prepared_meshes: Vec::new(),
         })
     }
 
+    pub fn enable_gpu_timing(&mut self) -> bool {
+        if self.timer.is_none() {
+            self.timer = crate::timing::GpuTimer::new(&self.gpu);
+        }
+        self.timer.is_some()
+    }
+
+    pub fn read_gpu_timings(&self) -> Result<Option<crate::FrameGpuTimings>, GpuError> {
+        self.timer
+            .as_ref()
+            .map_or(Ok(None), |timer| timer.read(&self.gpu))
+    }
+
+    pub fn lighting_cold_setup_ms(&self) -> Option<[f64; 3]> {
+        self.instanced
+            .as_ref()
+            .and_then(|scene| scene.lighting_cold_setup_ms())
+    }
+
     pub fn resources(&self) -> ResourceStats {
-        self.stats
+        if let Some(instanced) = &self.instanced {
+            instanced.resources(self.stats)
+        } else {
+            self.stats
+        }
+    }
+
+    pub fn from_snapshot(gpu: Arc<GpuContext>, scene: &SnapshotScene) -> Result<Self, GpuError> {
+        let mut renderer = Self::new(gpu, wgpu::TextureFormat::Rgba8Unorm, &scene.owned_draws())?;
+        renderer.snapshot_keys = Some(
+            scene
+                .visible_nodes()
+                .map(|n| (n.entity, n.mesh, n.material))
+                .collect(),
+        );
+        Ok(renderer)
+    }
+
+    pub fn from_prepared(gpu: Arc<GpuContext>, scene: &PreparedScene) -> Result<Self, GpuError> {
+        let mut renderer = Self::new(gpu, wgpu::TextureFormat::Rgba8Unorm, &[])?;
+        renderer.sync_prepared(scene)?;
+        Ok(renderer)
+    }
+
+    pub fn from_prepared_hdr(
+        gpu: Arc<GpuContext>,
+        scene: &PreparedScene,
+    ) -> Result<Self, GpuError> {
+        let mut renderer = Self::new(gpu, wgpu::TextureFormat::Rgba16Float, &[])?;
+        renderer.sync_prepared(scene)?;
+        Ok(renderer)
+    }
+
+    pub fn sync_prepared(&mut self, scene: &PreparedScene) -> Result<bool, GpuError> {
+        if self.instanced.is_none() {
+            self.instanced = Some(crate::instancing::InstancedScene::new(
+                &self.gpu,
+                self.format,
+                &self.pipeline_layout,
+                &self.shader,
+            ));
+        }
+        self.instanced
+            .as_mut()
+            .expect("initialized instancing")
+            .sync(&self.gpu, scene)
+    }
+
+    pub fn sync_prepared_reference(&mut self, scene: &PreparedScene) -> Result<bool, GpuError> {
+        let keys: Vec<_> = scene
+            .draws()
+            .map(|d| (d.node.entity, d.node.mesh, d.node.material, d.lod))
+            .collect();
+        let rebuild = self.instanced.is_some()
+            || self.snapshot_keys.is_some()
+            || self.prepared_keys != keys
+            || self.draws.len() != scene.visible
+            || !scene
+                .draws()
+                .map(|d| &d.mesh)
+                .zip(&self.prepared_meshes)
+                .all(|(a, b)| Arc::ptr_eq(a, b));
+        if rebuild {
+            let mut renderer = Self::new(self.gpu.clone(), self.format, &scene.owned_draws())?;
+            renderer.prepared_keys = keys;
+            renderer.prepared_meshes = scene.draws().map(|d| d.mesh.clone()).collect();
+            renderer.stats.geometry_uploads += self.stats.geometry_uploads;
+            renderer.stats.buffer_rebuilds += self.stats.buffer_rebuilds;
+            renderer.stats.dynamic_bytes_written += self.stats.dynamic_bytes_written;
+            *self = renderer;
+        } else {
+            for (index, draw) in scene.draws().enumerate() {
+                self.set_transform(index, draw.node.transform)?;
+            }
+        }
+        Ok(rebuild)
+    }
+
+    pub fn sync_snapshot(&mut self, scene: &SnapshotScene) -> Result<bool, GpuError> {
+        let keys = || {
+            scene
+                .visible_nodes()
+                .map(|n| (n.entity, n.mesh, n.material))
+        };
+        let rebuild = self.instanced.is_some()
+            || self
+                .snapshot_keys
+                .as_ref()
+                .is_none_or(|existing| !keys().eq(existing.iter().copied()));
+        if rebuild {
+            let mut renderer = Self::new(self.gpu.clone(), self.format, &scene.owned_draws())?;
+            renderer.snapshot_keys = Some(keys().collect());
+            renderer.stats.geometry_uploads += self.stats.geometry_uploads;
+            renderer.stats.buffer_rebuilds += self.stats.buffer_rebuilds;
+            renderer.stats.dynamic_bytes_written += self.stats.dynamic_bytes_written;
+            *self = renderer;
+        } else {
+            for (index, node) in scene.visible_nodes().enumerate() {
+                self.set_transform(index, node.transform)?;
+            }
+        }
+        Ok(rebuild)
     }
 
     pub fn color_format(&self) -> wgpu::TextureFormat {
@@ -272,6 +388,9 @@ impl GpuRenderer {
     pub fn set_transform(&mut self, draw: usize, transform: Transform) -> Result<(), GpuError> {
         if !transform.matrix().is_finite() {
             return Err(GpuError::InvalidInput("non-finite transform".into()));
+        }
+        if let Some(instanced) = &mut self.instanced {
+            return instanced.set_transform(draw, transform);
         }
         let entry = self
             .draws
@@ -287,29 +406,48 @@ impl GpuRenderer {
         depth: &wgpu::TextureView,
         camera: &Camera,
     ) -> Result<wgpu::SubmissionIndex, GpuError> {
+        self.render_to_view_matrix(color, depth, camera.view_projection_matrix())
+    }
+
+    pub fn render_to_view_matrix(
+        &mut self,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        vp: Mat4,
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
         self.gpu.check()?;
-        let vp = camera.view_projection_matrix();
         if !vp.is_finite() {
             return Err(GpuError::InvalidInput("non-finite camera matrix".into()));
         }
-        for (index, (_, model)) in self.draws.iter().enumerate() {
-            let mvp = vp * model.matrix();
-            if !mvp.is_finite() {
-                return Err(GpuError::InvalidInput("non-finite MVP matrix".into()));
+        if let Some(instanced) = &mut self.instanced {
+            instanced.update(&self.gpu, vp)?;
+        } else {
+            for (index, (_, model)) in self.draws.iter().enumerate() {
+                let mvp = vp * model.matrix();
+                if !mvp.is_finite() {
+                    return Err(GpuError::InvalidInput("non-finite MVP matrix".into()));
+                }
+                let mvp = mvp.to_cols_array();
+                let offset = index * self.stride as usize;
+                self.uniform_data[offset..offset + 64].copy_from_slice(bytemuck::cast_slice(&mvp));
             }
-            let mvp = mvp.to_cols_array();
-            let offset = index * self.stride as usize;
-            self.uniform_data[offset..offset + 64].copy_from_slice(bytemuck::cast_slice(&mvp));
+            self.gpu
+                .queue
+                .write_buffer(&self.uniforms, 0, &self.uniform_data);
+            self.stats.dynamic_bytes_written += self.uniform_data.len() as u64;
         }
-        self.gpu
-            .queue
-            .write_buffer(&self.uniforms, 0, &self.uniform_data);
         let mut encoder = self
             .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("color frame"),
             });
+        if let Some(instanced) = &self.instanced {
+            instanced.encode_shadow(
+                &mut encoder,
+                self.timer.as_ref().map(|timer| timer.writes(true)),
+            );
+        }
         {
             let channel = |v: u8| {
                 let v = f64::from(v) / 255.0;
@@ -325,6 +463,7 @@ impl GpuRenderer {
             };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("color and depth"),
+                timestamp_writes: self.timer.as_ref().map(|timer| timer.writes(false)),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: color,
                     depth_slice: None,
@@ -349,16 +488,93 @@ impl GpuRenderer {
                 }),
                 ..Default::default()
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_vertex_buffer(0, self.vertices.slice(..));
-            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-            for (index, (indices, _)) in self.draws.iter().enumerate() {
-                pass.set_bind_group(0, &self.bind_group, &[index as u32 * self.stride]);
-                pass.draw_indexed(indices.clone(), 0, 0..1);
+            if let Some(instanced) = &self.instanced {
+                pass.set_bind_group(0, &self.bind_group, &[0]);
+                instanced.encode(&mut pass);
+            } else {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_vertex_buffer(0, self.vertices.slice(..));
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                for (index, (indices, _)) in self.draws.iter().enumerate() {
+                    pass.set_bind_group(0, &self.bind_group, &[index as u32 * self.stride]);
+                    pass.draw_indexed(indices.clone(), 0, 0..1);
+                }
             }
+        }
+        if let Some(timer) = &mut self.timer {
+            timer.resolve(
+                &mut encoder,
+                self.instanced
+                    .as_ref()
+                    .is_some_and(|scene| scene.shadows_active()),
+            );
         }
         Ok(self.gpu.queue.submit([encoder.finish()]))
     }
+}
+
+pub(crate) fn color_pipeline(
+    gpu: &GpuContext,
+    format: wgpu::TextureFormat,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    instanced: bool,
+) -> wgpu::RenderPipeline {
+    let instance_layouts = [
+        wgpu::VertexBufferLayout {
+            array_stride: 28,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4],
+        },
+        wgpu::VertexBufferLayout {
+            array_stride: 64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4],
+        },
+    ];
+    gpu.device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Astral Echo indexed color/depth"),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some(if instanced { "vs_instanced" } else { "vs_main" }),
+                compilation_options: Default::default(),
+                buffers: if instanced {
+                    &instance_layouts
+                } else {
+                    &instance_layouts[..1]
+                },
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some(if format.is_srgb() {
+                    "fs_srgb"
+                } else {
+                    "fs_main"
+                }),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
 }
 
 pub(crate) fn validate_extent(gpu: &GpuContext, width: u32, height: u32) -> Result<(), GpuError> {

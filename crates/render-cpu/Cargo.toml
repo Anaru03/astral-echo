@@ -24,3 +24,8 @@ path = "examples/render_demo.rs"
 name = "pipeline_bench"
 path = "benches/pipeline_bench.rs"
 harness = false
+
+[[bench]]
+name = "culling_lod_bench"
+path = "benches/culling_lod_bench.rs"
+harness = false
