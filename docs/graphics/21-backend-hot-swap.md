@@ -88,3 +88,18 @@ distintas. Ahora la fuente de snapshots recibe siempre `Framebuffer::width/heigh
 el tamaño físico se usa exclusivamente para `softbuffer` y `copy_nearest_rgba`.
 La prueba headless de resize y escalado sigue pasando. La confirmación visual en
 Windows con DPI distinto requiere display.
+
+## Presets después de GPU→CPU
+
+Se confirmó otra fuente de la regresión: `set_preset` cambiaba también el tamaño
+físico de la ventana y llamaba a `gpu.resize`. Eso mezclaba la resolución interna
+del rasterizador con la superficie de presentación y dejaba el escalado CPU con un
+tamaño anterior tras volver desde GPU. Ahora los presets solo redimensionan el
+`Framebuffer` interno; la superficie y el viewport físicos solo se actualizan con
+`WindowEvent::Resized`. La presentación conserva el escalador existente y aplica
+letterbox desde la resolución interna al tamaño físico.
+
+La política de aspecto es única para ambos backends: CPU y GPU reciben snapshots
+con la resolución interna del preset. El tamaño físico solo determina la superficie
+de presentación y el rectángulo letterbox, evitando encuadres distintos al cambiar
+de backend.

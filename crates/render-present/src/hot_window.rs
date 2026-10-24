@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use render_core::{InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene};
-use render_cpu::{render_snapshot_scene, Framebuffer, RasterMode};
+use render_cpu::{render_snapshot_scene, write_png, Framebuffer, RasterMode};
 use render_gpu::{GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
@@ -14,7 +14,10 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::{copy_nearest_rgba, BackendKind, BackendSnapshot, HotSwapState, Preset, WindowConfig};
+use crate::{
+    copy_nearest_rgba, BackendKind, BackendSnapshot, HotSwapState, Preset, ScaleLayout,
+    WindowConfig,
+};
 
 pub type SnapshotSource = Box<dyn FnMut(u32, u32) -> Result<RenderSnapshot, String>>;
 
@@ -209,6 +212,7 @@ impl ApplicationHandler for Host {
                     match code {
                         KeyCode::KeyG => self.toggle(),
                         KeyCode::F9 | KeyCode::KeyM => self.capture_debug("marked"),
+                        KeyCode::F10 => self.capture_images(),
                         KeyCode::KeyS => self.config.raster_mode = RasterMode::Secuencial,
                         KeyCode::KeyP => self.config.raster_mode = RasterMode::Paralelo,
                         KeyCode::KeyA => self.config.raster_mode = RasterMode::Auto,
@@ -282,6 +286,19 @@ impl Host {
             Some(gpu)
         } else {
             state.surface = Self::new_cpu_surface(state);
+            let internal = (state.framebuffer.width(), state.framebuffer.height());
+            if let Ok(snapshot) = (self.source)(internal.0, internal.1) {
+                let mut scene = SnapshotScene::default();
+                if scene.update(&snapshot).is_ok() {
+                    let scene = Rc::new(scene);
+                    state.snapshot = scene.clone();
+                    state.backend.update_snapshot(BackendSnapshot {
+                        value: scene,
+                        width: internal.0,
+                        height: internal.1,
+                    });
+                }
+            }
             None
         };
         let result = state.backend.try_switch(target, |_| Ok(()));
@@ -335,15 +352,76 @@ impl Host {
             height: size.height,
             ..Default::default()
         });
+        let internal = (state.framebuffer.width(), state.framebuffer.height());
+        let layout = ScaleLayout::fit(internal, (size.width, size.height))
+            .map(|layout| {
+                format!(
+                    "{}x{}+{},{}",
+                    layout.width, layout.height, layout.x, layout.y
+                )
+            })
+            .unwrap_or_else(|_| "invalid".into());
+        let vp = state.snapshot.view_projection();
         let gpu_state = state.gpu.as_ref().map(|gpu| {
             let (format, hdr, postprocess, width, height) = gpu.diagnostic_state();
             format!("gpu_format={format:?} hdr={hdr} postprocess={postprocess} gpu_size={width}x{height}")
         }).unwrap_or_else(|| "gpu_format=none hdr=false postprocess=false gpu_size=0x0".into());
-        let text = format!("reason={reason}\nbackend={:?}\nphysical={}x{}\ninternal={}x{}\ntick={}\nnodes={} visible={} discarded={} triangles={} draws={} buffer={}\n", state.backend.backend(), size.width, size.height, state.framebuffer.width(), state.framebuffer.height(), state.snapshot.snapshot().tick.0, state.snapshot.snapshot().nodes.len(), prepared.visible, prepared.discarded, prepared.triangles, prepared.draws().count(), state.buffer.len());
+        let text = format!("reason={reason}\nbackend={:?}\nphysical={}x{}\ninternal={}x{}\nscale_layout={layout}\nview_projection={vp:?}\ntick={}\nnodes={} visible={} discarded={} triangles={} draws={} buffer={}\n", state.backend.backend(), size.width, size.height, internal.0, internal.1, state.snapshot.snapshot().tick.0, state.snapshot.snapshot().nodes.len(), prepared.visible, prepared.discarded, prepared.triangles, prepared.draws().count(), state.buffer.len());
         let text = format!("preset={:?}\n{gpu_state}\n{text}", state.preset);
         if std::fs::write(&path, text).is_ok() {
             println!("graphics-debug capture={}", path.display());
         }
+    }
+
+    fn capture_images(&mut self) {
+        let Some(directory) = self.debug.directory.as_ref() else {
+            return;
+        };
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        if state.backend.backend() != BackendKind::Cpu {
+            return;
+        }
+        let size = state.window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        let _ = std::fs::create_dir_all(directory);
+        let internal_path =
+            directory.join(format!("frame-{:04}-cpu-internal.png", self.debug_frame));
+        let scaled_path = directory.join(format!("frame-{:04}-cpu-scaled.png", self.debug_frame));
+        self.debug_frame += 1;
+        let _ = render_snapshot_scene(
+            &mut state.framebuffer,
+            &state.snapshot,
+            self.config.raster_mode,
+        );
+        let _ = write_png(&internal_path, &state.framebuffer);
+        let mut pixels = vec![0u32; (size.width as usize) * (size.height as usize)];
+        if copy_nearest_rgba(
+            state.framebuffer.color_bytes(),
+            (state.framebuffer.width(), state.framebuffer.height()),
+            (size.width, size.height),
+            &mut pixels,
+        )
+        .is_ok()
+        {
+            if let Ok(mut scaled) = Framebuffer::new(size.width, size.height) {
+                for (dst, pixel) in scaled.color_bytes_mut().chunks_exact_mut(4).zip(pixels) {
+                    dst[0] = (pixel >> 16) as u8;
+                    dst[1] = (pixel >> 8) as u8;
+                    dst[2] = pixel as u8;
+                    dst[3] = 255;
+                }
+                let _ = write_png(&scaled_path, &scaled);
+            }
+        }
+        println!(
+            "graphics-debug images internal={} scaled={}",
+            internal_path.display(),
+            scaled_path.display()
+        );
     }
 
     fn new_cpu_surface(state: &HostState) -> Option<Surface<Arc<Window>, Arc<Window>>> {
@@ -414,9 +492,28 @@ impl Host {
             self.config.raster_mode,
         );
         if let Some(surface) = &mut state.surface {
+            if let (Some(width), Some(height)) =
+                (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
+            {
+                let _ = surface.resize(width, height);
+            }
             let Ok(mut buffer) = surface.buffer_mut() else {
                 return;
             };
+            if buffer.width().get() != size.width || buffer.height().get() != size.height {
+                if self.debug.directory.is_some() {
+                    println!(
+                        "graphics-debug softbuffer-size requested={}x{} actual={}x{} len={} expected={}",
+                        size.width,
+                        size.height,
+                        buffer.width(),
+                        buffer.height(),
+                        buffer.len(),
+                        u64::from(size.width) * u64::from(size.height)
+                    );
+                }
+                return;
+            }
             let _ = copy_nearest_rgba(
                 state.framebuffer.color_bytes(),
                 (state.framebuffer.width(), state.framebuffer.height()),
