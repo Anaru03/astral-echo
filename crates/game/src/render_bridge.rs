@@ -9,6 +9,9 @@ pub const ACADEMIC_PLANET_DESTINATION_ID: u32 = 9_002;
 pub const PLANET_ORBIT_RADIUS: f32 = 42.0;
 pub const PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.25;
 pub const PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.5;
+pub const PLANET_SURFACE_RADIUS: f32 = 5.0;
+pub const PLANET_OBSERVATION_RADIUS: f32 = 14.0;
+pub const OBSERVATION_TRANSITION_DURATION_MS: u64 = 1_000;
 const SUN_POSITION: Vec3 = Vec3::new(0.0, 0.0, -18.0);
 const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 28.0, 46.0);
 pub const SHIP_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
@@ -180,12 +183,33 @@ pub fn interpolate_visual_ship_position(current: Vec3, target: Vec3, progress: f
 }
 
 pub fn flight_camera(world: &GameplayWorld, aspect: f32) -> Result<Camera, CameraError> {
+    observation_camera(world, aspect, 0.0, 0.0, 0.0)
+}
+
+pub fn observation_camera(
+    world: &GameplayWorld,
+    aspect: f32,
+    transition: f32,
+    azimuth: f32,
+    elevation: f32,
+) -> Result<Camera, CameraError> {
     let ship = visual_ship_position(world).unwrap_or(Vec3::ZERO);
     let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
     let planet = academic_planet_transform(elapsed_seconds).translation;
-    let target = (SUN_POSITION + ship + planet) / 3.0;
+    let space_position = ship + FLIGHT_CAMERA_OFFSET;
+    let space_target = (SUN_POSITION + ship + planet) / 3.0;
+    let elevation = elevation.clamp(-1.2, 1.2);
+    let surface_direction = Vec3::new(
+        elevation.cos() * azimuth.cos(),
+        elevation.sin(),
+        elevation.cos() * azimuth.sin(),
+    );
+    let close_position = planet + surface_direction * PLANET_OBSERVATION_RADIUS;
+    let transition = transition.clamp(0.0, 1.0);
+    let position = space_position.lerp(close_position, transition);
+    let target = space_target.lerp(planet, transition);
     Camera::new(
-        ship + FLIGHT_CAMERA_OFFSET,
+        position,
         target,
         Vec3::Y,
         Projection::Perspective {

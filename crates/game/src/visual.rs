@@ -18,6 +18,51 @@ const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
 const SIGNAL: DestinationId = DestinationId::new(9_003);
 const ENCOUNTER: EncounterId = EncounterId::new(9_004);
+const OBSERVATION_AZIMUTH_STEP: f32 = 0.2;
+const OBSERVATION_ELEVATION_STEP: f32 = 0.1;
+
+#[derive(Clone, Copy, Debug)]
+struct ObservationTransition {
+    from: f32,
+    to: f32,
+    started_at: u64,
+    azimuth: f32,
+    elevation: f32,
+}
+
+impl Default for ObservationTransition {
+    fn default() -> Self {
+        Self {
+            from: 0.0,
+            to: 0.0,
+            started_at: 0,
+            azimuth: 0.0,
+            elevation: 0.0,
+        }
+    }
+}
+
+impl ObservationTransition {
+    fn progress(self, now: u64) -> f32 {
+        let elapsed = now.saturating_sub(self.started_at);
+        let local = (elapsed as f32
+            / game::render_bridge::OBSERVATION_TRANSITION_DURATION_MS as f32)
+            .clamp(0.0, 1.0);
+        self.from + (self.to - self.from) * local
+    }
+
+    fn toggle(&mut self, now: u64) {
+        let current = (*self).progress(now);
+        self.from = current;
+        self.to = if current >= 0.5 { 0.0 } else { 1.0 };
+        self.started_at = now;
+    }
+
+    fn adjust_orbit(&mut self, azimuth_delta: f32, elevation_delta: f32) {
+        self.azimuth += azimuth_delta;
+        self.elevation = (self.elevation + elevation_delta).clamp(-1.2, 1.2);
+    }
+}
 
 struct VisualBridge {
     session: ProjectEchoSession,
@@ -27,6 +72,7 @@ struct VisualBridge {
     enemy: EntityId,
     feedback: String,
     scene: SnapshotScene,
+    observation: ObservationTransition,
 }
 
 impl VisualBridge {
@@ -161,6 +207,7 @@ impl VisualBridge {
             enemy,
             feedback: "ESCENA INICIALIZADA".to_owned(),
             scene: visual_scene(),
+            observation: ObservationTransition::default(),
         })
     }
 
@@ -245,8 +292,18 @@ impl VisualBridge {
                 }
             }
             KeyCode::KeyP => self.toggle_flight(player, pilot_station),
+            KeyCode::KeyO => self.toggle_observation(),
+            KeyCode::ArrowLeft => self.observation.adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0),
+            KeyCode::ArrowRight => self.observation.adjust_orbit(OBSERVATION_AZIMUTH_STEP, 0.0),
+            KeyCode::ArrowUp => self.observation.adjust_orbit(0.0, OBSERVATION_ELEVATION_STEP),
+            KeyCode::ArrowDown => self.observation.adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP),
             _ => {}
         }
+    }
+
+    fn toggle_observation(&mut self) {
+        let now = self.session.world().time().elapsed.0;
+        self.observation.toggle(now);
     }
 
     fn toggle_flight(&mut self, player: EntityId, pilot_station: EntityId) {
@@ -272,6 +329,17 @@ impl VisualBridge {
                 pilot_station,
             },
         ]);
+    }
+
+    fn camera(&self, aspect: f32) -> Result<render_core::Camera, render_core::CameraError> {
+        let world = self.session.world();
+        game::render_bridge::observation_camera(
+            world,
+            aspect,
+            self.observation.progress(world.time().elapsed.0),
+            self.observation.azimuth,
+            self.observation.elevation,
+        )
     }
 }
 
@@ -308,10 +376,8 @@ fn render_frame(
     framebuffer: &mut Framebuffer,
     mode: render_cpu::RasterMode,
 ) -> Result<(), RasterError> {
-    let camera = game::render_bridge::flight_camera(
-        bridge.session.world(),
-        framebuffer.width() as f32 / framebuffer.height() as f32,
-    )
+    let camera = bridge
+        .camera(framebuffer.width() as f32 / framebuffer.height() as f32)
         .map_err(|_| RasterError::InvalidViewport)?;
     let snapshot = game::render_bridge::snapshot_from_world_with_camera(
         bridge.session.world(),

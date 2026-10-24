@@ -269,6 +269,35 @@ fn flight_camera_tracks_visual_ship_and_keeps_projection_valid() {
 }
 
 #[test]
+fn observation_camera_stays_outside_planet_and_transition_is_deterministic() {
+    let world = support::fixture_world();
+    let start = observation_camera(&world, 16.0 / 9.0, 0.0, 0.0, 0.0).unwrap();
+    let close = observation_camera(&world, 16.0 / 9.0, 1.0, 0.0, 0.0).unwrap();
+    let close_again = observation_camera(&world, 16.0 / 9.0, 1.0, 0.0, 0.0).unwrap();
+    let planet = academic_planet_transform(0.0).translation;
+    assert!((close.position() - planet).length() > PLANET_SURFACE_RADIUS);
+    assert!(start.view_projection_matrix().is_finite());
+    assert!(close.view_projection_matrix().is_finite());
+    assert_eq!(close, close_again);
+    assert!(observation_camera(&world, 16.0 / 9.0, 1.0, 0.0, 1.2)
+        .unwrap()
+        .view_matrix()
+        .is_finite());
+}
+
+#[test]
+fn observation_transition_reverses_from_current_progress_without_frame_state() {
+    let world = support::fixture_world();
+    let before = format!("{world:?}");
+    let start = observation_camera(&world, 16.0 / 9.0, 0.0, 0.0, 0.0).unwrap();
+    let middle = observation_camera(&world, 16.0 / 9.0, 0.5, 0.0, 0.0).unwrap();
+    let end = observation_camera(&world, 16.0 / 9.0, 1.0, 0.0, 0.0).unwrap();
+    assert_ne!(start.position(), middle.position());
+    assert_ne!(middle.position(), end.position());
+    assert_eq!(before, format!("{world:?}"));
+}
+
+#[test]
 fn visual_ship_flight_interpolates_without_frame_based_accumulation() {
     let current = Vec3::ZERO;
     let target = Vec3::new(42.0, 0.0, -18.0);
