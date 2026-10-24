@@ -2,7 +2,7 @@
 mod support;
 
 use game::render_bridge::*;
-use render_core::{SnapshotId, SnapshotScene, Vec3};
+use render_core::{SnapshotId, SnapshotScene, Vec3, VisualAssets};
 
 #[test]
 fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
@@ -268,6 +268,49 @@ fn academic_surface_objects_are_four_deterministic_exterior_visual_nodes() {
         4
     );
     assert_eq!(before, format!("{world:?}"));
+}
+
+#[test]
+fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
+    let assets = VisualAssets::default();
+    let planet = academic_planet_transform(3.75);
+    let planet_matrix = planet.matrix();
+    let planet_inverse = planet_matrix.inverse();
+    let planet_center = planet.translation;
+    let nodes = academic_surface_objects(3.75);
+
+    let mut ids = std::collections::BTreeSet::new();
+    for node in nodes {
+        let id = match node.entity {
+            SnapshotId::Entity(id) => id,
+            SnapshotId::Destination(_) => panic!("surface object must have a stable entity id"),
+        };
+        assert!(ids.insert(id), "duplicate surface object id {id:?}");
+
+        let local_object = planet_inverse * node.transform.matrix();
+        let local_up = local_object.transform_vector3(Vec3::Y).normalize();
+        let local_radial = local_object.transform_point3(Vec3::ZERO).normalize();
+        assert!(
+            local_up.dot(local_radial) > 0.999,
+            "object axis is not aligned with its surface normal: up={local_up:?}, radial={local_radial:?}"
+        );
+
+        let mesh = assets.mesh(node.mesh, node.material).unwrap();
+        assert!(!mesh.vertices.is_empty());
+        for vertex in &mesh.vertices {
+            let world_position = node
+                .transform
+                .matrix()
+                .transform_point3(vertex.position);
+            let distance = world_position.distance(planet_center);
+            assert!(
+                distance > PLANET_SURFACE_RADIUS,
+                "surface object vertex penetrates planet: distance={distance}"
+            );
+        }
+    }
+    assert_eq!(ids.len(), SURFACE_OBJECT_IDS.len());
+    assert!(SURFACE_OBJECT_IDS.iter().all(|id| ids.contains(id)));
 }
 
 #[test]

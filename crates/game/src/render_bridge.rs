@@ -16,6 +16,7 @@ pub const PLANET_ORBIT_RADIUS: f32 = 42.0;
 pub const PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.25;
 pub const PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.5;
 pub const PLANET_SURFACE_RADIUS: f32 = 5.0;
+pub const SURFACE_OBJECT_RADIAL_OFFSET: f32 = 2.0;
 pub const PLANET_OBSERVATION_RADIUS: f32 = 14.0;
 pub const OBSERVATION_TRANSITION_DURATION_MS: u64 = 1_000;
 const SUN_POSITION: Vec3 = Vec3::new(0.0, 0.0, -18.0);
@@ -45,46 +46,54 @@ pub fn academic_surface_objects(elapsed_seconds: f64) -> [SnapshotNode; 4] {
             PLAYER_MESH,
             PLAYER_MATERIAL,
             Vec3::new(0.0, 1.0, 0.0),
-            Quat::IDENTITY,
+            0.0,
             Vec3::new(0.2, 0.35, 0.2),
         ),
         (
             ENEMY_MESH,
             ENEMY_MATERIAL,
             Vec3::new(1.0, 0.0, 0.0),
-            Quat::from_rotation_z(-0.35),
+            -0.35,
             Vec3::new(0.18, 0.48, 0.18),
         ),
         (
             DESTINATION_MESH,
             DESTINATION_MATERIAL,
             Vec3::new(0.0, 0.0, 1.0),
-            Quat::from_rotation_x(0.55),
+            0.55,
             Vec3::new(0.3, 0.22, 0.3),
         ),
         (
             COLLECTIBLE_MESH,
             COLLECTIBLE_MATERIAL,
             Vec3::new(-1.0, 0.45, 0.0).normalize(),
-            Quat::from_rotation_y(0.8),
+            0.8,
             Vec3::splat(0.26),
         ),
     ];
     object_specs
         .into_iter()
         .enumerate()
-        .map(|(index, (mesh, material, direction, rotation, scale))| {
-        SnapshotNode::new(
-            SURFACE_OBJECT_IDS[index],
-            planet.composed(Transform::new(direction * 1.18, rotation, scale)),
-            mesh,
-            material,
-            true,
-        )
+        .map(|(index, (mesh, material, direction, spin, scale))| {
+            SnapshotNode::new(
+                SURFACE_OBJECT_IDS[index],
+                planet.composed(Transform::new(
+                    direction * SURFACE_OBJECT_RADIAL_OFFSET,
+                    surface_object_orientation(direction, spin),
+                    scale,
+                )),
+                mesh,
+                material,
+                true,
+            )
         })
         .collect::<Vec<_>>()
         .try_into()
         .expect("four surface objects")
+}
+
+fn surface_object_orientation(direction: Vec3, spin: f32) -> Quat {
+    Quat::from_rotation_arc(Vec3::Y, direction) * Quat::from_rotation_y(spin)
 }
 
 #[derive(Clone, Copy, Debug)]
