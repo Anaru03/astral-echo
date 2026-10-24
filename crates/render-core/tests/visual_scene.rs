@@ -124,3 +124,25 @@ fn procedural_assets_cover_all_visual_classes() {
             .all(|v| v.position.is_finite() && v.color.is_finite()));
     }
 }
+
+#[test]
+fn planet_surface_is_deterministic_colored_and_unit_radius() {
+    let first_assets = VisualAssets::default();
+    let second_assets = VisualAssets::default();
+    let first = first_assets
+        .mesh(MeshHandle::PLANET_SPHERE, VisualAssets::PLANET)
+        .unwrap();
+    let second = second_assets
+        .mesh(MeshHandle::PLANET_SPHERE, VisualAssets::PLANET)
+        .unwrap();
+    assert_eq!(first, second);
+    assert!(first.vertices.len() > 100);
+    assert!(first
+        .vertices
+        .iter()
+        .all(|vertex| (vertex.position.length() - 1.0).abs() < 0.0001));
+    assert!(first
+        .vertices
+        .iter()
+        .any(|vertex| vertex.color != first.vertices[0].color));
+}

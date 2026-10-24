@@ -198,11 +198,7 @@ impl Default for VisualAssets {
             ),
             (
                 (MeshHandle::PLANET_SPHERE, Self::PLANET),
-                RasterMesh::sphere(
-                    Vec3::ZERO,
-                    1.0,
-                    Vec4::new(0.08, 0.24, 0.75, 1.0),
-                ),
+                RasterMesh::planet_surface(Vec3::ZERO, 1.0),
             ),
         ])
         .into_iter()

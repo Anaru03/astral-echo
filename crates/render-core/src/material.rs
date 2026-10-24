@@ -99,7 +99,7 @@ impl MaterialInfo {
     }
 
     pub fn planet() -> Self {
-        Self::new(Vec4::new(0.08, 0.24, 0.75, 1.0), 0.85, 0.0)
+        Self::new(Vec4::ONE, 0.85, 0.0)
     }
 }
 

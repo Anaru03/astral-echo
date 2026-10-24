@@ -11,8 +11,9 @@ use gameplay::{
     WeaponConfiguration,
 };
 use render_core::{LightingMode, MaterialInfo, SnapshotScene, VisualAssets};
-use render_cpu::{Framebuffer, RasterError};
-use render_present::{run_window_with_input, KeyCode, Preset, WindowConfig};
+use render_present::{
+    run_hot_swap_window_with_input_and_scene, GraphicsDebugConfig, KeyCode, Preset, WindowConfig,
+};
 
 const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
@@ -71,7 +72,6 @@ struct VisualBridge {
     pilot_station: EntityId,
     enemy: EntityId,
     feedback: String,
-    scene: SnapshotScene,
     observation: ObservationTransition,
 }
 
@@ -206,7 +206,6 @@ impl VisualBridge {
             pilot_station,
             enemy,
             feedback: "ESCENA INICIALIZADA".to_owned(),
-            scene: visual_scene(),
             observation: ObservationTransition::default(),
         })
     }
@@ -345,7 +344,7 @@ impl VisualBridge {
 
 pub fn run() -> Result<(), String> {
     let runtime = Rc::new(RefCell::new(VisualBridge::new()?));
-    let render_runtime = Rc::clone(&runtime);
+    let snapshot_runtime = Rc::clone(&runtime);
     let input_runtime = Rc::clone(&runtime);
     let config = WindowConfig {
         title: "Astral Echo — CPU propio".into(),
@@ -353,48 +352,34 @@ pub fn run() -> Result<(), String> {
         raster_controls: false,
         ..Default::default()
     };
-    run_window_with_input(
+    run_hot_swap_window_with_input_and_scene(
         config,
-        move |framebuffer: &mut Framebuffer, mode| {
-            render_frame(&mut render_runtime.borrow_mut(), framebuffer, mode)
+        Box::new(move |width, height| {
+            let bridge = snapshot_runtime.borrow();
+            let camera = bridge
+                .camera(width as f32 / height.max(1) as f32)
+                .map_err(|error| format!("cámara visual: {error:?}"))?;
+            Ok(game::render_bridge::snapshot_from_world_with_camera(
+                bridge.session.world(),
+                Default::default(),
+                &camera,
+            ))
         },
+        true,
         move |key| input_runtime.borrow_mut().handle_key(key),
+        |scene| {
+            scene.set_lighting_mode(LightingMode::Lambert);
+            scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
+            scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
+        },
+        GraphicsDebugConfig::default(),
     )
     .map(|report| {
         println!(
-            "CPU visual finalizado: frames={} render_avg_ms={:.3} present_avg_ms={:.3}",
-            report.metrics.frames,
-            report.metrics.average_render().as_secs_f64() * 1000.0,
-            report.metrics.average_presentation().as_secs_f64() * 1000.0,
+            "Visual finalizado: transiciones={} transición_gpu_ms={:?}",
+            report.transitions, report.last_transition_ms,
         );
     })
-    .map_err(|error| format!("ventana visual CPU: {error}"))
+    .map_err(|error| format!("ventana visual propia: {error}"))
 }
 
-fn render_frame(
-    bridge: &mut VisualBridge,
-    framebuffer: &mut Framebuffer,
-    mode: render_cpu::RasterMode,
-) -> Result<(), RasterError> {
-    let camera = bridge
-        .camera(framebuffer.width() as f32 / framebuffer.height() as f32)
-        .map_err(|_| RasterError::InvalidViewport)?;
-    let snapshot = game::render_bridge::snapshot_from_world_with_camera(
-        bridge.session.world(),
-        Default::default(),
-        &camera,
-    );
-    bridge
-        .scene
-        .update(&snapshot)
-        .map_err(|_| RasterError::NonFiniteVertex)?;
-    render_cpu::render_snapshot_scene(framebuffer, &bridge.scene, mode).map(|_| ())
-}
-
-fn visual_scene() -> SnapshotScene {
-    let mut scene = SnapshotScene::default();
-    scene.set_lighting_mode(LightingMode::Lambert);
-    scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
-    scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
-    scene
-}

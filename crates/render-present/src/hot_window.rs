@@ -31,7 +31,14 @@ pub fn run_hot_swap_window(
     source: SnapshotSource,
     start_gpu: bool,
 ) -> Result<HotSwapReport, String> {
-    run_hot_swap_window_with_debug(config, source, start_gpu, GraphicsDebugConfig::default())
+    run_hot_swap_window_with_input_and_scene(
+        config,
+        source,
+        start_gpu,
+        |_| {},
+        |_| {},
+        GraphicsDebugConfig::default(),
+    )
 }
 
 pub fn run_hot_swap_window_with_debug(
@@ -40,9 +47,22 @@ pub fn run_hot_swap_window_with_debug(
     start_gpu: bool,
     debug: GraphicsDebugConfig,
 ) -> Result<HotSwapReport, String> {
+    run_hot_swap_window_with_input_and_scene(config, source, start_gpu, |_| {}, |_| {}, debug)
+}
+
+pub fn run_hot_swap_window_with_input_and_scene(
+    config: WindowConfig,
+    source: SnapshotSource,
+    start_gpu: bool,
+    input: impl FnMut(KeyCode) + 'static,
+    configure_scene: impl FnMut(&mut SnapshotScene) + 'static,
+    debug: GraphicsDebugConfig,
+) -> Result<HotSwapReport, String> {
     let mut app = Host {
         config,
         source,
+        input: Box::new(input),
+        configure_scene: Box::new(configure_scene),
         start_gpu,
         state: None,
         failure: None,
@@ -70,6 +90,8 @@ pub struct HotSwapReport {
 struct Host {
     config: WindowConfig,
     source: SnapshotSource,
+    input: Box<dyn FnMut(KeyCode)>,
+    configure_scene: Box<dyn FnMut(&mut SnapshotScene)>,
     start_gpu: bool,
     state: Option<HostState>,
     failure: Option<String>,
@@ -153,6 +175,7 @@ impl ApplicationHandler for Host {
             .ok_or_else(|| "initial snapshot unavailable".to_string())
             .unwrap();
         let mut scene = SnapshotScene::default();
+        (self.configure_scene)(&mut scene);
         scene
             .update(&snapshot)
             .map_err(|error| error.to_string())
@@ -213,14 +236,21 @@ impl ApplicationHandler for Host {
                         KeyCode::KeyG => self.toggle(),
                         KeyCode::F9 | KeyCode::KeyM => self.capture_debug("marked"),
                         KeyCode::F10 => self.capture_images(),
-                        KeyCode::KeyS => self.config.raster_mode = RasterMode::Secuencial,
-                        KeyCode::KeyP => self.config.raster_mode = RasterMode::Paralelo,
-                        KeyCode::KeyA => self.config.raster_mode = RasterMode::Auto,
+                        KeyCode::KeyS if self.config.raster_controls => {
+                            self.config.raster_mode = RasterMode::Secuencial
+                        }
+                        KeyCode::KeyP if self.config.raster_controls => {
+                            self.config.raster_mode = RasterMode::Paralelo
+                        }
+                        KeyCode::KeyA if self.config.raster_controls => {
+                            self.config.raster_mode = RasterMode::Auto
+                        }
                         KeyCode::Digit1 => self.set_preset(Preset::Low),
                         KeyCode::Digit2 => self.set_preset(Preset::Medium),
                         KeyCode::Digit3 => self.set_preset(Preset::High),
                         _ => {}
                     }
+                    (self.input)(code);
                 }
             }
             WindowEvent::RedrawRequested => self.draw(),
