@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     while let Some(option) = args.next() {
         match option.as_str() {
             "--window" => window = true,
-            "--graphics-debug" => graphics_debug = true,
+            "--graphics-debug" | "--graphics-validate" => graphics_debug = true,
             "--backend" => backend = args.next().ok_or("missing backend")?,
             "--frames" => {
                 frames = Some(
@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--output" => output = Some(PathBuf::from(args.next().ok_or("missing PNG path")?)),
             "--help" => {
                 println!(
-                    "gameplay_visual [--backend cpu|gpu|auto] [--window] [--frames N] [--output PATH]"
+                    "gameplay_visual [--backend cpu|gpu|auto] [--window] [--graphics-validate] [--frames N] [--output PATH]"
                 );
                 return Ok(());
             }
