@@ -125,6 +125,8 @@ impl VisualAssets {
     pub const PLAYER: MaterialHandle = MaterialHandle::new(2);
     pub const DESTINATION: MaterialHandle = MaterialHandle::new(3);
     pub const COLLECTIBLE: MaterialHandle = MaterialHandle::new(4);
+    pub const SUN: MaterialHandle = MaterialHandle::new(5);
+    pub const PLANET: MaterialHandle = MaterialHandle::new(6);
 
     pub fn mesh(
         &self,
@@ -185,6 +187,22 @@ impl Default for VisualAssets {
             (
                 (MeshHandle::COLLECTIBLE_PLACEHOLDER, Self::COLLECTIBLE),
                 diamond(0.7, Vec4::new(1.0, 0.7, 0.05, 1.0)),
+            ),
+            (
+                (MeshHandle::SUN_SPHERE, Self::SUN),
+                RasterMesh::sphere(
+                    Vec3::ZERO,
+                    1.0,
+                    Vec4::new(1.0, 0.55, 0.08, 1.0),
+                ),
+            ),
+            (
+                (MeshHandle::PLANET_SPHERE, Self::PLANET),
+                RasterMesh::sphere(
+                    Vec3::ZERO,
+                    1.0,
+                    Vec4::new(0.08, 0.24, 0.75, 1.0),
+                ),
             ),
         ])
         .into_iter()

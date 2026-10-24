@@ -95,7 +95,7 @@ fn order_and_render_sampling_do_not_change_tick_or_handles() {
 }
 
 #[test]
-fn procedural_assets_cover_all_five_visual_classes() {
+fn procedural_assets_cover_all_visual_classes() {
     let assets = VisualAssets::default();
     for (mesh, material) in [
         (MeshHandle::SHIP_PLACEHOLDER, VisualAssets::SHIP),
@@ -109,6 +109,8 @@ fn procedural_assets_cover_all_five_visual_classes() {
             MeshHandle::COLLECTIBLE_PLACEHOLDER,
             VisualAssets::COLLECTIBLE,
         ),
+        (MeshHandle::SUN_SPHERE, VisualAssets::SUN),
+        (MeshHandle::PLANET_SPHERE, VisualAssets::PLANET),
     ] {
         let mesh = assets.mesh(mesh, material).unwrap();
         assert!(!mesh.indices.is_empty());
