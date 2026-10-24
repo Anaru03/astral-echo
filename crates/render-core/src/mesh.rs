@@ -145,6 +145,8 @@ impl MeshHandle {
     pub const ENEMY_PLACEHOLDER: Self = Self(3);
     pub const DESTINATION_PLACEHOLDER: Self = Self(4);
     pub const COLLECTIBLE_PLACEHOLDER: Self = Self(5);
+    pub const SUN_SPHERE: Self = Self(6);
+    pub const PLANET_SPHERE: Self = Self(7);
 
     pub const fn new(value: u32) -> Self {
         Self(value)

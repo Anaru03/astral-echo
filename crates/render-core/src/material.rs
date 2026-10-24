@@ -92,6 +92,15 @@ impl MaterialInfo {
     pub fn destination() -> Self {
         Self::new(Vec4::new(0.07, 0.85, 0.35, 1.0), 0.7, 0.0)
     }
+
+    pub fn sun() -> Self {
+        Self::new(Vec4::new(1.0, 0.55, 0.08, 1.0), 0.5, 0.0)
+            .with_emissive(Vec3::new(1.0, 0.24, 0.02))
+    }
+
+    pub fn planet() -> Self {
+        Self::new(Vec4::new(0.08, 0.24, 0.75, 1.0), 0.85, 0.0)
+    }
 }
 
 impl Default for MaterialInfo {

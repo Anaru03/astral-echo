@@ -1,4 +1,6 @@
-use bevy::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use engine::{Duration, EntityId, Vec3 as GameplayVec3};
 use game::ProjectEchoSession;
 use gameplay::types::ItemId;
@@ -8,44 +10,14 @@ use gameplay::{
     NavigationRouteState, SpatialEncounter, SpatialEncounterKind, StationType, WeaponAmmunition,
     WeaponConfiguration,
 };
+use render_core::{LightingMode, MaterialInfo, SnapshotScene, VisualAssets};
+use render_cpu::{Framebuffer, RasterError};
+use render_present::{run_window_with_input, KeyCode, Preset, WindowConfig};
 
 const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
 const SIGNAL: DestinationId = DestinationId::new(9_003);
 const ENCOUNTER: EncounterId = EncounterId::new(9_004);
-const PLAYER_SHIP_ASSET: &str = "models/player_ship.glb";
-const ENEMY_SHIP_ASSET: &str = "models/enemy_ship.glb";
-const STATION_ASSET: &str = "models/station.glb";
-const DERELICT_ASSET: &str = "models/derelict.glb";
-const RESOURCE_ASSET: &str = "models/resource.glb";
-
-#[derive(Component)]
-struct ShipVisual;
-
-#[derive(Component)]
-struct PlayerVisual;
-
-#[derive(Component)]
-struct DestinationVisual;
-
-#[derive(Component)]
-struct EnemyVisual;
-
-#[derive(Component)]
-struct RewardVisual;
-
-#[derive(Component)]
-struct HudText;
-
-#[allow(dead_code)]
-#[derive(Resource)]
-struct OptionalScenes {
-    player_ship: Handle<bevy::gltf::Gltf>,
-    enemy_ship: Handle<bevy::gltf::Gltf>,
-    station: Handle<bevy::gltf::Gltf>,
-    derelict: Handle<bevy::gltf::Gltf>,
-    resource: Handle<bevy::gltf::Gltf>,
-}
 
 struct VisualBridge {
     session: ProjectEchoSession,
@@ -54,6 +26,7 @@ struct VisualBridge {
     pilot_station: EntityId,
     enemy: EntityId,
     feedback: String,
+    scene: SnapshotScene,
 }
 
 impl VisualBridge {
@@ -103,6 +76,16 @@ impl VisualBridge {
             route: NavigationRoute {
                 from: ORIGIN,
                 to: DESTINATION,
+                distance: 49.0,
+                duration: Duration(1_000),
+                fuel_cost: 1,
+                state: NavigationRouteState::Available,
+            },
+        }]);
+        session.update([GameplayCommand::RegisterNavigationRoute {
+            route: NavigationRoute {
+                from: DESTINATION,
+                to: ORIGIN,
                 distance: 49.0,
                 duration: Duration(1_000),
                 fuel_cost: 1,
@@ -177,6 +160,7 @@ impl VisualBridge {
             pilot_station,
             enemy,
             feedback: "ESCENA INICIALIZADA".to_owned(),
+            scene: visual_scene(),
         })
     }
 
@@ -195,205 +179,84 @@ impl VisualBridge {
             .map(|value| format!("{:?}", value))
             .unwrap_or_else(|| "sin evento".to_owned());
         self.feedback = format!("{status}; {event}");
+        println!("visual gameplay: {}", self.feedback);
     }
-}
 
-pub fn run() -> Result<(), String> {
-    let bridge = VisualBridge::new()?;
-    App::new()
-        .insert_non_send(bridge)
-        .add_plugins(
-            DefaultPlugins
-                .set(AssetPlugin {
-                    file_path: "assets".to_owned(),
-                    ..default()
-                })
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        title: "Astral Echo — Visual 3D".to_owned(),
-                        resolution: (1280, 720).into(),
-                        ..default()
-                    }),
-                    ..default()
-                }),
-        )
-        .add_systems(Startup, setup)
-        .add_systems(Update, (input_system, sync_world_system, update_hud_system))
-        .run();
-    Ok(())
-}
-
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    asset_server: Res<AssetServer>,
-    bridge: NonSend<VisualBridge>,
-) {
-    commands.insert_resource(OptionalScenes {
-        player_ship: asset_server.load(PLAYER_SHIP_ASSET),
-        enemy_ship: asset_server.load(ENEMY_SHIP_ASSET),
-        station: asset_server.load(STATION_ASSET),
-        derelict: asset_server.load(DERELICT_ASSET),
-        resource: asset_server.load(RESOURCE_ASSET),
-    });
-    let ship_material = materials.add(Color::srgb(0.18, 0.75, 1.0));
-    let destination_material = materials.add(Color::srgb(0.3, 0.95, 0.65));
-    let enemy_material = materials.add(Color::srgb(0.95, 0.18, 0.35));
-    let reward_material = materials.add(Color::srgb(1.0, 0.75, 0.18));
-    let player_material = materials.add(Color::srgb(0.9, 0.95, 1.0));
-    let destination_position = bridge
-        .session
-        .world()
-        .destination(DESTINATION)
-        .map(|destination| destination.position)
-        .unwrap_or(GameplayVec3::ZERO);
-    let enemy_position = bridge
-        .session
-        .world()
-        .enemies()
-        .find(|enemy| enemy.entity == bridge.enemy)
-        .map(|enemy| enemy.position)
-        .unwrap_or(GameplayVec3::ZERO);
-    let player_position = bridge
-        .session
-        .world()
-        .player(bridge.player)
-        .map(|player| player.position)
-        .unwrap_or(GameplayVec3::ZERO);
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(3.0, 1.2, 5.0))),
-        MeshMaterial3d(ship_material),
-        Transform::from_xyz(0.0, 0.0, 0.0),
-        ShipVisual,
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(4.0))),
-        MeshMaterial3d(destination_material),
-        Transform::from_translation(to_bevy(destination_position)),
-        DestinationVisual,
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Capsule3d::new(1.2, 3.0))),
-        MeshMaterial3d(enemy_material),
-        Transform::from_translation(to_bevy(enemy_position)),
-        EnemyVisual,
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(0.7))),
-        MeshMaterial3d(player_material),
-        Transform::from_translation(to_bevy(player_position)),
-        PlayerVisual,
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(1.0))),
-        MeshMaterial3d(reward_material),
-        Transform::from_xyz(0.0, -3.0, 0.0),
-        Visibility::Hidden,
-        RewardVisual,
-    ));
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(0.0, 38.0, 62.0).looking_at(Vec3::new(18.0, 0.0, -18.0), Vec3::Y),
-    ));
-    commands.spawn((
-        PointLight {
-            intensity: 3_000_000.0,
-            range: 180.0,
-            shadow_maps_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(8.0, 26.0, 18.0),
-    ));
-    commands.spawn((
-        Text::new(hud_text(&bridge)),
-        TextFont {
-            font_size: FontSize::Px(18.0),
-            ..default()
-        },
-        TextColor(Color::WHITE),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(12.0),
-            left: Val::Px(12.0),
-            ..default()
-        },
-        HudText,
-    ));
-}
-
-fn input_system(keys: Res<ButtonInput<KeyCode>>, mut bridge: NonSendMut<VisualBridge>) {
-    let player = bridge.player;
-    let ship = bridge.ship;
-    let enemy = bridge.enemy;
-    let pilot_station = bridge.pilot_station;
-    if keys.just_pressed(KeyCode::Escape) {
-        std::process::exit(0);
-    }
-    if keys.just_pressed(KeyCode::Space) {
-        bridge.issue([GameplayCommand::AdvanceTime {
-            delta: Duration(100),
-        }]);
-    }
-    if keys.just_pressed(KeyCode::KeyW) {
-        bridge.issue([GameplayCommand::MovePlayer {
-            player,
-            direction: GameplayVec3 { x: 0.0, y: 0.0, z: -1.0 },
-            delta: Duration(100),
-        }]);
-    }
-    if keys.just_pressed(KeyCode::KeyA) {
-        bridge.issue([GameplayCommand::MovePlayer {
-            player,
-            direction: GameplayVec3 { x: -1.0, y: 0.0, z: 0.0 },
-            delta: Duration(100),
-        }]);
-    }
-    if keys.just_pressed(KeyCode::KeyS) {
-        bridge.issue([GameplayCommand::MovePlayer {
-            player,
-            direction: GameplayVec3 { x: 0.0, y: 0.0, z: 1.0 },
-            delta: Duration(100),
-        }]);
-    }
-    if keys.just_pressed(KeyCode::KeyD) {
-        bridge.issue([GameplayCommand::MovePlayer {
-            player,
-            direction: GameplayVec3 { x: 1.0, y: 0.0, z: 0.0 },
-            delta: Duration(100),
-        }]);
-    }
-    if keys.just_pressed(KeyCode::KeyQ) {
-        bridge.issue([GameplayCommand::ScanSignals {
-            player,
-            ship,
-        }]);
-    }
-    if keys.just_pressed(KeyCode::KeyF) {
-        bridge.issue([GameplayCommand::AttackEnemy {
-            player,
-            enemy,
-        }]);
-    }
-    if keys.just_pressed(KeyCode::KeyE) {
-        let collectible = {
-            bridge
-                .session
-                .world()
-                .collectibles()
-                .find(|value| value.active)
-                .map(|value| (value.entity, value.amount))
-        };
-        if let Some((collectible, amount)) = collectible {
-            bridge.issue([GameplayCommand::CollectItem {
+    fn handle_key(&mut self, key: KeyCode) {
+        let player = self.player;
+        let ship = self.ship;
+        let enemy = self.enemy;
+        let pilot_station = self.pilot_station;
+        match key {
+            KeyCode::Space => self.issue([GameplayCommand::AdvanceTime {
+                delta: Duration(100),
+            }]),
+            KeyCode::KeyW => self.issue([GameplayCommand::MovePlayer {
                 player,
-                collectible,
-                amount,
-            }]);
+                direction: GameplayVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -1.0,
+                },
+                delta: Duration(100),
+            }]),
+            KeyCode::KeyA => self.issue([GameplayCommand::MovePlayer {
+                player,
+                direction: GameplayVec3 {
+                    x: -1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                delta: Duration(100),
+            }]),
+            KeyCode::KeyS => self.issue([GameplayCommand::MovePlayer {
+                player,
+                direction: GameplayVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                delta: Duration(100),
+            }]),
+            KeyCode::KeyD => self.issue([GameplayCommand::MovePlayer {
+                player,
+                direction: GameplayVec3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                delta: Duration(100),
+            }]),
+            KeyCode::KeyQ => self.issue([GameplayCommand::ScanSignals { player, ship }]),
+            KeyCode::KeyF => self.issue([GameplayCommand::AttackEnemy { player, enemy }]),
+            KeyCode::KeyE => {
+                let collectible = self
+                    .session
+                    .world()
+                    .collectibles()
+                    .find(|value| value.active)
+                    .map(|value| (value.entity, value.amount));
+                if let Some((collectible, amount)) = collectible {
+                    self.issue([GameplayCommand::CollectItem {
+                        player,
+                        collectible,
+                        amount,
+                    }]);
+                }
+            }
+            KeyCode::KeyP => self.toggle_flight(player, pilot_station),
+            _ => {}
         }
     }
-    if keys.just_pressed(KeyCode::KeyP) {
-        bridge.issue([
+
+    fn toggle_flight(&mut self, player: EntityId, pilot_station: EntityId) {
+        let (origin, destination) = match self.session.world().travel_state() {
+            gameplay::TravelState::Completed { destination } if destination == DESTINATION => {
+                (DESTINATION, ORIGIN)
+            }
+            _ => (ORIGIN, DESTINATION),
+        };
+        self.issue([
             GameplayCommand::Interact {
                 player,
                 target: pilot_station,
@@ -401,8 +264,8 @@ fn input_system(keys: Res<ButtonInput<KeyCode>>, mut bridge: NonSendMut<VisualBr
             GameplayCommand::PlanAutopilot {
                 player,
                 pilot_station,
-                origin: ORIGIN,
-                destination: DESTINATION,
+                origin,
+                destination,
             },
             GameplayCommand::StartAutopilot {
                 player,
@@ -412,81 +275,60 @@ fn input_system(keys: Res<ButtonInput<KeyCode>>, mut bridge: NonSendMut<VisualBr
     }
 }
 
-fn sync_world_system(
-    bridge: NonSend<VisualBridge>,
-    mut ship_query: Query<&mut Transform, (With<ShipVisual>, Without<PlayerVisual>, Without<EnemyVisual>, Without<DestinationVisual>, Without<RewardVisual>)>,
-    mut player_query: Query<&mut Transform, (With<PlayerVisual>, Without<ShipVisual>, Without<EnemyVisual>, Without<DestinationVisual>, Without<RewardVisual>)>,
-    mut enemy_query: Query<(&mut Transform, &mut Visibility), (With<EnemyVisual>, Without<ShipVisual>, Without<PlayerVisual>, Without<DestinationVisual>, Without<RewardVisual>)>,
-    mut destination_query: Query<&mut Transform, (With<DestinationVisual>, Without<ShipVisual>, Without<PlayerVisual>, Without<EnemyVisual>, Without<RewardVisual>)>,
-    mut reward_query: Query<(&mut Transform, &mut Visibility), (With<RewardVisual>, Without<ShipVisual>, Without<PlayerVisual>, Without<EnemyVisual>, Without<DestinationVisual>)>,
-) {
-    if let Some(position) = bridge.session.world().ship_position() {
-        if let Ok(mut transform) = ship_query.single_mut() {
-            transform.translation = to_bevy(position);
-        }
-    }
-    if let Some(player) = bridge.session.world().player(bridge.player) {
-        if let Ok(mut transform) = player_query.single_mut() {
-            transform.translation = to_bevy(player.position);
-        }
-    }
-    if let Ok((mut transform, mut visibility)) = enemy_query.single_mut() {
-        if let Some(enemy) = bridge
-            .session
-            .world()
-            .enemies()
-            .find(|value| value.entity == bridge.enemy)
-        {
-            transform.translation = to_bevy(enemy.position);
-            *visibility = if enemy.active && !enemy.is_defeated() {
-                Visibility::Visible
-            } else {
-                Visibility::Hidden
-            };
-        }
-    }
-    if let Some(destination) = bridge.session.world().destination(DESTINATION) {
-        if let Ok(mut transform) = destination_query.single_mut() {
-            transform.translation = to_bevy(destination.position);
-        }
-    }
-    if let Ok((mut transform, mut visibility)) = reward_query.single_mut() {
-        if let Some(collectible) = bridge.session.world().collectibles().find(|value| value.active) {
-            transform.translation = to_bevy(collectible.position);
-            *visibility = Visibility::Visible;
-        } else {
-            *visibility = Visibility::Hidden;
-        }
-    }
-}
-
-fn update_hud_system(bridge: NonSend<VisualBridge>, mut query: Query<&mut Text, With<HudText>>) {
-    if let Ok(mut text) = query.single_mut() {
-        *text = Text::new(hud_text(&bridge));
-    }
-}
-
-fn hud_text(bridge: &VisualBridge) -> String {
-    let world = bridge.session.world();
-    let (health, maximum_health, _) = world.player_health(bridge.player).unwrap_or((0, 0, false));
-    let (hull, maximum_hull) = world
-        .ship_integrity(bridge.ship)
-        .map(|value| (value.current(), value.maximum()))
-        .unwrap_or((0, 0));
-    let (fuel, capacity) = world
-        .ship_fuel(bridge.ship)
-        .map(|value| (value.current(), value.capacity()))
-        .unwrap_or((0, 0));
-    let active_enemies = world
-        .enemies()
-        .filter(|value| value.active && !value.is_defeated())
-        .count();
-    format!(
-        "ASTRAL ECHO 3D\nWASD mover  SPACE tiempo  Q escanear  F atacar  E recoger  P autopilot  ESC salir\nHP {health}/{maximum_health}  CASCO {hull}/{maximum_hull}  COMBUSTIBLE {fuel}/{capacity}\nNAV {:?}  ENEMIGOS {active_enemies}  LOOT {}\n{}",
-        world.autopilot_state(), world.collectibles().filter(|value| value.active).count(), bridge.feedback
+pub fn run() -> Result<(), String> {
+    let runtime = Rc::new(RefCell::new(VisualBridge::new()?));
+    let render_runtime = Rc::clone(&runtime);
+    let input_runtime = Rc::clone(&runtime);
+    let config = WindowConfig {
+        title: "Astral Echo — CPU propio".into(),
+        preset: Preset::Low,
+        raster_controls: false,
+        ..Default::default()
+    };
+    run_window_with_input(
+        config,
+        move |framebuffer: &mut Framebuffer, mode| {
+            render_frame(&mut render_runtime.borrow_mut(), framebuffer, mode)
+        },
+        move |key| input_runtime.borrow_mut().handle_key(key),
     )
+    .map(|report| {
+        println!(
+            "CPU visual finalizado: frames={} render_avg_ms={:.3} present_avg_ms={:.3}",
+            report.metrics.frames,
+            report.metrics.average_render().as_secs_f64() * 1000.0,
+            report.metrics.average_presentation().as_secs_f64() * 1000.0,
+        );
+    })
+    .map_err(|error| format!("ventana visual CPU: {error}"))
 }
 
-fn to_bevy(position: GameplayVec3) -> Vec3 {
-    Vec3::new(position.x, position.y, position.z)
+fn render_frame(
+    bridge: &mut VisualBridge,
+    framebuffer: &mut Framebuffer,
+    mode: render_cpu::RasterMode,
+) -> Result<(), RasterError> {
+    let camera = game::render_bridge::flight_camera(
+        bridge.session.world(),
+        framebuffer.width() as f32 / framebuffer.height() as f32,
+    )
+        .map_err(|_| RasterError::InvalidViewport)?;
+    let snapshot = game::render_bridge::snapshot_from_world_with_camera(
+        bridge.session.world(),
+        Default::default(),
+        &camera,
+    );
+    bridge
+        .scene
+        .update(&snapshot)
+        .map_err(|_| RasterError::NonFiniteVertex)?;
+    render_cpu::render_snapshot_scene(framebuffer, &bridge.scene, mode).map(|_| ())
+}
+
+fn visual_scene() -> SnapshotScene {
+    let mut scene = SnapshotScene::default();
+    scene.set_lighting_mode(LightingMode::Lambert);
+    scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
+    scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
+    scene
 }

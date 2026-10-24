@@ -9,7 +9,13 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     let world = support::fixture_world();
     let before = format!("{world:?}");
     let snapshot = snapshot_from_world(&world, Default::default());
-    assert_eq!(snapshot.nodes.len(), 5);
+    assert_eq!(snapshot.nodes.len(), 6);
+    assert!(snapshot
+        .nodes
+        .iter()
+        .any(|node| node.entity == SnapshotId::Entity(SUN_ENTITY)
+            && node.mesh == SUN_MESH
+            && node.material == SUN_MATERIAL));
     let ship = world.navigation().ship_id().unwrap();
     assert_ne!(ship, engine::EntityId::new(0));
     let node = snapshot
@@ -37,7 +43,13 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     assert!(snapshot
         .nodes
         .iter()
-        .any(|n| n.entity == SnapshotId::Destination(1) && n.mesh == DESTINATION_MESH));
+        .any(|n| n.entity == SnapshotId::Destination(1) && n.mesh == PLANET_MESH));
+    assert!(snapshot.nodes.iter().any(|n| {
+        n.entity == SnapshotId::Destination(1)
+            && n.mesh == PLANET_MESH
+            && n.material == PLANET_MATERIAL
+            && n.transform.scale == render_core::Vec3::splat(5.0)
+    }));
     let collectible = world.collectibles().next().unwrap();
     assert!(snapshot
         .nodes
@@ -107,7 +119,7 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
     scene
         .update(&snapshot_from_world(&world, Default::default()))
         .unwrap();
-    assert_eq!(scene.visible_nodes().count(), 2);
+    assert_eq!(scene.visible_nodes().count(), 3);
     assert!(scene.snapshot().nodes.iter().filter(|n| matches!(n.entity,SnapshotId::Entity(id) if id==enemy || id==collectible || id==new_player)).all(|n| !n.visible));
     let empty = gameplay::GameplayWorld::new();
     assert_eq!(
@@ -115,7 +127,7 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
             .update(&snapshot_from_world(&empty, Default::default()))
             .unwrap()
             .removed,
-        6
+        7
     );
     assert!(scene.snapshot().nodes.is_empty());
 }
@@ -178,6 +190,94 @@ fn repeated_cpu_frames_do_not_advance_world_tick() {
     }
     assert_eq!(world.time(), tick);
     assert_eq!(before, format!("{world:?}"));
+}
+
+#[test]
+fn academic_planet_orbit_and_rotation_are_absolute_and_do_not_mutate_world() {
+    let world = support::fixture_world();
+    let before = format!("{world:?}");
+    let at_start = academic_planet_transform(0.0);
+    let at_later_time = academic_planet_transform(4.0);
+    let at_same_time = academic_planet_transform(4.0);
+
+    let start_radius = (at_start.translation - Vec3::new(0.0, 0.0, -18.0)).length();
+    let later_radius = (at_later_time.translation - Vec3::new(0.0, 0.0, -18.0)).length();
+    assert!((start_radius - PLANET_ORBIT_RADIUS).abs() < 0.0001);
+    assert!((later_radius - PLANET_ORBIT_RADIUS).abs() < 0.0001);
+    assert_ne!(at_start.translation, at_later_time.translation);
+    assert_ne!(at_start.rotation, at_later_time.rotation);
+    assert_eq!(at_later_time, at_same_time);
+
+    let initial_snapshot = snapshot_from_world(&world, Default::default());
+    let repeated_snapshot = snapshot_from_world(&world, Default::default());
+    let initial_planet = initial_snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Destination(1))
+        .unwrap();
+    let repeated_planet = repeated_snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Destination(1))
+        .unwrap();
+    assert_eq!(initial_planet.transform, repeated_planet.transform);
+    assert_eq!(before, format!("{world:?}"));
+}
+
+#[test]
+fn only_the_selected_academic_planet_orbits() {
+    let mut world = support::fixture_world();
+    world
+        .register_destination(gameplay::Destination {
+            id: gameplay::DestinationId::new(ACADEMIC_PLANET_DESTINATION_ID),
+            destination_type: gameplay::DestinationType::Planet,
+            position: engine::Vec3 {
+                x: 70.0,
+                y: 3.0,
+                z: -12.0,
+            },
+            travel_duration: engine::Duration(100),
+            fuel_cost: 1,
+            discovery: gameplay::DiscoveryState::Discovered,
+        })
+        .unwrap();
+
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let selected = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Destination(ACADEMIC_PLANET_DESTINATION_ID))
+        .unwrap();
+    let other = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Destination(1))
+        .unwrap();
+    assert_eq!(selected.transform, academic_planet_transform(0.0));
+    assert_eq!(other.transform.translation, Vec3::new(12.0, 0.0, -22.0));
+    assert_eq!(other.transform.rotation, render_core::Quat::IDENTITY);
+}
+
+#[test]
+fn flight_camera_tracks_visual_ship_and_keeps_projection_valid() {
+    let world = support::fixture_world();
+    let camera = flight_camera(&world, 16.0 / 9.0).unwrap();
+    assert!(camera.view_matrix().is_finite());
+    assert!(camera.projection_matrix().is_finite());
+    assert!(camera.view_projection_matrix().is_finite());
+    assert_eq!(visual_ship_position(&world), world.ship_position().map(render_core::from_engine));
+}
+
+#[test]
+fn visual_ship_flight_interpolates_without_frame_based_accumulation() {
+    let current = Vec3::ZERO;
+    let target = Vec3::new(42.0, 0.0, -18.0);
+    let halfway = interpolate_visual_ship_position(current, target, 0.5);
+    let repeated = interpolate_visual_ship_position(current, target, 0.5);
+    assert_eq!(halfway, Vec3::new(21.0, 0.0, -9.0));
+    assert_eq!(halfway, repeated);
+    assert_eq!(interpolate_visual_ship_position(current, target, -1.0), current);
+    assert_eq!(interpolate_visual_ship_position(current, target, 2.0), target);
 }
 
 #[test]
