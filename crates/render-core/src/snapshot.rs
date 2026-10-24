@@ -7,7 +7,7 @@ use crate::transform::Transform;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SnapshotNode {
-    pub entity: EntityId,
+    pub entity: SnapshotId,
     pub transform: Transform,
     pub mesh: MeshHandle,
     pub material: MaterialHandle,
@@ -23,13 +23,35 @@ impl SnapshotNode {
         visible: bool,
     ) -> Self {
         Self {
-            entity,
+            entity: SnapshotId::Entity(entity),
             transform,
             mesh,
             material,
             visible,
         }
     }
+
+    pub fn destination(
+        id: u32,
+        transform: Transform,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+        visible: bool,
+    ) -> Self {
+        Self {
+            entity: SnapshotId::Destination(id),
+            transform,
+            mesh,
+            material,
+            visible,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SnapshotId {
+    Entity(EntityId),
+    Destination(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

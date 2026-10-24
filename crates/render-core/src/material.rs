@@ -28,6 +28,45 @@ pub struct MaterialInfo {
 }
 
 impl MaterialInfo {
+    pub fn albedo(self) -> Vec4 {
+        self.base_color
+    }
+
+    pub fn sanitized(self) -> Self {
+        Self {
+            base_color: if self.base_color.is_finite() {
+                self.base_color.clamp(Vec4::ZERO, Vec4::ONE)
+            } else {
+                Vec4::ONE
+            },
+            emissive: if self.emissive.is_finite() {
+                self.emissive.max(Vec3::ZERO)
+            } else {
+                Vec3::ZERO
+            },
+            metallic: if self.metallic.is_finite() {
+                self.metallic.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            roughness: if self.roughness.is_finite() {
+                self.roughness.clamp(0.045, 1.0)
+            } else {
+                1.0
+            },
+        }
+    }
+
+    pub fn fixture_metal() -> Self {
+        Self::new(Vec4::new(1.0, 0.71, 0.29, 1.0), 0.15, 1.0)
+    }
+    pub fn fixture_rough() -> Self {
+        Self::new(Vec4::new(0.2, 0.5, 0.8, 1.0), 0.95, 0.0)
+    }
+    pub fn fixture_emissive() -> Self {
+        Self::new(Vec4::ONE, 0.8, 0.0).with_emissive(Vec3::new(0.4, 0.1, 0.02))
+    }
+
     pub fn new(base_color: Vec4, roughness: f32, metallic: f32) -> Self {
         Self {
             base_color,

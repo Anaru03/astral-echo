@@ -17,3 +17,23 @@ render-cpu = { path = "../render-cpu" }
 [[bench]]
 name = "gpu_bench"
 harness = false
+
+[[bench]]
+name = "culling_lod_bench"
+harness = false
+
+[[bench]]
+name = "instancing_bench"
+harness = false
+
+[[bench]]
+name = "lighting_bench"
+harness = false
+
+[[bench]]
+name = "shadows_bench"
+harness = false
+
+[[bench]]
+name = "postprocess_bench"
+harness = false
