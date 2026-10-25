@@ -138,37 +138,64 @@ impl MultiplayerSession {
         Ok(processed)
     }
 
+
     fn register_player(&mut self, player_id: NetworkPlayerId) -> Result<(), MultiplayerError> {
         if self.players.contains_key(&player_id) {
             return Ok(());
         }
+
+        // Buscar una entidad inactiva que no esté asignada
+        // actualmente a otro jugador de red.
         let reusable = self
             .gameplay
             .world()
             .players()
-            .find(|player| !player.is_active)
+            .find(|player| {
+                !player.is_active
+                    && !self.players.values().any(|&entity| entity == player.entity_id)
+            })
             .map(|player| player.entity_id);
+
+        // La sesión de gameplay ya crea un jugador inicial activo.
+        // Asignarlo a la primera conexión en lugar de crear
+        // una cuarta entidad innecesaria.
+        let initial_player = self.gameplay.ids.first_player;
+
+        let initial_available = self.players.is_empty()
+            && self
+                .gameplay
+                .world()
+                .player(initial_player)
+                .is_some();
+
         let entity = if let Some(entity) = reusable {
             let result = self.gameplay.update([GameplayCommand::SetPlayerActive {
                 player: entity,
                 active: true,
             }]);
+
             if !matches!(
                 result.first().map(|value| value.status),
                 Some(CommandStatus::Success { .. })
             ) {
                 return Err(MultiplayerError::GameplayRejected(player_id));
             }
+
             entity
+        } else if initial_available {
+            initial_player
         } else {
             self.gameplay
                 .world_mut()
                 .create_player()
                 .map_err(MultiplayerError::PlayerCreation)?
         };
+
         self.players.insert(player_id, entity);
+
         Ok(())
     }
+
 
     fn unregister_player(&mut self, player_id: NetworkPlayerId) {
         if let Some(entity) = self.players.remove(&player_id) {
