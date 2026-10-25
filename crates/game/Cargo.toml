@@ -9,12 +9,12 @@ engine.workspace = true
 gameplay.workspace = true
 networking = { path = "../networking" }
 render-core.workspace = true
+render-cpu = { path = "../render-cpu" }
+render-present = { path = "../render-present" }
 bevy = "0.19"
 
 [lib]
 path = "src/lib.rs"
 
 [dev-dependencies]
-render-cpu = { path = "../render-cpu" }
 render-gpu = { path = "../render-gpu" }
-render-present = { path = "../render-present" }

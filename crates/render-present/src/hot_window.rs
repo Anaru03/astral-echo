@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use render_core::{InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene};
-use render_cpu::{render_snapshot_scene, write_png, Framebuffer, RasterMode};
+use render_cpu::{
+    render_snapshot_scene, render_snapshot_scene_with_stats, write_png, Framebuffer, RasterMode,
+};
 use render_gpu::{GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
@@ -31,7 +33,14 @@ pub fn run_hot_swap_window(
     source: SnapshotSource,
     start_gpu: bool,
 ) -> Result<HotSwapReport, String> {
-    run_hot_swap_window_with_debug(config, source, start_gpu, GraphicsDebugConfig::default())
+    run_hot_swap_window_with_input_and_scene(
+        config,
+        source,
+        start_gpu,
+        |_| {},
+        |_| {},
+        GraphicsDebugConfig::default(),
+    )
 }
 
 pub fn run_hot_swap_window_with_debug(
@@ -40,9 +49,22 @@ pub fn run_hot_swap_window_with_debug(
     start_gpu: bool,
     debug: GraphicsDebugConfig,
 ) -> Result<HotSwapReport, String> {
+    run_hot_swap_window_with_input_and_scene(config, source, start_gpu, |_| {}, |_| {}, debug)
+}
+
+pub fn run_hot_swap_window_with_input_and_scene(
+    config: WindowConfig,
+    source: SnapshotSource,
+    start_gpu: bool,
+    input: impl FnMut(KeyCode) + 'static,
+    configure_scene: impl FnMut(&mut SnapshotScene) + 'static,
+    debug: GraphicsDebugConfig,
+) -> Result<HotSwapReport, String> {
     let mut app = Host {
         config,
         source,
+        input: Box::new(input),
+        configure_scene: Box::new(configure_scene),
         start_gpu,
         state: None,
         failure: None,
@@ -70,6 +92,8 @@ pub struct HotSwapReport {
 struct Host {
     config: WindowConfig,
     source: SnapshotSource,
+    input: Box<dyn FnMut(KeyCode)>,
+    configure_scene: Box<dyn FnMut(&mut SnapshotScene)>,
     start_gpu: bool,
     state: Option<HostState>,
     failure: Option<String>,
@@ -84,7 +108,7 @@ struct HostState {
     _context: Context<Arc<Window>>,
     framebuffer: Framebuffer,
     snapshot: Rc<SnapshotScene>,
-    backend: HotSwapState<Rc<SnapshotScene>>,
+    backend: HotSwapState<()>,
     buffer: SnapshotBuffer,
     started: Instant,
     gpu: Option<SurfaceRenderer>,
@@ -153,6 +177,7 @@ impl ApplicationHandler for Host {
             .ok_or_else(|| "initial snapshot unavailable".to_string())
             .unwrap();
         let mut scene = SnapshotScene::default();
+        (self.configure_scene)(&mut scene);
         scene
             .update(&snapshot)
             .map_err(|error| error.to_string())
@@ -161,7 +186,7 @@ impl ApplicationHandler for Host {
         let backend = HotSwapState::new(
             BackendKind::Cpu,
             BackendSnapshot {
-                value: snapshot.clone(),
+                value: (),
                 width: size.0,
                 height: size.1,
             },
@@ -213,14 +238,21 @@ impl ApplicationHandler for Host {
                         KeyCode::KeyG => self.toggle(),
                         KeyCode::F9 | KeyCode::KeyM => self.capture_debug("marked"),
                         KeyCode::F10 => self.capture_images(),
-                        KeyCode::KeyS => self.config.raster_mode = RasterMode::Secuencial,
-                        KeyCode::KeyP => self.config.raster_mode = RasterMode::Paralelo,
-                        KeyCode::KeyA => self.config.raster_mode = RasterMode::Auto,
+                        KeyCode::KeyS if self.config.raster_controls => {
+                            self.config.raster_mode = RasterMode::Secuencial
+                        }
+                        KeyCode::KeyP if self.config.raster_controls => {
+                            self.config.raster_mode = RasterMode::Paralelo
+                        }
+                        KeyCode::KeyA if self.config.raster_controls => {
+                            self.config.raster_mode = RasterMode::Auto
+                        }
                         KeyCode::Digit1 => self.set_preset(Preset::Low),
                         KeyCode::Digit2 => self.set_preset(Preset::Medium),
                         KeyCode::Digit3 => self.set_preset(Preset::High),
                         _ => {}
                     }
+                    (self.input)(code);
                 }
             }
             WindowEvent::RedrawRequested => self.draw(),
@@ -288,12 +320,9 @@ impl Host {
             state.surface = Self::new_cpu_surface(state);
             let internal = (state.framebuffer.width(), state.framebuffer.height());
             if let Ok(snapshot) = (self.source)(internal.0, internal.1) {
-                let mut scene = SnapshotScene::default();
-                if scene.update(&snapshot).is_ok() {
-                    let scene = Rc::new(scene);
-                    state.snapshot = scene.clone();
+                if update_shared_scene(&mut state.snapshot, &snapshot).is_ok() {
                     state.backend.update_snapshot(BackendSnapshot {
-                        value: scene,
+                        value: (),
                         width: internal.0,
                         height: internal.1,
                     });
@@ -452,45 +481,49 @@ impl Host {
             let timestamp = state.started.elapsed().as_secs_f32();
             let _ = state.buffer.push(snapshot, timestamp);
             if let Some(interpolated) = state.buffer.sample(timestamp) {
-                let mut scene = SnapshotScene::default();
-                if scene.update(&interpolated).is_err() {
+                if update_shared_scene(&mut state.snapshot, &interpolated).is_err() {
                     return;
                 }
-                let scene = Rc::new(scene);
-                state.snapshot = scene.clone();
                 state.backend.update_snapshot(BackendSnapshot {
-                    value: scene,
+                    value: (),
                     width: size.width,
                     height: size.height,
                 });
             }
         }
-        let prepared = state.snapshot.prepare(render_core::CullingConfig {
-            width: size.width,
-            height: size.height,
-            ..Default::default()
-        });
-        println!(
-            "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
-            state.backend.backend(),
-            state.snapshot.snapshot().tick.0,
-            state.snapshot.snapshot().nodes.len(),
-            prepared.considered,
-            prepared.visible,
-            prepared.discarded,
-            prepared.triangles
-        );
         if state.backend.backend() == BackendKind::Gpu {
             if let Some(gpu) = &mut state.gpu {
-                let _ = gpu.present_snapshot(&state.snapshot);
+                if let Ok((_, stats)) = gpu.present_snapshot_with_stats(&state.snapshot) {
+                    println!(
+                        "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
+                        state.backend.backend(),
+                        state.snapshot.snapshot().tick.0,
+                        state.snapshot.snapshot().nodes.len(),
+                        stats.considered,
+                        stats.visible,
+                        stats.discarded,
+                        stats.triangles
+                    );
+                }
             }
             return;
         }
-        let _ = render_snapshot_scene(
+        if let Ok((stats, _)) = render_snapshot_scene_with_stats(
             &mut state.framebuffer,
             &state.snapshot,
             self.config.raster_mode,
-        );
+        ) {
+            println!(
+                "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
+                state.backend.backend(),
+                state.snapshot.snapshot().tick.0,
+                state.snapshot.snapshot().nodes.len(),
+                stats.considered,
+                stats.visible,
+                stats.discarded,
+                stats.triangles
+            );
+        }
         if let Some(surface) = &mut state.surface {
             if let (Some(width), Some(height)) =
                 (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
@@ -522,6 +555,42 @@ impl Host {
             );
             let _ = buffer.present();
         }
+    }
+}
+
+fn update_shared_scene(
+    scene: &mut Rc<SnapshotScene>,
+    snapshot: &RenderSnapshot,
+) -> Result<render_core::SceneUpdate, String> {
+    Rc::get_mut(scene)
+        .ok_or_else(|| "snapshot scene is shared during update".to_string())?
+        .update(snapshot)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn updates_reuse_the_same_scene_instance() {
+        let mut scene = Rc::new(SnapshotScene::default());
+        let pointer = Rc::as_ptr(&scene);
+
+        update_shared_scene(&mut scene, &RenderSnapshot::minimal_demo()).unwrap();
+        update_shared_scene(&mut scene, &RenderSnapshot::minimal_demo()).unwrap();
+
+        assert_eq!(Rc::as_ptr(&scene), pointer);
+        assert_eq!(Rc::strong_count(&scene), 1);
+    }
+
+    #[test]
+    fn shared_scene_is_not_mutated_without_unique_ownership() {
+        let mut scene = Rc::new(SnapshotScene::default());
+        let shared = scene.clone();
+
+        assert!(update_shared_scene(&mut scene, &RenderSnapshot::minimal_demo()).is_err());
+        assert_eq!(Rc::strong_count(&shared), 2);
     }
 }
 

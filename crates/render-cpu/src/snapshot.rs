@@ -1,4 +1,4 @@
-use render_core::{PreparedScene, SnapshotScene};
+use render_core::{PreparedScene, PreparedSceneStats, SnapshotScene};
 
 use crate::{
     Color, CpuPipeline, Framebuffer, PipelineConfig, PipelineStats, RasterError, RasterMode,
@@ -10,12 +10,23 @@ pub fn render_snapshot_scene(
     scene: &SnapshotScene,
     mode: RasterMode,
 ) -> Result<PipelineStats, RasterError> {
+    let (_, stats) = render_snapshot_scene_with_stats(framebuffer, scene, mode)?;
+    Ok(stats)
+}
+
+pub fn render_snapshot_scene_with_stats(
+    framebuffer: &mut Framebuffer,
+    scene: &SnapshotScene,
+    mode: RasterMode,
+) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
     let prepared = scene.prepare(render_core::CullingConfig {
         width: framebuffer.width(),
         height: framebuffer.height(),
         ..Default::default()
     });
-    render_prepared_scene(framebuffer, &prepared, scene.view_projection(), mode)
+    let prepared_stats = prepared.stats();
+    let pipeline_stats = render_prepared_scene(framebuffer, &prepared, scene.view_projection(), mode)?;
+    Ok((prepared_stats, pipeline_stats))
 }
 
 pub fn render_snapshot_scene_reference(

@@ -120,6 +120,7 @@ struct Application<F> {
     config: WindowConfig,
     framebuffer: Framebuffer,
     render: F,
+    input: Box<dyn FnMut(KeyCode)>,
     state: Option<WindowState>,
     pacer: FramePacer,
     metrics: FrameMetrics,
@@ -181,13 +182,18 @@ where
                 }
             }
         }
-        match code {
-            KeyCode::Escape => self.close(event_loop),
-            KeyCode::KeyS => self.config.raster_mode = RasterMode::Secuencial,
-            KeyCode::KeyP => self.config.raster_mode = RasterMode::Paralelo,
-            KeyCode::KeyA => self.config.raster_mode = RasterMode::Auto,
-            _ => {}
+        if self.config.raster_controls {
+            match code {
+                KeyCode::KeyS => self.config.raster_mode = RasterMode::Secuencial,
+                KeyCode::KeyP => self.config.raster_mode = RasterMode::Paralelo,
+                KeyCode::KeyA => self.config.raster_mode = RasterMode::Auto,
+                _ => {}
+            }
         }
+        if code == KeyCode::Escape {
+            self.close(event_loop);
+        }
+        (self.input)(code);
         self.title();
         Ok(())
     }
@@ -323,6 +329,18 @@ pub fn run_window<F>(config: WindowConfig, render: F) -> Result<RunReport, Prese
 where
     F: FnMut(&mut Framebuffer, RasterMode) -> Result<(), RasterError>,
 {
+    run_window_with_input(config, render, |_| {})
+}
+
+pub fn run_window_with_input<F, I>(
+    config: WindowConfig,
+    render: F,
+    input: I,
+) -> Result<RunReport, PresentError>
+where
+    F: FnMut(&mut Framebuffer, RasterMode) -> Result<(), RasterError>,
+    I: FnMut(KeyCode) + 'static,
+{
     let size = config.preset.resolution();
     let framebuffer = Framebuffer::new(size.0, size.1).map_err(PresentError::Raster)?;
     let started = Instant::now();
@@ -331,6 +349,7 @@ where
         config,
         framebuffer,
         render,
+        input: Box::new(input),
         state: None,
         metrics: FrameMetrics::default(),
         failure: None,

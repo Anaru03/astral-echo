@@ -61,6 +61,15 @@ pub struct PreparedScene {
     pub triangles: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PreparedSceneStats {
+    pub considered: usize,
+    pub visible: usize,
+    pub discarded: usize,
+    pub triangles: usize,
+    pub draws: usize,
+}
+
 impl PreparedScene {
     pub fn from_draws(draws: Vec<PreparedDraw>) -> Self {
         Self {
@@ -77,6 +86,16 @@ impl PreparedScene {
 
     pub fn material(&self, handle: MaterialHandle) -> crate::MaterialInfo {
         self.materials.get(&handle).copied().unwrap_or_default()
+    }
+
+    pub fn stats(&self) -> PreparedSceneStats {
+        PreparedSceneStats {
+            considered: self.considered,
+            visible: self.visible,
+            discarded: self.discarded,
+            triangles: self.triangles,
+            draws: self.draws.len(),
+        }
     }
 
     pub fn set_material(&mut self, handle: MaterialHandle, material: crate::MaterialInfo) {
@@ -125,6 +144,8 @@ impl VisualAssets {
     pub const PLAYER: MaterialHandle = MaterialHandle::new(2);
     pub const DESTINATION: MaterialHandle = MaterialHandle::new(3);
     pub const COLLECTIBLE: MaterialHandle = MaterialHandle::new(4);
+    pub const SUN: MaterialHandle = MaterialHandle::new(5);
+    pub const PLANET: MaterialHandle = MaterialHandle::new(6);
 
     pub fn mesh(
         &self,
@@ -185,6 +206,18 @@ impl Default for VisualAssets {
             (
                 (MeshHandle::COLLECTIBLE_PLACEHOLDER, Self::COLLECTIBLE),
                 diamond(0.7, Vec4::new(1.0, 0.7, 0.05, 1.0)),
+            ),
+            (
+                (MeshHandle::SUN_SPHERE, Self::SUN),
+                RasterMesh::sphere(
+                    Vec3::ZERO,
+                    1.0,
+                    Vec4::new(1.0, 0.55, 0.08, 1.0),
+                ),
+            ),
+            (
+                (MeshHandle::PLANET_SPHERE, Self::PLANET),
+                RasterMesh::planet_surface(Vec3::ZERO, 1.0),
             ),
         ])
         .into_iter()
