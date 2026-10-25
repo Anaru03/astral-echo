@@ -43,6 +43,7 @@ pub fn academic_surface_objects(elapsed_seconds: f64) -> [SnapshotNode; 4] {
     let planet = academic_planet_transform(elapsed_seconds);
     let object_specs = [
         (
+            SURFACE_OBJECT_IDS[0],
             PLAYER_MESH,
             PLAYER_MATERIAL,
             Vec3::new(0.0, 1.0, 0.0),
@@ -50,6 +51,7 @@ pub fn academic_surface_objects(elapsed_seconds: f64) -> [SnapshotNode; 4] {
             Vec3::new(0.2, 0.35, 0.2),
         ),
         (
+            SURFACE_OBJECT_IDS[1],
             ENEMY_MESH,
             ENEMY_MATERIAL,
             Vec3::new(1.0, 0.0, 0.0),
@@ -57,6 +59,7 @@ pub fn academic_surface_objects(elapsed_seconds: f64) -> [SnapshotNode; 4] {
             Vec3::new(0.18, 0.48, 0.18),
         ),
         (
+            SURFACE_OBJECT_IDS[2],
             DESTINATION_MESH,
             DESTINATION_MATERIAL,
             Vec3::new(0.0, 0.0, 1.0),
@@ -64,6 +67,7 @@ pub fn academic_surface_objects(elapsed_seconds: f64) -> [SnapshotNode; 4] {
             Vec3::new(0.3, 0.22, 0.3),
         ),
         (
+            SURFACE_OBJECT_IDS[3],
             COLLECTIBLE_MESH,
             COLLECTIBLE_MATERIAL,
             Vec3::new(-1.0, 0.45, 0.0).normalize(),
@@ -72,11 +76,9 @@ pub fn academic_surface_objects(elapsed_seconds: f64) -> [SnapshotNode; 4] {
         ),
     ];
     object_specs
-        .into_iter()
-        .enumerate()
-        .map(|(index, (mesh, material, direction, spin, scale))| {
+        .map(|(id, mesh, material, direction, spin, scale)| {
             SnapshotNode::new(
-                SURFACE_OBJECT_IDS[index],
+                id,
                 planet.composed(Transform::new(
                     direction * SURFACE_OBJECT_RADIAL_OFFSET,
                     surface_object_orientation(direction, spin),
@@ -87,9 +89,6 @@ pub fn academic_surface_objects(elapsed_seconds: f64) -> [SnapshotNode; 4] {
                 true,
             )
         })
-        .collect::<Vec<_>>()
-        .try_into()
-        .expect("four surface objects")
 }
 
 fn surface_object_orientation(direction: Vec3, spin: f32) -> Quat {
@@ -129,6 +128,9 @@ pub fn snapshot_from_world_with_camera(
         camera.view_matrix(),
         camera.projection_matrix(),
     );
+    snapshot
+        .nodes
+        .reserve(expected_snapshot_node_count(world, params, academic_planet));
 
     if world.navigation().ship_id().is_some() {
         snapshot.push_node(SnapshotNode::new(
@@ -242,6 +244,42 @@ pub fn snapshot_from_world_with_camera(
     snapshot.push_light(SnapshotLight::new(render_core::RenderLight::demo_sun()));
 
     snapshot
+}
+
+fn expected_snapshot_node_count(
+    world: &GameplayWorld,
+    params: BridgeParams<'_>,
+    academic_planet: Option<gameplay::DestinationId>,
+) -> usize {
+    let mut count = 0;
+    if world.navigation().ship_id().is_some() {
+        count += 1;
+    }
+    if world.navigation().ship_id().is_some() && visual_ship_position(world).is_some() {
+        count += 1;
+    }
+    count += world.players().count();
+    count += world.enemies().filter(|enemy| !enemy.is_player).count();
+    count += world
+        .destinations()
+        .filter(|destination| {
+            params.destinations.is_empty() || params.destinations.contains(&destination.id)
+        })
+        .count();
+
+    let academic_planet_visible = academic_planet.is_some_and(|id| {
+        (params.destinations.is_empty() || params.destinations.contains(&id))
+            && world
+                .destination(id)
+                .is_some_and(|destination| destination.discovery != gameplay::DiscoveryState::Unknown)
+    });
+    if academic_planet_visible {
+        count += SURFACE_OBJECT_IDS.len();
+    }
+    if params.include_collectibles {
+        count += world.collectibles().count();
+    }
+    count
 }
 
 pub fn visual_ship_position(world: &GameplayWorld) -> Option<Vec3> {
