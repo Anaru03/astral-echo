@@ -114,6 +114,7 @@ struct HostState {
     gpu: Option<SurfaceRenderer>,
     occluded: bool,
     preset: Preset,
+    cpu_surface_size: Option<(u32, u32)>,
 }
 
 impl ApplicationHandler for Host {
@@ -166,22 +167,32 @@ impl ApplicationHandler for Host {
                 return;
             }
         };
-        let _ = surface.resize(
+        if let Err(error) = surface.resize(
             NonZeroU32::new(size.0).unwrap(),
             NonZeroU32::new(size.1).unwrap(),
-        );
+        ) {
+            self.failure = Some(format!("initial CPU surface resize failed: {error}"));
+            event_loop.exit();
+            return;
+        }
         let mut buffer = SnapshotBuffer::new(InterpolationConfig::default());
-        let _ = buffer.push(snapshot, 0.0);
-        let snapshot = buffer
-            .sample(0.0)
-            .ok_or_else(|| "initial snapshot unavailable".to_string())
-            .unwrap();
+        if !buffer.push(snapshot, 0.0) {
+            self.failure = Some("initial snapshot could not be buffered".into());
+            event_loop.exit();
+            return;
+        }
+        let Some(snapshot) = buffer.sample(0.0) else {
+            self.failure = Some("initial snapshot unavailable".into());
+            event_loop.exit();
+            return;
+        };
         let mut scene = SnapshotScene::default();
         (self.configure_scene)(&mut scene);
-        scene
-            .update(&snapshot)
-            .map_err(|error| error.to_string())
-            .unwrap();
+        if let Err(error) = scene.update(&snapshot) {
+            self.failure = Some(error.to_string());
+            event_loop.exit();
+            return;
+        }
         let snapshot = Rc::new(scene);
         let backend = HotSwapState::new(
             BackendKind::Cpu,
@@ -201,6 +212,7 @@ impl ApplicationHandler for Host {
             gpu: None,
             occluded: false,
             preset: self.config.preset,
+            cpu_surface_size: Some(size),
             buffer,
             started: Instant::now(),
         });
@@ -209,25 +221,28 @@ impl ApplicationHandler for Host {
         }
     }
 
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.state = None;
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        let Some(state) = self.state.as_mut() else {
+        let Some(window_id) = self.state.as_ref().map(|state| state.window.id()) else {
             return;
         };
-        if state.window.id() != id {
+        if window_id != id {
             return;
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Occluded(v) => state.occluded = v,
-            WindowEvent::Resized(size) => {
-                if let Some(surface) = &mut state.surface {
-                    let _ = surface.resize(
-                        NonZeroU32::new(size.width.max(1)).unwrap(),
-                        NonZeroU32::new(size.height.max(1)).unwrap(),
-                    );
+            WindowEvent::Occluded(v) => {
+                if let Some(state) = self.state.as_mut() {
+                    state.occluded = v;
                 }
-                if let Some(gpu) = &mut state.gpu {
-                    let _ = gpu.resize(size.width, size.height);
+            }
+            WindowEvent::Resized(size) => {
+                if let Err(error) = self.resize(size.width, size.height) {
+                    self.failure = Some(error);
+                    event_loop.exit();
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -262,26 +277,94 @@ impl ApplicationHandler for Host {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(state) = &self.state {
-            state.window.request_redraw();
+            if backend_ready_for_redraw(
+                state.backend.backend(),
+                state.surface.is_some(),
+                state.gpu.is_some(),
+            ) {
+                state.window.request_redraw();
+            }
         }
     }
 }
 
 impl Host {
     fn set_preset(&mut self, preset: Preset) {
-        self.config.preset = preset;
         if let Some(state) = &mut self.state {
-            state.preset = preset;
             let (width, height) = preset.resolution();
-            let _ = state.framebuffer.resize(width, height);
+            if let Err(error) = state.framebuffer.resize(width, height) {
+                self.report_gpu_error(format!("CPU framebuffer resize failed: {error}"));
+                return;
+            }
+            state.preset = preset;
             if let Some(gpu) = &mut state.gpu {
                 if preset == Preset::Low {
-                    let _ = gpu.set_postprocess(render_gpu::PostProcessConfig::default());
+                    if let Err(error) = gpu.set_postprocess(render_gpu::PostProcessConfig::default()) {
+                        self.report_gpu_error(error.to_string());
+                    }
                 } else {
-                    let _ = gpu.set_postprocess_preset(render_gpu::PostProcessPreset::High);
+                    if let Err(error) = gpu.set_postprocess_preset(render_gpu::PostProcessPreset::High) {
+                        self.report_gpu_error(error.to_string());
+                    }
                 }
             }
         }
+        self.config.preset = preset;
+    }
+
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), String> {
+        let mut gpu_error = None;
+        if let Some(state) = self.state.as_mut() {
+            if state.backend.backend() == BackendKind::Cpu {
+                if let Some(surface) = &mut state.surface {
+                    if !resize_is_needed(state.cpu_surface_size, (width, height)) {
+                        return Ok(());
+                    }
+                    let result = NonZeroU32::new(width.max(1))
+                        .zip(NonZeroU32::new(height.max(1)))
+                        .ok_or_else(|| "invalid CPU surface dimensions".to_string())
+                        .and_then(|(width, height)| {
+                            surface
+                                .resize(width, height)
+                                .map_err(|error| error.to_string())
+                        });
+                    if let Err(error) = result {
+                        state.surface = None;
+                        state.cpu_surface_size = None;
+                        println!("CPU resize error={error}");
+                    } else {
+                        state.cpu_surface_size = Some((width, height));
+                    }
+                } else {
+                    state.surface = Self::new_cpu_surface_for_size(state, width, height);
+                    if state.surface.is_none() {
+                        state.cpu_surface_size = None;
+                        println!("CPU surface recreation failed");
+                    } else {
+                        state.cpu_surface_size = Some((width, height));
+                    }
+                }
+            }
+            if let Some(gpu) = &mut state.gpu {
+                let (_, _, _, gpu_width, gpu_height) = gpu.diagnostic_state();
+                if (width, height) != (gpu_width, gpu_height) {
+                    if let Err(error) = gpu.resize(width, height) {
+                        gpu_error = Some(error.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(error) = gpu_error {
+            self.report_gpu_error(error);
+            self.toggle();
+            let fallback_ready = self.state.as_ref().is_some_and(|state| {
+                cpu_fallback_is_confirmable(state.backend.backend(), state.surface.is_some())
+            });
+            if !fallback_ready {
+                return Err("GPU resize failed and CPU fallback is unavailable".into());
+            }
+        }
+        Ok(())
     }
 
     fn toggle(&mut self) {
@@ -299,6 +382,11 @@ impl Host {
         } else {
             None
         };
+        let released_cpu_surface_size = if target == BackendKind::Gpu {
+            state.cpu_surface_size.take()
+        } else {
+            None
+        };
         let gpu = if target == BackendKind::Gpu {
             let mut gpu = match SurfaceRenderer::new(
                 state.window.clone(),
@@ -308,6 +396,7 @@ impl Host {
                 Ok(gpu) => gpu,
                 Err(error) => {
                     state.surface = released_surface;
+                    state.cpu_surface_size = released_cpu_surface_size;
                     self.report_gpu_error(error.to_string());
                     return;
                 }
@@ -317,7 +406,14 @@ impl Host {
             }
             Some(gpu)
         } else {
-            state.surface = Self::new_cpu_surface(state);
+            let Some(surface) = Self::new_cpu_surface(state) else {
+                state.gpu = previous_gpu;
+                self.report_gpu_error("CPU presentation surface unavailable".into());
+                return;
+            };
+            state.surface = Some(surface);
+            let size = state.window.inner_size();
+            state.cpu_surface_size = Some((size.width, size.height));
             let internal = (state.framebuffer.width(), state.framebuffer.height());
             if let Ok(snapshot) = (self.source)(internal.0, internal.1) {
                 if update_shared_scene(&mut state.snapshot, &snapshot).is_ok() {
@@ -336,6 +432,7 @@ impl Host {
             state.window.request_redraw();
         } else if target == BackendKind::Gpu {
             state.surface = released_surface;
+            state.cpu_surface_size = released_cpu_surface_size;
             state.gpu = previous_gpu;
         }
         let transition_error = result.err();
@@ -416,6 +513,13 @@ impl Host {
         if size.width == 0 || size.height == 0 {
             return;
         }
+        if !backend_ready_for_redraw(
+            state.backend.backend(),
+            state.surface.is_some(),
+            state.gpu.is_some(),
+        ) {
+            return;
+        }
         let _ = std::fs::create_dir_all(directory);
         let internal_path =
             directory.join(format!("frame-{:04}-cpu-internal.png", self.debug_frame));
@@ -455,12 +559,20 @@ impl Host {
 
     fn new_cpu_surface(state: &HostState) -> Option<Surface<Arc<Window>, Arc<Window>>> {
         let size = state.window.inner_size();
-        if size.width == 0 || size.height == 0 {
+        Self::new_cpu_surface_for_size(state, size.width, size.height)
+    }
+
+    fn new_cpu_surface_for_size(
+        state: &HostState,
+        width: u32,
+        height: u32,
+    ) -> Option<Surface<Arc<Window>, Arc<Window>>> {
+        if width == 0 || height == 0 {
             return None;
         }
         let mut surface = Surface::new(&state._context, state.window.clone()).ok()?;
         surface
-            .resize(NonZeroU32::new(size.width)?, NonZeroU32::new(size.height)?)
+            .resize(NonZeroU32::new(width)?, NonZeroU32::new(height)?)
             .ok()?;
         Some(surface)
     }
@@ -492,19 +604,29 @@ impl Host {
             }
         }
         if state.backend.backend() == BackendKind::Gpu {
-            if let Some(gpu) = &mut state.gpu {
-                if let Ok((_, stats)) = gpu.present_snapshot_with_stats(&state.snapshot) {
-                    println!(
-                        "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
-                        state.backend.backend(),
-                        state.snapshot.snapshot().tick.0,
-                        state.snapshot.snapshot().nodes.len(),
-                        stats.considered,
-                        stats.visible,
-                        stats.discarded,
-                        stats.triangles
-                    );
-                }
+            let gpu_error = match state.gpu.as_mut() {
+                Some(gpu) => match gpu.present_snapshot_with_stats(&state.snapshot) {
+                    Ok((_, stats)) => {
+                        println!(
+                            "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
+                            state.backend.backend(),
+                            state.snapshot.snapshot().tick.0,
+                            state.snapshot.snapshot().nodes.len(),
+                            stats.considered,
+                            stats.visible,
+                            stats.discarded,
+                            stats.triangles
+                        );
+                        None
+                    }
+                    Err(error) => Some(error.to_string()),
+                },
+                None => Some("GPU backend active without GPU resources".into()),
+            };
+            if let Some(error) = gpu_error {
+                let _ = state;
+                self.report_gpu_error(error);
+                self.toggle();
             }
             return;
         }
@@ -525,11 +647,6 @@ impl Host {
             );
         }
         if let Some(surface) = &mut state.surface {
-            if let (Some(width), Some(height)) =
-                (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-            {
-                let _ = surface.resize(width, height);
-            }
             let Ok(mut buffer) = surface.buffer_mut() else {
                 return;
             };
@@ -568,6 +685,21 @@ fn update_shared_scene(
         .map_err(|error| error.to_string())
 }
 
+fn cpu_fallback_is_confirmable(backend: BackendKind, surface_ready: bool) -> bool {
+    backend == BackendKind::Cpu && surface_ready
+}
+
+fn backend_ready_for_redraw(backend: BackendKind, cpu_surface_ready: bool, gpu_ready: bool) -> bool {
+    match backend {
+        BackendKind::Cpu => cpu_surface_ready,
+        BackendKind::Gpu => gpu_ready,
+    }
+}
+
+fn resize_is_needed(current: Option<(u32, u32)>, requested: (u32, u32)) -> bool {
+    current != Some(requested)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,6 +723,28 @@ mod tests {
 
         assert!(update_shared_scene(&mut scene, &RenderSnapshot::minimal_demo()).is_err());
         assert_eq!(Rc::strong_count(&shared), 2);
+    }
+
+    #[test]
+    fn cpu_fallback_requires_cpu_backend_and_ready_surface() {
+        assert!(cpu_fallback_is_confirmable(BackendKind::Cpu, true));
+        assert!(!cpu_fallback_is_confirmable(BackendKind::Cpu, false));
+        assert!(!cpu_fallback_is_confirmable(BackendKind::Gpu, true));
+    }
+
+    #[test]
+    fn redraw_is_disabled_until_the_active_backend_has_resources() {
+        assert!(backend_ready_for_redraw(BackendKind::Cpu, true, false));
+        assert!(!backend_ready_for_redraw(BackendKind::Cpu, false, false));
+        assert!(backend_ready_for_redraw(BackendKind::Gpu, false, true));
+        assert!(!backend_ready_for_redraw(BackendKind::Gpu, false, false));
+    }
+
+    #[test]
+    fn duplicate_resize_is_skipped_only_for_confirmed_dimensions() {
+        assert!(!resize_is_needed(Some((960, 540)), (960, 540)));
+        assert!(resize_is_needed(Some((960, 540)), (1280, 720)));
+        assert!(resize_is_needed(None, (960, 540)));
     }
 }
 
