@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use render_core::{InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene};
-use render_cpu::{render_snapshot_scene, write_png, Framebuffer, RasterMode};
+use render_cpu::{
+    render_snapshot_scene, render_snapshot_scene_with_stats, write_png, Framebuffer, RasterMode,
+};
 use render_gpu::{GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
@@ -489,32 +491,39 @@ impl Host {
                 });
             }
         }
-        let prepared = state.snapshot.prepare(render_core::CullingConfig {
-            width: size.width,
-            height: size.height,
-            ..Default::default()
-        });
-        println!(
-            "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
-            state.backend.backend(),
-            state.snapshot.snapshot().tick.0,
-            state.snapshot.snapshot().nodes.len(),
-            prepared.considered,
-            prepared.visible,
-            prepared.discarded,
-            prepared.triangles
-        );
         if state.backend.backend() == BackendKind::Gpu {
             if let Some(gpu) = &mut state.gpu {
-                let _ = gpu.present_snapshot(&state.snapshot);
+                if let Ok((_, stats)) = gpu.present_snapshot_with_stats(&state.snapshot) {
+                    println!(
+                        "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
+                        state.backend.backend(),
+                        state.snapshot.snapshot().tick.0,
+                        state.snapshot.snapshot().nodes.len(),
+                        stats.considered,
+                        stats.visible,
+                        stats.discarded,
+                        stats.triangles
+                    );
+                }
             }
             return;
         }
-        let _ = render_snapshot_scene(
+        if let Ok((stats, _)) = render_snapshot_scene_with_stats(
             &mut state.framebuffer,
             &state.snapshot,
             self.config.raster_mode,
-        );
+        ) {
+            println!(
+                "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
+                state.backend.backend(),
+                state.snapshot.snapshot().tick.0,
+                state.snapshot.snapshot().nodes.len(),
+                stats.considered,
+                stats.visible,
+                stats.discarded,
+                stats.triangles
+            );
+        }
         if let Some(surface) = &mut state.surface {
             if let (Some(width), Some(height)) =
                 (NonZeroU32::new(size.width), NonZeroU32::new(size.height))

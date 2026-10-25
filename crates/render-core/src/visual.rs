@@ -61,6 +61,15 @@ pub struct PreparedScene {
     pub triangles: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PreparedSceneStats {
+    pub considered: usize,
+    pub visible: usize,
+    pub discarded: usize,
+    pub triangles: usize,
+    pub draws: usize,
+}
+
 impl PreparedScene {
     pub fn from_draws(draws: Vec<PreparedDraw>) -> Self {
         Self {
@@ -77,6 +86,16 @@ impl PreparedScene {
 
     pub fn material(&self, handle: MaterialHandle) -> crate::MaterialInfo {
         self.materials.get(&handle).copied().unwrap_or_default()
+    }
+
+    pub fn stats(&self) -> PreparedSceneStats {
+        PreparedSceneStats {
+            considered: self.considered,
+            visible: self.visible,
+            discarded: self.discarded,
+            triangles: self.triangles,
+            draws: self.draws.len(),
+        }
     }
 
     pub fn set_material(&mut self, handle: MaterialHandle, material: crate::MaterialInfo) {

@@ -126,6 +126,19 @@ fn procedural_assets_cover_all_visual_classes() {
 }
 
 #[test]
+fn prepared_scene_stats_match_the_consumed_draws() {
+    let mut scene = SnapshotScene::default();
+    scene.update(&RenderSnapshot::minimal_demo()).unwrap();
+    let prepared = scene.prepare(Default::default());
+    let stats = prepared.stats();
+    assert_eq!(stats.considered, prepared.considered);
+    assert_eq!(stats.visible, prepared.visible);
+    assert_eq!(stats.discarded, prepared.discarded);
+    assert_eq!(stats.triangles, prepared.triangles);
+    assert_eq!(stats.draws, prepared.draws().count());
+}
+
+#[test]
 fn planet_surface_is_deterministic_colored_and_unit_radius() {
     let first_assets = VisualAssets::default();
     let second_assets = VisualAssets::default();

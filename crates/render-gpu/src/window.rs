@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use render_core::{Camera, Mat4, RasterMesh, RenderSnapshot, SnapshotScene, Transform};
+use render_core::{
+    Camera, Mat4, PreparedSceneStats, RasterMesh, RenderSnapshot, SnapshotScene, Transform,
+};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -181,6 +183,13 @@ impl SurfaceRenderer {
     }
 
     pub fn present_snapshot(&mut self, scene: &SnapshotScene) -> Result<bool, GpuError> {
+        self.present_snapshot_with_stats(scene).map(|(presented, _)| presented)
+    }
+
+    pub fn present_snapshot_with_stats(
+        &mut self,
+        scene: &SnapshotScene,
+    ) -> Result<(bool, PreparedSceneStats), GpuError> {
         if self
             .postprocess
             .as_ref()
@@ -196,11 +205,12 @@ impl SurfaceRenderer {
             height: self.config.height,
             ..Default::default()
         });
+        let prepared_stats = prepared.stats();
         self.renderer.sync_prepared(&prepared)?;
         if let Some(renderer) = &mut self.hdr_renderer {
             renderer.sync_prepared(&prepared)?;
         }
-        self.present_matrix(scene.view_projection())
+        Ok((self.present_matrix(scene.view_projection())?, prepared_stats))
     }
 
     fn present_matrix(&mut self, vp: Mat4) -> Result<bool, GpuError> {

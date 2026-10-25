@@ -1,5 +1,7 @@
 use render_core::{CullingConfig, RenderSnapshot, SnapshotScene, Vec3};
-use render_cpu::{render_snapshot_scene, Framebuffer, RasterMode};
+use render_cpu::{
+    render_snapshot_scene, render_snapshot_scene_with_stats, Framebuffer, RasterMode,
+};
 
 #[test]
 fn all_cpu_modes_render_the_same_snapshot_and_clear_removed_objects() {
@@ -41,6 +43,27 @@ fn prepared_scene_reports_culling_and_lod_work() {
     assert_eq!(prepared.considered, 0);
     assert_eq!(prepared.visible, 0);
     assert_eq!(prepared.discarded, 0);
+}
+
+#[test]
+fn snapshot_render_reports_stats_from_its_prepared_scene() {
+    let mut scene = SnapshotScene::default();
+    scene.update(&RenderSnapshot::minimal_demo()).unwrap();
+    let mut framebuffer = Framebuffer::new(321, 181).unwrap();
+    let (stats, _) = render_snapshot_scene_with_stats(
+        &mut framebuffer,
+        &scene,
+        RasterMode::Secuencial,
+    )
+    .unwrap();
+    let expected = scene
+        .prepare(CullingConfig {
+            width: 321,
+            height: 181,
+            ..Default::default()
+        })
+        .stats();
+    assert_eq!(stats, expected);
 }
 
 #[test]

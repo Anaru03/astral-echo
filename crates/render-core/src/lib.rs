@@ -26,7 +26,8 @@ pub use scene::{RenderCamera, RenderLight, RenderLightKind, RenderNode, RenderSc
 pub use snapshot::{RenderSnapshot, SnapshotId, SnapshotLight, SnapshotNode};
 pub use transform::Transform;
 pub use visual::{
-    CullingConfig, LodLevel, PreparedDraw, PreparedScene, SceneUpdate, SnapshotScene,
+    CullingConfig, LodLevel, PreparedDraw, PreparedScene, PreparedSceneStats, SceneUpdate,
+    SnapshotScene,
     VisibilityClass, VisualAssets, VisualError,
 };
 
