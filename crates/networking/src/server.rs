@@ -1522,31 +1522,45 @@ mod tests {
     #[test]
     fn test_reap_finished_client_threads_keeps_active_handlers() {
         let finished = thread::spawn(|| {});
+
         while !finished.is_finished() {
             thread::yield_now();
         }
+
         let (started_sender, started_receiver) = std::sync::mpsc::channel();
         let (sender, receiver) = std::sync::mpsc::channel();
+
         let active = thread::spawn(move || {
             started_sender.send(()).unwrap();
             receiver.recv().unwrap();
         });
+
         started_receiver.recv().unwrap();
+
         let mut threads = vec![active, finished];
         let mut error = None;
 
         reap_finished_client_threads(&mut threads, &mut error);
+
         assert_eq!(threads.len(), 1);
         assert!(error.is_none());
 
         sender.send(()).unwrap();
-        for _ in 0..100 {
-            if threads[0].is_finished() {
-                break;
-            }
-            thread::yield_now();
+
+        // Esperar a que el hilo termine sin depender de 100 iteraciones.
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        while !threads[0].is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
         }
+
+        assert!(
+            threads[0].is_finished(),
+            "El hilo no terminó dentro del tiempo esperado"
+        );
+
         reap_finished_client_threads(&mut threads, &mut error);
+
         assert!(threads.is_empty());
         assert!(error.is_none());
     }
