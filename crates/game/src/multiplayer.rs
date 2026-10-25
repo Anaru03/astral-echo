@@ -138,7 +138,6 @@ impl MultiplayerSession {
         Ok(processed)
     }
 
-
     fn register_player(&mut self, player_id: NetworkPlayerId) -> Result<(), MultiplayerError> {
         if self.players.contains_key(&player_id) {
             return Ok(());
@@ -152,7 +151,10 @@ impl MultiplayerSession {
             .players()
             .find(|player| {
                 !player.is_active
-                    && !self.players.values().any(|&entity| entity == player.entity_id)
+                    && !self
+                        .players
+                        .values()
+                        .any(|&entity| entity == player.entity_id)
             })
             .map(|player| player.entity_id);
 
@@ -161,12 +163,8 @@ impl MultiplayerSession {
         // una cuarta entidad innecesaria.
         let initial_player = self.gameplay.ids.first_player;
 
-        let initial_available = self.players.is_empty()
-            && self
-                .gameplay
-                .world()
-                .player(initial_player)
-                .is_some();
+        let initial_available =
+            self.players.is_empty() && self.gameplay.world().player(initial_player).is_some();
 
         let entity = if let Some(entity) = reusable {
             let result = self.gameplay.update([GameplayCommand::SetPlayerActive {
@@ -195,7 +193,6 @@ impl MultiplayerSession {
 
         Ok(())
     }
-
 
     fn unregister_player(&mut self, player_id: NetworkPlayerId) {
         if let Some(entity) = self.players.remove(&player_id) {
@@ -437,5 +434,163 @@ mod tests {
         }
         assert!(session.network_player(first.player_id()).is_none());
         second.disconnect().unwrap();
+    }
+
+    fn wait_until<F>(session: &mut MultiplayerSession, mut condition: F)
+    where
+        F: FnMut(&MultiplayerSession) -> bool,
+    {
+        let deadline = std::time::Instant::now() + StdDuration::from_secs(3);
+        loop {
+            session.update().unwrap();
+            if condition(session) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Se agotó el tiempo esperando el estado multijugador"
+            );
+            thread::sleep(StdDuration::from_millis(5));
+        }
+    }
+
+    fn send_test_movement(client: &mut GameClient, sequence: u64) {
+        client
+            .send(&ClientMessage::PlayerMove {
+                sequence,
+                transform: PlayerTransform::new(
+                    NetworkVec3::new(0.0, 0.0, 0.0),
+                    NetworkOrientation::new(0.0, 0.0),
+                    NetworkVec3::new(1.0, 0.0, 0.0),
+                ),
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn tres_jugadores_tienen_entidades_distintas() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+
+        let mut first = GameClient::connect(address, "Ruth").unwrap();
+        wait_for_player(&mut session, first.player_id());
+        let mut second = GameClient::connect(address, "Tiffany").unwrap();
+        wait_for_player(&mut session, second.player_id());
+        let mut third = GameClient::connect(address, "Sarita").unwrap();
+        wait_for_player(&mut session, third.player_id());
+
+        let entities = [first.player_id(), second.player_id(), third.player_id()]
+            .map(|id| session.network_player(id).unwrap().entity);
+
+        assert_eq!(entities[0], session.gameplay.ids.first_player);
+        assert_ne!(entities[0], entities[1]);
+        assert_ne!(entities[0], entities[2]);
+        assert_ne!(entities[1], entities[2]);
+        assert_eq!(session.gameplay().world().players().count(), 3);
+
+        first.disconnect().unwrap();
+        second.disconnect().unwrap();
+        third.disconnect().unwrap();
+    }
+
+    #[test]
+    fn desconexion_libera_entidad_para_nuevo_jugador() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+
+        let mut first = GameClient::connect(address, "Ruth").unwrap();
+        wait_for_player(&mut session, first.player_id());
+        let mut second = GameClient::connect(address, "Tiffany").unwrap();
+        wait_for_player(&mut session, second.player_id());
+        let mut third = GameClient::connect(address, "Sarita").unwrap();
+        wait_for_player(&mut session, third.player_id());
+
+        let released_entity = session.network_player(second.player_id()).unwrap().entity;
+        second.disconnect().unwrap();
+        wait_until(&mut session, |s| {
+            s.network_player(second.player_id()).is_none()
+        });
+        assert!(
+            !session
+                .gameplay()
+                .world()
+                .player(released_entity)
+                .unwrap()
+                .is_active
+        );
+
+        let mut replacement = GameClient::connect(address, "Jugador 4").unwrap();
+        wait_for_player(&mut session, replacement.player_id());
+        assert_eq!(
+            session
+                .network_player(replacement.player_id())
+                .unwrap()
+                .entity,
+            released_entity
+        );
+        assert!(
+            session
+                .gameplay()
+                .world()
+                .player(released_entity)
+                .unwrap()
+                .is_active
+        );
+        assert_eq!(session.gameplay().world().players().count(), 3);
+
+        first.disconnect().unwrap();
+        third.disconnect().unwrap();
+        replacement.disconnect().unwrap();
+    }
+
+    #[test]
+    fn jugador_reconectado_puede_moverse() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+
+        let mut first = GameClient::connect(address, "Ruth").unwrap();
+        wait_for_player(&mut session, first.player_id());
+        let mut second = GameClient::connect(address, "Tiffany").unwrap();
+        wait_for_player(&mut session, second.player_id());
+        let mut third = GameClient::connect(address, "Sarita").unwrap();
+        wait_for_player(&mut session, third.player_id());
+
+        let released_entity = session.network_player(first.player_id()).unwrap().entity;
+        first.disconnect().unwrap();
+        wait_until(&mut session, |s| {
+            s.network_player(first.player_id()).is_none()
+        });
+
+        let mut replacement = GameClient::connect(address, "Jugador 4").unwrap();
+        wait_for_player(&mut session, replacement.player_id());
+        assert_eq!(
+            session
+                .network_player(replacement.player_id())
+                .unwrap()
+                .entity,
+            released_entity
+        );
+
+        let initial_position = session
+            .gameplay()
+            .world()
+            .player(released_entity)
+            .unwrap()
+            .position;
+        send_test_movement(&mut replacement, 1);
+        wait_until(&mut session, |s| {
+            s.gameplay()
+                .world()
+                .player(released_entity)
+                .is_some_and(|player| player.position != initial_position)
+        });
+
+        assert!(session.network_player(second.player_id()).is_some());
+        assert!(session.network_player(third.player_id()).is_some());
+        assert_eq!(session.gameplay().world().players().count(), 3);
+
+        second.disconnect().unwrap();
+        third.disconnect().unwrap();
+        replacement.disconnect().unwrap();
     }
 }
