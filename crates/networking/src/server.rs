@@ -75,8 +75,8 @@ impl OutputQueue {
     }
 
     fn enqueue(&self, message: &ServerMessage) -> io::Result<()> {
-        let json = encode(message)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let json =
+            encode(message).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let mut bytes = json.into_bytes();
         bytes.push(b'\n');
         let mut state = self
@@ -84,7 +84,10 @@ impl OutputQueue {
             .lock()
             .map_err(|_| io::Error::other("Cola de salida no disponible"))?;
         if state.closing {
-            return Err(io::Error::new(io::ErrorKind::NotConnected, "Conexión cerrada"));
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "Conexión cerrada",
+            ));
         }
         if state.queue.len() >= MAX_PENDING_OUTPUT_MESSAGES {
             state.closing = true;
@@ -131,7 +134,11 @@ impl OutputQueue {
 
 fn run_writer(mut stream: TcpStream, output: Arc<OutputQueue>) {
     while let Some(message) = output.next() {
-        if stream.write_all(&message).and_then(|_| stream.flush()).is_err() {
+        if stream
+            .write_all(&message)
+            .and_then(|_| stream.flush())
+            .is_err()
+        {
             output.close();
             let _ = stream.shutdown(Shutdown::Both);
             break;
@@ -193,7 +200,6 @@ impl ServerState {
         self.last_sequences.insert(player_id, sequence);
         true
     }
-
 }
 
 fn broadcast_state_inner(
@@ -216,18 +222,14 @@ fn broadcast_state_inner(
         .iter()
         .filter(|(id, _)| Some(**id) != exclude)
         .filter_map(|(&id, connection)| {
-            connection
-                .stream
-                .try_clone()
-                .ok()
-                .map(|stream| {
-                    (
-                        id,
-                        stream,
-                        connection.output.clone(),
-                        Arc::clone(&connection.legacy_write_lock),
-                    )
-                })
+            connection.stream.try_clone().ok().map(|stream| {
+                (
+                    id,
+                    stream,
+                    connection.output.clone(),
+                    Arc::clone(&connection.legacy_write_lock),
+                )
+            })
         })
         .collect::<Vec<_>>();
     for (id, mut stream, output, legacy_write_lock) in targets {
@@ -413,7 +415,9 @@ impl ActiveConnections {
             .streams
             .lock()
             .map(|mut streams| {
-                std::mem::take(&mut *streams).into_values().collect::<Vec<_>>()
+                std::mem::take(&mut *streams)
+                    .into_values()
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default();
 
@@ -473,11 +477,7 @@ impl GameServerHandle {
         self.broadcast_except(message, None);
     }
 
-    pub fn broadcast_except(
-        &self,
-        message: &ServerMessage,
-        exclude: Option<NetworkPlayerId>,
-    ) {
+    pub fn broadcast_except(&self, message: &ServerMessage, exclude: Option<NetworkPlayerId>) {
         broadcast_all(&self.state, self.events.as_ref(), message, exclude);
     }
 }
@@ -582,17 +582,17 @@ impl GameServer {
 
                     let thread = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         thread::spawn(move || {
-                        if let Err(error) = handle_client(
-                            stream,
-                            state,
-                            events,
-                            Some(Arc::clone(&active_for_handler)),
-                            Some(pending),
-                            accepted_at,
-                            join_timeout,
-                        ) {
-                            eprintln!("Error de conexión: {error}");
-                        }
+                            if let Err(error) = handle_client(
+                                stream,
+                                state,
+                                events,
+                                Some(Arc::clone(&active_for_handler)),
+                                Some(pending),
+                                accepted_at,
+                                join_timeout,
+                            ) {
+                                eprintln!("Error de conexión: {error}");
+                            }
                             active_for_handler.remove(connection_id);
                         })
                     }));
@@ -602,9 +602,8 @@ impl GameServer {
                         Err(_) => {
                             active_connections.remove(connection_id);
                             if server_error.is_none() {
-                                server_error = Some(io::Error::other(
-                                    "No se pudo crear el hilo de cliente",
-                                ));
+                                server_error =
+                                    Some(io::Error::other("No se pudo crear el hilo de cliente"));
                             }
                         }
                     }
@@ -620,7 +619,6 @@ impl GameServer {
                     break;
                 }
             }
-
         }
 
         active_connections.shutdown_all();
@@ -789,7 +787,12 @@ fn handle_client(
                         break;
                     }
                     Ok(available) => available,
-                    Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                        ) =>
+                    {
                         if active_connections
                             .as_ref()
                             .is_some_and(|connections| connections.is_closing())
@@ -912,9 +915,7 @@ fn handle_client(
                             .lifecycle
                             .lock()
                             .map_err(|_| io::Error::other("Ciclo de vida no disponible"))?;
-                        if connections.is_closing()
-                            || accepted_at.elapsed() >= join_timeout
-                        {
+                        if connections.is_closing() || accepted_at.elapsed() >= join_timeout {
                             drop(guard);
                             break;
                         }
@@ -926,10 +927,10 @@ fn handle_client(
                     let publication = if output.is_some() {
                         Some(
                             state
-                            .lock()
-                            .map_err(|_| io::Error::other("Estado del servidor no disponible"))?
-                            .publication
-                            .clone(),
+                                .lock()
+                                .map_err(|_| io::Error::other("Estado del servidor no disponible"))?
+                                .publication
+                                .clone(),
                         )
                     } else {
                         None
@@ -971,10 +972,7 @@ fn handle_client(
                         .map(|(&other_id, other_name)| (other_id, other_name.clone()))
                         .collect::<Vec<_>>();
 
-                    let connection = Connection::new(
-                        stream.try_clone()?,
-                        output.clone(),
-                    );
+                    let connection = Connection::new(stream.try_clone()?, output.clone());
                     server.connections.insert(id, connection);
 
                     if output.is_some() {
@@ -1272,7 +1270,10 @@ mod tests {
         let mut second = String::new();
         reader.read_line(&mut first).unwrap();
         reader.read_line(&mut second).unwrap();
-        assert!(matches!(decode_server(first.trim()).unwrap(), ServerMessage::Welcome { .. }));
+        assert!(matches!(
+            decode_server(first.trim()).unwrap(),
+            ServerMessage::Welcome { .. }
+        ));
         assert_eq!(
             decode_server(second.trim()).unwrap(),
             ServerMessage::PlayerLeft { player_id: 7 }
@@ -1490,7 +1491,9 @@ mod tests {
         let (address, shutdown, handle, events) =
             start_test_server_with_events(Duration::from_millis(100));
         let mut client = TcpStream::connect(&address).unwrap();
-        client.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
         let message = crate::encode(&ClientMessage::Join {
             version: PROTOCOL_VERSION,
             name: "Tardío".to_string(),
@@ -1679,9 +1682,8 @@ mod tests {
         let healthy_output = OutputQueue::new();
         let healthy_writer_output = Arc::clone(&healthy_output);
         let healthy_writer_stream = healthy_server.try_clone().unwrap();
-        let healthy_writer = thread::spawn(move || {
-            run_writer(healthy_writer_stream, healthy_writer_output)
-        });
+        let healthy_writer =
+            thread::spawn(move || run_writer(healthy_writer_stream, healthy_writer_output));
         let failed_output = OutputQueue::new();
         failed_output.close();
         let failed_output_2 = OutputQueue::new();
@@ -1691,15 +1693,18 @@ mod tests {
         let healthy_id = initial.join("Jugador sano".to_string()).unwrap();
         let failed_id = initial.join("Jugador fallido".to_string()).unwrap();
         let failed_id_2 = initial.join("Jugador fallido 2".to_string()).unwrap();
-        initial
-            .connections
-            .insert(healthy_id, Connection::new(healthy_server, Some(healthy_output)));
-        initial
-            .connections
-            .insert(failed_id, Connection::new(failed_server, Some(failed_output)));
-        initial
-            .connections
-            .insert(failed_id_2, Connection::new(failed_server_2, Some(failed_output_2)));
+        initial.connections.insert(
+            healthy_id,
+            Connection::new(healthy_server, Some(healthy_output)),
+        );
+        initial.connections.insert(
+            failed_id,
+            Connection::new(failed_server, Some(failed_output)),
+        );
+        initial.connections.insert(
+            failed_id_2,
+            Connection::new(failed_server_2, Some(failed_output_2)),
+        );
         let state = Arc::new(Mutex::new(initial));
         let events = ServerEventQueue::new();
         let handle = GameServerHandle {
@@ -1747,10 +1752,7 @@ mod tests {
         assert!(!server.connections.contains_key(&failed_id_2));
         drop(server);
 
-        let mut disconnected = vec![
-            events.pop().unwrap().clone(),
-            events.pop().unwrap().clone(),
-        ];
+        let mut disconnected = vec![events.pop().unwrap().clone(), events.pop().unwrap().clone()];
         disconnected.sort_by_key(|event| match event {
             ServerEvent::PlayerLeft { player_id } => *player_id,
             _ => 0,
@@ -1769,12 +1771,7 @@ mod tests {
         assert_eq!(events.pop(), None);
         assert!(!disconnect_player(&state, Some(&events), failed_id));
         assert!(!disconnect_player(&state, Some(&events), failed_id_2));
-        if let Some(connection) = state
-            .lock()
-            .unwrap()
-            .connections
-            .get(&healthy_id)
-        {
+        if let Some(connection) = state.lock().unwrap().connections.get(&healthy_id) {
             if let Some(output) = &connection.output {
                 output.close();
             }
