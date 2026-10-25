@@ -106,7 +106,7 @@ struct HostState {
     _context: Context<Arc<Window>>,
     framebuffer: Framebuffer,
     snapshot: Rc<SnapshotScene>,
-    backend: HotSwapState<Rc<SnapshotScene>>,
+    backend: HotSwapState<()>,
     buffer: SnapshotBuffer,
     started: Instant,
     gpu: Option<SurfaceRenderer>,
@@ -184,7 +184,7 @@ impl ApplicationHandler for Host {
         let backend = HotSwapState::new(
             BackendKind::Cpu,
             BackendSnapshot {
-                value: snapshot.clone(),
+                value: (),
                 width: size.0,
                 height: size.1,
             },
@@ -318,12 +318,9 @@ impl Host {
             state.surface = Self::new_cpu_surface(state);
             let internal = (state.framebuffer.width(), state.framebuffer.height());
             if let Ok(snapshot) = (self.source)(internal.0, internal.1) {
-                let mut scene = SnapshotScene::default();
-                if scene.update(&snapshot).is_ok() {
-                    let scene = Rc::new(scene);
-                    state.snapshot = scene.clone();
+                if update_shared_scene(&mut state.snapshot, &snapshot).is_ok() {
                     state.backend.update_snapshot(BackendSnapshot {
-                        value: scene,
+                        value: (),
                         width: internal.0,
                         height: internal.1,
                     });
@@ -482,14 +479,11 @@ impl Host {
             let timestamp = state.started.elapsed().as_secs_f32();
             let _ = state.buffer.push(snapshot, timestamp);
             if let Some(interpolated) = state.buffer.sample(timestamp) {
-                let mut scene = SnapshotScene::default();
-                if scene.update(&interpolated).is_err() {
+                if update_shared_scene(&mut state.snapshot, &interpolated).is_err() {
                     return;
                 }
-                let scene = Rc::new(scene);
-                state.snapshot = scene.clone();
                 state.backend.update_snapshot(BackendSnapshot {
-                    value: scene,
+                    value: (),
                     width: size.width,
                     height: size.height,
                 });
@@ -552,6 +546,42 @@ impl Host {
             );
             let _ = buffer.present();
         }
+    }
+}
+
+fn update_shared_scene(
+    scene: &mut Rc<SnapshotScene>,
+    snapshot: &RenderSnapshot,
+) -> Result<render_core::SceneUpdate, String> {
+    Rc::get_mut(scene)
+        .ok_or_else(|| "snapshot scene is shared during update".to_string())?
+        .update(snapshot)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn updates_reuse_the_same_scene_instance() {
+        let mut scene = Rc::new(SnapshotScene::default());
+        let pointer = Rc::as_ptr(&scene);
+
+        update_shared_scene(&mut scene, &RenderSnapshot::minimal_demo()).unwrap();
+        update_shared_scene(&mut scene, &RenderSnapshot::minimal_demo()).unwrap();
+
+        assert_eq!(Rc::as_ptr(&scene), pointer);
+        assert_eq!(Rc::strong_count(&scene), 1);
+    }
+
+    #[test]
+    fn shared_scene_is_not_mutated_without_unique_ownership() {
+        let mut scene = Rc::new(SnapshotScene::default());
+        let shared = scene.clone();
+
+        assert!(update_shared_scene(&mut scene, &RenderSnapshot::minimal_demo()).is_err());
+        assert_eq!(Rc::strong_count(&shared), 2);
     }
 }
 
