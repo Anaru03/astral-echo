@@ -141,6 +141,40 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
 }
 
 #[test]
+fn gameplay_snapshot_reaches_prepared_scene_without_losing_visual_data() {
+    let world = support::fixture_world();
+    let snapshot = snapshot_from_world_with_camera(
+        &world,
+        Default::default(),
+        &render_core::Camera::demo(),
+    );
+    let mut scene = SnapshotScene::default();
+    scene.update(&snapshot).unwrap();
+
+    let prepared = scene.prepare(render_core::CullingConfig {
+        width: 640,
+        height: 360,
+        ..Default::default()
+    });
+    let stats = prepared.stats();
+
+    assert_eq!(stats.considered, snapshot.nodes.len());
+    assert_eq!(stats.visible, prepared.draws().count());
+    assert_eq!(stats.discarded, stats.considered - stats.visible);
+    assert!(stats.visible > 0);
+    for draw in prepared.draws() {
+        let source = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == draw.node.entity)
+            .expect("prepared draw must originate from the gameplay snapshot");
+        assert_eq!(draw.node.transform, source.transform);
+        assert_eq!(draw.node.mesh, source.mesh);
+        assert_eq!(draw.node.material, source.material);
+    }
+}
+
+#[test]
 fn destination_filter_collectibles_and_camera_are_respected() {
     let mut world = support::fixture_world();
     world

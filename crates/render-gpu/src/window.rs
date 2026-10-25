@@ -178,6 +178,10 @@ impl SurfaceRenderer {
         )
     }
 
+    pub fn ready_for_present(&self) -> bool {
+        self.config.width > 0 && self.config.height > 0 && self.depth.is_some()
+    }
+
     pub fn present(&mut self, camera: &Camera) -> Result<bool, GpuError> {
         self.present_matrix(camera.view_projection_matrix())
     }
