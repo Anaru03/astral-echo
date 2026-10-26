@@ -634,4 +634,56 @@ mod tests {
         assert_ne!(after, before);
         assert!(after.is_finite());
     }
+
+    #[test]
+    fn p_starts_the_configured_autopilot_route() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+
+        assert!(matches!(
+            bridge.session.world().autopilot_state(),
+            gameplay::AutopilotState::InTransit { destination, .. } if *destination == DESTINATION
+        ));
+        assert!(matches!(
+            bridge.session.world().travel_state(),
+            gameplay::TravelState::InProgress { destination, .. } if destination == DESTINATION
+        ));
+    }
+
+    #[test]
+    fn f_attacks_outside_landing_window_and_lands_only_when_valid() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+
+        bridge.handle_key(KeyCode::KeyF, ElementState::Pressed);
+        assert!(bridge
+            .session
+            .world()
+            .events()
+            .iter()
+            .any(|event| matches!(event, GameplayEvent::AttackExecuted { .. })));
+        assert!(!bridge.session.world().landing_available(DESTINATION));
+
+        let landing_physics = PlanetPhysics {
+            destination: DESTINATION,
+            orbit_center: GameplayVec3::ZERO,
+            orbit_radius: 5.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        };
+        assert!(bridge
+            .session
+            .world_mut()
+            .configure_planet_physics(landing_physics));
+        assert!(bridge.session.world().landing_available(DESTINATION));
+        bridge.handle_key(KeyCode::KeyF, ElementState::Pressed);
+        assert!(matches!(
+            bridge.session.world().planet_flight_state(),
+            gameplay::PlanetFlightState::Landing { planet } if planet == DESTINATION
+        ));
+    }
 }

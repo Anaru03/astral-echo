@@ -1,9 +1,7 @@
-use std::future::Future;
 use std::num::NonZeroU32;
-use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::task::{Context as TaskContext, Poll, Wake, Waker};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use render_core::{InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene};
@@ -125,16 +123,12 @@ struct HostState {
     preset: Preset,
     cpu_surface_size: Option<(u32, u32)>,
     cpu_redraw: CpuRedrawGate,
-    pending_gpu: Option<Pin<Box<dyn Future<Output = Result<SurfaceRenderer, GpuError>>>>>,
+    pending_gpu: Option<PendingGpu>,
     pending_gpu_started: Option<Instant>,
 }
 
-struct PendingGpuWake(EventLoopProxy<()>);
-
-impl Wake for PendingGpuWake {
-    fn wake(self: Arc<Self>) {
-        let _ = self.0.send_event(());
-    }
+struct PendingGpu {
+    result: Receiver<Result<SurfaceRenderer, GpuError>>,
 }
 
 impl ApplicationHandler for Host {
@@ -330,6 +324,13 @@ impl ApplicationHandler for Host {
                 state.window.request_redraw();
             }
             if state.pending_gpu.is_some() {
+                if self.frames % 60 == 0 {
+                    println!(
+                        "hot-swap about-to-wait pending frames={} backend={:?}",
+                        self.frames,
+                        state.backend.backend()
+                    );
+                }
                 _event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
                     Instant::now() + Duration::from_millis(16),
                 ));
@@ -338,33 +339,32 @@ impl ApplicationHandler for Host {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: ()) {
+        println!("hot-swap user-event pending={}", self.state.as_ref().is_some_and(|state| state.pending_gpu.is_some()));
         self.poll_pending_gpu(event_loop);
     }
 }
 
 impl Host {
     fn poll_pending_gpu(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(mut pending) = self
+        let Some(pending) = self
             .state
             .as_mut()
             .and_then(|state| state.pending_gpu.take())
         else {
             return;
         };
-        let waker = Waker::from(Arc::new(PendingGpuWake(self.wake_proxy.clone())));
-        let mut context = TaskContext::from_waker(&waker);
-        match pending.as_mut().poll(&mut context) {
-            Poll::Pending => {
+        match pending.result.try_recv() {
+            Err(TryRecvError::Empty) => {
                 if let Some(state) = self.state.as_mut() {
                     state.pending_gpu = Some(pending);
                 }
-                println!("hot-swap gpu-poll pending");
+                println!("hot-swap gpu-worker pending");
                 event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
                     Instant::now() + Duration::from_millis(16),
                 ));
             }
-            Poll::Ready(Ok(mut gpu)) => {
-                println!("hot-swap gpu-poll ready");
+            Ok(Ok(mut gpu)) => {
+                println!("hot-swap gpu-worker ready");
                 let preparation_ms = self
                     .state
                     .as_mut()
@@ -403,8 +403,25 @@ impl Host {
                     state.window.request_redraw();
                 }
             }
-            Poll::Ready(Err(error)) => {
-                println!("hot-swap gpu-poll error={error}");
+            Ok(Err(error)) => {
+                println!("hot-swap gpu-worker error={error}");
+                let preparation_ms = self
+                    .state
+                    .as_mut()
+                    .and_then(|state| state.pending_gpu_started.take())
+                    .map(|started| started.elapsed().as_secs_f64() * 1000.0);
+                if let Some(state) = self.state.as_mut() {
+                    state.backend.cancel_switch(error.to_string());
+                }
+                println!(
+                    "hot-swap gpu-failed preparation_ms={:.3} error={error}",
+                    preparation_ms.unwrap_or_default()
+                );
+                self.report_gpu_error(error.to_string());
+            }
+            Err(TryRecvError::Disconnected) => {
+                let error = GpuError::Backend("GPU preparation worker disconnected".into());
+                println!("hot-swap gpu-worker error={error}");
                 let preparation_ms = self
                     .state
                     .as_mut()
@@ -545,16 +562,43 @@ impl Host {
                     let window = state.window.clone();
                     let scene = state.snapshot.owned_draws();
                     let high_preset = state.config_preset() != Preset::Low;
-                    state.pending_gpu = Some(Box::pin(async move {
-                        let mut gpu =
-                            SurfaceRenderer::new_async(window, scene, GpuOptions::default())
+                    let (sender, receiver) = mpsc::sync_channel(1);
+                    let wake_proxy = self.wake_proxy.clone();
+                    let worker = std::thread::Builder::new()
+                        .name("astral-echo-gpu-init".into())
+                        .spawn(move || {
+                            println!("hot-swap gpu-worker start");
+                            let result = render_gpu::block_on(async move {
+                                let mut gpu = SurfaceRenderer::new_async(
+                                    window,
+                                    scene,
+                                    GpuOptions::default(),
+                                )
                                 .await?;
-                        if high_preset {
-                            gpu.set_postprocess_preset_async(render_gpu::PostProcessPreset::High)
-                                .await?;
-                        }
-                        Ok(gpu)
-                    }));
+                                if high_preset {
+                                    gpu.set_postprocess_preset_async(
+                                        render_gpu::PostProcessPreset::High,
+                                    )
+                                    .await?;
+                                }
+                                Ok(gpu)
+                            });
+                            println!("hot-swap gpu-worker finished");
+                            let _ = sender.send(result);
+                            let _ = wake_proxy.send_event(());
+                        });
+                    if worker.is_err() {
+                        state
+                            .backend
+                            .cancel_switch("could not start GPU preparation worker");
+                        state.pending_gpu_started = None;
+                        self.report_gpu_error(
+                            "could not start GPU preparation worker".into(),
+                        );
+                        println!("hot-swap gpu-worker spawn-error");
+                        return;
+                    }
+                    state.pending_gpu = Some(PendingGpu { result: receiver });
                     println!("hot-swap key-g exit pending=true");
                     return;
                 }
@@ -767,6 +811,9 @@ impl Host {
             return;
         };
         self.frames = self.frames.saturating_add(1);
+        let frame_id = self.frames;
+        let trace_frame = frame_id <= 3 || frame_id % 60 == 0 || state.pending_gpu.is_some();
+        let frame_started = Instant::now();
         if state.occluded {
             return;
         }
@@ -802,7 +849,8 @@ impl Host {
             let gpu_error = match state.gpu.as_mut() {
                 Some(gpu) => match gpu.present_snapshot_with_stats(&state.snapshot) {
                     Ok((_, stats)) => {
-                        println!(
+                        if trace_frame {
+                            println!(
                             "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
                             state.backend.backend(),
                             state.snapshot.snapshot().tick.0,
@@ -811,7 +859,13 @@ impl Host {
                             stats.visible,
                             stats.discarded,
                             stats.triangles
-                        );
+                            );
+                            println!(
+                                "hot-swap frame-presented backend=GPU frame={} elapsed_ms={:.3}",
+                                frame_id,
+                                frame_started.elapsed().as_secs_f64() * 1000.0
+                            );
+                        }
                         None
                     }
                     Err(error) => Some(error.to_string()),
@@ -831,7 +885,8 @@ impl Host {
             self.config.raster_mode,
             FragmentShader::SolarBands,
         ) {
-            println!(
+            if trace_frame {
+                println!(
                 "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
                 state.backend.backend(),
                 state.snapshot.snapshot().tick.0,
@@ -840,7 +895,8 @@ impl Host {
                 stats.visible,
                 stats.discarded,
                 stats.triangles
-            );
+                );
+            }
         }
         let presentation_error = if let Some(surface) = &mut state.surface {
             match surface.buffer_mut() {
@@ -888,6 +944,12 @@ impl Host {
         if let Some(error) = presentation_error {
             state.cpu_redraw.block();
             self.report_gpu_error(error);
+        } else if trace_frame {
+            println!(
+                "hot-swap frame-presented backend=CPU frame={} elapsed_ms={:.3}",
+                frame_id,
+                frame_started.elapsed().as_secs_f64() * 1000.0
+            );
         }
     }
 }
