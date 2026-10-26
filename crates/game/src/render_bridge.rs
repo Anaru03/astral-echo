@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use gameplay::GameplayWorld;
 use render_core::{
     from_engine, Camera, CameraError, MaterialHandle, MeshHandle, Projection, Quat,
@@ -34,6 +36,8 @@ pub const DESTINATION_MESH: MeshHandle = MeshHandle::DESTINATION_PLACEHOLDER;
 pub const PLANET_MESH: MeshHandle = MeshHandle::PLANET_SPHERE;
 pub const SUN_MESH: MeshHandle = MeshHandle::SUN_SPHERE;
 pub const COLLECTIBLE_MESH: MeshHandle = MeshHandle::COLLECTIBLE_PLACEHOLDER;
+pub const STATION_MESH: MeshHandle = MeshHandle::STATION;
+pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
 
 pub const SHIP_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const ENEMY_MATERIAL: MaterialHandle = VisualAssets::ENEMY;
@@ -43,6 +47,46 @@ pub const DESTINATION_MATERIAL: MaterialHandle = VisualAssets::DESTINATION;
 pub const PLANET_MATERIAL: MaterialHandle = VisualAssets::PLANET;
 pub const SUN_MATERIAL: MaterialHandle = VisualAssets::SUN;
 pub const COLLECTIBLE_MATERIAL: MaterialHandle = VisualAssets::COLLECTIBLE;
+pub const STATION_MATERIAL: MaterialHandle = VisualAssets::STATION;
+pub const DERELICT_MATERIAL: MaterialHandle = VisualAssets::DERELICT;
+
+pub fn station_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    let mut nodes = Vec::new();
+    let mut seen = BTreeSet::new();
+    for interactable in world.interactables() {
+        if !matches!(
+            interactable.behavior,
+            gameplay::InteractionBehavior::Station { .. }
+        ) || !seen.insert(interactable.entity_id)
+        {
+            continue;
+        }
+        nodes.push(SnapshotNode::new(
+            interactable.entity_id,
+            Transform::from_translation(from_engine(interactable.position)),
+            STATION_MESH,
+            STATION_MATERIAL,
+            interactable.enabled,
+        ));
+    }
+    nodes
+}
+
+pub fn derelict_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    world
+        .derelicts()
+        .filter(|derelict| derelict.state != gameplay::DerelictState::Undiscovered)
+        .map(|derelict| {
+            SnapshotNode::derelict(
+                derelict.id.value(),
+                Transform::from_translation(from_engine(derelict.position)),
+                DERELICT_MESH,
+                DERELICT_MATERIAL,
+                true,
+            )
+        })
+        .collect()
+}
 
 pub fn academic_surface_objects(elapsed_seconds: f64) -> [SnapshotNode; 4] {
     let objects = academic_surface_objects_with_seed(
@@ -201,6 +245,14 @@ pub fn snapshot_from_world_with_camera(
         ));
     }
 
+    for node in station_nodes(world) {
+        snapshot.push_node(node);
+    }
+
+    for node in derelict_nodes(world) {
+        snapshot.push_node(node);
+    }
+
     for player in world.players() {
         snapshot.push_node(SnapshotNode::new(
             player.entity_id,
@@ -355,6 +407,8 @@ fn expected_snapshot_node_count(
         count += 1;
     }
     count += world.players().count();
+    count += station_nodes(world).len();
+    count += derelict_nodes(world).len();
     count += world.enemies().filter(|enemy| !enemy.is_player).count();
     count += world
         .destinations()

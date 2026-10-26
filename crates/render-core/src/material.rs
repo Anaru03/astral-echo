@@ -101,6 +101,15 @@ impl MaterialInfo {
     pub fn planet() -> Self {
         Self::new(Vec4::ONE, 0.85, 0.0)
     }
+
+    pub fn station() -> Self {
+        Self::new(Vec4::new(0.2, 0.55, 0.85, 1.0), 0.55, 0.65)
+            .with_emissive(Vec3::new(0.02, 0.08, 0.14))
+    }
+
+    pub fn derelict() -> Self {
+        Self::new(Vec4::new(0.28, 0.22, 0.18, 1.0), 0.92, 0.05)
+    }
 }
 
 impl Default for MaterialInfo {

@@ -118,6 +118,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 scene.set_lighting_mode(LightingMode::Lambert);
                 scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
                 scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
+                scene.set_material(VisualAssets::STATION, MaterialInfo::station());
+                scene.set_material(VisualAssets::DERELICT, MaterialInfo::derelict());
             },
             debug,
         )?;
@@ -146,6 +148,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     scene.set_lighting_mode(LightingMode::Lambert);
     scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
     scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
+    scene.set_material(VisualAssets::STATION, MaterialInfo::station());
+    scene.set_material(VisualAssets::DERELICT, MaterialInfo::derelict());
     let count = frames.map(NonZeroU64::get).unwrap_or(1);
     let path = output.unwrap_or_else(|| {
         if demo_impact {

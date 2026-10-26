@@ -423,6 +423,8 @@ pub fn run() -> Result<(), String> {
             scene.set_lighting_mode(LightingMode::Lambert);
             scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
             scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
+            scene.set_material(VisualAssets::STATION, MaterialInfo::station());
+            scene.set_material(VisualAssets::DERELICT, MaterialInfo::derelict());
         },
         GraphicsDebugConfig::default(),
     )

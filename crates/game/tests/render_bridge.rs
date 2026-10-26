@@ -68,6 +68,159 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
 }
 
 #[test]
+fn station_nodes_use_stable_ids_positions_and_registered_assets() {
+    let mut world = support::fixture_world();
+    let position = engine::Vec3 {
+        x: 4.0,
+        y: 2.0,
+        z: -3.0,
+    };
+    let station = world
+        .create_station(position, 3.0, gameplay::StationType::Engineering)
+        .unwrap();
+
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let nodes: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.entity == SnapshotId::Entity(station))
+        .collect();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].transform.translation, render_core::from_engine(position));
+    assert_eq!((nodes[0].mesh, nodes[0].material), (STATION_MESH, STATION_MATERIAL));
+    SnapshotScene::default()
+        .update(&snapshot)
+        .expect("station asset pair must resolve");
+    assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
+}
+
+#[test]
+fn station_visibility_and_identity_are_preserved_across_snapshots() {
+    let mut world = support::fixture_world();
+    let first = world
+        .create_station(
+            engine::Vec3 {
+                x: 2.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            2.0,
+            gameplay::StationType::Piloting,
+        )
+        .unwrap();
+    let second = world
+        .create_station(
+            engine::Vec3 {
+                x: -2.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            2.0,
+            gameplay::StationType::Weapons,
+        )
+        .unwrap();
+    let mut processor = gameplay::GameplayProcessor::new();
+    processor.add_system(gameplay::systems::StationSystem);
+    let result = processor.update(
+        &mut world,
+        [gameplay::GameplayCommand::SetStationEnabled {
+            station: first,
+            enabled: false,
+        }],
+    );
+    assert!(matches!(
+        result[0].status,
+        gameplay::CommandStatus::Success { changed: true }
+    ));
+
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let stations: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.mesh == STATION_MESH)
+        .collect();
+    assert_eq!(stations.len(), 2);
+    assert_eq!(stations.iter().filter(|node| !node.visible).count(), 1);
+    assert!(stations.iter().any(|node| {
+        node.entity == SnapshotId::Entity(first) && !node.visible
+    }));
+    assert!(stations.iter().any(|node| {
+        node.entity == SnapshotId::Entity(second) && node.visible
+    }));
+    assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
+    SnapshotScene::default()
+        .update(&snapshot)
+        .expect("all station pairs must resolve");
+}
+
+#[test]
+fn discovered_derelicts_use_stable_ids_positions_and_registered_assets() {
+    let mut world = support::fixture_world();
+    let first_position = engine::Vec3 {
+        x: 6.0,
+        y: 1.0,
+        z: -4.0,
+    };
+    let second_position = engine::Vec3 {
+        x: -7.0,
+        y: 0.5,
+        z: 3.0,
+    };
+    let mut first = gameplay::Derelict::new(
+        gameplay::DerelictId::new(41),
+        first_position,
+        4.0,
+    );
+    first.state = gameplay::DerelictState::Discovered;
+    let mut second = gameplay::Derelict::new(
+        gameplay::DerelictId::new(42),
+        second_position,
+        4.0,
+    );
+    second.state = gameplay::DerelictState::Resolved;
+    world.register_derelict(first).unwrap();
+    world.register_derelict(second).unwrap();
+    world
+        .register_derelict(gameplay::Derelict::new(
+            gameplay::DerelictId::new(43),
+            engine::Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 5.0,
+            },
+            4.0,
+        ))
+        .unwrap();
+
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let derelicts: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.mesh == DERELICT_MESH)
+        .collect();
+    assert_eq!(derelicts.len(), 2);
+    assert!(derelicts.iter().any(|node| {
+        node.entity == SnapshotId::Derelict(41)
+            && node.transform.translation == render_core::from_engine(first_position)
+            && node.material == DERELICT_MATERIAL
+            && node.visible
+    }));
+    assert!(derelicts.iter().any(|node| {
+        node.entity == SnapshotId::Derelict(42)
+            && node.transform.translation == render_core::from_engine(second_position)
+            && node.visible
+    }));
+    assert!(!snapshot
+        .nodes
+        .iter()
+        .any(|node| node.entity == SnapshotId::Derelict(43)));
+    assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
+    SnapshotScene::default()
+        .update(&snapshot)
+        .expect("derelict asset pair must resolve");
+}
+
+#[test]
 fn updates_positions_visibility_spawn_and_missing_entities() {
     let mut world = support::fixture_world();
     let player = world.players().next().unwrap().entity_id;
@@ -318,6 +471,7 @@ fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
         let id = match node.entity {
             SnapshotId::Entity(id) => id,
             SnapshotId::Destination(_) => panic!("surface object must have a stable entity id"),
+            SnapshotId::Derelict(_) => panic!("surface object must have a stable entity id"),
         };
         assert!(ids.insert(id), "duplicate surface object id {id:?}");
 
