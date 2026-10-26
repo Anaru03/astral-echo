@@ -519,6 +519,123 @@ fn deterministic_flight_observation_demo_uses_one_world_and_two_snapshots() {
 }
 
 #[test]
+fn real_impact_propagates_to_terminal_render_overlay() {
+    let (mut session, planet) = support::deterministic_flight_session();
+    for _ in 0..20 {
+        session.update([gameplay::GameplayCommand::AdvanceTime {
+            delta: engine::Duration(100),
+        }]);
+        if matches!(
+            session.world().planet_flight_state(),
+            gameplay::PlanetFlightState::Impacted { planet: active } if active == planet
+        ) {
+            break;
+        }
+    }
+    assert!(matches!(
+        session.world().planet_flight_state(),
+        gameplay::PlanetFlightState::Impacted { planet: active } if active == planet
+    ));
+
+    let impact_snapshot = snapshot_from_world(session.world(), Default::default());
+    assert!(impact_snapshot.overlay.fade_to_black.is_finite());
+    assert!(impact_snapshot.overlay.fade_to_black < 1.0);
+    assert!(!impact_snapshot.overlay.game_over);
+
+    session.update([gameplay::GameplayCommand::AdvanceTime {
+        delta: engine::Duration(1_000),
+    }]);
+    let terminal_snapshot = snapshot_from_world(session.world(), Default::default());
+    assert_eq!(terminal_snapshot.overlay.fade_to_black, 1.0);
+    assert!(terminal_snapshot.overlay.game_over);
+}
+
+#[test]
+fn public_landing_request_accepts_valid_context_and_rejects_repeat() {
+    let mut session = game::ProjectEchoSession::new();
+    let planet = gameplay::DestinationId::new(9_101);
+    session
+        .register_destination(gameplay::Destination {
+            id: planet,
+            destination_type: gameplay::DestinationType::Planet,
+            position: engine::Vec3::ZERO,
+            travel_duration: engine::Duration(1_000),
+            fuel_cost: 1,
+            discovery: gameplay::DiscoveryState::Discovered,
+        })
+        .unwrap();
+    assert!(session.world_mut().configure_planet_physics(gameplay::PlanetPhysics {
+        destination: planet,
+        orbit_center: engine::Vec3 {
+            x: -10.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        orbit_radius: 10.0,
+        orbit_angular_speed: 0.0,
+        surface_radius: 2.0,
+        ship_radius: 1.0,
+        gravity_influence_radius: 20.0,
+        gravitational_parameter: 4.0,
+        atmosphere_height: 2.0,
+    }));
+    assert!(session.world().landing_available(planet));
+    assert!(session.world_mut().request_planet_landing(planet));
+    assert!(session
+        .world()
+        .events()
+        .iter()
+        .any(|event| matches!(event, gameplay::GameplayEvent::PlanetLandingRequested { planet: active, .. } if *active == planet)));
+    assert!(!session.world_mut().request_planet_landing(planet));
+}
+
+#[test]
+fn public_attack_command_produces_attack_event_for_contextual_fallback() {
+    let mut session = game::ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let player_position = session.world().players().next().unwrap().position;
+    let results = session.update([
+        gameplay::GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: gameplay::WeaponConfiguration::new(
+                gameplay::AttackType::Kinetic,
+                10,
+                20,
+                engine::Duration(1),
+            ),
+        },
+        gameplay::GameplayCommand::CreateEnemy {
+            configuration: gameplay::EnemyConfiguration::for_archetype(
+                gameplay::EnemyArchetype::Shooter,
+                player_position,
+            ),
+        },
+    ]);
+    assert!(results
+        .iter()
+        .all(|result| matches!(result.status, gameplay::CommandStatus::Success { .. })));
+    let enemy = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            gameplay::GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .unwrap();
+    let attack = session.update([gameplay::GameplayCommand::AttackEnemy { player, enemy }]);
+    assert!(matches!(
+        attack.first().map(|result| &result.status),
+        Some(gameplay::CommandStatus::Success { .. })
+    ));
+    assert!(session
+        .world()
+        .events()
+        .iter()
+        .any(|event| matches!(event, gameplay::GameplayEvent::AttackExecuted { attacker, target, .. } if *attacker == player && *target == enemy)));
+}
+
+#[test]
 fn visual_ship_flight_interpolates_without_frame_based_accumulation() {
     let current = Vec3::ZERO;
     let target = Vec3::new(42.0, 0.0, -18.0);

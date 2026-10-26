@@ -76,6 +76,7 @@ pub fn run_hot_swap_window_with_input_and_scene(
         },
         debug,
         debug_frame: 0,
+        frames: 0,
     };
     EventLoop::new()
         .map_err(|e| e.to_string())?
@@ -101,6 +102,7 @@ struct Host {
     report: HotSwapReport,
     debug: GraphicsDebugConfig,
     debug_frame: u64,
+    frames: u64,
 }
 
 struct HostState {
@@ -279,6 +281,14 @@ impl ApplicationHandler for Host {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if self
+            .config
+            .max_frames
+            .is_some_and(|limit| self.frames >= limit.get())
+        {
+            _event_loop.exit();
+            return;
+        }
         if let Some(state) = &self.state {
             if backend_ready_for_redraw(
                 state.backend.backend(),
@@ -600,6 +610,7 @@ impl Host {
         let Some(state) = self.state.as_mut() else {
             return;
         };
+        self.frames = self.frames.saturating_add(1);
         if state.occluded {
             return;
         }

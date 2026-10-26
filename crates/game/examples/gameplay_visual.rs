@@ -2,8 +2,10 @@
 mod support;
 
 use std::error::Error;
+use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -62,13 +64,34 @@ fn main() -> Result<(), Box<dyn Error>> {
     if window && output.is_some() {
         return Err("PNG output uses offscreen mode; omit --window".into());
     }
-    if window && demo_flight {
-        return Err("--demo-flight is available in offscreen mode; omit --window".into());
-    }
-    let world = support::fixture_world();
-    let tick = world.time().tick;
-    println!("F5B read-only world tick={} ship={:?} players={} enemies={} destinations={} collectibles={}",tick.0,world.navigation().ship_id(),world.players().count(),world.enemies().count(),world.destinations().count(),world.collectibles().count());
     if window {
+        let source: render_present::SnapshotSource = if demo_flight {
+            let session = Rc::new(RefCell::new(support::deterministic_flight_session().0));
+            let stage = Rc::new(RefCell::new(0usize));
+            let source_session = Rc::clone(&session);
+            let source_stage = Rc::clone(&stage);
+            Box::new(move |width, height| {
+                let mut session = source_session.borrow_mut();
+                let mut stage = source_stage.borrow_mut();
+                if *stage == 1 {
+                    session.update([gameplay::GameplayCommand::AdvanceTime {
+                        delta: engine::Duration(500),
+                    }]);
+                }
+                let snapshot = support::deterministic_flight_snapshot(
+                    &session,
+                    width,
+                    height,
+                    *stage,
+                );
+                *stage = (*stage + 1).min(2);
+                Ok(snapshot)
+            })
+        } else {
+            let world = support::fixture_world();
+            println!("F5B read-only world tick={} ship={:?} players={} enemies={} destinations={} collectibles={}",world.time().tick.0,world.navigation().ship_id(),world.players().count(),world.enemies().count(),world.destinations().count(),world.collectibles().count());
+            Box::new(move |width, height| Ok(support::snapshot(&world, width, height)))
+        };
         let config = render_present::WindowConfig {
             max_frames: frames,
             title: "Astral Echo - CPU/GPU Hot-Swap".into(),
@@ -80,7 +103,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
         let report = render_present::run_hot_swap_window_with_input_and_scene(
             config,
-            Box::new(move |width, height| Ok(support::snapshot(&world, width, height))),
+            source,
             start_gpu,
             |_| {},
             |scene| {
@@ -96,6 +119,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         return Ok(());
     }
+    let world = support::fixture_world();
+    let tick = world.time().tick;
+    println!("F5B read-only world tick={} ship={:?} players={} enemies={} destinations={} collectibles={}",tick.0,world.navigation().ship_id(),world.players().count(),world.enemies().count(),world.destinations().count(),world.collectibles().count());
     let (width, height) = (640, 360);
     let snapshots = if demo_flight {
         support::deterministic_flight_snapshots(width, height)
