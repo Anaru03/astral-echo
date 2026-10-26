@@ -78,6 +78,21 @@ impl SnapshotNode {
             visible,
         }
     }
+
+    pub fn visual_event(
+        id: u64,
+        transform: Transform,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+    ) -> Self {
+        Self {
+            entity: SnapshotId::VisualEvent(id),
+            transform,
+            mesh,
+            material,
+            visible: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -86,6 +101,7 @@ pub enum SnapshotId {
     Destination(u32),
     Derelict(u32),
     Hazard(u32),
+    VisualEvent(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -102,12 +118,32 @@ impl SnapshotLight {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderSnapshot {
     pub tick: Tick,
+    pub simulation_time: engine::Duration,
     pub nodes: Vec<SnapshotNode>,
+    pub visual_events: Vec<RenderVisualEvent>,
     pub lights: Vec<SnapshotLight>,
     pub camera_position: crate::math::Vec3,
     pub view: crate::math::Mat4,
     pub projection: crate::math::Mat4,
     pub overlay: RenderOverlay,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RenderVisualEventKind {
+    Attack,
+    EnemyDefeated,
+    ItemCollected,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderVisualEvent {
+    pub id: u64,
+    pub kind: RenderVisualEventKind,
+    pub source: Option<EntityId>,
+    pub target: Option<EntityId>,
+    pub position: Option<crate::math::Vec3>,
+    pub emitted_at: engine::Duration,
+    pub expires_at: engine::Duration,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -179,7 +215,9 @@ impl RenderSnapshot {
     ) -> Self {
         Self {
             tick,
+            simulation_time: engine::Duration(0),
             nodes: Vec::new(),
+            visual_events: Vec::new(),
             lights: Vec::new(),
             camera_position,
             view,

@@ -56,7 +56,9 @@ fn snapshot(size: usize) -> RenderSnapshot {
         .collect();
     RenderSnapshot {
         tick: Tick(1),
+        simulation_time: engine::Duration(0),
         nodes,
+        visual_events: Vec::new(),
         lights: Vec::new(),
         camera_position: camera.position(),
         view: camera.view_matrix(),

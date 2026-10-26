@@ -74,6 +74,7 @@ use crate::{
     scaling::{GameplayScaling, GroupSize, ScalingError},
     station::{Station, StationType},
     types::{GameplayState, SimulationPhase},
+    visual_events::{GameplayVisualEvent, GameplayVisualEventKind, VISUAL_EVENT_DURATION},
     world_activity::{
         FunctionalWorld, FunctionalWorldError, WorldActivity, WorldActivityError,
     },
@@ -127,6 +128,8 @@ pub struct GameplayWorld {
     processed_enemy_rewards: BTreeSet<EntityId>,
     knowledge: BTreeMap<KnowledgeTarget, KnowledgeState>,
     events: EventLog,
+    visual_events: Vec<GameplayVisualEvent>,
+    next_visual_event_id: u64,
 }
 
 impl GameplayWorld {
@@ -5712,6 +5715,13 @@ impl GameplayWorld {
     pub fn events(&self) -> &EventLog {
         &self.events
     }
+
+    pub fn visual_events(&self) -> impl Iterator<Item = &GameplayVisualEvent> {
+        let now = self.time().elapsed;
+        self.visual_events
+            .iter()
+            .filter(move |event| event.is_active_at(now))
+    }
     pub fn create_entity(&mut self) -> EntityId {
         self.entities.create()
     }
@@ -6116,9 +6126,50 @@ impl GameplayWorld {
     }
     pub(crate) fn set_time(&mut self, time: GameTime) {
         self.state.time = time;
+        self.visual_events
+            .retain(|event| event.is_active_at(time.elapsed));
     }
     pub(crate) fn publish(&mut self, event: crate::events::GameplayEvent) {
+        self.record_visual_event(&event);
         self.events.push(event);
+    }
+
+    fn record_visual_event(&mut self, event: &crate::events::GameplayEvent) {
+        let (kind, source, target, position) = match event {
+            crate::events::GameplayEvent::AttackExecuted { attacker, target, .. } => (
+                GameplayVisualEventKind::Attack,
+                Some(*attacker),
+                Some(*target),
+                self.combatants.get(target).map(|combatant| combatant.position),
+            ),
+            crate::events::GameplayEvent::EnemyDefeated { enemy, .. } => (
+                GameplayVisualEventKind::EnemyDefeated,
+                Some(*enemy),
+                None,
+                self.combatants.get(enemy).map(|combatant| combatant.position),
+            ),
+            crate::events::GameplayEvent::ItemCollected { player, collectible, .. } => (
+                GameplayVisualEventKind::ItemCollected,
+                Some(*player),
+                Some(*collectible),
+                self.collectibles.get(collectible).map(|item| item.position),
+            ),
+            _ => return,
+        };
+        let Some(id) = self.next_visual_event_id.checked_add(1) else {
+            return;
+        };
+        self.next_visual_event_id = id;
+        let emitted_at = self.time().elapsed;
+        self.visual_events.push(GameplayVisualEvent {
+            id,
+            kind,
+            source,
+            target,
+            position,
+            emitted_at,
+            expires_at: Duration(emitted_at.0.saturating_add(VISUAL_EVENT_DURATION.0)),
+        });
     }
     pub(crate) fn knowledge_target_exists(&self, target: KnowledgeTarget) -> bool {
         match target {

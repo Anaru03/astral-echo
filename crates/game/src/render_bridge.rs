@@ -229,6 +229,7 @@ pub fn snapshot_from_world_with_camera(
         camera.view_matrix(),
         camera.projection_matrix(),
     );
+    snapshot.simulation_time = world.time().elapsed;
     snapshot
         .nodes
         .reserve(expected_snapshot_node_count(world, params, academic_planet));
@@ -257,6 +258,9 @@ pub fn snapshot_from_world_with_camera(
             expires_at: event.expires_at,
         })
         .collect();
+    for node in visual_event_nodes(&snapshot) {
+        snapshot.push_node(node);
+    }
 
     if world.navigation().ship_id().is_some() {
         snapshot.push_node(SnapshotNode::new(
@@ -439,6 +443,47 @@ pub fn snapshot_from_world_with_camera(
     snapshot.push_light(SnapshotLight::new(render_core::RenderLight::demo_sun()));
 
     snapshot
+}
+
+fn visual_event_nodes(snapshot: &RenderSnapshot) -> Vec<SnapshotNode> {
+    snapshot
+        .visual_events
+        .iter()
+        .filter_map(|event| {
+            let position = event.position?;
+            let duration = event.expires_at.0.saturating_sub(event.emitted_at.0);
+            if duration == 0 || snapshot.simulation_time.0 < event.emitted_at.0 {
+                return None;
+            }
+            let progress = ((snapshot.simulation_time.0 - event.emitted_at.0) as f32
+                / duration as f32)
+                .clamp(0.0, 1.0);
+            let intensity = 1.0 - progress;
+            let (mesh, material, scale) = match event.kind {
+                RenderVisualEventKind::Attack => (
+                    SUN_MESH,
+                    SUN_MATERIAL,
+                    Vec3::splat(0.2 + intensity * 0.45),
+                ),
+                RenderVisualEventKind::EnemyDefeated => (
+                    SUN_MESH,
+                    SUN_MATERIAL,
+                    Vec3::splat(0.45 + intensity * 1.4),
+                ),
+                RenderVisualEventKind::ItemCollected => (
+                    COLLECTIBLE_MESH,
+                    COLLECTIBLE_MATERIAL,
+                    Vec3::splat(0.15 + intensity * 0.35),
+                ),
+            };
+            Some(SnapshotNode::visual_event(
+                event.id,
+                Transform::new(position, Quat::IDENTITY, scale),
+                mesh,
+                material,
+            ))
+        })
+        .collect()
 }
 
 fn hud_state(

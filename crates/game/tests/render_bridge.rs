@@ -556,6 +556,7 @@ fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
             SnapshotId::Destination(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Derelict(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Hazard(_) => panic!("surface object must have a stable entity id"),
+            SnapshotId::VisualEvent(_) => panic!("surface object must have a stable entity id"),
         };
         assert!(ids.insert(id), "duplicate surface object id {id:?}");
 
@@ -921,8 +922,28 @@ fn visual_events_are_persistent_unique_and_time_bounded() {
     assert_eq!(first.visual_events.len(), 1);
     assert_eq!(first.visual_events[0].id, 1);
     assert_eq!(first.visual_events[0].kind, render_core::RenderVisualEventKind::Attack);
+    let first_effect = first
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::VisualEvent(1))
+        .expect("an attack event with a position should produce an effect node");
+    assert_eq!((first_effect.mesh, first_effect.material), (SUN_MESH, SUN_MATERIAL));
+    let mut scene = SnapshotScene::default();
+    scene
+        .update(&first)
+        .expect("visual event assets should resolve through SnapshotScene");
     let repeated = snapshot_from_world(session.world(), Default::default());
     assert_eq!(first.visual_events, repeated.visual_events);
+    assert_eq!(
+        first_effect.transform.scale,
+        repeated
+            .nodes
+            .iter()
+            .find(|node| node.entity == SnapshotId::VisualEvent(1))
+            .unwrap()
+            .transform
+            .scale
+    );
     assert!(!session.world().events().is_empty());
 
     session.update([gameplay::GameplayCommand::AdvanceTime {
@@ -933,6 +954,12 @@ fn visual_events_are_persistent_unique_and_time_bounded() {
         .visual_events
         .iter()
         .any(|event| event.id == first.visual_events[0].id));
+    let second_effect = second
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::VisualEvent(1))
+        .unwrap();
+    assert!(second_effect.transform.scale.x < first_effect.transform.scale.x);
 
     session.update([gameplay::GameplayCommand::AttackEnemy { player, enemy }]);
     let two_events = snapshot_from_world(session.world(), Default::default());
