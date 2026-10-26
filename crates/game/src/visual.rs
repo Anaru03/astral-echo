@@ -216,6 +216,15 @@ impl VisualBridge {
                 _ => None,
             })
             .ok_or_else(|| "el escenario visual no creó el enemigo".to_owned())?;
+        session.update([GameplayCommand::Interact {
+            player,
+            target: pilot_station,
+        }]);
+        session.update([GameplayCommand::SetShipControlActive {
+            player,
+            pilot_station,
+            active: true,
+        }]);
         Ok(Self {
             session,
             player,
@@ -254,42 +263,10 @@ impl VisualBridge {
             KeyCode::Space => self.issue([GameplayCommand::AdvanceTime {
                 delta: Duration(100),
             }]),
-            KeyCode::KeyW => self.issue([GameplayCommand::MovePlayer {
-                player,
-                direction: GameplayVec3 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: -1.0,
-                },
-                delta: Duration(100),
-            }]),
-            KeyCode::KeyA => self.issue([GameplayCommand::MovePlayer {
-                player,
-                direction: GameplayVec3 {
-                    x: -1.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-                delta: Duration(100),
-            }]),
-            KeyCode::KeyS => self.issue([GameplayCommand::MovePlayer {
-                player,
-                direction: GameplayVec3 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 1.0,
-                },
-                delta: Duration(100),
-            }]),
-            KeyCode::KeyD => self.issue([GameplayCommand::MovePlayer {
-                player,
-                direction: GameplayVec3 {
-                    x: 1.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-                delta: Duration(100),
-            }]),
+            KeyCode::KeyW => self.accelerate_ship(player, pilot_station, GameplayVec3 { x: 0.0, y: 0.0, z: -1.0 }),
+            KeyCode::KeyA => self.accelerate_ship(player, pilot_station, GameplayVec3 { x: -1.0, y: 0.0, z: 0.0 }),
+            KeyCode::KeyS => self.accelerate_ship(player, pilot_station, GameplayVec3 { x: 0.0, y: 0.0, z: 1.0 }),
+            KeyCode::KeyD => self.accelerate_ship(player, pilot_station, GameplayVec3 { x: 1.0, y: 0.0, z: 0.0 }),
             KeyCode::KeyQ => self.issue([GameplayCommand::ScanSignals { player, ship }]),
             KeyCode::KeyF => {
                 if self.session.world().landing_available(DESTINATION) {
@@ -324,6 +301,19 @@ impl VisualBridge {
             KeyCode::ArrowDown => self.observation.adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP),
             _ => {}
         }
+    }
+
+    fn accelerate_ship(&mut self, player: EntityId, pilot_station: EntityId, input: GameplayVec3) {
+        self.issue([
+            GameplayCommand::AccelerateShip {
+                player,
+                pilot_station,
+                input,
+            },
+            GameplayCommand::AdvanceTime {
+                delta: Duration(100),
+            },
+        ]);
     }
 
     fn toggle_observation(&mut self) {
@@ -407,4 +397,40 @@ pub fn run() -> Result<(), String> {
         );
     })
     .map_err(|error| format!("ventana visual propia: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flight_keys_update_authoritative_ship_position() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let before = bridge
+            .session
+            .world()
+            .ship_position()
+            .expect("visual session should have a ship");
+
+        bridge.handle_key(KeyCode::KeyW);
+
+        let after = bridge
+            .session
+            .world()
+            .ship_position()
+            .expect("visual session should retain its ship");
+        assert_ne!(after, before);
+    }
+
+    #[test]
+    fn arrow_keys_change_flight_camera_without_observation_transition() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let before = bridge.camera(1.0).expect("camera should be valid").position();
+
+        bridge.handle_key(KeyCode::ArrowLeft);
+
+        let after = bridge.camera(1.0).expect("camera should remain valid").position();
+        assert_ne!(after, before);
+        assert!(after.is_finite());
+    }
 }

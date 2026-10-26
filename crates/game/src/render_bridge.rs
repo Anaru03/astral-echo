@@ -427,9 +427,27 @@ pub fn observation_camera(
         .and_then(|id| world.planet_position_at(id, world.time().elapsed))
         .map(from_engine)
         .unwrap_or_else(|| academic_planet_transform(elapsed_seconds).translation);
-    let space_position = ship + FLIGHT_CAMERA_OFFSET;
+    let azimuth = if azimuth.is_finite() { azimuth } else { 0.0 };
+    let elevation = if elevation.is_finite() {
+        elevation.clamp(-1.2, 1.2)
+    } else {
+        0.0
+    };
+    let flight_radius = FLIGHT_CAMERA_OFFSET.length();
+    let flight_elevation =
+        (FLIGHT_CAMERA_OFFSET.y / (FLIGHT_CAMERA_OFFSET.x * FLIGHT_CAMERA_OFFSET.x
+            + FLIGHT_CAMERA_OFFSET.z * FLIGHT_CAMERA_OFFSET.z)
+            .sqrt())
+        .atan()
+        + elevation;
+    let flight_position = ship
+        + Vec3::new(
+            flight_radius * flight_elevation.cos() * azimuth.sin(),
+            flight_radius * flight_elevation.sin(),
+            flight_radius * flight_elevation.cos() * azimuth.cos(),
+        );
+    let space_position = flight_position;
     let space_target = (SUN_POSITION + ship + planet) / 3.0;
-    let elevation = elevation.clamp(-1.2, 1.2);
     let surface_direction = Vec3::new(
         elevation.cos() * azimuth.cos(),
         elevation.sin(),
