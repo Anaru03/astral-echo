@@ -24,7 +24,8 @@ pub use math::{
 pub use mesh::{MeshHandle, Vertex};
 pub use scene::{RenderCamera, RenderLight, RenderLightKind, RenderNode, RenderScene};
 pub use snapshot::{
-    game_over_layout, RenderOverlay, RenderSnapshot, SnapshotId, SnapshotLight, SnapshotNode,
+    game_over_layout, HudAutopilotState, HudFlightState, HudState, RenderOverlay, RenderSnapshot,
+    RenderVisualEvent, RenderVisualEventKind, SnapshotId, SnapshotLight, SnapshotNode,
     GAME_OVER_GLYPHS,
 };
 pub use transform::Transform;

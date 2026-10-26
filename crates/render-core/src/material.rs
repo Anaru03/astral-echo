@@ -110,6 +110,10 @@ impl MaterialInfo {
     pub fn derelict() -> Self {
         Self::new(Vec4::new(0.28, 0.22, 0.18, 1.0), 0.92, 0.05)
     }
+
+    pub fn asteroid() -> Self {
+        Self::new(Vec4::new(0.34, 0.31, 0.27, 1.0), 0.98, 0.0)
+    }
 }
 
 impl Default for MaterialInfo {

@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use gameplay::GameplayWorld;
 use render_core::{
     from_engine, Camera, CameraError, MaterialHandle, MeshHandle, Projection, Quat,
-    RenderSnapshot, SnapshotLight, SnapshotNode, Transform, Vec3, VisualAssets,
+    HudAutopilotState, HudFlightState, HudState, RenderSnapshot, RenderVisualEvent,
+    RenderVisualEventKind, SnapshotLight, SnapshotNode,
+    Transform, Vec3, VisualAssets,
 };
 
 pub const SUN_ENTITY: engine::EntityId = engine::EntityId::new(9_100);
@@ -38,6 +40,7 @@ pub const SUN_MESH: MeshHandle = MeshHandle::SUN_SPHERE;
 pub const COLLECTIBLE_MESH: MeshHandle = MeshHandle::COLLECTIBLE_PLACEHOLDER;
 pub const STATION_MESH: MeshHandle = MeshHandle::STATION;
 pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
+pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
 
 pub const SHIP_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const ENEMY_MATERIAL: MaterialHandle = VisualAssets::ENEMY;
@@ -49,6 +52,7 @@ pub const SUN_MATERIAL: MaterialHandle = VisualAssets::SUN;
 pub const COLLECTIBLE_MATERIAL: MaterialHandle = VisualAssets::COLLECTIBLE;
 pub const STATION_MATERIAL: MaterialHandle = VisualAssets::STATION;
 pub const DERELICT_MATERIAL: MaterialHandle = VisualAssets::DERELICT;
+pub const ASTEROID_MATERIAL: MaterialHandle = VisualAssets::ASTEROID;
 
 pub fn station_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
     let mut nodes = Vec::new();
@@ -82,6 +86,24 @@ pub fn derelict_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
                 Transform::from_translation(from_engine(derelict.position)),
                 DERELICT_MESH,
                 DERELICT_MATERIAL,
+                true,
+            )
+        })
+        .collect()
+}
+
+pub fn asteroid_field_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    world
+        .active_environmental_hazards()
+        .filter(|hazard| {
+            hazard.hazard_type == gameplay::EnvironmentalHazardType::DebrisField
+        })
+        .map(|hazard| {
+            SnapshotNode::hazard(
+                hazard.id.value(),
+                Transform::from_translation(from_engine(hazard.position)),
+                ASTEROID_FIELD_MESH,
+                ASTEROID_MATERIAL,
                 true,
             )
         })
@@ -214,6 +236,27 @@ pub fn snapshot_from_world_with_camera(
         snapshot.overlay.fade_to_black = fade;
         snapshot.overlay.game_over = fade >= 1.0;
     }
+    snapshot.overlay.hud = hud_state(world, academic_planet);
+    snapshot.visual_events = world
+        .visual_events()
+        .map(|event| RenderVisualEvent {
+            id: event.id,
+            kind: match event.kind {
+                gameplay::GameplayVisualEventKind::Attack => RenderVisualEventKind::Attack,
+                gameplay::GameplayVisualEventKind::EnemyDefeated => {
+                    RenderVisualEventKind::EnemyDefeated
+                }
+                gameplay::GameplayVisualEventKind::ItemCollected => {
+                    RenderVisualEventKind::ItemCollected
+                }
+            },
+            source: event.source,
+            target: event.target,
+            position: event.position.map(from_engine),
+            emitted_at: event.emitted_at,
+            expires_at: event.expires_at,
+        })
+        .collect();
 
     if world.navigation().ship_id().is_some() {
         snapshot.push_node(SnapshotNode::new(
@@ -250,6 +293,10 @@ pub fn snapshot_from_world_with_camera(
     }
 
     for node in derelict_nodes(world) {
+        snapshot.push_node(node);
+    }
+
+    for node in asteroid_field_nodes(world) {
         snapshot.push_node(node);
     }
 
@@ -394,6 +441,53 @@ pub fn snapshot_from_world_with_camera(
     snapshot
 }
 
+fn hud_state(
+    world: &GameplayWorld,
+    academic_planet: Option<gameplay::DestinationId>,
+) -> HudState {
+    let flight = match world.planet_flight_state() {
+        gameplay::PlanetFlightState::Free => HudFlightState::Free,
+        gameplay::PlanetFlightState::Atmospheric { .. } => HudFlightState::Atmospheric,
+        gameplay::PlanetFlightState::Landing { .. } => HudFlightState::Landing,
+        gameplay::PlanetFlightState::Landed { .. } => HudFlightState::Landed,
+        gameplay::PlanetFlightState::Impacted { .. } => HudFlightState::Impacted,
+    };
+    let (autopilot, autopilot_target) = match world.autopilot_state() {
+        gameplay::AutopilotState::Inactive => (HudAutopilotState::Inactive, None),
+        gameplay::AutopilotState::Planned { destination, .. } => {
+            (HudAutopilotState::Planned, Some(destination.value()))
+        }
+        gameplay::AutopilotState::InTransit { destination, .. } => {
+            (HudAutopilotState::InTransit, Some(destination.value()))
+        }
+        gameplay::AutopilotState::Completed { destination } => {
+            (HudAutopilotState::Completed, Some(destination.value()))
+        }
+        gameplay::AutopilotState::Interrupted { destination } => {
+            (HudAutopilotState::Interrupted, Some(destination.value()))
+        }
+        gameplay::AutopilotState::Failed { destination } => {
+            (HudAutopilotState::Failed, Some(destination.value()))
+        }
+    };
+    let target = autopilot_target.or_else(|| match world.travel_state() {
+        gameplay::TravelState::InProgress { destination, .. }
+        | gameplay::TravelState::Completed { destination }
+        | gameplay::TravelState::Cancelled { destination } => Some(destination.value()),
+        gameplay::TravelState::Idle => None,
+    });
+    HudState {
+        flight,
+        autopilot,
+        target,
+        active_enemies: world
+            .enemies()
+            .filter(|enemy| enemy.active && !enemy.is_defeated())
+            .count() as u32,
+        landing_available: academic_planet.is_some_and(|planet| world.landing_available(planet)),
+    }
+}
+
 fn expected_snapshot_node_count(
     world: &GameplayWorld,
     params: BridgeParams<'_>,
@@ -409,6 +503,7 @@ fn expected_snapshot_node_count(
     count += world.players().count();
     count += station_nodes(world).len();
     count += derelict_nodes(world).len();
+    count += asteroid_field_nodes(world).len();
     count += world.enemies().filter(|enemy| !enemy.is_player).count();
     count += world
         .destinations()

@@ -120,6 +120,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
                 scene.set_material(VisualAssets::STATION, MaterialInfo::station());
                 scene.set_material(VisualAssets::DERELICT, MaterialInfo::derelict());
+                scene.set_material(VisualAssets::ASTEROID, MaterialInfo::asteroid());
             },
             debug,
         )?;
@@ -150,6 +151,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
     scene.set_material(VisualAssets::STATION, MaterialInfo::station());
     scene.set_material(VisualAssets::DERELICT, MaterialInfo::derelict());
+    scene.set_material(VisualAssets::ASTEROID, MaterialInfo::asteroid());
     let count = frames.map(NonZeroU64::get).unwrap_or(1);
     let path = output.unwrap_or_else(|| {
         if demo_impact {
