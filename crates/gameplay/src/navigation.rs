@@ -163,6 +163,69 @@ pub struct Destination {
     pub discovery: DiscoveryState,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlanetPhysics {
+    pub destination: DestinationId,
+    pub orbit_center: Vec3,
+    pub orbit_radius: f32,
+    pub orbit_angular_speed: f32,
+    pub surface_radius: f32,
+    pub ship_radius: f32,
+    pub gravity_influence_radius: f32,
+    pub gravitational_parameter: f32,
+    pub atmosphere_height: f32,
+}
+
+impl PlanetPhysics {
+    pub fn validate(self) -> bool {
+        finite_position(self.orbit_center)
+            && self.orbit_radius.is_finite()
+            && self.orbit_radius > 0.0
+            && self.orbit_angular_speed.is_finite()
+            && self.surface_radius.is_finite()
+            && self.surface_radius > 0.0
+            && self.ship_radius.is_finite()
+            && self.ship_radius >= 0.0
+            && self.gravity_influence_radius.is_finite()
+            && self.gravity_influence_radius > self.surface_radius
+            && self.gravitational_parameter.is_finite()
+            && self.gravitational_parameter > 0.0
+            && self.atmosphere_height.is_finite()
+            && self.atmosphere_height >= 0.0
+    }
+
+    pub fn position_at(self, elapsed: Duration) -> Vec3 {
+        let angle = self.orbit_angular_speed * elapsed.0 as f32 / 1_000.0;
+        add_vec(
+            self.orbit_center,
+            Vec3 {
+                x: angle.cos() * self.orbit_radius,
+                y: 0.0,
+                z: angle.sin() * self.orbit_radius,
+            },
+        )
+    }
+
+    pub fn collision_radius(self) -> f32 {
+        self.surface_radius + self.ship_radius
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlanetFlightState {
+    Free,
+    Atmospheric { planet: DestinationId, intensity: f32 },
+    Landing { planet: DestinationId },
+    Landed { planet: DestinationId },
+    Impacted { planet: DestinationId },
+}
+
+impl PlanetFlightState {
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Landed { .. } | Self::Impacted { .. })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NavigationRegistrationError {
     InvalidDestinationId,
@@ -281,6 +344,9 @@ pub struct NavigationState {
     routes: BTreeMap<(DestinationId, DestinationId), NavigationRoute>,
     autopilot: AutopilotState,
     autopilot_continuation_authorized: bool,
+    planet_physics: BTreeMap<DestinationId, PlanetPhysics>,
+    planet_flight_state: PlanetFlightState,
+    travel_origin: Vec3,
 }
 
 impl Default for NavigationState {
@@ -303,6 +369,9 @@ impl Default for NavigationState {
             routes: BTreeMap::new(),
             autopilot: AutopilotState::Inactive,
             autopilot_continuation_authorized: false,
+            planet_physics: BTreeMap::new(),
+            planet_flight_state: PlanetFlightState::Free,
+            travel_origin: Vec3::ZERO,
         }
     }
 }
@@ -394,6 +463,63 @@ impl NavigationState {
 
     pub fn current_position(&self) -> Vec3 {
         self.current_position
+    }
+
+    pub fn configure_planet_physics(&mut self, physics: PlanetPhysics) -> bool {
+        if !physics.validate() || self.destination(physics.destination).is_none() {
+            return false;
+        }
+        self.planet_physics.insert(physics.destination, physics);
+        true
+    }
+
+    pub fn planet_physics(&self, destination: DestinationId) -> Option<PlanetPhysics> {
+        self.planet_physics.get(&destination).copied()
+    }
+
+    pub fn planet_position_at(&self, destination: DestinationId, elapsed: Duration) -> Option<Vec3> {
+        self.planet_physics
+            .get(&destination)
+            .copied()
+            .map(|physics| physics.position_at(elapsed))
+    }
+
+    pub const fn planet_flight_state(&self) -> PlanetFlightState {
+        self.planet_flight_state
+    }
+
+    pub fn landing_available(
+        &self,
+        destination: DestinationId,
+        now: Duration,
+    ) -> bool {
+        let Some(physics) = self.planet_physics.get(&destination).copied() else {
+            return false;
+        };
+        if self.planet_flight_state != PlanetFlightState::Free
+            && !matches!(
+                self.planet_flight_state,
+                PlanetFlightState::Atmospheric { .. }
+            )
+        {
+            return false;
+        }
+        let planet = physics.position_at(now);
+        let distance = distance(self.current_position, planet);
+        let landing_radius = physics.collision_radius() + physics.atmosphere_height;
+        if distance <= landing_radius && dot(self.velocity, self.velocity) <= 36.0 {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn request_landing(&mut self, destination: DestinationId, now: Duration) -> bool {
+        if !self.landing_available(destination, now) {
+            return false;
+        }
+        self.planet_flight_state = PlanetFlightState::Landing { planet: destination };
+        true
     }
 
     pub const fn orientation(&self) -> ShipOrientation {
@@ -502,8 +628,20 @@ impl NavigationState {
         changed
     }
 
-    pub(crate) fn advance_manual(&mut self, delta: Duration) -> Option<(Vec3, Vec3, bool)> {
-        if !self.control_active || delta.0 == 0 || self.has_active_travel() {
+    pub(crate) fn advance_manual(
+        &mut self,
+        delta: Duration,
+        now: Duration,
+    ) -> Option<(Vec3, Vec3, bool, Option<(DestinationId, bool)>)> {
+        if delta.0 == 0 || self.has_active_travel() || self.planet_flight_state.is_terminal() {
+            return None;
+        }
+        if let PlanetFlightState::Landing { planet } = self.planet_flight_state {
+            self.velocity = Vec3::ZERO;
+            self.planet_flight_state = PlanetFlightState::Landed { planet };
+            return Some((Vec3::ZERO, Vec3::ZERO, false, Some((planet, false))));
+        }
+        if !self.control_active {
             return None;
         }
         let seconds = delta.0 as f32 / 1000.0;
@@ -525,6 +663,34 @@ impl NavigationState {
             );
             self.velocity = clamp_speed(self.velocity, self.movement.max_speed);
         }
+        let mut atmospheric = None;
+        for (destination, physics) in &self.planet_physics {
+            let planet = physics.position_at(now);
+            let offset = sub_vec(planet, self.current_position);
+            let distance = dot(offset, offset).sqrt();
+            if distance > 0.0 && distance < physics.gravity_influence_radius {
+                let direction = Vec3 {
+                    x: offset.x / distance,
+                    y: offset.y / distance,
+                    z: offset.z / distance,
+                };
+                let denominator = distance.max(physics.collision_radius()).powi(2);
+                let gravity = (physics.gravitational_parameter / denominator)
+                    .min(self.movement.max_speed / seconds.max(0.001));
+                self.velocity = add_vec(self.velocity, scale_vec(direction, gravity * seconds));
+                self.velocity = clamp_speed(self.velocity, self.movement.max_speed);
+            }
+            let atmosphere_radius = physics.collision_radius() + physics.atmosphere_height;
+            if distance <= atmosphere_radius && distance > physics.collision_radius() {
+                let intensity = if physics.atmosphere_height > 0.0 {
+                    (1.0 - (distance - physics.collision_radius()) / physics.atmosphere_height)
+                        .clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                atmospheric = Some((*destination, intensity));
+            }
+        }
         let displacement = Vec3 {
             x: self.velocity.x * seconds,
             y: self.velocity.y * seconds,
@@ -535,14 +701,100 @@ impl NavigationState {
             y: self.current_position.y + displacement.y,
             z: self.current_position.z + displacement.z,
         };
-        if finite_vec3(next_position) {
+        let mut contact = None;
+        for (destination, physics) in &self.planet_physics {
+            let planet = physics.position_at(now);
+            if segment_intersects_sphere(
+                previous_position,
+                next_position,
+                planet,
+                physics.collision_radius(),
+            ) {
+                self.velocity = Vec3::ZERO;
+                self.planet_flight_state = PlanetFlightState::Impacted { planet: *destination };
+                contact = Some((*destination, true));
+                break;
+            }
+        }
+        if contact.is_none() && finite_vec3(next_position) {
             self.current_position = next_position;
+            self.planet_flight_state = atmospheric
+                .map_or(PlanetFlightState::Free, |(planet, intensity)| {
+                    PlanetFlightState::Atmospheric { planet, intensity }
+                });
         }
         Some((
             previous_velocity,
             self.velocity,
             self.current_position != previous_position,
+            contact.or(atmospheric.map(|(planet, _)| (planet, false))),
         ))
+    }
+
+    pub(crate) fn advance_travel_at(
+        &mut self,
+        now: Duration,
+    ) -> Option<(DestinationId, Vec3, bool)> {
+        let TravelState::InProgress {
+            destination,
+            started_at,
+            duration,
+            ..
+        } = self.travel_state
+        else {
+            return None;
+        };
+        let Some(physics) = self.planet_physics.get(&destination).copied() else {
+            return None;
+        };
+        let elapsed = now.0.saturating_sub(started_at.0);
+        let progress = (elapsed as f32 / duration.0.max(1) as f32).clamp(0.0, 1.0);
+        let target = physics.position_at(now);
+        let proposed = add_vec(
+            self.travel_origin,
+            scale_vec(sub_vec(target, self.travel_origin), progress),
+        );
+        let planet = target;
+        let radius = physics.collision_radius();
+        if matches!(
+            self.planet_flight_state,
+            PlanetFlightState::Landing { planet: active } if active == destination
+        ) && distance(proposed, planet) <= radius + physics.atmosphere_height
+        {
+            let direction = sub_vec(planet, self.travel_origin);
+            let length = distance(self.travel_origin, planet).max(radius);
+            self.current_position = sub_vec(planet, scale_vec(direction, radius / length));
+            self.velocity = Vec3::ZERO;
+            self.planet_flight_state = PlanetFlightState::Landed { planet: destination };
+            self.travel_state = TravelState::Completed { destination };
+            return Some((destination, self.current_position, false));
+        }
+        if segment_intersects_sphere(self.current_position, proposed, planet, radius) {
+            let direction = sub_vec(planet, self.current_position);
+            let length = distance(self.current_position, planet).max(radius);
+            self.current_position = sub_vec(planet, scale_vec(direction, radius / length));
+            self.velocity = Vec3::ZERO;
+            self.planet_flight_state = PlanetFlightState::Impacted { planet: destination };
+            self.travel_state = TravelState::Cancelled { destination };
+            return Some((destination, self.current_position, true));
+        }
+        self.current_position = proposed;
+        let distance_to_planet = distance(self.current_position, planet);
+        if distance_to_planet <= radius + physics.atmosphere_height
+            && distance_to_planet > radius
+        {
+            let intensity = if physics.atmosphere_height > 0.0 {
+                (1.0 - (distance_to_planet - radius) / physics.atmosphere_height)
+                    .clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            self.planet_flight_state = PlanetFlightState::Atmospheric {
+                planet: destination,
+                intensity,
+            };
+        }
+        None
     }
 
     pub fn destinations(&self) -> impl Iterator<Item = &Destination> {
@@ -877,6 +1129,7 @@ impl NavigationState {
         }
         fuel.consume(leg_fuel).map_err(|_| AutopilotError::InsufficientFuel)?;
         self.autopilot_continuation_authorized = false;
+        self.travel_origin = self.current_position;
         self.travel_state = TravelState::InProgress {
             destination: leg.to,
             started_at: now,
@@ -931,6 +1184,7 @@ impl NavigationState {
         }
         fuel.consume(leg_fuel).map_err(|_| AutopilotError::InsufficientFuel)?;
         self.autopilot_continuation_authorized = false;
+        self.travel_origin = self.current_position;
         self.travel_state = TravelState::InProgress {
             destination: leg.to,
             started_at: now,
@@ -1065,6 +1319,7 @@ impl NavigationState {
         }
         fuel.consume(fuel_cost)
             .map_err(|_| NavigationStartError::InsufficientFuel)?;
+        self.travel_origin = self.current_position;
         self.travel_state = TravelState::InProgress {
             destination,
             started_at: now,
@@ -1095,6 +1350,55 @@ impl NavigationState {
         }
         self.travel_state = TravelState::Completed { destination };
         true
+    }
+
+    pub(crate) fn complete_travel_at(
+        &mut self,
+        destination: DestinationId,
+        now: Duration,
+    ) -> Result<Vec3, (DestinationId, Vec3)> {
+        if !matches!(
+            self.travel_state,
+            TravelState::InProgress {
+                destination: active,
+                ..
+            } if active == destination
+        ) {
+            return Err((destination, self.current_position));
+        }
+        let Some(physics) = self.planet_physics.get(&destination).copied() else {
+            let _ = self.complete_travel(destination);
+            return Ok(self.current_position);
+        };
+        let planet = physics.position_at(now);
+        let direction = sub_vec(planet, self.current_position);
+        let length = distance(self.current_position, planet);
+        if length <= physics.collision_radius() {
+            self.planet_flight_state = PlanetFlightState::Impacted { planet: destination };
+            self.travel_state = TravelState::Cancelled { destination };
+            return Err((destination, self.current_position));
+        }
+        if matches!(self.planet_flight_state, PlanetFlightState::Landing { planet: active } if active == destination)
+        {
+            let landing_position = sub_vec(
+                planet,
+                scale_vec(direction, physics.collision_radius() / length),
+            );
+            self.current_position = landing_position;
+            self.velocity = Vec3::ZERO;
+            self.planet_flight_state = PlanetFlightState::Landed { planet: destination };
+            self.travel_state = TravelState::Completed { destination };
+            return Ok(landing_position);
+        }
+        let impact_position = add_vec(
+            self.current_position,
+            scale_vec(direction, (length - physics.collision_radius()) / length),
+        );
+        self.current_position = impact_position;
+        self.velocity = Vec3::ZERO;
+        self.planet_flight_state = PlanetFlightState::Impacted { planet: destination };
+        self.travel_state = TravelState::Cancelled { destination };
+        Err((destination, impact_position))
     }
 
     pub(crate) fn cancel_travel(&mut self) -> Option<DestinationId> {
@@ -1181,6 +1485,47 @@ fn distance_squared(first: Vec3, second: Vec3) -> f64 {
     x * x + y * y + z * z
 }
 
+fn segment_intersects_sphere(start: Vec3, end: Vec3, center: Vec3, radius: f32) -> bool {
+    let direction = sub_vec(end, start);
+    let offset = sub_vec(start, center);
+    let length_squared = dot(direction, direction);
+    if length_squared <= 0.0 {
+        return dot(offset, offset) <= radius * radius;
+    }
+    let projection = (-dot(offset, direction) / length_squared).clamp(0.0, 1.0);
+    let closest = add_vec(start, scale_vec(direction, projection));
+    let distance = sub_vec(closest, center);
+    dot(distance, distance) <= radius * radius
+}
+
+fn dot(left: Vec3, right: Vec3) -> f32 {
+    left.x * right.x + left.y * right.y + left.z * right.z
+}
+
+fn add_vec(left: Vec3, right: Vec3) -> Vec3 {
+    Vec3 {
+        x: left.x + right.x,
+        y: left.y + right.y,
+        z: left.z + right.z,
+    }
+}
+
+fn sub_vec(left: Vec3, right: Vec3) -> Vec3 {
+    Vec3 {
+        x: left.x - right.x,
+        y: left.y - right.y,
+        z: left.z - right.z,
+    }
+}
+
+fn scale_vec(value: Vec3, scale: f32) -> Vec3 {
+    Vec3 {
+        x: value.x * scale,
+        y: value.y * scale,
+        z: value.z * scale,
+    }
+}
+
 fn finite_vec3(value: Vec3) -> bool {
     value.x.is_finite() && value.y.is_finite() && value.z.is_finite()
 }
@@ -1229,4 +1574,99 @@ fn normalize_yaw(mut value: f32) -> f32 {
         value += 360.0;
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn physics(destination: DestinationId) -> PlanetPhysics {
+        PlanetPhysics {
+            destination,
+            orbit_center: Vec3 { x: -1.0, y: 0.0, z: 0.0 },
+            orbit_radius: 1.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 2.0,
+            ship_radius: 0.0,
+            gravity_influence_radius: 20.0,
+            gravitational_parameter: 4.0,
+            atmosphere_height: 2.0,
+        }
+    }
+
+    fn navigation(position: Vec3) -> NavigationState {
+        let mut navigation = NavigationState::default();
+        let destination = DestinationId::new(7);
+        navigation
+            .register_destination(Destination {
+                id: destination,
+                destination_type: DestinationType::Planet,
+                position: Vec3::ZERO,
+                travel_duration: Duration(1),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .expect("destination should be valid");
+        assert!(navigation.configure_planet_physics(physics(destination)));
+        navigation.restore_position(position).expect("position is finite");
+        navigation
+            .initialize_ship(EntityId::new(1))
+            .expect("ship should initialize");
+        navigation.set_control_active(true);
+        navigation
+    }
+
+    #[test]
+    fn orbital_position_is_deterministic_and_time_dependent() {
+        let physics = physics(DestinationId::new(7));
+        let start = physics.position_at(Duration(0));
+        let later = physics.position_at(Duration(1_000));
+        assert_eq!(start, later);
+
+        let mut moving = physics;
+        moving.orbit_angular_speed = 1.0;
+        assert_ne!(moving.position_at(Duration(0)), moving.position_at(Duration(1_000)));
+    }
+
+    #[test]
+    fn gravity_changes_velocity_towards_the_planet() {
+        let mut navigation = navigation(Vec3 { x: 10.0, y: 0.0, z: 0.0 });
+        navigation
+            .set_acceleration_input(Vec3::ZERO)
+            .expect("zero input is valid");
+        let (_, velocity, _, _) = navigation
+            .advance_manual(Duration(100), Duration(0))
+            .expect("active control advances");
+        assert!(velocity.x < 0.0);
+        assert!(velocity.x.is_finite());
+    }
+
+    #[test]
+    fn swept_collision_keeps_the_ship_outside_the_planet_and_emits_once() {
+        let mut navigation = navigation(Vec3 { x: 5.0, y: 0.0, z: 0.0 });
+        navigation
+            .set_acceleration_input(Vec3 { x: -1.0, y: 0.0, z: 0.0 })
+            .expect("input is valid");
+        let (_, _, moved, contact) = navigation
+            .advance_manual(Duration(1_000), Duration(0))
+            .expect("active control advances");
+        assert!(!moved);
+        assert_eq!(contact, Some((DestinationId::new(7), true)));
+        assert_eq!(navigation.planet_flight_state(), PlanetFlightState::Impacted { planet: DestinationId::new(7) });
+        assert!(distance(navigation.current_position(), Vec3::ZERO) >= 2.0);
+        assert!(navigation.advance_manual(Duration(100), Duration(0)).is_none());
+    }
+
+    #[test]
+    fn landing_is_confirmed_before_the_next_simulation_step() {
+        let mut navigation = navigation(Vec3 { x: 3.0, y: 0.0, z: 0.0 });
+        let planet = DestinationId::new(7);
+        assert!(navigation.landing_available(planet, Duration(0)));
+        assert!(navigation.request_landing(planet, Duration(0)));
+        let (_, _, _, contact) = navigation
+            .advance_manual(Duration(100), Duration(0))
+            .expect("landing advances without flight controls");
+        assert_eq!(contact, Some((planet, false)));
+        assert_eq!(navigation.planet_flight_state(), PlanetFlightState::Landed { planet });
+    }
 }

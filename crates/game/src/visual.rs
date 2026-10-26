@@ -8,7 +8,7 @@ use gameplay::{
     AttackType, Destination, DestinationId, DestinationType, DiscoveryState, EnemyArchetype,
     EnemyConfiguration, EncounterId, GameplayCommand, GameplayEvent, NavigationRoute,
     NavigationRouteState, SpatialEncounter, SpatialEncounterKind, StationType, WeaponAmmunition,
-    WeaponConfiguration,
+    WeaponConfiguration, PlanetPhysics,
 };
 use render_core::{LightingMode, MaterialInfo, VisualAssets};
 use render_present::{
@@ -97,7 +97,7 @@ impl VisualBridge {
                 position: GameplayVec3 {
                     x: 42.0,
                     y: 0.0,
-                    z: -25.0,
+                    z: -18.0,
                 },
                 travel_duration: Duration(1_000),
                 fuel_cost: 1,
@@ -138,6 +138,23 @@ impl VisualBridge {
                 state: NavigationRouteState::Available,
             },
         }]);
+        if !session.world_mut().configure_planet_physics(PlanetPhysics {
+            destination: DESTINATION,
+            orbit_center: GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0,
+            },
+            orbit_radius: game::render_bridge::PLANET_ORBIT_RADIUS,
+            orbit_angular_speed: game::render_bridge::PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
+            surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }) {
+            return Err("configurar la fÃ­sica planetaria visual".to_owned());
+        }
         let pilot_station = session
             .create_station(GameplayVec3::ZERO, 3.0, StationType::Piloting)
             .map_err(|error| format!("crear estación visual: {error:?}"))?;
@@ -274,7 +291,16 @@ impl VisualBridge {
                 delta: Duration(100),
             }]),
             KeyCode::KeyQ => self.issue([GameplayCommand::ScanSignals { player, ship }]),
-            KeyCode::KeyF => self.issue([GameplayCommand::AttackEnemy { player, enemy }]),
+            KeyCode::KeyF => {
+                if self.session.world().landing_available(DESTINATION) {
+                    if self.session.world_mut().request_planet_landing(DESTINATION) {
+                        self.feedback = "ATERRIZAJE CONFIRMADO".to_owned();
+                        println!("visual gameplay: {}", self.feedback);
+                    }
+                } else {
+                    self.issue([GameplayCommand::AttackEnemy { player, enemy }]);
+                }
+            }
             KeyCode::KeyE => {
                 let collectible = self
                     .session

@@ -202,7 +202,11 @@ pub fn snapshot_from_world_with_camera(
                 _ => (DESTINATION_MESH, DESTINATION_MATERIAL, Vec3::ONE),
             };
             let transform = if academic_planet == Some(dest.id) {
-                academic_planet_transform(elapsed_seconds)
+                let mut transform = academic_planet_transform(elapsed_seconds);
+                if let Some(position) = world.planet_position_at(dest.id, world.time().elapsed) {
+                    transform.translation = from_engine(position);
+                }
+                transform
             } else {
                 Transform::new(from_engine(dest.position), Quat::IDENTITY, scale)
             };
@@ -287,8 +291,14 @@ pub fn visual_ship_position(world: &GameplayWorld) -> Option<Vec3> {
     let gameplay::TravelState::InProgress { destination, .. } = world.travel_state() else {
         return Some(current);
     };
+    if world.planet_position_at(destination, world.time().elapsed).is_some() {
+        return Some(current);
+    }
     let progress = world.travel_progress()?.progress.clamp(0.0, 1.0);
-    let target = from_engine(world.destination(destination)?.position);
+    let target = world
+        .planet_position_at(destination, world.time().elapsed)
+        .map(from_engine)
+        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))?;
     Some(interpolate_visual_ship_position(current, target, progress))
 }
 
@@ -309,7 +319,10 @@ pub fn observation_camera(
 ) -> Result<Camera, CameraError> {
     let ship = visual_ship_position(world).unwrap_or(Vec3::ZERO);
     let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
-    let planet = academic_planet_transform(elapsed_seconds).translation;
+    let planet = academic_planet_id(world)
+        .and_then(|id| world.planet_position_at(id, world.time().elapsed))
+        .map(from_engine)
+        .unwrap_or_else(|| academic_planet_transform(elapsed_seconds).translation);
     let space_position = ship + FLIGHT_CAMERA_OFFSET;
     let space_target = (SUN_POSITION + ship + planet) / 3.0;
     let elevation = elevation.clamp(-1.2, 1.2);
@@ -320,7 +333,15 @@ pub fn observation_camera(
     );
     let close_position = planet + surface_direction * PLANET_OBSERVATION_RADIUS;
     let transition = transition.clamp(0.0, 1.0);
-    let position = space_position.lerp(close_position, transition);
+    let mut position = space_position.lerp(close_position, transition);
+    if let gameplay::PlanetFlightState::Atmospheric { intensity, .. } =
+        world.planet_flight_state()
+    {
+        let phase = elapsed_seconds as f32 * 28.0;
+        let amplitude = intensity.clamp(0.0, 1.0) * 0.22;
+        position.x += phase.sin() * amplitude;
+        position.y += (phase * 1.37).cos() * amplitude;
+    }
     let target = space_target.lerp(planet, transition);
     Camera::new(
         position,

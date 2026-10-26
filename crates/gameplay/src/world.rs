@@ -61,7 +61,7 @@ use crate::{
     mission::{Mission, MissionRegistrationError},
     navigation::{
         AutopilotState, Destination, DestinationId, NavigationInitializationError, NavigationRegistrationError,
-        NavigationState, TravelProgress, TravelState,
+        NavigationState, PlanetFlightState, PlanetPhysics, TravelProgress, TravelState,
     },
     player::Player,
     resources::{FuelError, FuelTank, ShipResources, ShipUpgrade},
@@ -5163,6 +5163,39 @@ impl GameplayWorld {
     }
     pub fn navigation(&self) -> &NavigationState {
         &self.navigation
+    }
+    pub fn configure_planet_physics(&mut self, physics: PlanetPhysics) -> bool {
+        self.navigation.configure_planet_physics(physics)
+    }
+    pub fn planet_position_at(
+        &self,
+        destination: DestinationId,
+        elapsed: Duration,
+    ) -> Option<engine::Vec3> {
+        self.navigation.planet_position_at(destination, elapsed)
+    }
+    pub fn planet_flight_state(&self) -> PlanetFlightState {
+        self.navigation.planet_flight_state()
+    }
+    pub fn landing_available(&self, destination: DestinationId) -> bool {
+        self.navigation
+            .landing_available(destination, self.time().elapsed)
+    }
+    pub fn request_planet_landing(&mut self, destination: DestinationId) -> bool {
+        if !self.navigation.landing_available(destination, self.time().elapsed) {
+            return false;
+        }
+        let Some(ship) = self.navigation.ship_id() else {
+            return false;
+        };
+        if !self.navigation.request_landing(destination, self.time().elapsed) {
+            return false;
+        }
+        self.publish(crate::events::GameplayEvent::PlanetLandingRequested {
+            ship,
+            planet: destination,
+        });
+        true
     }
     pub fn destination(&self, destination: DestinationId) -> Option<&Destination> {
         self.navigation.destination(destination)
