@@ -183,7 +183,7 @@ impl SurfaceRenderer {
     }
 
     pub fn present(&mut self, camera: &Camera) -> Result<bool, GpuError> {
-        self.present_matrix(camera.view_projection_matrix())
+        self.present_matrix(camera.view_projection_matrix(), Default::default())
     }
 
     pub fn present_snapshot(&mut self, scene: &SnapshotScene) -> Result<bool, GpuError> {
@@ -214,10 +214,15 @@ impl SurfaceRenderer {
         if let Some(renderer) = &mut self.hdr_renderer {
             renderer.sync_prepared(&prepared)?;
         }
-        Ok((self.present_matrix(scene.view_projection())?, prepared_stats))
+        let overlay = scene.overlay();
+        Ok((self.present_matrix(scene.view_projection(), overlay)?, prepared_stats))
     }
 
-    fn present_matrix(&mut self, vp: Mat4) -> Result<bool, GpuError> {
+    fn present_matrix(
+        &mut self,
+        vp: Mat4,
+        overlay: render_core::RenderOverlay,
+    ) -> Result<bool, GpuError> {
         self.gpu.check()?;
         let Some(depth) = &self.depth else {
             return Ok(false);
@@ -247,6 +252,16 @@ impl SurfaceRenderer {
             }
         };
         let view = texture.texture.create_view(&Default::default());
+        if overlay.game_over {
+            self.renderer
+                .clear_view(&view, &depth.view, [0, 0, 0, 255])?;
+            self.window.pre_present_notify();
+            texture.present();
+            if reconfigure {
+                self.surface.configure(&self.gpu.device, &self.config);
+            }
+            return Ok(true);
+        }
         if let (Some(hdr), Some(pass), Some(hdr_view)) = (
             &mut self.hdr_renderer,
             self.postprocess.as_mut().filter(|p| p.is_enabled()),
@@ -258,8 +273,12 @@ impl SurfaceRenderer {
             pass.encode(&self.gpu, &mut encoder, &view);
             self.gpu.queue.submit([encoder.finish()]);
         } else {
-            self.renderer
-                .render_to_view_matrix(&view, &depth.view, vp)?;
+            self.renderer.render_to_view_matrix_with_clear(
+                &view,
+                &depth.view,
+                vp,
+                overlay_clear_color(overlay),
+            )?;
         }
         self.window.pre_present_notify();
         texture.present();
@@ -269,6 +288,11 @@ impl SurfaceRenderer {
         self.gpu.check()?;
         Ok(true)
     }
+}
+
+fn overlay_clear_color(overlay: render_core::RenderOverlay) -> [u8; 4] {
+    let scale = 1.0 - overlay.fade_to_black.clamp(0.0, 1.0);
+    [(8.0 * scale) as u8, (10.0 * scale) as u8, (18.0 * scale) as u8, 255]
 }
 
 #[derive(Default, Debug)]

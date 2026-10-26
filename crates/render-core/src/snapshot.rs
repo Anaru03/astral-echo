@@ -73,6 +73,13 @@ pub struct RenderSnapshot {
     pub camera_position: crate::math::Vec3,
     pub view: crate::math::Mat4,
     pub projection: crate::math::Mat4,
+    pub overlay: RenderOverlay,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RenderOverlay {
+    pub fade_to_black: f32,
+    pub game_over: bool,
 }
 
 impl RenderSnapshot {
@@ -89,6 +96,7 @@ impl RenderSnapshot {
             camera_position,
             view,
             projection,
+            overlay: RenderOverlay::default(),
         }
     }
 

@@ -5,7 +5,8 @@ use std::time::Instant;
 
 use render_core::{InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene};
 use render_cpu::{
-    render_snapshot_scene, render_snapshot_scene_with_stats, write_png, Framebuffer, RasterMode,
+    render_snapshot_scene_with_shader, render_snapshot_scene_with_shader_with_stats, write_png,
+    Framebuffer, FragmentShader, RasterMode,
 };
 use render_gpu::{GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
@@ -542,10 +543,11 @@ impl Host {
             directory.join(format!("frame-{:04}-cpu-internal.png", self.debug_frame));
         let scaled_path = directory.join(format!("frame-{:04}-cpu-scaled.png", self.debug_frame));
         self.debug_frame += 1;
-        let _ = render_snapshot_scene(
+        let _ = render_snapshot_scene_with_shader(
             &mut state.framebuffer,
             &state.snapshot,
             self.config.raster_mode,
+            FragmentShader::SolarBands,
         );
         let _ = write_png(&internal_path, &state.framebuffer);
         let mut pixels = vec![0u32; (size.width as usize) * (size.height as usize)];
@@ -653,10 +655,11 @@ impl Host {
             }
             return;
         }
-        if let Ok((stats, _)) = render_snapshot_scene_with_stats(
+        if let Ok((stats, _)) = render_snapshot_scene_with_shader_with_stats(
             &mut state.framebuffer,
             &state.snapshot,
             self.config.raster_mode,
+            FragmentShader::SolarBands,
         ) {
             println!(
                 "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",

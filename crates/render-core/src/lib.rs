@@ -23,7 +23,7 @@ pub use math::{
 };
 pub use mesh::{MeshHandle, Vertex};
 pub use scene::{RenderCamera, RenderLight, RenderLightKind, RenderNode, RenderScene};
-pub use snapshot::{RenderSnapshot, SnapshotId, SnapshotLight, SnapshotNode};
+pub use snapshot::{RenderOverlay, RenderSnapshot, SnapshotId, SnapshotLight, SnapshotNode};
 pub use transform::Transform;
 pub use visual::{
     CullingConfig, LodLevel, PreparedDraw, PreparedScene, PreparedSceneStats, SceneUpdate,
