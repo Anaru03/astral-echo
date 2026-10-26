@@ -80,6 +80,22 @@ fn invalid_snapshot_is_transactional() {
 }
 
 #[test]
+fn asteroid_field_generation_is_seed_deterministic_and_finite() {
+    let color = render_core::Vec4::new(0.34, 0.31, 0.27, 1.0);
+    let first = render_core::RasterMesh::asteroid_field(color, 5.0, 77);
+    let same = render_core::RasterMesh::asteroid_field(color, 5.0, 77);
+    let different = render_core::RasterMesh::asteroid_field(color, 5.0, 78);
+    assert_eq!(first, same);
+    assert_ne!(first, different);
+    assert!(!first.vertices.is_empty());
+    assert!(!first.indices.is_empty());
+    assert!(first
+        .vertices
+        .iter()
+        .all(|vertex| vertex.position.is_finite() && vertex.normal.is_finite()));
+}
+
+#[test]
 fn order_and_render_sampling_do_not_change_tick_or_handles() {
     let mut scene = SnapshotScene::default();
     let mut snapshot = RenderSnapshot::minimal_demo();

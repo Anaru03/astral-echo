@@ -46,12 +46,62 @@ impl SnapshotNode {
             visible,
         }
     }
+
+    pub fn derelict(
+        id: u32,
+        transform: Transform,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+        visible: bool,
+    ) -> Self {
+        Self {
+            entity: SnapshotId::Derelict(id),
+            transform,
+            mesh,
+            material,
+            visible,
+        }
+    }
+
+    pub fn hazard(
+        id: u32,
+        transform: Transform,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+        visible: bool,
+    ) -> Self {
+        Self {
+            entity: SnapshotId::Hazard(id),
+            transform,
+            mesh,
+            material,
+            visible,
+        }
+    }
+
+    pub fn visual_event(
+        id: u64,
+        transform: Transform,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+    ) -> Self {
+        Self {
+            entity: SnapshotId::VisualEvent(id),
+            transform,
+            mesh,
+            material,
+            visible: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SnapshotId {
     Entity(EntityId),
     Destination(u32),
+    Derelict(u32),
+    Hazard(u32),
+    VisualEvent(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -68,7 +118,9 @@ impl SnapshotLight {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderSnapshot {
     pub tick: Tick,
+    pub simulation_time: engine::Duration,
     pub nodes: Vec<SnapshotNode>,
+    pub visual_events: Vec<RenderVisualEvent>,
     pub lights: Vec<SnapshotLight>,
     pub camera_position: crate::math::Vec3,
     pub view: crate::math::Mat4,
@@ -76,10 +128,59 @@ pub struct RenderSnapshot {
     pub overlay: RenderOverlay,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RenderVisualEventKind {
+    Attack,
+    EnemyDefeated,
+    ItemCollected,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderVisualEvent {
+    pub id: u64,
+    pub kind: RenderVisualEventKind,
+    pub source: Option<EntityId>,
+    pub target: Option<EntityId>,
+    pub position: Option<crate::math::Vec3>,
+    pub emitted_at: engine::Duration,
+    pub expires_at: engine::Duration,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RenderOverlay {
     pub fade_to_black: f32,
     pub game_over: bool,
+    pub hud: HudState,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HudFlightState {
+    #[default]
+    Free,
+    Atmospheric,
+    Landing,
+    Landed,
+    Impacted,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HudAutopilotState {
+    #[default]
+    Inactive,
+    Planned,
+    InTransit,
+    Completed,
+    Interrupted,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HudState {
+    pub flight: HudFlightState,
+    pub autopilot: HudAutopilotState,
+    pub target: Option<u32>,
+    pub active_enemies: u32,
+    pub landing_available: bool,
 }
 
 pub const GAME_OVER_GLYPHS: [[u8; 7]; 8] = [
@@ -114,7 +215,9 @@ impl RenderSnapshot {
     ) -> Self {
         Self {
             tick,
+            simulation_time: engine::Duration(0),
             nodes: Vec::new(),
+            visual_events: Vec::new(),
             lights: Vec::new(),
             camera_position,
             view,

@@ -194,6 +194,95 @@ impl RasterMesh {
         Self { vertices, indices }
     }
 
+    pub fn station(color: Vec4) -> Self {
+        let mut result = Self::default();
+        append_station_part(
+            &mut result,
+            Self::cube(Vec3::ZERO, 1.0, color),
+            Vec3::new(1.2, 0.6, 1.2),
+            Vec3::ZERO,
+        );
+        for (scale, translation) in [
+            (Vec3::new(1.8, 0.22, 0.35), Vec3::new(1.8, 0.0, 0.0)),
+            (Vec3::new(1.8, 0.22, 0.35), Vec3::new(-1.8, 0.0, 0.0)),
+            (Vec3::new(0.35, 0.22, 1.8), Vec3::new(0.0, 0.0, 1.8)),
+            (Vec3::new(0.35, 0.22, 1.8), Vec3::new(0.0, 0.0, -1.8)),
+        ] {
+            append_station_part(
+                &mut result,
+                Self::cube(Vec3::ZERO, 1.0, color),
+                scale,
+                translation,
+            );
+        }
+        append_station_part(
+            &mut result,
+            Self::sphere(Vec3::new(0.0, 0.7, 0.0), 0.45, color),
+            Vec3::ONE,
+            Vec3::ZERO,
+        );
+        result
+    }
+
+    pub fn derelict(color: Vec4) -> Self {
+        let mut result = Self::default();
+        append_station_part(
+            &mut result,
+            Self::cube(Vec3::ZERO, 1.0, color),
+            Vec3::new(2.4, 0.55, 0.8),
+            Vec3::ZERO,
+        );
+        append_station_part(
+            &mut result,
+            Self::cube(Vec3::ZERO, 1.0, color),
+            Vec3::new(0.65, 0.35, 1.4),
+            Vec3::new(0.9, 0.0, 0.0),
+        );
+        append_station_part(
+            &mut result,
+            Self::sphere(Vec3::new(-1.0, 0.0, 0.0), 0.5, color),
+            Vec3::ONE,
+            Vec3::ZERO,
+        );
+        result
+    }
+
+    pub fn asteroid_field(color: Vec4, radius: f32, seed: u32) -> Self {
+        let field_radius = radius.max(0.1);
+        let mut result = Self::default();
+        let mut state = u64::from(seed) | 1;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 40) as f32) / ((1u32 << 24) - 1) as f32
+        };
+        for index in 0..8 {
+            let latitude = next() * 2.0 - 1.0;
+            let longitude = index as f32 * core::f32::consts::TAU / 8.0 + next() * 0.45;
+            let ring = (1.0 - latitude * latitude).max(0.0).sqrt();
+            let direction = Vec3::new(
+                ring * longitude.cos(),
+                latitude,
+                ring * longitude.sin(),
+            );
+            let center = direction * field_radius * (0.35 + next() * 0.45);
+            let size = field_radius * (0.06 + next() * 0.06);
+            let scale = Vec3::new(
+                size * (0.75 + next() * 0.7),
+                size * (0.75 + next() * 0.7),
+                size * (0.75 + next() * 0.7),
+            );
+            append_station_part(
+                &mut result,
+                Self::sphere(Vec3::ZERO, 1.0, color),
+                scale,
+                center,
+            );
+        }
+        result
+    }
+
     pub fn resolved_normals(&self) -> Vec<Vec3> {
         let mut normals = vec![Vec3::ZERO; self.vertices.len()];
         for triangle in self.indices.chunks_exact(3) {
@@ -226,4 +315,15 @@ impl RasterMesh {
     pub fn triangle_indices(&self) -> impl Iterator<Item = (u32, u32, u32)> + '_ {
         self.indices.chunks_exact(3).map(|c| (c[0], c[1], c[2]))
     }
+}
+
+fn append_station_part(target: &mut RasterMesh, mut part: RasterMesh, scale: Vec3, translation: Vec3) {
+    let base = target.vertices.len() as u32;
+    for vertex in &mut part.vertices {
+        vertex.position = vertex.position * scale + translation;
+    }
+    target.vertices.extend(part.vertices);
+    target
+        .indices
+        .extend(part.indices.into_iter().map(|index| index + base));
 }

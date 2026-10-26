@@ -1,7 +1,11 @@
+use std::collections::BTreeSet;
+
 use gameplay::GameplayWorld;
 use render_core::{
     from_engine, Camera, CameraError, MaterialHandle, MeshHandle, Projection, Quat,
-    RenderSnapshot, SnapshotLight, SnapshotNode, Transform, Vec3, VisualAssets,
+    HudAutopilotState, HudFlightState, HudState, RenderSnapshot, RenderVisualEvent,
+    RenderVisualEventKind, SnapshotLight, SnapshotNode,
+    Transform, Vec3, VisualAssets,
 };
 
 pub const SUN_ENTITY: engine::EntityId = engine::EntityId::new(9_100);
@@ -34,6 +38,9 @@ pub const DESTINATION_MESH: MeshHandle = MeshHandle::DESTINATION_PLACEHOLDER;
 pub const PLANET_MESH: MeshHandle = MeshHandle::PLANET_SPHERE;
 pub const SUN_MESH: MeshHandle = MeshHandle::SUN_SPHERE;
 pub const COLLECTIBLE_MESH: MeshHandle = MeshHandle::COLLECTIBLE_PLACEHOLDER;
+pub const STATION_MESH: MeshHandle = MeshHandle::STATION;
+pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
+pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
 
 pub const SHIP_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const ENEMY_MATERIAL: MaterialHandle = VisualAssets::ENEMY;
@@ -43,6 +50,65 @@ pub const DESTINATION_MATERIAL: MaterialHandle = VisualAssets::DESTINATION;
 pub const PLANET_MATERIAL: MaterialHandle = VisualAssets::PLANET;
 pub const SUN_MATERIAL: MaterialHandle = VisualAssets::SUN;
 pub const COLLECTIBLE_MATERIAL: MaterialHandle = VisualAssets::COLLECTIBLE;
+pub const STATION_MATERIAL: MaterialHandle = VisualAssets::STATION;
+pub const DERELICT_MATERIAL: MaterialHandle = VisualAssets::DERELICT;
+pub const ASTEROID_MATERIAL: MaterialHandle = VisualAssets::ASTEROID;
+
+pub fn station_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    let mut nodes = Vec::new();
+    let mut seen = BTreeSet::new();
+    for interactable in world.interactables() {
+        if !matches!(
+            interactable.behavior,
+            gameplay::InteractionBehavior::Station { .. }
+        ) || !seen.insert(interactable.entity_id)
+        {
+            continue;
+        }
+        nodes.push(SnapshotNode::new(
+            interactable.entity_id,
+            Transform::from_translation(from_engine(interactable.position)),
+            STATION_MESH,
+            STATION_MATERIAL,
+            interactable.enabled,
+        ));
+    }
+    nodes
+}
+
+pub fn derelict_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    world
+        .derelicts()
+        .filter(|derelict| derelict.state != gameplay::DerelictState::Undiscovered)
+        .map(|derelict| {
+            SnapshotNode::derelict(
+                derelict.id.value(),
+                Transform::from_translation(from_engine(derelict.position)),
+                DERELICT_MESH,
+                DERELICT_MATERIAL,
+                true,
+            )
+        })
+        .collect()
+}
+
+pub fn asteroid_field_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    world
+        .active_environmental_hazards()
+        .filter(|hazard| {
+            hazard.hazard_type == gameplay::EnvironmentalHazardType::DebrisField
+        })
+        .map(|hazard| {
+            SnapshotNode::hazard(
+                hazard.id.value(),
+                Transform::from_translation(from_engine(hazard.position)),
+                ASTEROID_FIELD_MESH,
+                ASTEROID_MATERIAL,
+                true,
+            )
+        })
+        .collect()
+}
 
 pub fn academic_surface_objects(elapsed_seconds: f64) -> [SnapshotNode; 4] {
     let objects = academic_surface_objects_with_seed(
@@ -163,12 +229,37 @@ pub fn snapshot_from_world_with_camera(
         camera.view_matrix(),
         camera.projection_matrix(),
     );
+    snapshot.simulation_time = world.time().elapsed;
     snapshot
         .nodes
         .reserve(expected_snapshot_node_count(world, params, academic_planet));
     if let Some(fade) = world.impact_fade_to_black() {
         snapshot.overlay.fade_to_black = fade;
         snapshot.overlay.game_over = fade >= 1.0;
+    }
+    snapshot.overlay.hud = hud_state(world, academic_planet);
+    snapshot.visual_events = world
+        .visual_events()
+        .map(|event| RenderVisualEvent {
+            id: event.id,
+            kind: match event.kind {
+                gameplay::GameplayVisualEventKind::Attack => RenderVisualEventKind::Attack,
+                gameplay::GameplayVisualEventKind::EnemyDefeated => {
+                    RenderVisualEventKind::EnemyDefeated
+                }
+                gameplay::GameplayVisualEventKind::ItemCollected => {
+                    RenderVisualEventKind::ItemCollected
+                }
+            },
+            source: event.source,
+            target: event.target,
+            position: event.position.map(from_engine),
+            emitted_at: event.emitted_at,
+            expires_at: event.expires_at,
+        })
+        .collect();
+    for node in visual_event_nodes(&snapshot) {
+        snapshot.push_node(node);
     }
 
     if world.navigation().ship_id().is_some() {
@@ -199,6 +290,18 @@ pub fn snapshot_from_world_with_camera(
             SHIP_MATERIAL,
             world.entities().contains(ship),
         ));
+    }
+
+    for node in station_nodes(world) {
+        snapshot.push_node(node);
+    }
+
+    for node in derelict_nodes(world) {
+        snapshot.push_node(node);
+    }
+
+    for node in asteroid_field_nodes(world) {
+        snapshot.push_node(node);
     }
 
     for player in world.players() {
@@ -342,6 +445,94 @@ pub fn snapshot_from_world_with_camera(
     snapshot
 }
 
+fn visual_event_nodes(snapshot: &RenderSnapshot) -> Vec<SnapshotNode> {
+    snapshot
+        .visual_events
+        .iter()
+        .filter_map(|event| {
+            let position = event.position?;
+            let duration = event.expires_at.0.saturating_sub(event.emitted_at.0);
+            if duration == 0 || snapshot.simulation_time.0 < event.emitted_at.0 {
+                return None;
+            }
+            let progress = ((snapshot.simulation_time.0 - event.emitted_at.0) as f32
+                / duration as f32)
+                .clamp(0.0, 1.0);
+            let intensity = 1.0 - progress;
+            let (mesh, material, scale) = match event.kind {
+                RenderVisualEventKind::Attack => (
+                    SUN_MESH,
+                    SUN_MATERIAL,
+                    Vec3::splat(0.2 + intensity * 0.45),
+                ),
+                RenderVisualEventKind::EnemyDefeated => (
+                    SUN_MESH,
+                    SUN_MATERIAL,
+                    Vec3::splat(0.45 + intensity * 1.4),
+                ),
+                RenderVisualEventKind::ItemCollected => (
+                    COLLECTIBLE_MESH,
+                    COLLECTIBLE_MATERIAL,
+                    Vec3::splat(0.15 + intensity * 0.35),
+                ),
+            };
+            Some(SnapshotNode::visual_event(
+                event.id,
+                Transform::new(position, Quat::IDENTITY, scale),
+                mesh,
+                material,
+            ))
+        })
+        .collect()
+}
+
+fn hud_state(
+    world: &GameplayWorld,
+    academic_planet: Option<gameplay::DestinationId>,
+) -> HudState {
+    let flight = match world.planet_flight_state() {
+        gameplay::PlanetFlightState::Free => HudFlightState::Free,
+        gameplay::PlanetFlightState::Atmospheric { .. } => HudFlightState::Atmospheric,
+        gameplay::PlanetFlightState::Landing { .. } => HudFlightState::Landing,
+        gameplay::PlanetFlightState::Landed { .. } => HudFlightState::Landed,
+        gameplay::PlanetFlightState::Impacted { .. } => HudFlightState::Impacted,
+    };
+    let (autopilot, autopilot_target) = match world.autopilot_state() {
+        gameplay::AutopilotState::Inactive => (HudAutopilotState::Inactive, None),
+        gameplay::AutopilotState::Planned { destination, .. } => {
+            (HudAutopilotState::Planned, Some(destination.value()))
+        }
+        gameplay::AutopilotState::InTransit { destination, .. } => {
+            (HudAutopilotState::InTransit, Some(destination.value()))
+        }
+        gameplay::AutopilotState::Completed { destination } => {
+            (HudAutopilotState::Completed, Some(destination.value()))
+        }
+        gameplay::AutopilotState::Interrupted { destination } => {
+            (HudAutopilotState::Interrupted, Some(destination.value()))
+        }
+        gameplay::AutopilotState::Failed { destination } => {
+            (HudAutopilotState::Failed, Some(destination.value()))
+        }
+    };
+    let target = autopilot_target.or_else(|| match world.travel_state() {
+        gameplay::TravelState::InProgress { destination, .. }
+        | gameplay::TravelState::Completed { destination }
+        | gameplay::TravelState::Cancelled { destination } => Some(destination.value()),
+        gameplay::TravelState::Idle => None,
+    });
+    HudState {
+        flight,
+        autopilot,
+        target,
+        active_enemies: world
+            .enemies()
+            .filter(|enemy| enemy.active && !enemy.is_defeated())
+            .count() as u32,
+        landing_available: academic_planet.is_some_and(|planet| world.landing_available(planet)),
+    }
+}
+
 fn expected_snapshot_node_count(
     world: &GameplayWorld,
     params: BridgeParams<'_>,
@@ -355,6 +546,9 @@ fn expected_snapshot_node_count(
         count += 1;
     }
     count += world.players().count();
+    count += station_nodes(world).len();
+    count += derelict_nodes(world).len();
+    count += asteroid_field_nodes(world).len();
     count += world.enemies().filter(|enemy| !enemy.is_player).count();
     count += world
         .destinations()

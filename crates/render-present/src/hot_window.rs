@@ -62,12 +62,33 @@ pub fn run_hot_swap_window_with_input_and_scene(
     configure_scene: impl FnMut(&mut SnapshotScene) + 'static,
     debug: GraphicsDebugConfig,
 ) -> Result<HotSwapReport, String> {
+    run_hot_swap_window_with_input_and_scene_and_focus(
+        config,
+        source,
+        start_gpu,
+        input,
+        |_| {},
+        configure_scene,
+        debug,
+    )
+}
+
+pub fn run_hot_swap_window_with_input_and_scene_and_focus(
+    config: WindowConfig,
+    source: SnapshotSource,
+    start_gpu: bool,
+    input: impl FnMut(KeyCode, ElementState) + 'static,
+    focus: impl FnMut(bool) + 'static,
+    configure_scene: impl FnMut(&mut SnapshotScene) + 'static,
+    debug: GraphicsDebugConfig,
+) -> Result<HotSwapReport, String> {
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let wake_proxy = event_loop.create_proxy();
     let mut app = Host {
         config,
         source,
         input: Box::new(input),
+        focus: Box::new(focus),
         configure_scene: Box::new(configure_scene),
         start_gpu,
         state: None,
@@ -98,6 +119,7 @@ struct Host {
     config: WindowConfig,
     source: SnapshotSource,
     input: Box<dyn FnMut(KeyCode, ElementState)>,
+    focus: Box<dyn FnMut(bool)>,
     configure_scene: Box<dyn FnMut(&mut SnapshotScene)>,
     start_gpu: bool,
     state: Option<HostState>,
@@ -262,7 +284,11 @@ impl ApplicationHandler for Host {
                     event_loop.exit();
                 }
             }
-            WindowEvent::Focused(false) => {
+            WindowEvent::Focused(focused) => {
+                (self.focus)(focused);
+                if focused {
+                    return;
+                }
                 for code in [
                     KeyCode::KeyW,
                     KeyCode::KeyA,
@@ -972,9 +998,35 @@ fn hud_title(base: &str, backend: BackendKind, snapshot: &RenderSnapshot) -> Str
         BackendKind::Cpu => "CPU",
         BackendKind::Gpu => "GPU",
     };
+    let flight = match snapshot.overlay.hud.flight {
+        render_core::HudFlightState::Free => "libre",
+        render_core::HudFlightState::Atmospheric => "atmosfera",
+        render_core::HudFlightState::Landing => "aterrizaje",
+        render_core::HudFlightState::Landed => "aterrizado",
+        render_core::HudFlightState::Impacted => "impactado",
+    };
+    let autopilot = match snapshot.overlay.hud.autopilot {
+        render_core::HudAutopilotState::Inactive => "inactivo",
+        render_core::HudAutopilotState::Planned => "planificado",
+        render_core::HudAutopilotState::InTransit => "en_transito",
+        render_core::HudAutopilotState::Completed => "completado",
+        render_core::HudAutopilotState::Interrupted => "interrumpido",
+        render_core::HudAutopilotState::Failed => "fallido",
+    };
+    let target = snapshot
+        .overlay
+        .hud
+        .target
+        .map_or_else(|| "ninguno".to_owned(), |value| value.to_string());
+    let landing = if snapshot.overlay.hud.landing_available {
+        " | F aterrizar"
+    } else {
+        ""
+    };
     format!(
-        "{base} | {backend} | tick={} | O observar | P vuelo | Flechas orbitar | Espacio tiempo | F aterrizar/atacar",
-        snapshot.tick.0
+        "{base} | {backend} | tick={} | vuelo={flight} | objetivo={target} | auto={autopilot} | enemigos={} | O observar | P vuelo | Flechas orbitar | Espacio tiempo | F aterrizar/atacar{landing}",
+        snapshot.tick.0,
+        snapshot.overlay.hud.active_enemies,
     )
 }
 
@@ -1094,6 +1146,21 @@ mod tests {
         assert!(title.contains("tick=1"));
         assert!(title.contains("O observar"));
         assert!(title.contains("F aterrizar/atacar"));
+    }
+
+    #[test]
+    fn hud_title_reports_shared_snapshot_context() {
+        let mut snapshot = RenderSnapshot::minimal_demo();
+        snapshot.overlay.hud.flight = render_core::HudFlightState::Atmospheric;
+        snapshot.overlay.hud.autopilot = render_core::HudAutopilotState::InTransit;
+        snapshot.overlay.hud.target = Some(42);
+        snapshot.overlay.hud.active_enemies = 2;
+        let title = hud_title("Astral Echo", BackendKind::Gpu, &snapshot);
+
+        assert!(title.contains("vuelo=atmosfera"));
+        assert!(title.contains("objetivo=42"));
+        assert!(title.contains("auto=en_transito"));
+        assert!(title.contains("enemigos=2"));
     }
 
     #[test]
