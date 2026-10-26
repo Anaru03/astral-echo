@@ -1,7 +1,7 @@
 use engine::{EntityId, Tick};
 use render_core::{
-    MaterialHandle, MeshHandle, RenderSnapshot, SnapshotId, SnapshotNode, SnapshotScene, Transform,
-    Vec3, VisualAssets, VisualError,
+    CullingConfig, MaterialHandle, MeshHandle, RenderSnapshot, SnapshotId, SnapshotNode,
+    SnapshotScene, Transform, Vec3, VisualAssets, VisualError,
 };
 
 #[test]
@@ -136,6 +136,24 @@ fn prepared_scene_stats_match_the_consumed_draws() {
     assert_eq!(stats.discarded, prepared.discarded);
     assert_eq!(stats.triangles, prepared.triangles);
     assert_eq!(stats.draws, prepared.draws().count());
+}
+
+#[test]
+fn prepared_scene_stats_are_zero_for_an_empty_scene() {
+    let mut snapshot = RenderSnapshot::minimal_demo();
+    snapshot.nodes.clear();
+    let mut scene = SnapshotScene::default();
+    scene.update(&snapshot).unwrap();
+
+    let stats = scene
+        .prepare(CullingConfig {
+            width: 0,
+            height: 0,
+            ..Default::default()
+        })
+        .stats();
+
+    assert_eq!(stats, render_core::PreparedSceneStats::default());
 }
 
 #[test]
