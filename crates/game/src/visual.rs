@@ -425,6 +425,7 @@ pub fn run() -> Result<(), String> {
             scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
             scene.set_material(VisualAssets::STATION, MaterialInfo::station());
             scene.set_material(VisualAssets::DERELICT, MaterialInfo::derelict());
+            scene.set_material(VisualAssets::ASTEROID, MaterialInfo::asteroid());
         },
         GraphicsDebugConfig::default(),
     )

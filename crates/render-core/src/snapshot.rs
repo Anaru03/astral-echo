@@ -46,12 +46,46 @@ impl SnapshotNode {
             visible,
         }
     }
+
+    pub fn derelict(
+        id: u32,
+        transform: Transform,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+        visible: bool,
+    ) -> Self {
+        Self {
+            entity: SnapshotId::Derelict(id),
+            transform,
+            mesh,
+            material,
+            visible,
+        }
+    }
+
+    pub fn hazard(
+        id: u32,
+        transform: Transform,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+        visible: bool,
+    ) -> Self {
+        Self {
+            entity: SnapshotId::Hazard(id),
+            transform,
+            mesh,
+            material,
+            visible,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SnapshotId {
     Entity(EntityId),
     Destination(u32),
+    Derelict(u32),
+    Hazard(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,6 +114,37 @@ pub struct RenderSnapshot {
 pub struct RenderOverlay {
     pub fade_to_black: f32,
     pub game_over: bool,
+    pub hud: HudState,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HudFlightState {
+    #[default]
+    Free,
+    Atmospheric,
+    Landing,
+    Landed,
+    Impacted,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HudAutopilotState {
+    #[default]
+    Inactive,
+    Planned,
+    InTransit,
+    Completed,
+    Interrupted,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HudState {
+    pub flight: HudFlightState,
+    pub autopilot: HudAutopilotState,
+    pub target: Option<u32>,
+    pub active_enemies: u32,
+    pub landing_available: bool,
 }
 
 pub const GAME_OVER_GLYPHS: [[u8; 7]; 8] = [
