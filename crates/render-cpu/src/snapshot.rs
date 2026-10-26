@@ -1,4 +1,6 @@
-use render_core::{PreparedScene, PreparedSceneStats, SnapshotScene};
+use render_core::{
+    game_over_layout, PreparedScene, PreparedSceneStats, SnapshotScene, GAME_OVER_GLYPHS,
+};
 
 use crate::{
     Color, CpuPipeline, Framebuffer, FragmentShader, PipelineConfig, PipelineStats, RasterError,
@@ -186,10 +188,36 @@ fn render_prepared_scene_with_shader(
         });
     pipeline.clear(clear);
     if game_over {
-        return Ok(pipeline.stats);
+        let stats = pipeline.stats;
+        drop(pipeline);
+        draw_game_over(framebuffer);
+        return Ok(stats);
     }
     pipeline.draw_prepared_scene(scene, view_projection)?;
     Ok(pipeline.stats)
+}
+
+fn draw_game_over(framebuffer: &mut Framebuffer) {
+    let (left, top, scale) = game_over_layout(framebuffer.width(), framebuffer.height());
+    let color = Color::new(255, 64, 48, 255);
+    for (glyph_index, glyph) in GAME_OVER_GLYPHS.iter().enumerate() {
+        let word_gap = u32::from(glyph_index >= 4) * 2 * scale;
+        let glyph_left = left + glyph_index as u32 * 6 * scale + word_gap;
+        for (row, bits) in glyph.iter().copied().enumerate() {
+            for column in 0..5u32 {
+                if bits & (1 << (4 - column)) == 0 {
+                    continue;
+                }
+                let x = glyph_left + column * scale;
+                let y = top + row as u32 * scale;
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        framebuffer.set_pixel(x + dx, y + dy, color);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn overlay_clear_color(overlay: render_core::RenderOverlay) -> Color {

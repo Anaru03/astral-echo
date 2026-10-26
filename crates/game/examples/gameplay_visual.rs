@@ -113,7 +113,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             config,
             source,
             start_gpu,
-            |_| {},
+            |_, _| {},
             |scene| {
                 scene.set_lighting_mode(LightingMode::Lambert);
                 scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
@@ -181,17 +181,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .as_ref()
                     .ok_or("missing impact output paths")?[index]
                     .clone();
-                let black = is_black_frame(framebuffer.color_bytes());
+                let visible = has_game_over_indicator(framebuffer.color_bytes());
                 println!(
-                    "impact backend=cpu index={index} tick={} fade_to_black={} game_over={} framebuffer_black={} path={}",
+                    "impact backend=cpu index={index} tick={} fade_to_black={} game_over={} framebuffer_game_over={} path={}",
                     snapshots[index].tick.0,
                     snapshots[index].overlay.fade_to_black,
                     snapshots[index].overlay.game_over,
-                    black,
+                    visible,
                     image.display()
                 );
-                if index == 2 && !black {
-                    return Err("terminal CPU framebuffer was not black".into());
+                if index == 2 && !visible {
+                    return Err("terminal CPU framebuffer has no GAME OVER indicator".into());
                 }
                 render_cpu::write_png(&image, &framebuffer)?;
             }
@@ -227,17 +227,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .as_ref()
                     .ok_or("missing impact output paths")?[index]
                     .clone();
-                let black = is_black_frame(&image.rgba);
+                let visible = has_game_over_indicator(&image.rgba);
                 println!(
-                    "impact backend=gpu index={index} tick={} fade_to_black={} game_over={} framebuffer_black={} path={}",
+                    "impact backend=gpu index={index} tick={} fade_to_black={} game_over={} framebuffer_game_over={} path={}",
                     snapshots[index].tick.0,
                     snapshots[index].overlay.fade_to_black,
                     snapshots[index].overlay.game_over,
-                    black,
+                    visible,
                     path.display()
                 );
-                if index == 2 && !black {
-                    return Err("terminal GPU framebuffer was not black".into());
+                if index == 2 && !visible {
+                    return Err("terminal GPU framebuffer has no GAME OVER indicator".into());
                 }
                 image.write_png(&path)?;
             }
@@ -247,7 +247,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let image = target.readback()?;
         let readback_ms = start.elapsed().as_secs_f64() * 1000.0;
         println!("GPU frames={iterations} submit_to_completion_avg_ms={render_ms:.3} readback_ms={readback_ms:.3}");
-        if !demo_flight {
+        if !demo_flight && !demo_impact {
             println!(
                 "CPU/GPU comparison {:?}",
                 support::compare(&support::cpu_image(&scene, width, height), &image)
@@ -294,9 +294,18 @@ fn validate_impact_snapshots(
     Ok(())
 }
 
-fn is_black_frame(rgba: &[u8]) -> bool {
-    rgba.chunks_exact(4)
-        .all(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0)
+fn has_game_over_indicator(rgba: &[u8]) -> bool {
+    let mut indicator = false;
+    for pixel in rgba.chunks_exact(4) {
+        let red = pixel[0] > 200 && pixel[1] < 100 && pixel[2] < 100;
+        let black = pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0;
+        if red {
+            indicator = true;
+        } else if !black {
+            return false;
+        }
+    }
+    indicator
 }
 
 fn unique_impact_paths(path: &Path) -> [PathBuf; 3] {

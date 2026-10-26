@@ -14,4 +14,5 @@ pub use hot_window::{
 pub use pixels::{copy_nearest_rgba, rgba_to_xrgb, PixelError, ResizeState, ScaleLayout};
 pub use timing::{FrameMetrics, FramePacer};
 pub use window::{run_window, run_window_with_input, PresentError, RunReport};
+pub use winit::event::ElementState;
 pub use winit::keyboard::KeyCode;
