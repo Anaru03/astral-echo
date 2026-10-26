@@ -3,8 +3,8 @@ use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::task::{Context as TaskContext, Poll, Waker};
-use std::time::Instant;
+use std::task::{Context as TaskContext, Poll, Wake, Waker};
+use std::time::{Duration, Instant};
 
 use render_core::{InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene};
 use render_cpu::{
@@ -16,7 +16,7 @@ use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
@@ -64,6 +64,8 @@ pub fn run_hot_swap_window_with_input_and_scene(
     configure_scene: impl FnMut(&mut SnapshotScene) + 'static,
     debug: GraphicsDebugConfig,
 ) -> Result<HotSwapReport, String> {
+    let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
+    let wake_proxy = event_loop.create_proxy();
     let mut app = Host {
         config,
         source,
@@ -80,9 +82,9 @@ pub fn run_hot_swap_window_with_input_and_scene(
         debug,
         debug_frame: 0,
         frames: 0,
+        wake_proxy,
     };
-    EventLoop::new()
-        .map_err(|e| e.to_string())?
+    event_loop
         .run_app(&mut app)
         .map_err(|e| e.to_string())?;
     app.failure.map_or_else(|| Ok(app.report), Err)
@@ -106,6 +108,7 @@ struct Host {
     debug: GraphicsDebugConfig,
     debug_frame: u64,
     frames: u64,
+    wake_proxy: EventLoopProxy<()>,
 }
 
 struct HostState {
@@ -124,6 +127,14 @@ struct HostState {
     cpu_redraw: CpuRedrawGate,
     pending_gpu: Option<Pin<Box<dyn Future<Output = Result<SurfaceRenderer, GpuError>>>>>,
     pending_gpu_started: Option<Instant>,
+}
+
+struct PendingGpuWake(EventLoopProxy<()>);
+
+impl Wake for PendingGpuWake {
+    fn wake(self: Arc<Self>) {
+        let _ = self.0.send_event(());
+    }
 }
 
 impl ApplicationHandler for Host {
@@ -318,7 +329,16 @@ impl ApplicationHandler for Host {
             ) {
                 state.window.request_redraw();
             }
+            if state.pending_gpu.is_some() {
+                _event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                    Instant::now() + Duration::from_millis(16),
+                ));
+            }
         }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: ()) {
+        self.poll_pending_gpu(event_loop);
     }
 }
 
@@ -331,16 +351,20 @@ impl Host {
         else {
             return;
         };
-        let waker = Waker::noop();
-        let mut context = TaskContext::from_waker(waker);
+        let waker = Waker::from(Arc::new(PendingGpuWake(self.wake_proxy.clone())));
+        let mut context = TaskContext::from_waker(&waker);
         match pending.as_mut().poll(&mut context) {
             Poll::Pending => {
                 if let Some(state) = self.state.as_mut() {
                     state.pending_gpu = Some(pending);
                 }
-                event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+                println!("hot-swap gpu-poll pending");
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                    Instant::now() + Duration::from_millis(16),
+                ));
             }
             Poll::Ready(Ok(mut gpu)) => {
+                println!("hot-swap gpu-poll ready");
                 let preparation_ms = self
                     .state
                     .as_mut()
@@ -380,6 +404,7 @@ impl Host {
                 }
             }
             Poll::Ready(Err(error)) => {
+                println!("hot-swap gpu-poll error={error}");
                 let preparation_ms = self
                     .state
                     .as_mut()
@@ -493,7 +518,13 @@ impl Host {
         let Some(state) = self.state.as_mut() else {
             return;
         };
+        println!(
+            "hot-swap key-g enter backend={:?} pending={}",
+            state.backend.backend(),
+            state.pending_gpu.is_some()
+        );
         if state.pending_gpu.is_some() {
+            println!("hot-swap key-g exit pending-request-ignored");
             return;
         }
         let target = if state.backend.backend() == BackendKind::Cpu {
@@ -524,6 +555,7 @@ impl Host {
                         }
                         Ok(gpu)
                     }));
+                    println!("hot-swap key-g exit pending=true");
                     return;
                 }
             };
@@ -597,6 +629,11 @@ impl Host {
                 self.report.last_transition_ms.unwrap_or_default()
             );
         }
+        let pending = state.pending_gpu.is_some();
+        println!(
+            "hot-swap key-g exit backend={:?} pending={}",
+            target, pending
+        );
         let _ = state;
         if let Some(error) = transition_error {
             self.report_gpu_error(error);

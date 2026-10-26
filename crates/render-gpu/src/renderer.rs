@@ -1,6 +1,7 @@
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use render_core::{
@@ -172,6 +173,8 @@ impl GpuRenderer {
         format: wgpu::TextureFormat,
         scene: &[(RasterMesh, Transform)],
     ) -> Result<Self, GpuError> {
+        let started = Instant::now();
+        println!("hot-swap gpu-resources-start nodes={}", scene.len());
         gpu.check()?;
         if !matches!(
             format,
@@ -287,7 +290,7 @@ impl GpuRenderer {
             return Err(GpuError::Backend(error.to_string()));
         }
         gpu.check()?;
-        Ok(Self {
+        let result = Self {
             gpu,
             pipeline,
             pipeline_layout,
@@ -306,7 +309,12 @@ impl GpuRenderer {
             snapshot_keys: None,
             prepared_keys: Vec::new(),
             prepared_meshes: Vec::new(),
-        })
+        };
+        println!(
+            "hot-swap gpu-resources-ready elapsed_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        Ok(result)
     }
 
     pub fn enable_gpu_timing(&mut self) -> bool {

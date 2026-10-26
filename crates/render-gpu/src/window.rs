@@ -54,6 +54,8 @@ impl SurfaceRenderer {
         scene: &[(RasterMesh, Transform)],
         options: GpuOptions,
     ) -> Result<Self, GpuError> {
+        let started = Instant::now();
+        println!("hot-swap gpu-surface-start");
         let instance = GpuContext::create_instance(options)?;
         let surface = instance
             .create_surface(window.clone())
@@ -68,6 +70,10 @@ impl SurfaceRenderer {
         let mut config = surface
             .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
             .ok_or_else(|| GpuError::Unavailable("adapter cannot present to window".into()))?;
+        println!(
+            "hot-swap gpu-surface-configured elapsed_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
         let formats = surface.get_capabilities(&gpu.adapter).formats;
         config.format = formats
             .iter()
@@ -108,6 +114,10 @@ impl SurfaceRenderer {
             hdr_view: None,
         };
         result.resize_without_wait(size.width, size.height)?;
+        println!(
+            "hot-swap gpu-surface-ready elapsed_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
         Ok(result)
     }
 

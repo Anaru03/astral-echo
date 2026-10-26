@@ -3,6 +3,7 @@ use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
+use std::time::Instant;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GpuError {
@@ -99,6 +100,8 @@ impl GpuContext {
         surface: Option<&wgpu::Surface<'_>>,
         options: GpuOptions,
     ) -> Result<Self, GpuError> {
+        let started = Instant::now();
+        println!("hot-swap gpu-adapter-requested");
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -107,6 +110,12 @@ impl GpuContext {
         })
             .await
             .map_err(|e| GpuError::Unavailable(e.to_string()))?;
+        println!(
+            "hot-swap gpu-adapter-ready elapsed_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        let device_started = Instant::now();
+        println!("hot-swap gpu-device-requested");
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
             label: Some("Astral Echo GPU"),
@@ -115,6 +124,11 @@ impl GpuContext {
         })
         .await
         .map_err(|e| GpuError::Backend(e.to_string()))?;
+        println!(
+            "hot-swap gpu-device-ready elapsed_ms={:.3} total_ms={:.3}",
+            device_started.elapsed().as_secs_f64() * 1000.0,
+            started.elapsed().as_secs_f64() * 1000.0
+        );
         let failure = Arc::new(Mutex::new(None));
         let errors = failure.clone();
         device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
