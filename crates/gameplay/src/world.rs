@@ -5177,6 +5177,12 @@ impl GameplayWorld {
     pub fn planet_flight_state(&self) -> PlanetFlightState {
         self.navigation.planet_flight_state()
     }
+    pub fn impact_flash_intensity(&self) -> Option<f32> {
+        self.navigation.impact_flash_intensity(self.time().elapsed)
+    }
+    pub fn impact_fade_to_black(&self) -> Option<f32> {
+        self.navigation.impact_fade_to_black(self.time().elapsed)
+    }
     pub fn landing_available(&self, destination: DestinationId) -> bool {
         self.navigation
             .landing_available(destination, self.time().elapsed)

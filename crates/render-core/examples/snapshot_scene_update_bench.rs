@@ -61,6 +61,7 @@ fn snapshot(size: usize) -> RenderSnapshot {
         camera_position: camera.position(),
         view: camera.view_matrix(),
         projection: camera.projection_matrix(),
+        overlay: Default::default(),
     }
 }
 
