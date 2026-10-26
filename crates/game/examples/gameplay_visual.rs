@@ -262,7 +262,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("PNG={} demo_flight={} gameplay_tick_unchanged={}", path.display(), demo_flight, tick.0);
     Ok(())
-}\ No newline at end of file
+}
 
 fn demo_path(path: &Path, index: usize) -> PathBuf {
     let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("frame");

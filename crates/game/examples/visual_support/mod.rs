@@ -77,7 +77,7 @@ pub fn fixture_world() -> GameplayWorld {
         )
         .unwrap();
     world
-}\ No newline at end of file
+}
 
 pub fn deterministic_flight_session() -> (ProjectEchoSession, DestinationId) {
     let mut session = ProjectEchoSession::new();
@@ -197,17 +197,7 @@ pub fn deterministic_impact_snapshots(width: u32, height: u32) -> Vec<RenderSnap
         delta: Duration(900),
     }]);
     let game_over = snapshot(session.world(), width, height);
-    let mut snapshots = vec![before, fade, game_over];
-    for snapshot in &mut snapshots {
-        for node in &mut snapshot.nodes {
-            if node.entity
-                == render_core::SnapshotId::Entity(game::render_bridge::IMPACT_FLASH_ENTITY)
-            {
-                node.material = render_core::VisualAssets::SUN;
-            }
-        }
-    }
-    snapshots
+    vec![before, fade, game_over]
 }
 
 #[allow(dead_code)]

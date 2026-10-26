@@ -541,6 +541,17 @@ fn real_impact_propagates_to_terminal_render_overlay() {
     assert!(impact_snapshot.overlay.fade_to_black.is_finite());
     assert!(impact_snapshot.overlay.fade_to_black < 1.0);
     assert!(!impact_snapshot.overlay.game_over);
+    let flash = impact_snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Entity(IMPACT_FLASH_ENTITY))
+        .expect("impact snapshot should contain its flash node");
+    assert_eq!((flash.mesh, flash.material), (SUN_MESH, SUN_MATERIAL));
+    let mut scene = SnapshotScene::default();
+    scene
+        .update(&impact_snapshot)
+        .expect("impact flash assets should resolve through SnapshotScene");
+    assert!(scene.mesh(flash).is_ok());
 
     session.update([gameplay::GameplayCommand::AdvanceTime {
         delta: engine::Duration(1_000),

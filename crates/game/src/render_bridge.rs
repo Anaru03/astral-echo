@@ -315,7 +315,7 @@ pub fn snapshot_from_world_with_camera(
                             Vec3::splat(0.5 + intensity * 1.5),
                         ),
                         SUN_MESH,
-                        ENEMY_MATERIAL,
+                        SUN_MATERIAL,
                         true,
                     ));
                 }
