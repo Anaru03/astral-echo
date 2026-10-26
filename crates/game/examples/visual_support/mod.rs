@@ -77,7 +77,7 @@ pub fn fixture_world() -> GameplayWorld {
         )
         .unwrap();
     world
-}
+}\ No newline at end of file
 
 pub fn deterministic_flight_session() -> (ProjectEchoSession, DestinationId) {
     let mut session = ProjectEchoSession::new();
@@ -167,6 +167,46 @@ pub fn deterministic_flight_snapshots(width: u32, height: u32) -> Vec<RenderSnap
     }]);
     snapshots.push(deterministic_flight_snapshot(&session, width, height, 1));
     snapshots.push(deterministic_flight_snapshot(&session, width, height, 2));
+    snapshots
+}
+
+#[allow(dead_code)]
+pub fn deterministic_impact_snapshots(width: u32, height: u32) -> Vec<RenderSnapshot> {
+    let (mut session, planet) = deterministic_flight_session();
+    let before = snapshot(session.world(), width, height);
+    for _ in 0..20 {
+        session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        }]);
+        if matches!(
+            session.world().planet_flight_state(),
+            gameplay::PlanetFlightState::Impacted { planet: active } if active == planet
+        ) {
+            break;
+        }
+    }
+    assert!(matches!(
+        session.world().planet_flight_state(),
+        gameplay::PlanetFlightState::Impacted { planet: active } if active == planet
+    ));
+    session.update([GameplayCommand::AdvanceTime {
+        delta: Duration(100),
+    }]);
+    let fade = snapshot(session.world(), width, height);
+    session.update([GameplayCommand::AdvanceTime {
+        delta: Duration(900),
+    }]);
+    let game_over = snapshot(session.world(), width, height);
+    let mut snapshots = vec![before, fade, game_over];
+    for snapshot in &mut snapshots {
+        for node in &mut snapshot.nodes {
+            if node.entity
+                == render_core::SnapshotId::Entity(game::render_bridge::IMPACT_FLASH_ENTITY)
+            {
+                node.material = render_core::VisualAssets::SUN;
+            }
+        }
+    }
     snapshots
 }
 
