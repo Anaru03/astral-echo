@@ -12,9 +12,13 @@ use gameplay::{
 };
 use render_core::{LightingMode, MaterialInfo, VisualAssets};
 use render_present::{
-    run_hot_swap_window_with_input_and_scene, ElementState, GraphicsDebugConfig, KeyCode, Preset,
-    WindowConfig,
+    run_hot_swap_window_with_input_and_scene_and_focus, ElementState, GraphicsDebugConfig,
+    KeyCode, Preset, WindowConfig,
 };
+
+#[path = "gamepad.rs"]
+mod gamepad;
+use gamepad::{ControllerButton, GamepadInput};
 
 const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
@@ -105,6 +109,9 @@ struct VisualBridge {
     feedback: String,
     observation: ObservationTransition,
     flight_keys: FlightKeys,
+    gamepad: GamepadInput,
+    gamepad_flight: GameplayVec3,
+    last_discrete_action: Option<KeyCode>,
 }
 
 impl VisualBridge {
@@ -266,6 +273,9 @@ impl VisualBridge {
             feedback: "ESCENA INICIALIZADA".to_owned(),
             observation: ObservationTransition::default(),
             flight_keys: FlightKeys::default(),
+            gamepad: GamepadInput::new(),
+            gamepad_flight: GameplayVec3::ZERO,
+            last_discrete_action: None,
         })
     }
 
@@ -293,12 +303,13 @@ impl VisualBridge {
         let enemy = self.enemy;
         let pilot_station = self.pilot_station;
         if self.flight_keys.set(key, state == ElementState::Pressed) {
-            self.accelerate_ship(player, pilot_station, self.flight_keys.input());
+            self.accelerate_ship(player, pilot_station, self.current_flight_input());
             return;
         }
         if state != ElementState::Pressed {
             return;
         }
+        self.last_discrete_action = Some(key);
         match key {
             KeyCode::Space => self.issue([GameplayCommand::AdvanceTime {
                 delta: Duration(100),
@@ -352,6 +363,64 @@ impl VisualBridge {
         ]);
     }
 
+    fn current_flight_input(&self) -> GameplayVec3 {
+        let keyboard = self.flight_keys.input();
+        GameplayVec3 {
+            x: (keyboard.x + self.gamepad_flight.x).clamp(-1.0, 1.0),
+            y: 0.0,
+            z: (keyboard.z + self.gamepad_flight.z).clamp(-1.0, 1.0),
+        }
+    }
+
+    fn set_gamepad_flight(&mut self, input: GameplayVec3) {
+        if input == self.gamepad_flight {
+            return;
+        }
+        self.gamepad_flight = input;
+        self.issue([GameplayCommand::AccelerateShip {
+            player: self.player,
+            pilot_station: self.pilot_station,
+            input: self.current_flight_input(),
+        }]);
+    }
+
+    fn poll_gamepad(&mut self) {
+        let keyboard_action = self.last_discrete_action.take();
+        let frame = self.gamepad.poll();
+        if !frame.connected {
+            self.set_gamepad_flight(GameplayVec3::ZERO);
+            return;
+        }
+        self.set_gamepad_flight(GameplayVec3 {
+            x: frame.left_stick.x,
+            y: 0.0,
+            z: frame.left_stick.y,
+        });
+        self.observation.adjust_orbit(
+            frame.right_stick.x * OBSERVATION_AZIMUTH_STEP,
+            -frame.right_stick.y * OBSERVATION_ELEVATION_STEP,
+        );
+        let mut handled = Vec::new();
+        for button in frame.pressed {
+            let Some(key) = controller_key(button) else {
+                continue;
+            };
+            if handled.contains(&key) {
+                continue;
+            }
+            if keyboard_action == Some(key) {
+                continue;
+            }
+            handled.push(key);
+            self.handle_key(key, ElementState::Pressed);
+        }
+    }
+
+    fn neutralize_gamepad(&mut self) {
+        self.gamepad.neutralize();
+        self.set_gamepad_flight(GameplayVec3::ZERO);
+    }
+
     fn toggle_observation(&mut self) {
         let now = self.session.world().time().elapsed.0;
         self.observation.toggle(now);
@@ -398,16 +467,18 @@ pub fn run() -> Result<(), String> {
     let runtime = Rc::new(RefCell::new(VisualBridge::new()?));
     let snapshot_runtime = Rc::clone(&runtime);
     let input_runtime = Rc::clone(&runtime);
+    let focus_runtime = Rc::clone(&runtime);
     let config = WindowConfig {
         title: "Astral Echo — CPU propio".into(),
         preset: Preset::Low,
         raster_controls: false,
         ..Default::default()
     };
-    run_hot_swap_window_with_input_and_scene(
+    run_hot_swap_window_with_input_and_scene_and_focus(
         config,
         Box::new(move |width, height| {
-            let bridge = snapshot_runtime.borrow();
+            let mut bridge = snapshot_runtime.borrow_mut();
+            bridge.poll_gamepad();
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
@@ -419,6 +490,11 @@ pub fn run() -> Result<(), String> {
         }),
         true,
         move |key, state| input_runtime.borrow_mut().handle_key(key, state),
+        move |focused| {
+            if !focused {
+                focus_runtime.borrow_mut().neutralize_gamepad();
+            }
+        },
         |scene| {
             scene.set_lighting_mode(LightingMode::Lambert);
             scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
@@ -438,9 +514,30 @@ pub fn run() -> Result<(), String> {
     .map_err(|error| format!("ventana visual propia: {error}"))
 }
 
+fn controller_key(button: ControllerButton) -> Option<KeyCode> {
+    match button {
+        ControllerButton::South | ControllerButton::RightTrigger => Some(KeyCode::KeyF),
+        ControllerButton::North | ControllerButton::East => Some(KeyCode::KeyO),
+        ControllerButton::West => Some(KeyCode::KeyQ),
+        ControllerButton::DPadUp => Some(KeyCode::ArrowUp),
+        ControllerButton::DPadDown => Some(KeyCode::ArrowDown),
+        ControllerButton::DPadLeft => Some(KeyCode::ArrowLeft),
+        ControllerButton::DPadRight => Some(KeyCode::ArrowRight),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn controller_bindings_reuse_existing_keyboard_actions() {
+        assert_eq!(controller_key(ControllerButton::South), Some(KeyCode::KeyF));
+        assert_eq!(controller_key(ControllerButton::RightTrigger), Some(KeyCode::KeyF));
+        assert_eq!(controller_key(ControllerButton::West), Some(KeyCode::KeyQ));
+        assert_eq!(controller_key(ControllerButton::North), Some(KeyCode::KeyO));
+        assert_eq!(controller_key(ControllerButton::DPadLeft), Some(KeyCode::ArrowLeft));
+    }
 
     #[test]
     fn flight_keys_produce_distinct_individual_directions() {

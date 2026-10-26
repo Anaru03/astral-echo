@@ -2685,6 +2685,7 @@ dependencies = [
  "bevy",
  "engine",
  "gameplay",
+ "gilrs",
  "networking",
  "render-core",
  "render-cpu",
