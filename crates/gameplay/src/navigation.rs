@@ -347,6 +347,7 @@ pub struct NavigationState {
     planet_physics: BTreeMap<DestinationId, PlanetPhysics>,
     planet_flight_state: PlanetFlightState,
     travel_origin: Vec3,
+    impact_started_at: Option<Duration>,
 }
 
 impl Default for NavigationState {
@@ -372,6 +373,7 @@ impl Default for NavigationState {
             planet_physics: BTreeMap::new(),
             planet_flight_state: PlanetFlightState::Free,
             travel_origin: Vec3::ZERO,
+            impact_started_at: None,
         }
     }
 }
@@ -486,6 +488,20 @@ impl NavigationState {
 
     pub const fn planet_flight_state(&self) -> PlanetFlightState {
         self.planet_flight_state
+    }
+
+    pub fn impact_flash_intensity(&self, now: Duration) -> Option<f32> {
+        let started = self.impact_started_at?;
+        let elapsed = now.0.saturating_sub(started.0);
+        if elapsed >= 250 {
+            return None;
+        }
+        Some(1.0 - elapsed as f32 / 250.0)
+    }
+
+    pub fn impact_fade_to_black(&self, now: Duration) -> Option<f32> {
+        let started = self.impact_started_at?;
+        Some((now.0.saturating_sub(started.0) as f32 / 1_000.0).clamp(0.0, 1.0))
     }
 
     pub fn landing_available(
@@ -712,6 +728,7 @@ impl NavigationState {
             ) {
                 self.velocity = Vec3::ZERO;
                 self.planet_flight_state = PlanetFlightState::Impacted { planet: *destination };
+                self.impact_started_at = Some(now);
                 contact = Some((*destination, true));
                 break;
             }
@@ -775,6 +792,7 @@ impl NavigationState {
             self.current_position = sub_vec(planet, scale_vec(direction, radius / length));
             self.velocity = Vec3::ZERO;
             self.planet_flight_state = PlanetFlightState::Impacted { planet: destination };
+            self.impact_started_at = Some(now);
             self.travel_state = TravelState::Cancelled { destination };
             return Some((destination, self.current_position, true));
         }
@@ -1397,6 +1415,7 @@ impl NavigationState {
         self.current_position = impact_position;
         self.velocity = Vec3::ZERO;
         self.planet_flight_state = PlanetFlightState::Impacted { planet: destination };
+        self.impact_started_at = Some(now);
         self.travel_state = TravelState::Cancelled { destination };
         Err((destination, impact_position))
     }
@@ -1655,6 +1674,24 @@ mod tests {
         assert_eq!(navigation.planet_flight_state(), PlanetFlightState::Impacted { planet: DestinationId::new(7) });
         assert!(distance(navigation.current_position(), Vec3::ZERO) >= 2.0);
         assert!(navigation.advance_manual(Duration(100), Duration(0)).is_none());
+    }
+
+    #[test]
+    fn impact_flash_is_bounded_and_does_not_retrigger_terminal_motion() {
+        let mut navigation = navigation(Vec3 { x: 5.0, y: 0.0, z: 0.0 });
+        navigation
+            .set_acceleration_input(Vec3 { x: -1.0, y: 0.0, z: 0.0 })
+            .expect("input is valid");
+        navigation
+            .advance_manual(Duration(1_000), Duration(100))
+            .expect("active control advances");
+
+        assert_eq!(navigation.impact_flash_intensity(Duration(100)), Some(1.0));
+        assert!(navigation.impact_flash_intensity(Duration(249)).unwrap() > 0.0);
+        assert_eq!(navigation.impact_flash_intensity(Duration(350)), None);
+        assert_eq!(navigation.impact_fade_to_black(Duration(100)), Some(0.0));
+        assert_eq!(navigation.impact_fade_to_black(Duration(1_100)), Some(1.0));
+        assert!(navigation.advance_manual(Duration(100), Duration(400)).is_none());
     }
 
     #[test]

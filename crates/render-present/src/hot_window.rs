@@ -618,9 +618,12 @@ impl Host {
                 if update_shared_scene(&mut state.snapshot, &interpolated).is_err() {
                     return;
                 }
-                if state.snapshot.overlay().game_over {
-                    state.window.set_title("Astral Echo | GAME OVER");
-                }
+                let title = hud_title(
+                    &self.config.title,
+                    state.backend.backend(),
+                    state.snapshot.snapshot(),
+                );
+                state.window.set_title(&title);
                 state.backend.update_snapshot(BackendSnapshot {
                     value: (),
                     width: size.width,
@@ -732,6 +735,20 @@ fn update_shared_scene(
         .map_err(|error| error.to_string())
 }
 
+fn hud_title(base: &str, backend: BackendKind, snapshot: &RenderSnapshot) -> String {
+    if snapshot.overlay.game_over {
+        return format!("{base} | GAME OVER");
+    }
+    let backend = match backend {
+        BackendKind::Cpu => "CPU",
+        BackendKind::Gpu => "GPU",
+    };
+    format!(
+        "{base} | {backend} | tick={} | O observar | P vuelo | Flechas orbitar | Espacio tiempo | F aterrizar/atacar",
+        snapshot.tick.0
+    )
+}
+
 fn cpu_fallback_is_confirmable(backend: BackendKind, surface_ready: bool) -> bool {
     backend == BackendKind::Cpu && surface_ready
 }
@@ -837,6 +854,25 @@ mod tests {
         assert!(!resize_is_needed(Some((960, 540)), (960, 540)));
         assert!(resize_is_needed(Some((960, 540)), (1280, 720)));
         assert!(resize_is_needed(None, (960, 540)));
+    }
+
+    #[test]
+    fn hud_title_reports_backend_tick_and_controls() {
+        let snapshot = RenderSnapshot::minimal_demo();
+        let title = hud_title("Astral Echo", BackendKind::Cpu, &snapshot);
+
+        assert!(title.contains("CPU"));
+        assert!(title.contains("tick=1"));
+        assert!(title.contains("O observar"));
+        assert!(title.contains("F aterrizar/atacar"));
+    }
+
+    #[test]
+    fn hud_title_prioritizes_game_over() {
+        let mut snapshot = RenderSnapshot::minimal_demo();
+        snapshot.overlay.game_over = true;
+
+        assert_eq!(hud_title("Astral Echo", BackendKind::Gpu, &snapshot), "Astral Echo | GAME OVER");
     }
 }
 

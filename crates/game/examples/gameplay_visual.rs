@@ -3,12 +3,12 @@ mod support;
 
 use std::error::Error;
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use game::render_backend::{select_backend, BackendDecision, BackendRequest};
-use render_core::SnapshotScene;
+use render_core::{LightingMode, MaterialInfo, SnapshotScene, VisualAssets};
 use render_gpu::{GpuContext, GpuRenderer, OffscreenTarget};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -16,6 +16,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut window = false;
     let mut frames = None;
     let mut output = None;
+    let mut shader_time = None;
+    let mut demo_flight = false;
     let mut graphics_debug = false;
     let mut args = std::env::args().skip(1);
     while let Some(option) = args.next() {
@@ -31,9 +33,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 )
             }
             "--output" => output = Some(PathBuf::from(args.next().ok_or("missing PNG path")?)),
+            "--shader-time" => {
+                shader_time = Some(args.next().ok_or("missing shader time")?.parse::<f32>()?)
+            }
+            "--demo-flight" => demo_flight = true,
             "--help" => {
                 println!(
-                    "gameplay_visual [--backend cpu|gpu|auto] [--window] [--graphics-validate] [--frames N] [--output PATH]"
+                    "gameplay_visual [--backend cpu|gpu|auto] [--window] [--graphics-validate] [--frames N] [--output PATH] [--shader-time T] [--demo-flight]"
                 );
                 return Ok(());
             }
@@ -56,6 +62,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if window && output.is_some() {
         return Err("PNG output uses offscreen mode; omit --window".into());
     }
+    if window && demo_flight {
+        return Err("--demo-flight is available in offscreen mode; omit --window".into());
+    }
     let world = support::fixture_world();
     let tick = world.time().tick;
     println!("F5B read-only world tick={} ship={:?} players={} enemies={} destinations={} collectibles={}",tick.0,world.navigation().ship_id(),world.players().count(),world.enemies().count(),world.destinations().count(),world.collectibles().count());
@@ -69,10 +78,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         let debug = render_present::GraphicsDebugConfig {
             directory: graphics_debug.then(|| PathBuf::from("target/graphics-debug")),
         };
-        let report = render_present::run_hot_swap_window_with_debug(
+        let report = render_present::run_hot_swap_window_with_input_and_scene(
             config,
             Box::new(move |width, height| Ok(support::snapshot(&world, width, height))),
             start_gpu,
+            |_| {},
+            |scene| {
+                scene.set_lighting_mode(LightingMode::Lambert);
+                scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
+                scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
+            },
             debug,
         )?;
         println!(
@@ -82,45 +97,84 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let (width, height) = (640, 360);
+    let snapshots = if demo_flight {
+        support::deterministic_flight_snapshots(width, height)
+    } else {
+        vec![support::snapshot(&world, width, height)]
+    };
     let mut scene = SnapshotScene::default();
-    scene.update(&support::snapshot(&world, width, height))?;
+    scene.update(&snapshots[0])?;
+    scene.set_lighting_mode(LightingMode::Lambert);
+    scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
+    scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
     let count = frames.map(NonZeroU64::get).unwrap_or(1);
     let path = output.unwrap_or_else(|| PathBuf::from(format!("target/f5b-output/{backend}.png")));
     if matches!(decision, BackendDecision::Cpu { .. }) {
         let mut framebuffer = render_cpu::Framebuffer::new(width, height)?;
         let start = Instant::now();
-        for _ in 0..count {
-            render_cpu::render_snapshot_scene(
+        let iterations = if demo_flight { snapshots.len() } else { count as usize };
+        for index in 0..iterations {
+            if index > 0 {
+                scene.update(&snapshots[index])?;
+            }
+            render_cpu::render_snapshot_scene_with_shader_at_time(
                 &mut framebuffer,
                 &scene,
                 render_cpu::RasterMode::Secuencial,
+                render_cpu::FragmentShader::SolarBands,
+                shader_time.unwrap_or((tick.0 % 4096) as f32),
             )?;
+            if demo_flight {
+                render_cpu::write_png(&demo_path(&path, index), &framebuffer)?;
+            }
         }
-        let render_ms = start.elapsed().as_secs_f64() * 1000.0 / count as f64;
-        render_cpu::write_png(&path, &framebuffer)?;
-        println!("CPU frames={count} render_avg_ms={render_ms:.3}");
+        let render_ms = start.elapsed().as_secs_f64() * 1000.0 / iterations as f64;
+        if !demo_flight {
+            render_cpu::write_png(&path, &framebuffer)?;
+        }
+        println!("CPU frames={iterations} render_avg_ms={render_ms:.3}");
     } else {
         let gpu = Arc::new(GpuContext::new(Default::default())?);
         println!("ADAPTER {:?}", gpu.adapter_info());
         let mut renderer = GpuRenderer::from_snapshot(gpu.clone(), &scene)?;
         let target = OffscreenTarget::new(gpu.clone(), width, height)?;
         let start = Instant::now();
-        for _ in 0..count {
+        let iterations = if demo_flight { snapshots.len() } else { count as usize };
+        for index in 0..iterations {
+            if index > 0 {
+                scene.update(&snapshots[index])?;
+                renderer.sync_snapshot(&scene)?;
+            }
             target.render_snapshot(&mut renderer, &scene)?;
             gpu.wait()?;
+            if demo_flight {
+                target.readback()?.write_png(&demo_path(&path, index))?;
+            }
         }
-        let render_ms = start.elapsed().as_secs_f64() * 1000.0 / count as f64;
+        let render_ms = start.elapsed().as_secs_f64() * 1000.0 / iterations as f64;
         let start = Instant::now();
         let image = target.readback()?;
         let readback_ms = start.elapsed().as_secs_f64() * 1000.0;
-        println!("GPU frames={count} submit_to_completion_avg_ms={render_ms:.3} readback_ms={readback_ms:.3}");
-        println!(
-            "CPU/GPU comparison {:?}",
-            support::compare(&support::cpu_image(&scene, width, height), &image)
-        );
-        image.write_png(&path)?;
+        println!("GPU frames={iterations} submit_to_completion_avg_ms={render_ms:.3} readback_ms={readback_ms:.3}");
+        if !demo_flight {
+            println!(
+                "CPU/GPU comparison {:?}",
+                support::compare(&support::cpu_image(&scene, width, height), &image)
+            );
+        }
+        if !demo_flight {
+            image.write_png(&path)?;
+        }
     }
-    assert_eq!(tick, world.time().tick);
-    println!("PNG={} gameplay_tick_unchanged={}", path.display(), tick.0);
+    if !demo_flight {
+        assert_eq!(tick, world.time().tick);
+    }
+    println!("PNG={} demo_flight={} gameplay_tick_unchanged={}", path.display(), demo_flight, tick.0);
     Ok(())
+}
+
+fn demo_path(path: &Path, index: usize) -> PathBuf {
+    let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("frame");
+    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("png");
+    path.with_file_name(format!("{stem}-demo-{index:02}.{extension}"))
 }

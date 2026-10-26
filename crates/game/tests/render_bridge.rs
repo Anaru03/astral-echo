@@ -348,6 +348,66 @@ fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
 }
 
 #[test]
+fn seeded_surface_distribution_is_reproducible_and_local_to_the_planet() {
+    let first = academic_surface_objects_with_seed(0.0, 17, 12);
+    let repeated = academic_surface_objects_with_seed(0.0, 17, 12);
+    let other_seed = academic_surface_objects_with_seed(0.0, 18, 12);
+    assert_eq!(first, repeated);
+    assert_ne!(first, other_seed);
+
+    let planet = academic_planet_transform(0.0);
+    let inverse = planet.matrix().inverse();
+    let assets = VisualAssets::default();
+    for node in &first {
+        let local = inverse * node.transform.matrix();
+        let local_center = local.transform_point3(Vec3::ZERO);
+        let local_up = local.transform_vector3(Vec3::Y).normalize();
+        assert!(local.is_finite());
+        assert!((local_center.length() - SURFACE_OBJECT_RADIAL_OFFSET).abs() < 0.0001);
+        assert!(local_up.dot(local_center.normalize()) > 0.999);
+        let mesh = assets.mesh(node.mesh, node.material).unwrap();
+        assert!(mesh.vertices.iter().all(|vertex| {
+            node.transform
+                .matrix()
+                .transform_point3(vertex.position)
+                .distance(planet.translation)
+                > PLANET_SURFACE_RADIUS
+        }));
+    }
+}
+
+#[test]
+fn seeded_surface_distribution_handles_empty_and_capped_counts() {
+    assert!(academic_surface_objects_with_seed(0.0, 1, 0).is_empty());
+    assert_eq!(
+        academic_surface_objects_with_seed(0.0, 1, MAX_ACADEMIC_SURFACE_OBJECTS + 10).len(),
+        MAX_ACADEMIC_SURFACE_OBJECTS
+    );
+    let ids: std::collections::BTreeSet<_> = academic_surface_objects_with_seed(
+        0.0,
+        ACADEMIC_SURFACE_OBJECT_SEED,
+        MAX_ACADEMIC_SURFACE_OBJECTS,
+    )
+    .into_iter()
+    .map(|node| node.entity)
+    .collect();
+    assert_eq!(ids.len(), MAX_ACADEMIC_SURFACE_OBJECTS);
+}
+
+#[test]
+fn seeded_surface_distribution_follows_orbit_and_rotation_as_a_local_layout() {
+    let at_start = academic_surface_objects_with_seed(0.0, 91, 8);
+    let at_later = academic_surface_objects_with_seed(3.0, 91, 8);
+    let start_inverse = academic_planet_transform(0.0).matrix().inverse();
+    let later_inverse = academic_planet_transform(3.0).matrix().inverse();
+    for (start, later) in at_start.iter().zip(at_later.iter()) {
+        let start_local = start_inverse * start.transform.matrix();
+        let later_local = later_inverse * later.transform.matrix();
+        assert!((start_local - later_local).abs_diff_eq(render_core::Mat4::ZERO, 0.0001));
+    }
+}
+
+#[test]
 fn only_the_selected_academic_planet_orbits() {
     let mut world = support::fixture_world();
     world
@@ -418,6 +478,44 @@ fn observation_transition_reverses_from_current_progress_without_frame_state() {
     assert_ne!(start.position(), middle.position());
     assert_ne!(middle.position(), end.position());
     assert_eq!(before, format!("{world:?}"));
+}
+
+#[test]
+fn deterministic_flight_observation_demo_uses_one_world_and_two_snapshots() {
+    let (mut session, planet) = support::deterministic_flight_session();
+    let initial = snapshot_from_world(session.world(), Default::default());
+    session.update([gameplay::GameplayCommand::AdvanceTime {
+        delta: engine::Duration(500),
+    }]);
+    assert!(matches!(
+        session.world().travel_state(),
+        gameplay::TravelState::InProgress { .. }
+    ));
+    let mid = snapshot_from_world(session.world(), Default::default());
+    let repeat = snapshot_from_world(session.world(), Default::default());
+    assert_ne!(initial, mid);
+    assert_eq!(mid, repeat);
+    assert_ne!(
+        initial
+            .nodes
+            .iter()
+            .find(|node| node.entity == SnapshotId::Destination(planet.value()))
+            .unwrap()
+            .transform
+            .translation,
+        mid.nodes
+            .iter()
+            .find(|node| node.entity == SnapshotId::Destination(planet.value()))
+            .unwrap()
+            .transform
+            .translation
+    );
+
+    let before_camera = format!("{:?}", session.world());
+    let close = observation_camera(session.world(), 16.0 / 9.0, 1.0, 0.0, 0.0).unwrap();
+    let retreat = observation_camera(session.world(), 16.0 / 9.0, 0.0, 0.0, 0.0).unwrap();
+    assert_ne!(close.position(), retreat.position());
+    assert_eq!(before_camera, format!("{:?}", session.world()));
 }
 
 #[test]

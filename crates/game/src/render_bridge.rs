@@ -5,6 +5,9 @@ use render_core::{
 };
 
 pub const SUN_ENTITY: engine::EntityId = engine::EntityId::new(9_100);
+pub const LANDING_INDICATOR_ENTITY: engine::EntityId = engine::EntityId::new(9_205);
+pub const ATMOSPHERE_EFFECT_ENTITY: engine::EntityId = engine::EntityId::new(9_206);
+pub const IMPACT_FLASH_ENTITY: engine::EntityId = engine::EntityId::new(9_207);
 pub const SURFACE_OBJECT_IDS: [engine::EntityId; 4] = [
     engine::EntityId::new(9_201),
     engine::EntityId::new(9_202),
@@ -17,6 +20,8 @@ pub const PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.25;
 pub const PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.5;
 pub const PLANET_SURFACE_RADIUS: f32 = 5.0;
 pub const SURFACE_OBJECT_RADIAL_OFFSET: f32 = 2.0;
+pub const ACADEMIC_SURFACE_OBJECT_SEED: u64 = 0xA57A_1E5D;
+pub const MAX_ACADEMIC_SURFACE_OBJECTS: usize = 64;
 pub const PLANET_OBSERVATION_RADIUS: f32 = 14.0;
 pub const OBSERVATION_TRANSITION_DURATION_MS: u64 = 1_000;
 const SUN_POSITION: Vec3 = Vec3::new(0.0, 0.0, -18.0);
@@ -40,55 +45,85 @@ pub const SUN_MATERIAL: MaterialHandle = VisualAssets::SUN;
 pub const COLLECTIBLE_MATERIAL: MaterialHandle = VisualAssets::COLLECTIBLE;
 
 pub fn academic_surface_objects(elapsed_seconds: f64) -> [SnapshotNode; 4] {
+    let objects = academic_surface_objects_with_seed(
+        elapsed_seconds,
+        ACADEMIC_SURFACE_OBJECT_SEED,
+        SURFACE_OBJECT_IDS.len(),
+    );
+    [objects[0], objects[1], objects[2], objects[3]]
+}
+
+pub fn academic_surface_objects_with_seed(
+    elapsed_seconds: f64,
+    seed: u64,
+    count: usize,
+) -> Vec<SnapshotNode> {
     let planet = academic_planet_transform(elapsed_seconds);
-    let object_specs = [
-        (
-            SURFACE_OBJECT_IDS[0],
-            PLAYER_MESH,
-            PLAYER_MATERIAL,
-            Vec3::new(0.0, 1.0, 0.0),
-            0.0,
-            Vec3::new(0.2, 0.35, 0.2),
-        ),
-        (
-            SURFACE_OBJECT_IDS[1],
-            ENEMY_MESH,
-            ENEMY_MATERIAL,
-            Vec3::new(1.0, 0.0, 0.0),
-            -0.35,
-            Vec3::new(0.18, 0.48, 0.18),
-        ),
-        (
-            SURFACE_OBJECT_IDS[2],
-            DESTINATION_MESH,
-            DESTINATION_MATERIAL,
-            Vec3::new(0.0, 0.0, 1.0),
-            0.55,
-            Vec3::new(0.3, 0.22, 0.3),
-        ),
-        (
-            SURFACE_OBJECT_IDS[3],
-            COLLECTIBLE_MESH,
-            COLLECTIBLE_MATERIAL,
-            Vec3::new(-1.0, 0.45, 0.0).normalize(),
-            0.8,
-            Vec3::splat(0.26),
-        ),
-    ];
-    object_specs
-        .map(|(id, mesh, material, direction, spin, scale)| {
-            SnapshotNode::new(
-                id,
-                planet.composed(Transform::new(
-                    direction * SURFACE_OBJECT_RADIAL_OFFSET,
-                    surface_object_orientation(direction, spin),
-                    scale,
-                )),
-                mesh,
-                material,
-                true,
-            )
-        })
+    let mut rng = SurfaceDistribution::new(seed);
+    let mut objects = Vec::with_capacity(count.min(MAX_ACADEMIC_SURFACE_OBJECTS));
+    for index in 0..count.min(MAX_ACADEMIC_SURFACE_OBJECTS) {
+        let direction = rng.unit_direction();
+        let spin = rng.next_f32() * core::f32::consts::TAU;
+        let scale = Vec3::new(
+            0.08 + rng.next_f32() * 0.08,
+            0.1 + rng.next_f32() * 0.12,
+            0.08 + rng.next_f32() * 0.08,
+        );
+        let (mesh, material) = match index % 4 {
+            0 => (PLAYER_MESH, PLAYER_MATERIAL),
+            1 => (ENEMY_MESH, ENEMY_MATERIAL),
+            2 => (DESTINATION_MESH, DESTINATION_MATERIAL),
+            _ => (COLLECTIBLE_MESH, COLLECTIBLE_MATERIAL),
+        };
+        let id = SURFACE_OBJECT_IDS
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| engine::EntityId::new(9_300 + index as u64));
+        objects.push(SnapshotNode::new(
+            id,
+            planet.composed(Transform::new(
+                direction * SURFACE_OBJECT_RADIAL_OFFSET,
+                surface_object_orientation(direction, spin),
+                scale,
+            )),
+            mesh,
+            material,
+            true,
+        ));
+    }
+    objects
+}
+
+struct SurfaceDistribution {
+    state: u64,
+}
+
+impl SurfaceDistribution {
+    fn new(seed: u64) -> Self {
+        Self {
+            state: seed | 1,
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut value = self.state;
+        value ^= value >> 12;
+        value ^= value << 25;
+        value ^= value >> 27;
+        self.state = value;
+        value.wrapping_mul(2_685_821_657_736_338_717)
+    }
+
+    fn next_f32(&mut self) -> f32 {
+        ((self.next_u64() >> 40) as f32) / ((1u32 << 24) - 1) as f32
+    }
+
+    fn unit_direction(&mut self) -> Vec3 {
+        let y = self.next_f32() * 2.0 - 1.0;
+        let longitude = self.next_f32() * core::f32::consts::TAU;
+        let ring = (1.0 - y * y).max(0.0).sqrt();
+        Vec3::new(ring * longitude.cos(), y, ring * longitude.sin()).normalize()
+    }
 }
 
 fn surface_object_orientation(direction: Vec3, spin: f32) -> Quat {
@@ -131,6 +166,10 @@ pub fn snapshot_from_world_with_camera(
     snapshot
         .nodes
         .reserve(expected_snapshot_node_count(world, params, academic_planet));
+    if let Some(fade) = world.impact_fade_to_black() {
+        snapshot.overlay.fade_to_black = fade;
+        snapshot.overlay.game_over = fade >= 1.0;
+    }
 
     if world.navigation().ship_id().is_some() {
         snapshot.push_node(SnapshotNode::new(
@@ -227,8 +266,61 @@ pub fn snapshot_from_world_with_camera(
                 .is_some_and(|destination| destination.discovery != gameplay::DiscoveryState::Unknown)
     });
     if academic_planet_visible {
+        if let Some(planet_id) = academic_planet {
+            if world.landing_available(planet_id) {
+                let position = world
+                    .planet_position_at(planet_id, world.time().elapsed)
+                    .map(from_engine)
+                    .unwrap_or_else(|| academic_planet_transform(elapsed_seconds).translation);
+                snapshot.push_node(SnapshotNode::new(
+                    LANDING_INDICATOR_ENTITY,
+                    Transform::new(
+                        position + Vec3::new(0.0, PLANET_SURFACE_RADIUS + 2.0, 0.0),
+                        Quat::IDENTITY,
+                        Vec3::splat(0.65),
+                    ),
+                    DESTINATION_MESH,
+                    DESTINATION_MATERIAL,
+                    true,
+                ));
+            }
+        }
         for node in academic_surface_objects(elapsed_seconds) {
             snapshot.push_node(node);
+        }
+    }
+
+    if let Some(ship_position) = visual_ship_position(world) {
+        match world.planet_flight_state() {
+            gameplay::PlanetFlightState::Atmospheric { intensity, .. } => {
+                snapshot.push_node(SnapshotNode::new(
+                    ATMOSPHERE_EFFECT_ENTITY,
+                    Transform::new(
+                        ship_position,
+                        Quat::IDENTITY,
+                        Vec3::splat(0.35 + intensity.clamp(0.0, 1.0) * 0.8),
+                    ),
+                    SUN_MESH,
+                    SUN_MATERIAL,
+                    true,
+                ));
+            }
+            gameplay::PlanetFlightState::Impacted { .. } => {
+                if let Some(intensity) = world.impact_flash_intensity() {
+                    snapshot.push_node(SnapshotNode::new(
+                        IMPACT_FLASH_ENTITY,
+                        Transform::new(
+                            ship_position,
+                            Quat::IDENTITY,
+                            Vec3::splat(0.5 + intensity * 1.5),
+                        ),
+                        SUN_MESH,
+                        ENEMY_MATERIAL,
+                        true,
+                    ));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -279,6 +371,18 @@ fn expected_snapshot_node_count(
     });
     if academic_planet_visible {
         count += SURFACE_OBJECT_IDS.len();
+        if academic_planet.is_some_and(|id| world.landing_available(id)) {
+            count += 1;
+        }
+    }
+    if matches!(
+        world.planet_flight_state(),
+        gameplay::PlanetFlightState::Atmospheric { .. }
+    ) || world.impact_flash_intensity().is_some()
+    {
+        if visual_ship_position(world).is_some() {
+            count += 1;
+        }
     }
     if params.include_collectibles {
         count += world.collectibles().count();
