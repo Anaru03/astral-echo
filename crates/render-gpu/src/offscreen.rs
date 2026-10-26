@@ -135,7 +135,7 @@ impl OffscreenTarget {
     ) -> Result<(), GpuError> {
         self.validate_renderer(renderer)?;
         renderer.sync_snapshot(scene)?;
-        self.render_matrix(renderer, scene.view_projection())
+        self.render_snapshot_matrix(renderer, scene)
     }
 
     pub fn render_prepared(
@@ -176,6 +176,19 @@ impl OffscreenTarget {
         pass.encode(&self.gpu, &mut encoder, &self.color_view);
         self.gpu.queue.submit([encoder.finish()]);
         Ok(())
+    }
+
+    fn render_snapshot_matrix(
+        &self,
+        renderer: &mut GpuRenderer,
+        scene: &SnapshotScene,
+    ) -> Result<(), GpuError> {
+        self.validate_renderer(renderer)?;
+        if scene.overlay().game_over {
+            renderer.clear_view(&self.color_view, &self.depth.view, [0, 0, 0, 255])?;
+            return Ok(());
+        }
+        self.render_matrix(renderer, scene.view_projection())
     }
 
     pub fn readback(&self) -> Result<GpuImage, GpuError> {

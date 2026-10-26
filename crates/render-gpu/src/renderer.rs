@@ -415,6 +415,16 @@ impl GpuRenderer {
         depth: &wgpu::TextureView,
         vp: Mat4,
     ) -> Result<wgpu::SubmissionIndex, GpuError> {
+        self.render_to_view_matrix_with_clear(color, depth, vp, CLEAR_RGBA)
+    }
+
+    pub fn render_to_view_matrix_with_clear(
+        &mut self,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        vp: Mat4,
+        clear: [u8; 4],
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
         self.gpu.check()?;
         if !vp.is_finite() {
             return Err(GpuError::InvalidInput("non-finite camera matrix".into()));
@@ -470,9 +480,9 @@ impl GpuRenderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: channel(CLEAR_RGBA[0]),
-                            g: channel(CLEAR_RGBA[1]),
-                            b: channel(CLEAR_RGBA[2]),
+                            r: channel(clear[0]),
+                            g: channel(clear[1]),
+                            b: channel(clear[2]),
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -508,6 +518,51 @@ impl GpuRenderer {
                     .as_ref()
                     .is_some_and(|scene| scene.shadows_active()),
             );
+        }
+        Ok(self.gpu.queue.submit([encoder.finish()]))
+    }
+
+    pub fn clear_view(
+        &mut self,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        clear: [u8; 4],
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
+        self.gpu.check()?;
+        let channel = |v: u8| f64::from(v) / 255.0;
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("overlay clear"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("overlay clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: channel(clear[0]),
+                            g: channel(clear[1]),
+                            b: channel(clear[2]),
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
         }
         Ok(self.gpu.queue.submit([encoder.finish()]))
     }

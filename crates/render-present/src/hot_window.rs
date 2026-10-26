@@ -616,6 +616,9 @@ impl Host {
                 if update_shared_scene(&mut state.snapshot, &interpolated).is_err() {
                     return;
                 }
+                if state.snapshot.overlay().game_over {
+                    state.window.set_title("Astral Echo | GAME OVER");
+                }
                 state.backend.update_snapshot(BackendSnapshot {
                     value: (),
                     width: size.width,
