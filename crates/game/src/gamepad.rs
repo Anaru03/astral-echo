@@ -1,6 +1,174 @@
+use std::time::{Duration, Instant};
+
+use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Replay, Repeat, Ticks};
 use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
 
 pub const DEFAULT_DEADZONE: f32 = 0.18;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HapticEvent {
+    AttackExecuted,
+    EnemyDefeated,
+    ItemCollected,
+    Impact,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HapticPattern {
+    pub weak: u16,
+    pub strong: u16,
+    pub duration_ms: u32,
+    pub priority: u8,
+}
+
+pub fn haptic_pattern(event: HapticEvent) -> HapticPattern {
+    match event {
+        HapticEvent::AttackExecuted => HapticPattern {
+            weak: 26_000,
+            strong: 9_000,
+            duration_ms: 100,
+            priority: 1,
+        },
+        HapticEvent::EnemyDefeated => HapticPattern {
+            weak: 45_000,
+            strong: 30_000,
+            duration_ms: 160,
+            priority: 2,
+        },
+        HapticEvent::ItemCollected => HapticPattern {
+            weak: 18_000,
+            strong: 0,
+            duration_ms: 80,
+            priority: 1,
+        },
+        HapticEvent::Impact => HapticPattern {
+            weak: 50_000,
+            strong: 60_000,
+            duration_ms: 260,
+            priority: 3,
+        },
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct HapticScheduler {
+    active: Option<HapticPattern>,
+}
+
+impl HapticScheduler {
+    fn request(&mut self, pattern: HapticPattern) -> bool {
+        if self
+            .active
+            .is_some_and(|active| active.priority > pattern.priority)
+        {
+            return false;
+        }
+        self.active = Some(pattern);
+        true
+    }
+
+    fn clear(&mut self) {
+        self.active = None;
+    }
+}
+
+struct HapticOutput {
+    enabled: bool,
+    unsupported: bool,
+    effect: Option<Effect>,
+    scheduler: HapticScheduler,
+    active_until: Option<Instant>,
+}
+
+impl Default for HapticOutput {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            unsupported: false,
+            effect: None,
+            scheduler: HapticScheduler::default(),
+            active_until: None,
+        }
+    }
+}
+
+impl HapticOutput {
+    fn request(&mut self, gilrs: &mut Gilrs, gamepad: GamepadId, event: HapticEvent) {
+        let pattern = haptic_pattern(event);
+        let now = Instant::now();
+        if self.active_until.is_some_and(|until| until <= now) {
+            self.effect = None;
+            self.active_until = None;
+            self.scheduler.clear();
+        }
+        if !self.enabled || self.unsupported || !self.scheduler.request(pattern) {
+            return;
+        }
+        if let Some(effect) = self.effect.take() {
+            let _ = effect.stop();
+        }
+        let duration = Ticks::from_ms(pattern.duration_ms);
+        let mut builder = EffectBuilder::new();
+        if pattern.weak > 0 {
+            builder.add_effect(BaseEffect {
+                kind: BaseEffectType::Weak {
+                    magnitude: pattern.weak,
+                },
+                scheduling: Replay {
+                    after: Ticks::from_ms(0),
+                    play_for: duration,
+                    with_delay: Ticks::from_ms(0),
+                },
+                ..BaseEffect::default()
+            });
+        }
+        if pattern.strong > 0 {
+            builder.add_effect(BaseEffect {
+                kind: BaseEffectType::Strong {
+                    magnitude: pattern.strong,
+                },
+                scheduling: Replay {
+                    after: Ticks::from_ms(0),
+                    play_for: duration,
+                    with_delay: Ticks::from_ms(0),
+                },
+                ..BaseEffect::default()
+            });
+        }
+        let result = builder
+            .gamepads(&[gamepad])
+            .repeat(Repeat::For(duration))
+            .finish(gilrs)
+            .and_then(|effect| {
+                effect.play()?;
+                Ok(effect)
+            });
+        match result {
+            Ok(effect) => {
+                self.effect = Some(effect);
+                self.active_until = Some(now + Duration::from_millis(pattern.duration_ms as u64));
+            }
+            Err(error) => {
+                self.unsupported = true;
+                self.scheduler.clear();
+                eprintln!("vibración no disponible: {error}");
+            }
+        }
+    }
+
+    fn stop(&mut self) {
+        if let Some(effect) = self.effect.take() {
+            let _ = effect.stop();
+        }
+        self.active_until = None;
+        self.scheduler.clear();
+    }
+
+    fn reset_for_reconnect(&mut self) {
+        self.stop();
+        self.unsupported = false;
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stick {
@@ -104,6 +272,7 @@ pub struct GamepadInput {
     active: Option<GamepadId>,
     state: ControllerState,
     deadzone: f32,
+    haptics: HapticOutput,
 }
 
 impl GamepadInput {
@@ -114,6 +283,7 @@ impl GamepadInput {
                 active: None,
                 state: ControllerState::default(),
                 deadzone: DEFAULT_DEADZONE,
+                haptics: HapticOutput::default(),
             },
             Err(error) => {
                 eprintln!("mando no disponible: {error}");
@@ -122,6 +292,7 @@ impl GamepadInput {
                     active: None,
                     state: ControllerState::default(),
                     deadzone: DEFAULT_DEADZONE,
+                    haptics: HapticOutput::default(),
                 }
             }
         }
@@ -140,6 +311,7 @@ impl GamepadInput {
                     let _ = event.id;
                 }
                 EventType::Disconnected if self.active == Some(event.id) => {
+                    self.haptics.stop();
                     self.active = None;
                     self.state.neutral();
                 }
@@ -176,6 +348,7 @@ impl GamepadInput {
                 .min_by_key(|id| usize::from(*id))
             {
                 self.active = Some(id);
+                self.haptics.reset_for_reconnect();
                 Self::sync_gamepad(&mut self.state, self.deadzone, gilrs, id, false);
             }
         }
@@ -183,6 +356,7 @@ impl GamepadInput {
             Self::sync_axes(&mut self.state, self.deadzone, gilrs, id);
             self.state.connected = gilrs.gamepad(id).is_connected();
             if !self.state.connected {
+                self.haptics.stop();
                 self.active = None;
                 self.state.neutral();
             }
@@ -193,8 +367,27 @@ impl GamepadInput {
     }
 
     pub fn neutralize(&mut self) {
+        self.haptics.stop();
         self.active = None;
         self.state.neutral();
+    }
+
+    pub fn request_haptic(&mut self, event: HapticEvent) {
+        let Some(id) = self.active else {
+            return;
+        };
+        let Some(gilrs) = self.gilrs.as_mut() else {
+            return;
+        };
+        self.haptics.request(gilrs, id, event);
+    }
+
+    #[allow(dead_code)]
+    pub fn set_haptics_enabled(&mut self, enabled: bool) {
+        self.haptics.enabled = enabled;
+        if !enabled {
+            self.haptics.stop();
+        }
     }
 
     fn sync_gamepad(
@@ -286,6 +479,37 @@ fn mapped_buttons() -> [(Button, ControllerButton); 9] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn haptic_patterns_are_finite_and_moderate() {
+        for event in [
+            HapticEvent::AttackExecuted,
+            HapticEvent::EnemyDefeated,
+            HapticEvent::ItemCollected,
+            HapticEvent::Impact,
+        ] {
+            let pattern = haptic_pattern(event);
+            assert!(pattern.duration_ms > 0 && pattern.duration_ms <= 300);
+            assert!(pattern.weak <= 60_000 && pattern.strong <= 60_000);
+        }
+    }
+
+    #[test]
+    fn higher_priority_pattern_replaces_lower_priority_pattern() {
+        let mut scheduler = HapticScheduler::default();
+        assert!(scheduler.request(haptic_pattern(HapticEvent::EnemyDefeated)));
+        assert!(!scheduler.request(haptic_pattern(HapticEvent::ItemCollected)));
+        assert!(scheduler.request(haptic_pattern(HapticEvent::Impact)));
+        scheduler.clear();
+        assert!(scheduler.request(haptic_pattern(HapticEvent::ItemCollected)));
+    }
+
+    #[test]
+    fn haptics_can_be_disabled_without_hardware() {
+        let mut input = GamepadInput::new();
+        input.set_haptics_enabled(false);
+        input.set_haptics_enabled(true);
+    }
 
     #[test]
     fn radial_deadzone_removes_drift_and_preserves_direction() {

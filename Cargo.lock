@@ -2691,6 +2691,7 @@ dependencies = [
  "render-cpu",
  "render-gpu",
  "render-present",
+ "rodio",
 ]
 
 [[package]]

@@ -18,7 +18,10 @@ use render_present::{
 
 #[path = "gamepad.rs"]
 mod gamepad;
-use gamepad::{ControllerButton, GamepadInput};
+#[path = "audio.rs"]
+mod audio;
+use gamepad::{ControllerButton, GamepadInput, HapticEvent};
+use audio::{AudioEvent, AudioManager, SoundEffect};
 
 const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
@@ -110,8 +113,14 @@ struct VisualBridge {
     observation: ObservationTransition,
     flight_keys: FlightKeys,
     gamepad: GamepadInput,
+    audio: AudioManager,
     gamepad_flight: GameplayVec3,
     last_discrete_action: Option<KeyCode>,
+    haptic_event_cursor: u64,
+    last_impacted: bool,
+    last_audio_impacted: bool,
+    last_landed: bool,
+    last_game_over: bool,
 }
 
 impl VisualBridge {
@@ -264,6 +273,8 @@ impl VisualBridge {
             pilot_station,
             active: true,
         }]);
+        let mut audio = AudioManager::new();
+        audio.request_exploration_music();
         Ok(Self {
             session,
             player,
@@ -274,13 +285,22 @@ impl VisualBridge {
             observation: ObservationTransition::default(),
             flight_keys: FlightKeys::default(),
             gamepad: GamepadInput::new(),
+            audio,
             gamepad_flight: GameplayVec3::ZERO,
             last_discrete_action: None,
+            haptic_event_cursor: 0,
+            last_impacted: false,
+            last_audio_impacted: false,
+            last_landed: false,
+            last_game_over: false,
         })
     }
 
-    fn issue(&mut self, commands: impl IntoIterator<Item = GameplayCommand>) {
+    fn issue(&mut self, commands: impl IntoIterator<Item = GameplayCommand>) -> bool {
         let results = self.session.update(commands);
+        let succeeded = results.last().is_some_and(|result| {
+            matches!(result.status, gameplay::CommandStatus::Success { .. })
+        });
         let status = results
             .last()
             .map(|result| format!("{:?}", result.status))
@@ -295,6 +315,7 @@ impl VisualBridge {
             .unwrap_or_else(|| "sin evento".to_owned());
         self.feedback = format!("{status}; {event}");
         println!("visual gameplay: {}", self.feedback);
+        succeeded
     }
 
     fn handle_key(&mut self, key: KeyCode, state: ElementState) {
@@ -311,10 +332,16 @@ impl VisualBridge {
         }
         self.last_discrete_action = Some(key);
         match key {
-            KeyCode::Space => self.issue([GameplayCommand::AdvanceTime {
-                delta: Duration(100),
-            }]),
-            KeyCode::KeyQ => self.issue([GameplayCommand::ScanSignals { player, ship }]),
+            KeyCode::Space => {
+                self.issue([GameplayCommand::AdvanceTime {
+                    delta: Duration(100),
+                }]);
+            }
+            KeyCode::KeyQ => {
+                if self.issue([GameplayCommand::ScanSignals { player, ship }]) {
+                    self.audio.request_effect(SoundEffect::Scan);
+                }
+            }
             KeyCode::KeyF => {
                 if self.session.world().landing_available(DESTINATION) {
                     if self.session.world_mut().request_planet_landing(DESTINATION) {
@@ -385,8 +412,11 @@ impl VisualBridge {
     }
 
     fn poll_gamepad(&mut self) {
+        self.audio.poll();
         let keyboard_action = self.last_discrete_action.take();
         let frame = self.gamepad.poll();
+        self.poll_audio_events();
+        self.poll_haptics();
         if !frame.connected {
             self.set_gamepad_flight(GameplayVec3::ZERO);
             return;
@@ -417,8 +447,92 @@ impl VisualBridge {
     }
 
     fn neutralize_gamepad(&mut self) {
+        self.discard_pending_haptics();
         self.gamepad.neutralize();
         self.set_gamepad_flight(GameplayVec3::ZERO);
+    }
+
+    fn poll_haptics(&mut self) {
+        let events: Vec<_> = self.session.world().visual_events().copied().collect();
+        for event in events {
+            if event.id <= self.haptic_event_cursor {
+                continue;
+            }
+            self.haptic_event_cursor = self.haptic_event_cursor.max(event.id);
+            let haptic = match event.kind {
+                gameplay::GameplayVisualEventKind::Attack
+                    if event.source == Some(self.player) => Some(HapticEvent::AttackExecuted),
+                gameplay::GameplayVisualEventKind::EnemyDefeated => {
+                    Some(HapticEvent::EnemyDefeated)
+                }
+                gameplay::GameplayVisualEventKind::ItemCollected
+                    if event.source == Some(self.player) => Some(HapticEvent::ItemCollected),
+                _ => None,
+            };
+            if let Some(haptic) = haptic {
+                self.gamepad.request_haptic(haptic);
+            }
+        }
+        let impacted = matches!(
+            self.session.world().planet_flight_state(),
+            gameplay::PlanetFlightState::Impacted { .. }
+        );
+        if impacted && !self.last_impacted {
+            self.gamepad.request_haptic(HapticEvent::Impact);
+        }
+        self.last_impacted = impacted;
+    }
+
+    fn poll_audio_events(&mut self) {
+        let events: Vec<_> = self.session.world().visual_events().copied().collect();
+        for event in events {
+            let effect = match event.kind {
+                gameplay::GameplayVisualEventKind::Attack
+                    if event.source == Some(self.player) => Some(SoundEffect::PlayerAttack),
+                gameplay::GameplayVisualEventKind::EnemyDefeated => {
+                    Some(SoundEffect::EnemyDefeated)
+                }
+                gameplay::GameplayVisualEventKind::ItemCollected
+                    if event.source == Some(self.player) => Some(SoundEffect::Collect),
+                _ => None,
+            };
+            if let Some(effect) = effect {
+                self.audio.dispatch_event(AudioEvent { id: event.id, effect });
+            }
+        }
+
+        let flight_state = self.session.world().planet_flight_state();
+        let impacted = matches!(flight_state, gameplay::PlanetFlightState::Impacted { .. });
+        if impacted && !self.last_audio_impacted {
+            self.audio.request_effect(SoundEffect::PlayerImpacted);
+        }
+        self.last_audio_impacted = impacted;
+
+        let landed = matches!(flight_state, gameplay::PlanetFlightState::Landed { .. });
+        if landed && !self.last_landed {
+            self.audio.request_effect(SoundEffect::Landing);
+        }
+        self.last_landed = landed;
+
+        let game_over = self
+            .session
+            .world()
+            .impact_fade_to_black()
+            .is_some_and(|fade| fade >= 1.0);
+        if game_over && !self.last_game_over {
+            self.audio.request_effect(SoundEffect::GameOver);
+        }
+        self.last_game_over = game_over;
+    }
+
+    fn discard_pending_haptics(&mut self) {
+        self.haptic_event_cursor = self
+            .session
+            .world()
+            .visual_events()
+            .map(|event| event.id)
+            .max()
+            .unwrap_or(self.haptic_event_cursor);
     }
 
     fn toggle_observation(&mut self) {
@@ -491,8 +605,10 @@ pub fn run() -> Result<(), String> {
         true,
         move |key, state| input_runtime.borrow_mut().handle_key(key, state),
         move |focused| {
+            let mut bridge = focus_runtime.borrow_mut();
+            bridge.audio.on_focus(focused);
             if !focused {
-                focus_runtime.borrow_mut().neutralize_gamepad();
+                bridge.neutralize_gamepad();
             }
         },
         |scene| {
@@ -785,5 +901,16 @@ mod tests {
             bridge.session.world().planet_flight_state(),
             gameplay::PlanetFlightState::Landing { planet } if planet == DESTINATION
         ));
+    }
+
+    #[test]
+    fn haptic_event_cursor_does_not_reconsume_visual_events() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyF, ElementState::Pressed);
+        bridge.poll_haptics();
+        let cursor = bridge.haptic_event_cursor;
+        assert!(cursor > 0);
+        bridge.poll_haptics();
+        assert_eq!(bridge.haptic_event_cursor, cursor);
     }
 }
