@@ -73,6 +73,36 @@ pub struct RenderSnapshot {
     pub camera_position: crate::math::Vec3,
     pub view: crate::math::Mat4,
     pub projection: crate::math::Mat4,
+    pub overlay: RenderOverlay,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RenderOverlay {
+    pub fade_to_black: f32,
+    pub game_over: bool,
+}
+
+pub const GAME_OVER_GLYPHS: [[u8; 7]; 8] = [
+    [14, 16, 16, 23, 17, 17, 14],
+    [14, 17, 17, 31, 17, 17, 17],
+    [17, 27, 21, 21, 17, 17, 17],
+    [31, 16, 16, 30, 16, 16, 31],
+    [14, 17, 17, 17, 17, 17, 14],
+    [17, 17, 10, 4, 4, 4, 4],
+    [31, 16, 16, 30, 16, 16, 31],
+    [30, 17, 17, 30, 20, 18, 17],
+];
+
+pub fn game_over_layout(width: u32, height: u32) -> (u32, u32, u32) {
+    const COLUMNS: u32 = 8 * 5 + 7 + 2;
+    let scale = (width / (COLUMNS + 2)).min(height / 9).max(1);
+    let text_width = COLUMNS * scale;
+    let text_height = 7 * scale;
+    (
+        width.saturating_sub(text_width) / 2,
+        height.saturating_sub(text_height) / 2,
+        scale,
+    )
 }
 
 impl RenderSnapshot {
@@ -89,6 +119,7 @@ impl RenderSnapshot {
             camera_position,
             view,
             projection,
+            overlay: RenderOverlay::default(),
         }
     }
 

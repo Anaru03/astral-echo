@@ -16,14 +16,16 @@ use crate::viewport::Viewport;
 
 pub use assembly::{assemble, AssemblyStats, Topology, Triangle};
 pub use raster::{
-    depth_resolve, edge_function, raster_triangle, resolve_fragment, shade_fragment, to_screen,
-    FillRule, Fragment, RasterOutput, ScreenVertex,
+    depth_resolve, edge_function, raster_triangle, resolve_fragment, shade_fragment,
+    shade_fragment_with_shader, shade_fragment_with_time, to_screen, FillRule, Fragment,
+    FragmentShader, RasterOutput, ScreenVertex,
 };
 pub use stages::{PipelineConfig, PipelineError, PipelineStats, Stage, StageMetrics};
 pub use tiles::{
     rasterize_triangles_tiled, RasterMode, RasterWorkload, TileConfig, TileGrid, TileRect,
     TileStats,
 };
+use tiles::rasterize_triangles_tiled_with_shader;
 use vertex::VertexLighting;
 pub use vertex::VertexStage;
 
@@ -41,6 +43,8 @@ pub struct CpuPipeline<'a> {
     fragments: Vec<Fragment>,
     shaded: Vec<Color>,
     assembly: AssemblyStats,
+    fragment_shader: FragmentShader,
+    fragment_time: f32,
 }
 
 impl<'a> CpuPipeline<'a> {
@@ -62,6 +66,8 @@ impl<'a> CpuPipeline<'a> {
             fragments: Vec::new(),
             shaded: Vec::new(),
             assembly: AssemblyStats::default(),
+            fragment_shader: FragmentShader::VertexColor,
+            fragment_time: 0.0,
         }
     }
 
@@ -72,6 +78,16 @@ impl<'a> CpuPipeline<'a> {
 
     pub fn with_tile_config(mut self, config: TileConfig) -> Self {
         self.tile_config = Some(config);
+        self
+    }
+
+    pub fn with_fragment_shader(mut self, shader: FragmentShader) -> Self {
+        self.fragment_shader = shader;
+        self
+    }
+
+    pub fn with_fragment_time(mut self, time: f32) -> Self {
+        self.fragment_time = time;
         self
     }
 
@@ -299,13 +315,15 @@ impl<'a> CpuPipeline<'a> {
         }
 
         let t0 = self.timer();
-        let mut tile_stats = rasterize_triangles_tiled(
+        let mut tile_stats = rasterize_triangles_tiled_with_shader(
             &screen_triangles,
             self.framebuffer,
             self.fill_rule,
             self.config.depth_test,
             self.config.depth_write,
             self.tile_config.unwrap_or_default(),
+            self.fragment_shader,
+            self.fragment_time,
         );
         let raster_ns = self.elapsed(t0);
 
@@ -408,7 +426,9 @@ impl<'a> CpuPipeline<'a> {
         let t1 = self.timer();
         self.shaded.clear();
         self.shaded
-            .extend(self.fragments.iter().map(shade_fragment));
+            .extend(self.fragments.iter().map(|fragment| {
+                shade_fragment_with_time(fragment, self.fragment_shader, self.fragment_time)
+            }));
         let fragment_ns = self.elapsed(t1);
         // Etapa de depth: test de profundidad y escritura en el framebuffer.
         let t2 = self.timer();

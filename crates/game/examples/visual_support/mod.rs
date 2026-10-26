@@ -1,4 +1,5 @@
 use engine::{Duration, Vec3};
+use game::ProjectEchoSession;
 use gameplay::{
     Destination, DestinationId, DestinationType, DiscoveryState, EnemyArchetype,
     EnemyConfiguration, GameplayCommand, GameplayProcessor, GameplayWorld, ItemCategory,
@@ -76,6 +77,154 @@ pub fn fixture_world() -> GameplayWorld {
         )
         .unwrap();
     world
+}
+
+pub fn deterministic_flight_session() -> (ProjectEchoSession, DestinationId) {
+    let mut session = ProjectEchoSession::new();
+    let origin = DestinationId::new(9_001);
+    let planet = DestinationId::new(9_002);
+    let player = session.ids.first_player;
+    let station = session
+        .create_station(Vec3::ZERO, 3.0, gameplay::StationType::Piloting)
+        .unwrap();
+    session
+        .register_destination(Destination {
+            id: origin,
+            destination_type: DestinationType::SpacePoint,
+            position: Vec3::ZERO,
+            travel_duration: Duration(1_000),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        })
+        .unwrap();
+    session
+        .register_destination(Destination {
+            id: planet,
+            destination_type: DestinationType::Planet,
+            position: Vec3 {
+                x: 10.0,
+                y: 0.0,
+                z: -20.0,
+            },
+            travel_duration: Duration(1_000),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Discovered,
+        })
+        .unwrap();
+    assert!(session.world_mut().configure_planet_physics(gameplay::PlanetPhysics {
+        destination: planet,
+        orbit_center: Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: -20.0,
+        },
+        orbit_radius: 10.0,
+        orbit_angular_speed: 0.1,
+        surface_radius: 2.0,
+        ship_radius: 1.0,
+        gravity_influence_radius: 24.0,
+        gravitational_parameter: 80.0,
+        atmosphere_height: 4.0,
+    }));
+    let route = gameplay::NavigationRoute {
+        from: origin,
+        to: planet,
+        distance: 22.36,
+        duration: Duration(1_000),
+        fuel_cost: 1,
+        state: gameplay::NavigationRouteState::Available,
+    };
+    let results = session.update([
+        GameplayCommand::RegisterNavigationRoute { route },
+        GameplayCommand::Interact {
+            player,
+            target: station,
+        },
+        GameplayCommand::PlanAutopilot {
+            player,
+            pilot_station: station,
+            origin,
+            destination: planet,
+        },
+        GameplayCommand::StartAutopilot {
+            player,
+            pilot_station: station,
+        },
+    ]);
+    assert!(results.iter().all(|result| {
+        matches!(result.status, gameplay::CommandStatus::Success { .. })
+    }));
+    (session, planet)
+}
+
+#[allow(dead_code)]
+pub fn deterministic_flight_snapshots(width: u32, height: u32) -> Vec<RenderSnapshot> {
+    let (mut session, _) = deterministic_flight_session();
+    let mut snapshots = Vec::with_capacity(3);
+    snapshots.push(deterministic_flight_snapshot(&session, width, height, 0));
+    session.update([GameplayCommand::AdvanceTime {
+        delta: Duration(500),
+    }]);
+    snapshots.push(deterministic_flight_snapshot(&session, width, height, 1));
+    snapshots.push(deterministic_flight_snapshot(&session, width, height, 2));
+    snapshots
+}
+
+#[allow(dead_code)]
+pub fn deterministic_impact_snapshots(width: u32, height: u32) -> Vec<RenderSnapshot> {
+    let (mut session, planet) = deterministic_flight_session();
+    let before = snapshot(session.world(), width, height);
+    for _ in 0..20 {
+        session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        }]);
+        if matches!(
+            session.world().planet_flight_state(),
+            gameplay::PlanetFlightState::Impacted { planet: active } if active == planet
+        ) {
+            break;
+        }
+    }
+    assert!(matches!(
+        session.world().planet_flight_state(),
+        gameplay::PlanetFlightState::Impacted { planet: active } if active == planet
+    ));
+    session.update([GameplayCommand::AdvanceTime {
+        delta: Duration(100),
+    }]);
+    let fade = snapshot(session.world(), width, height);
+    session.update([GameplayCommand::AdvanceTime {
+        delta: Duration(900),
+    }]);
+    let game_over = snapshot(session.world(), width, height);
+    vec![before, fade, game_over]
+}
+
+#[allow(dead_code)]
+pub fn deterministic_flight_snapshot(
+    session: &ProjectEchoSession,
+    width: u32,
+    height: u32,
+    stage: usize,
+) -> RenderSnapshot {
+    let aspect = width as f32 / height.max(1) as f32;
+    let camera = if stage == 0 {
+        game::render_bridge::flight_camera(session.world(), aspect).unwrap()
+    } else {
+        game::render_bridge::observation_camera(
+            session.world(),
+            aspect,
+            if stage == 1 { 1.0 } else { 0.0 },
+            0.0,
+            0.0,
+        )
+        .unwrap()
+    };
+    game::render_bridge::snapshot_from_world_with_camera(
+        session.world(),
+        Default::default(),
+        &camera,
+    )
 }
 
 pub fn snapshot(world: &GameplayWorld, width: u32, height: u32) -> RenderSnapshot {

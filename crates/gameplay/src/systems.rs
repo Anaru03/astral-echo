@@ -1089,15 +1089,17 @@ impl GameplaySystem for PilotSystem {
             let Some(ship) = world.navigation().ship_id() else {
                 continue;
             };
-            if world.ship_is_destroyed(ship) == Some(true) {
+            if world.ship_is_destroyed(ship) == Some(true)
+                || world.navigation().planet_flight_state().is_terminal()
+            {
                 continue;
             }
             if world.navigation().has_active_travel() {
                 continue;
             }
             let delta = engine::Duration(to.elapsed.0.saturating_sub(from.elapsed.0));
-            let Some((before, after, position_changed)) =
-                world.navigation_mut().advance_manual(delta)
+            let Some((before, after, position_changed, contact)) =
+                world.navigation_mut().advance_manual(delta, to.elapsed)
             else {
                 continue;
             };
@@ -1112,6 +1114,24 @@ impl GameplaySystem for PilotSystem {
                     ship,
                     position: world.navigation().current_position(),
                 });
+            }
+            if let Some((planet, impact)) = contact {
+                if impact {
+                    world.publish(crate::events::GameplayEvent::PlanetImpact {
+                        ship,
+                        planet,
+                        position: world.navigation().current_position(),
+                    });
+                } else if matches!(
+                    world.navigation().planet_flight_state(),
+                    crate::navigation::PlanetFlightState::Landed { .. }
+                ) {
+                    world.publish(crate::events::GameplayEvent::PlanetLanded {
+                        ship,
+                        planet,
+                        position: world.navigation().current_position(),
+                    });
+                }
             }
         }
     }
@@ -2777,6 +2797,27 @@ impl NavigationSystem {
             if waiting_for_encounter_decision {
                 continue;
             }
+            if let Some((planet, position, impact)) =
+                world.navigation_mut().advance_travel_at(to.elapsed)
+            {
+                let Some(ship) = world.navigation().ship_id() else {
+                    continue;
+                };
+                if impact {
+                    world.publish(crate::events::GameplayEvent::PlanetImpact {
+                        ship,
+                        planet,
+                        position,
+                    });
+                } else {
+                    world.publish(crate::events::GameplayEvent::PlanetLanded {
+                        ship,
+                        planet,
+                        position,
+                    });
+                }
+                continue;
+            }
             let deadline = started_at.0.saturating_add(duration.0);
             if to.elapsed.0 < deadline {
                 continue;
@@ -2784,12 +2825,26 @@ impl NavigationSystem {
             let Some(destination_data) = world.destination(destination).cloned() else {
                 continue;
             };
-            if !world.navigation_mut().complete_travel(destination) {
-                continue;
-            }
+            let arrival_position = match world
+                .navigation_mut()
+                .complete_travel_at(destination, to.elapsed)
+            {
+                Ok(position) => position,
+                Err((planet, position)) => {
+                    let Some(ship) = world.navigation().ship_id() else {
+                        continue;
+                    };
+                    world.publish(crate::events::GameplayEvent::PlanetImpact {
+                        ship,
+                        planet,
+                        position,
+                    });
+                    continue;
+                }
+            };
             world.publish(crate::events::GameplayEvent::TravelArrived {
                 destination,
-                position: destination_data.position,
+                position: arrival_position,
             });
             if destination_data.destination_type == crate::navigation::DestinationType::Planet
                 && world.navigation_mut().discover_destination(destination)

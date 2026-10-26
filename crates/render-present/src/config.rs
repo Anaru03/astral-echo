@@ -92,6 +92,7 @@ pub struct WindowConfig {
     pub preset: Preset,
     pub raster_mode: RasterMode,
     pub max_frames: Option<NonZeroU64>,
+    pub raster_controls: bool,
 }
 
 impl Default for WindowConfig {
@@ -101,6 +102,7 @@ impl Default for WindowConfig {
             preset: Preset::Low,
             raster_mode: RasterMode::Auto,
             max_frames: None,
+            raster_controls: true,
         }
     }
 }

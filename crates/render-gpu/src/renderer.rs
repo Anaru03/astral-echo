@@ -1,11 +1,12 @@
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use render_core::{
-    Camera, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh, SnapshotId, SnapshotScene,
-    Transform,
+    game_over_layout, Camera, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh,
+    RasterVertex, SnapshotId, SnapshotScene, Transform, Vec3, Vec4, GAME_OVER_GLYPHS,
 };
 use wgpu::util::DeviceExt;
 
@@ -25,6 +26,50 @@ pub struct PackedScene {
     pub vertices: Vec<GpuVertex>,
     pub indices: Vec<u32>,
     pub draws: Vec<(Range<u32>, Transform)>,
+}
+
+pub fn game_over_overlay_scene(width: u32, height: u32) -> Vec<(RasterMesh, Transform)> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let (left, top, scale) = game_over_layout(width, height);
+    let color = Vec4::new(1.0, 0.25, 0.19, 1.0);
+    let to_ndc = |x: u32, y: u32| {
+        Vec3::new(
+            (x as f32 / width as f32) * 2.0 - 1.0,
+            1.0 - (y as f32 / height as f32) * 2.0,
+            0.0,
+        )
+    };
+    let mut result = Vec::new();
+    for (glyph_index, glyph) in GAME_OVER_GLYPHS.iter().enumerate() {
+        let word_gap = u32::from(glyph_index >= 4) * 2 * scale;
+        let glyph_left = left + glyph_index as u32 * 6 * scale + word_gap;
+        for (row, bits) in glyph.iter().copied().enumerate() {
+            for column in 0..5u32 {
+                if bits & (1 << (4 - column)) == 0 {
+                    continue;
+                }
+                let x0 = glyph_left + column * scale;
+                let y0 = top + row as u32 * scale;
+                let x1 = x0 + scale;
+                let y1 = y0 + scale;
+                result.push((
+                    RasterMesh::new(
+                        vec![
+                            RasterVertex::new(to_ndc(x0, y1), color),
+                            RasterVertex::new(to_ndc(x1, y1), color),
+                            RasterVertex::new(to_ndc(x1, y0), color),
+                            RasterVertex::new(to_ndc(x0, y0), color),
+                        ],
+                        vec![0, 1, 2, 0, 2, 3],
+                    ),
+                    Transform::IDENTITY,
+                ));
+            }
+        }
+    }
+    result
 }
 
 impl PackedScene {
@@ -120,6 +165,16 @@ impl GpuRenderer {
         format: wgpu::TextureFormat,
         scene: &[(RasterMesh, Transform)],
     ) -> Result<Self, GpuError> {
+        block_on(Self::new_async(gpu, format, scene))
+    }
+
+    pub(crate) async fn new_async(
+        gpu: Arc<GpuContext>,
+        format: wgpu::TextureFormat,
+        scene: &[(RasterMesh, Transform)],
+    ) -> Result<Self, GpuError> {
+        let started = Instant::now();
+        println!("hot-swap gpu-resources-start nodes={}", scene.len());
         gpu.check()?;
         if !matches!(
             format,
@@ -231,11 +286,11 @@ impl GpuRenderer {
                 source: wgpu::ShaderSource::Wgsl(include_str!("vertex_color.wgsl").into()),
             });
         let pipeline = color_pipeline(&gpu, format, &pipeline_layout, &shader, false);
-        if let Some(error) = block_on(scope.pop()) {
+        if let Some(error) = scope.pop().await {
             return Err(GpuError::Backend(error.to_string()));
         }
         gpu.check()?;
-        Ok(Self {
+        let result = Self {
             gpu,
             pipeline,
             pipeline_layout,
@@ -254,7 +309,12 @@ impl GpuRenderer {
             snapshot_keys: None,
             prepared_keys: Vec::new(),
             prepared_meshes: Vec::new(),
-        })
+        };
+        println!(
+            "hot-swap gpu-resources-ready elapsed_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        Ok(result)
     }
 
     pub fn enable_gpu_timing(&mut self) -> bool {
@@ -415,6 +475,16 @@ impl GpuRenderer {
         depth: &wgpu::TextureView,
         vp: Mat4,
     ) -> Result<wgpu::SubmissionIndex, GpuError> {
+        self.render_to_view_matrix_with_clear(color, depth, vp, CLEAR_RGBA)
+    }
+
+    pub fn render_to_view_matrix_with_clear(
+        &mut self,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        vp: Mat4,
+        clear: [u8; 4],
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
         self.gpu.check()?;
         if !vp.is_finite() {
             return Err(GpuError::InvalidInput("non-finite camera matrix".into()));
@@ -470,9 +540,9 @@ impl GpuRenderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: channel(CLEAR_RGBA[0]),
-                            g: channel(CLEAR_RGBA[1]),
-                            b: channel(CLEAR_RGBA[2]),
+                            r: channel(clear[0]),
+                            g: channel(clear[1]),
+                            b: channel(clear[2]),
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -508,6 +578,51 @@ impl GpuRenderer {
                     .as_ref()
                     .is_some_and(|scene| scene.shadows_active()),
             );
+        }
+        Ok(self.gpu.queue.submit([encoder.finish()]))
+    }
+
+    pub fn clear_view(
+        &mut self,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        clear: [u8; 4],
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
+        self.gpu.check()?;
+        let channel = |v: u8| f64::from(v) / 255.0;
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("overlay clear"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("overlay clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: channel(clear[0]),
+                            g: channel(clear[1]),
+                            b: channel(clear[2]),
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
         }
         Ok(self.gpu.queue.submit([encoder.finish()]))
     }

@@ -48,6 +48,7 @@ pub(crate) struct LightingPass {
     dirty: bool,
     force_write: bool,
     last_vp: Option<Mat4>,
+    hdr: bool,
     pub reallocations: u64,
     pub bytes_written: u64,
 }
@@ -128,6 +129,7 @@ impl LightingPass {
             dirty: true,
             force_write: true,
             last_vp: None,
+            hdr: format == wgpu::TextureFormat::Rgba16Float,
             reallocations: 1,
             bytes_written: 0,
         })
@@ -179,6 +181,7 @@ impl LightingPass {
                 .extend(f32::from(self.srgb))
                 .to_array();
             data.counts[0] = scene.lighting.lights().len() as f32;
+            data.counts[1] = f32::from(self.hdr);
             for (out, light) in data.lights.iter_mut().zip(scene.lighting.lights()) {
                 out.color = light.color.extend(light.intensity).to_array();
                 match light.kind {

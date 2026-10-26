@@ -23,10 +23,14 @@ pub use math::{
 };
 pub use mesh::{MeshHandle, Vertex};
 pub use scene::{RenderCamera, RenderLight, RenderLightKind, RenderNode, RenderScene};
-pub use snapshot::{RenderSnapshot, SnapshotId, SnapshotLight, SnapshotNode};
+pub use snapshot::{
+    game_over_layout, RenderOverlay, RenderSnapshot, SnapshotId, SnapshotLight, SnapshotNode,
+    GAME_OVER_GLYPHS,
+};
 pub use transform::Transform;
 pub use visual::{
-    CullingConfig, LodLevel, PreparedDraw, PreparedScene, SceneUpdate, SnapshotScene,
+    CullingConfig, LodLevel, PreparedDraw, PreparedScene, PreparedSceneStats, SceneUpdate,
+    SnapshotScene,
     VisibilityClass, VisualAssets, VisualError,
 };
 

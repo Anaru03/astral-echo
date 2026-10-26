@@ -20,6 +20,7 @@ pub struct HotSwapState<T> {
     transitions: u64,
     last_transition: Option<Duration>,
     gpu_error: Option<String>,
+    pending: Option<BackendKind>,
 }
 
 impl<T> HotSwapState<T> {
@@ -30,6 +31,7 @@ impl<T> HotSwapState<T> {
             transitions: 0,
             last_transition: None,
             gpu_error: None,
+            pending: None,
         }
     }
 
@@ -49,6 +51,35 @@ impl<T> HotSwapState<T> {
         self.gpu_error.as_deref()
     }
 
+    pub fn pending(&self) -> Option<BackendKind> {
+        self.pending
+    }
+
+    pub fn request_switch(&mut self, target: BackendKind) -> bool {
+        if target == self.backend || self.pending.is_some() {
+            return false;
+        }
+        self.pending = Some(target);
+        true
+    }
+
+    pub fn cancel_switch(&mut self, error: impl Into<String>) {
+        self.pending = None;
+        self.gpu_error = Some(error.into());
+    }
+
+    pub fn confirm_switch(&mut self, target: BackendKind) -> Result<bool, String> {
+        if self.pending != Some(target) {
+            return Err("backend switch was not pending".into());
+        }
+        self.pending = None;
+        self.backend = target;
+        self.transitions += 1;
+        self.last_transition = Some(Duration::ZERO);
+        self.gpu_error = None;
+        Ok(true)
+    }
+
     pub fn update_snapshot(&mut self, snapshot: BackendSnapshot<T>) {
         self.snapshot = snapshot;
     }
@@ -57,19 +88,23 @@ impl<T> HotSwapState<T> {
     where
         F: FnOnce(&BackendSnapshot<T>) -> Result<(), String>,
     {
-        if target == self.backend {
+        if !self.request_switch(target) {
             return Ok(false);
         }
         let started = Instant::now();
         if target == BackendKind::Gpu {
             if let Err(error) = create(&self.snapshot) {
-                self.gpu_error = Some(error.clone());
+                self.cancel_switch(error.clone());
                 return Err(error);
             }
             self.gpu_error = None;
         } else {
-            create(&self.snapshot)?;
+            if let Err(error) = create(&self.snapshot) {
+                self.cancel_switch(error.clone());
+                return Err(error);
+            }
         }
+        self.pending = None;
         self.backend = target;
         self.transitions += 1;
         self.last_transition = Some(started.elapsed());
@@ -111,6 +146,7 @@ mod tests {
         );
         assert_eq!(state.backend(), BackendKind::Cpu);
         assert_eq!(state.gpu_error(), Some("no adapter"));
+        assert_eq!(state.pending(), None);
     }
 
     #[test]
@@ -149,5 +185,49 @@ mod tests {
             );
         }
         assert!(state.transitions() <= 100);
+    }
+
+    #[test]
+    fn repeated_backend_cycle_keeps_the_last_confirmed_backend_after_failure() {
+        let mut state = state();
+        assert_eq!(state.backend(), BackendKind::Cpu);
+
+        assert!(state.try_switch(BackendKind::Gpu, |_| Ok(())).unwrap());
+        assert_eq!(state.backend(), BackendKind::Gpu);
+        assert!(state.try_switch(BackendKind::Cpu, |_| Ok(())).unwrap());
+        assert_eq!(state.backend(), BackendKind::Cpu);
+
+        assert_eq!(
+            state.try_switch(BackendKind::Gpu, |_| Err("GPU unavailable".into())),
+            Err("GPU unavailable".into())
+        );
+        assert_eq!(state.backend(), BackendKind::Cpu);
+        assert_eq!(state.transitions(), 2);
+        assert_eq!(state.snapshot().width, 640);
+        assert_eq!(state.snapshot().height, 360);
+    }
+
+    #[test]
+    fn pending_switch_keeps_active_backend_and_rejects_duplicate_requests() {
+        let mut state = state();
+        assert!(state.request_switch(BackendKind::Gpu));
+        assert_eq!(state.backend(), BackendKind::Cpu);
+        assert_eq!(state.pending(), Some(BackendKind::Gpu));
+        assert!(!state.request_switch(BackendKind::Gpu));
+
+        state.cancel_switch("initialization failed");
+        assert_eq!(state.backend(), BackendKind::Cpu);
+        assert_eq!(state.pending(), None);
+        assert_eq!(state.gpu_error(), Some("initialization failed"));
+    }
+
+    #[test]
+    fn pending_switch_confirms_only_after_resources_are_ready() {
+        let mut state = state();
+        assert!(state.request_switch(BackendKind::Gpu));
+        assert!(state.confirm_switch(BackendKind::Gpu).unwrap());
+        assert_eq!(state.backend(), BackendKind::Gpu);
+        assert_eq!(state.pending(), None);
+        assert_eq!(state.transitions(), 1);
     }
 }

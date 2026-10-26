@@ -4,7 +4,7 @@ use render_core::{Camera, Mat4, PreparedScene, SnapshotScene};
 
 use crate::postprocess::{PostProcessConfig, PostProcessPass};
 use crate::renderer::{validate_extent, DepthTarget};
-use crate::{GpuContext, GpuError, GpuImage, GpuRenderer, ReadbackLayout};
+use crate::{game_over_overlay_scene, GpuContext, GpuError, GpuImage, GpuRenderer, ReadbackLayout};
 
 pub struct OffscreenTarget {
     gpu: Arc<GpuContext>,
@@ -135,7 +135,7 @@ impl OffscreenTarget {
     ) -> Result<(), GpuError> {
         self.validate_renderer(renderer)?;
         renderer.sync_snapshot(scene)?;
-        self.render_matrix(renderer, scene.view_projection())
+        self.render_snapshot_matrix(renderer, scene)
     }
 
     pub fn render_prepared(
@@ -176,6 +176,27 @@ impl OffscreenTarget {
         pass.encode(&self.gpu, &mut encoder, &self.color_view);
         self.gpu.queue.submit([encoder.finish()]);
         Ok(())
+    }
+
+    fn render_snapshot_matrix(
+        &self,
+        renderer: &mut GpuRenderer,
+        scene: &SnapshotScene,
+    ) -> Result<(), GpuError> {
+        self.validate_renderer(renderer)?;
+        if scene.overlay().game_over {
+            let overlay_scene = game_over_overlay_scene(self.layout.width, self.layout.height);
+            let mut overlay_renderer =
+                GpuRenderer::new(self.gpu.clone(), renderer.color_format(), &overlay_scene)?;
+            overlay_renderer.render_to_view_matrix_with_clear(
+                &self.color_view,
+                &self.depth.view,
+                Mat4::IDENTITY,
+                [0, 0, 0, 255],
+            )?;
+            return Ok(());
+        }
+        self.render_matrix(renderer, scene.view_projection())
     }
 
     pub fn readback(&self) -> Result<GpuImage, GpuError> {

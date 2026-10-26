@@ -41,6 +41,15 @@ pub struct Fragment {
     pub color: Vec4,
 }
 
+/// Efecto ejecutado por la etapa de fragmentos del rasterizador CPU.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FragmentShader {
+    /// Conserva el color interpolado de los vértices.
+    VertexColor,
+    /// Aplica bandas de iluminación deterministas en espacio de pantalla.
+    SolarBands,
+}
+
 /// Resultado de una llamada de rasterización.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RasterOutput {
@@ -235,7 +244,43 @@ pub(crate) fn raster_triangle_visit(
 
 /// Convierte un fragmento a su color final (etapa de fragment/shading).
 pub fn shade_fragment(fragment: &Fragment) -> Color {
-    vec4_to_rgba8(fragment.color)
+    shade_fragment_with_shader(fragment, FragmentShader::VertexColor)
+}
+
+/// Ejecuta un shader de fragmentos software sobre un fragmento rasterizado.
+pub fn shade_fragment_with_shader(fragment: &Fragment, shader: FragmentShader) -> Color {
+    shade_fragment_with_time(fragment, shader, 0.0)
+}
+
+/// Ejecuta un shader de fragmentos software con una fase temporal explícita.
+pub fn shade_fragment_with_time(
+    fragment: &Fragment,
+    shader: FragmentShader,
+    time: f32,
+) -> Color {
+    let color = match shader {
+        FragmentShader::VertexColor => fragment.color,
+        FragmentShader::SolarBands => {
+            let time = if time.is_finite() {
+                time.rem_euclid(4096.0)
+            } else {
+                0.0
+            };
+            let band = (((fragment.x / 16 + fragment.y / 16) as f32 + time * 0.5).floor()
+                as i32
+                & 1)
+                == 0;
+            let base = if band { 1.0 } else { 0.55 };
+            let glow = ((fragment.x as f32 * 0.08 + time * 0.7).sin() * 0.5 + 0.5) * 0.25;
+            glam::Vec4::new(
+                (fragment.color.x * (base + glow)).clamp(0.0, 1.0),
+                (fragment.color.y * (base + glow * 0.35)).clamp(0.0, 1.0),
+                (fragment.color.z * (base + glow * 0.1)).clamp(0.0, 1.0),
+                fragment.color.w,
+            )
+        }
+    };
+    vec4_to_rgba8(color)
 }
 
 /// Aplica el test de profundidad y escribe el fragmento en el framebuffer.
