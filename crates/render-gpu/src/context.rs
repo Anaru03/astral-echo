@@ -91,17 +91,29 @@ impl GpuContext {
         surface: Option<&wgpu::Surface<'_>>,
         options: GpuOptions,
     ) -> Result<Self, GpuError> {
-        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        block_on(Self::from_instance_async(instance, surface, options))
+    }
+
+    pub(crate) async fn from_instance_async(
+        instance: wgpu::Instance,
+        surface: Option<&wgpu::Surface<'_>>,
+        options: GpuOptions,
+    ) -> Result<Self, GpuError> {
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: options.force_fallback_adapter,
             compatible_surface: surface,
-        }))
-        .map_err(|e| GpuError::Unavailable(e.to_string()))?;
-        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        })
+            .await
+            .map_err(|e| GpuError::Unavailable(e.to_string()))?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
             label: Some("Astral Echo GPU"),
             required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
             ..Default::default()
-        }))
+        })
+        .await
         .map_err(|e| GpuError::Backend(e.to_string()))?;
         let failure = Arc::new(Mutex::new(None));
         let errors = failure.clone();

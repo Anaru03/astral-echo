@@ -1661,6 +1661,62 @@ mod tests {
     }
 
     #[test]
+    fn manual_braking_reverses_velocity_without_erasing_inertia() {
+        let mut navigation = navigation(Vec3 { x: 100.0, y: 0.0, z: 0.0 });
+        navigation
+            .set_acceleration_input(Vec3 { x: 0.0, y: 0.0, z: -1.0 })
+            .expect("forward input is valid");
+        navigation
+            .advance_manual(Duration(1_000), Duration(0))
+            .expect("forward flight advances");
+        let forward_velocity = navigation.velocity();
+        assert!(forward_velocity.z < 0.0);
+
+        navigation
+            .set_acceleration_input(Vec3::ZERO)
+            .expect("releasing input is valid");
+        let position_before_coast = navigation.current_position();
+        navigation
+            .advance_manual(Duration(500), Duration(500))
+            .expect("coasting advances");
+        assert_eq!(navigation.velocity(), forward_velocity);
+        assert!(navigation.current_position().z < position_before_coast.z);
+
+        navigation
+            .set_acceleration_input(Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+            .expect("backward input is valid");
+        for step in 0..12 {
+            navigation
+                .advance_manual(Duration(100), Duration(1_000 + step * 100))
+                .expect("reverse flight advances");
+        }
+        assert!(navigation.velocity().z > 0.0);
+        assert!(navigation.current_position().z.is_finite());
+    }
+
+    #[test]
+    fn gravity_is_planetary_and_stops_outside_its_influence_radius() {
+        let mut near = navigation(Vec3 { x: 10.0, y: 0.0, z: 0.0 });
+        let mut far = navigation(Vec3 { x: 100.0, y: 0.0, z: 0.0 });
+        near.set_acceleration_input(Vec3::ZERO)
+            .expect("zero input is valid");
+        far.set_acceleration_input(Vec3::ZERO)
+            .expect("zero input is valid");
+
+        near.advance_manual(Duration(100), Duration(0))
+            .expect("near trajectory advances");
+        far.advance_manual(Duration(100), Duration(0))
+            .expect("far trajectory advances");
+
+        assert!(near.velocity().x < 0.0);
+        assert_eq!(far.velocity(), Vec3::ZERO);
+        assert!(near.current_position().x < 10.0);
+        assert_eq!(far.current_position(), Vec3 { x: 100.0, y: 0.0, z: 0.0 });
+        assert!(near.velocity().x.is_finite());
+        assert!(near.current_position().x.is_finite());
+    }
+
+    #[test]
     fn swept_collision_keeps_the_ship_outside_the_planet_and_emits_once() {
         let mut navigation = navigation(Vec3 { x: 5.0, y: 0.0, z: 0.0 });
         navigation

@@ -1,6 +1,9 @@
+use std::future::Future;
 use std::num::NonZeroU32;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::Instant;
 
 use render_core::{InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene};
@@ -8,7 +11,7 @@ use render_cpu::{
     render_snapshot_scene_with_shader, render_snapshot_scene_with_shader_with_stats, write_png,
     Framebuffer, FragmentShader, RasterMode,
 };
-use render_gpu::{GpuOptions, SurfaceRenderer};
+use render_gpu::{GpuError, GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -119,6 +122,8 @@ struct HostState {
     preset: Preset,
     cpu_surface_size: Option<(u32, u32)>,
     cpu_redraw: CpuRedrawGate,
+    pending_gpu: Option<Pin<Box<dyn Future<Output = Result<SurfaceRenderer, GpuError>>>>>,
+    pending_gpu_started: Option<Instant>,
 }
 
 impl ApplicationHandler for Host {
@@ -220,6 +225,8 @@ impl ApplicationHandler for Host {
             buffer,
             started: Instant::now(),
             cpu_redraw: CpuRedrawGate::default(),
+            pending_gpu: None,
+            pending_gpu_started: None,
         });
         if self.start_gpu {
             self.toggle();
@@ -292,6 +299,7 @@ impl ApplicationHandler for Host {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        self.poll_pending_gpu(_event_loop);
         if self
             .config
             .max_frames
@@ -315,6 +323,83 @@ impl ApplicationHandler for Host {
 }
 
 impl Host {
+    fn poll_pending_gpu(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(mut pending) = self
+            .state
+            .as_mut()
+            .and_then(|state| state.pending_gpu.take())
+        else {
+            return;
+        };
+        let waker = Waker::noop();
+        let mut context = TaskContext::from_waker(waker);
+        match pending.as_mut().poll(&mut context) {
+            Poll::Pending => {
+                if let Some(state) = self.state.as_mut() {
+                    state.pending_gpu = Some(pending);
+                }
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+            }
+            Poll::Ready(Ok(mut gpu)) => {
+                let preparation_ms = self
+                    .state
+                    .as_mut()
+                    .and_then(|state| state.pending_gpu_started.take())
+                    .map(|started| started.elapsed().as_secs_f64() * 1000.0);
+                let Some(state) = self.state.as_mut() else {
+                    return;
+                };
+                let size = state.window.inner_size();
+                if size.width == 0 || size.height == 0 {
+                    state.gpu = Some(gpu);
+                    state
+                        .backend
+                        .cancel_switch("GPU presentation dimensions are zero");
+                    self.report_gpu_error("GPU presentation dimensions are zero".into());
+                    return;
+                }
+                let (_, _, _, gpu_width, gpu_height) = gpu.diagnostic_state();
+                if (size.width, size.height) != (gpu_width, gpu_height)
+                    || !gpu.ready_for_present()
+                {
+                    if let Err(error) = gpu.resize_without_wait(size.width, size.height) {
+                        state.backend.cancel_switch(error.to_string());
+                        self.report_gpu_error(error.to_string());
+                        return;
+                    }
+                }
+                state.surface = None;
+                state.cpu_surface_size = None;
+                state.gpu = Some(gpu);
+                if state.backend.confirm_switch(BackendKind::Gpu).is_ok() {
+                    println!(
+                        "hot-swap gpu-ready preparation_ms={:.3}",
+                        preparation_ms.unwrap_or_default()
+                    );
+                    state.window.request_redraw();
+                }
+            }
+            Poll::Ready(Err(error)) => {
+                let preparation_ms = self
+                    .state
+                    .as_mut()
+                    .and_then(|state| state.pending_gpu_started.take())
+                    .map(|started| started.elapsed().as_secs_f64() * 1000.0);
+                if let Some(state) = self.state.as_mut() {
+                    state.backend.cancel_switch(error.to_string());
+                }
+                println!(
+                    "hot-swap gpu-failed preparation_ms={:.3} error={error}",
+                    preparation_ms.unwrap_or_default()
+                );
+                self.report_gpu_error(error.to_string());
+            }
+        }
+        if self.state.as_ref().is_some_and(|state| state.pending_gpu.is_none()) {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+        }
+    }
+
     fn set_preset(&mut self, preset: Preset) {
         if let Some(state) = &mut self.state {
             let (width, height) = preset.resolution();
@@ -380,11 +465,13 @@ impl Host {
                     }
                 }
             }
-            if let Some(gpu) = &mut state.gpu {
-                let (_, _, _, gpu_width, gpu_height) = gpu.diagnostic_state();
-                if (width, height) != (gpu_width, gpu_height) || !gpu.ready_for_present() {
-                    if let Err(error) = gpu.resize(width, height) {
-                        gpu_error = Some(error.to_string());
+            if state.backend.backend() == BackendKind::Gpu {
+                if let Some(gpu) = &mut state.gpu {
+                    let (_, _, _, gpu_width, gpu_height) = gpu.diagnostic_state();
+                    if (width, height) != (gpu_width, gpu_height) || !gpu.ready_for_present() {
+                        if let Err(error) = gpu.resize(width, height) {
+                            gpu_error = Some(error.to_string());
+                        }
                     }
                 }
             }
@@ -406,44 +493,69 @@ impl Host {
         let Some(state) = self.state.as_mut() else {
             return;
         };
+        if state.pending_gpu.is_some() {
+            return;
+        }
         let target = if state.backend.backend() == BackendKind::Cpu {
             BackendKind::Gpu
         } else {
             BackendKind::Cpu
         };
+        if !state.backend.request_switch(target) {
+            return;
+        }
         let previous_gpu = state.gpu.take();
-        let released_surface = if target == BackendKind::Gpu {
-            state.surface.take()
-        } else {
-            None
-        };
-        let released_cpu_surface_size = if target == BackendKind::Gpu {
-            state.cpu_surface_size.take()
-        } else {
-            None
-        };
         let gpu = if target == BackendKind::Gpu {
-            let mut gpu = match SurfaceRenderer::new(
-                state.window.clone(),
-                &state.snapshot.owned_draws(),
-                GpuOptions::default(),
-            ) {
-                Ok(gpu) => gpu,
-                Err(error) => {
-                    state.surface = released_surface;
-                    state.cpu_surface_size = released_cpu_surface_size;
-                    state.cpu_redraw.reset();
-                    self.report_gpu_error(error.to_string());
+            let mut gpu = match previous_gpu {
+                Some(gpu) => gpu,
+                None => {
+                    state.pending_gpu_started = Some(Instant::now());
+                    println!("hot-swap gpu-requested");
+                    let window = state.window.clone();
+                    let scene = state.snapshot.owned_draws();
+                    let high_preset = state.config_preset() != Preset::Low;
+                    state.pending_gpu = Some(Box::pin(async move {
+                        let mut gpu =
+                            SurfaceRenderer::new_async(window, scene, GpuOptions::default())
+                                .await?;
+                        if high_preset {
+                            gpu.set_postprocess_preset_async(render_gpu::PostProcessPreset::High)
+                                .await?;
+                        }
+                        Ok(gpu)
+                    }));
                     return;
                 }
             };
-            if state.config_preset() != Preset::Low {
-                let _ = gpu.set_postprocess_preset(render_gpu::PostProcessPreset::High);
+            let size = state.window.inner_size();
+            if size.width == 0 || size.height == 0 {
+                state.gpu = Some(gpu);
+                state
+                    .backend
+                    .cancel_switch("GPU presentation dimensions are zero");
+                self.report_gpu_error("GPU presentation dimensions are zero".into());
+                return;
             }
+            let (_, _, _, gpu_width, gpu_height) = gpu.diagnostic_state();
+            if (size.width, size.height) != (gpu_width, gpu_height)
+                || !gpu.ready_for_present()
+            {
+                if let Err(error) = gpu.resize_without_wait(size.width, size.height) {
+                    state.gpu = Some(gpu);
+                    state.backend.cancel_switch(error.to_string());
+                    self.report_gpu_error(error.to_string());
+                    return;
+                }
+            }
+            state.surface = None;
+            state.cpu_surface_size = None;
             Some(gpu)
         } else {
             let Some(surface) = Self::new_cpu_surface(state) else {
                 state.gpu = previous_gpu;
+                state
+                    .backend
+                    .cancel_switch("CPU presentation surface unavailable");
                 self.report_gpu_error("CPU presentation surface unavailable".into());
                 return;
             };
@@ -461,16 +573,12 @@ impl Host {
                     });
                 }
             }
-            None
+            previous_gpu
         };
-        let result = state.backend.try_switch(target, |_| Ok(()));
+        let result = state.backend.confirm_switch(target);
         if result.is_ok() {
             state.gpu = gpu;
             state.window.request_redraw();
-        } else if target == BackendKind::Gpu {
-            state.surface = released_surface;
-            state.cpu_surface_size = released_cpu_surface_size;
-            state.gpu = previous_gpu;
         }
         let transition_error = result.err();
         if let Some(error) = &transition_error {

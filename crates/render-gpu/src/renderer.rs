@@ -164,6 +164,14 @@ impl GpuRenderer {
         format: wgpu::TextureFormat,
         scene: &[(RasterMesh, Transform)],
     ) -> Result<Self, GpuError> {
+        block_on(Self::new_async(gpu, format, scene))
+    }
+
+    pub(crate) async fn new_async(
+        gpu: Arc<GpuContext>,
+        format: wgpu::TextureFormat,
+        scene: &[(RasterMesh, Transform)],
+    ) -> Result<Self, GpuError> {
         gpu.check()?;
         if !matches!(
             format,
@@ -275,7 +283,7 @@ impl GpuRenderer {
                 source: wgpu::ShaderSource::Wgsl(include_str!("vertex_color.wgsl").into()),
             });
         let pipeline = color_pipeline(&gpu, format, &pipeline_layout, &shader, false);
-        if let Some(error) = block_on(scope.pop()) {
+        if let Some(error) = scope.pop().await {
             return Err(GpuError::Backend(error.to_string()));
         }
         gpu.check()?;

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::future::Future;
+use std::pin::Pin;
 
 use render_core::{
     Camera, Mat4, PreparedSceneStats, RasterMesh, RenderSnapshot, SnapshotScene, Transform,
@@ -12,7 +14,7 @@ use winit::window::{Window, WindowId};
 use crate::postprocess::PostProcessPass;
 use crate::renderer::DepthTarget;
 use crate::{
-    game_over_overlay_scene, GpuContext, GpuError, GpuOptions, GpuRenderer, PostProcessConfig,
+    block_on, game_over_overlay_scene, GpuContext, GpuError, GpuOptions, GpuRenderer, PostProcessConfig,
     PostProcessPreset,
 };
 
@@ -36,15 +38,32 @@ impl SurfaceRenderer {
         scene: &[(RasterMesh, Transform)],
         options: GpuOptions,
     ) -> Result<Self, GpuError> {
+        block_on(Self::new_async_ref(window, scene, options))
+    }
+
+    pub fn new_async(
+        window: Arc<Window>,
+        scene: Vec<(RasterMesh, Transform)>,
+        options: GpuOptions,
+    ) -> Pin<Box<dyn Future<Output = Result<Self, GpuError>>>> {
+        Box::pin(async move { Self::new_async_ref(window, &scene, options).await })
+    }
+
+    async fn new_async_ref(
+        window: Arc<Window>,
+        scene: &[(RasterMesh, Transform)],
+        options: GpuOptions,
+    ) -> Result<Self, GpuError> {
         let instance = GpuContext::create_instance(options)?;
         let surface = instance
             .create_surface(window.clone())
             .map_err(|e| GpuError::Backend(e.to_string()))?;
-        let gpu = Arc::new(GpuContext::from_instance(
+        let gpu = Arc::new(GpuContext::from_instance_async(
             instance,
             Some(&surface),
             options,
-        )?);
+        )
+        .await?);
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
@@ -69,7 +88,7 @@ impl SurfaceRenderer {
             })
             .ok_or_else(|| GpuError::Unavailable("no supported surface color format".into()))?;
         config.present_mode = wgpu::PresentMode::Fifo;
-        let renderer = GpuRenderer::new(gpu.clone(), config.format, scene)?;
+        let renderer = GpuRenderer::new_async(gpu.clone(), config.format, scene).await?;
         println!(
             "GPU window: {:?}, format={:?}",
             gpu.adapter_info(),
@@ -88,11 +107,24 @@ impl SurfaceRenderer {
             hdr_texture: None,
             hdr_view: None,
         };
-        result.resize(size.width, size.height)?;
+        result.resize_without_wait(size.width, size.height)?;
         Ok(result)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
+        self.resize_with_wait(width, height, true)
+    }
+
+    pub fn resize_without_wait(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
+        self.resize_with_wait(width, height, false)
+    }
+
+    fn resize_with_wait(
+        &mut self,
+        width: u32,
+        height: u32,
+        wait: bool,
+    ) -> Result<(), GpuError> {
         if width == 0 || height == 0 {
             self.depth = None;
             return Ok(());
@@ -123,7 +155,9 @@ impl SurfaceRenderer {
         }
         self.config.width = width;
         self.config.height = height;
-        self.gpu.wait()?;
+        if wait {
+            self.gpu.wait()?;
+        }
         self.surface.configure(&self.gpu.device, &self.config);
         self.depth = Some(depth);
         self.gpu.check()
@@ -131,6 +165,49 @@ impl SurfaceRenderer {
 
     pub fn set_postprocess_preset(&mut self, preset: PostProcessPreset) -> Result<(), GpuError> {
         self.set_postprocess(PostProcessConfig::preset(preset))
+    }
+
+    pub async fn set_postprocess_preset_async(
+        &mut self,
+        preset: PostProcessPreset,
+    ) -> Result<(), GpuError> {
+        self.set_postprocess_async(PostProcessConfig::preset(preset))
+            .await
+    }
+
+    async fn set_postprocess_async(&mut self, config: PostProcessConfig) -> Result<(), GpuError> {
+        config.validate()?;
+        if config.enabled {
+            if self.hdr_renderer.is_none() {
+                self.hdr_renderer = Some(
+                    GpuRenderer::new_async(
+                        self.gpu.clone(),
+                        wgpu::TextureFormat::Rgba16Float,
+                        &self.scene,
+                    )
+                    .await?,
+                );
+            }
+            if self.postprocess.is_none() {
+                self.postprocess = Some(PostProcessPass::new(
+                    &self.gpu,
+                    self.config.format,
+                    wgpu::TextureFormat::Rgba16Float,
+                    self.config.width,
+                    self.config.height,
+                )?);
+            }
+            self.postprocess
+                .as_mut()
+                .expect("postprocess")
+                .set_config(config)?;
+            if self.hdr_texture.is_none() && self.config.width > 0 && self.config.height > 0 {
+                self.resize_without_wait(self.config.width, self.config.height)?;
+            }
+        } else if let Some(pass) = &mut self.postprocess {
+            pass.set_config(config)?;
+        }
+        Ok(())
     }
 
     pub fn set_postprocess(&mut self, config: PostProcessConfig) -> Result<(), GpuError> {
