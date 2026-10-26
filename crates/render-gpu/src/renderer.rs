@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use render_core::{
-    Camera, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh, SnapshotId, SnapshotScene,
-    Transform,
+    game_over_layout, Camera, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh,
+    RasterVertex, SnapshotId, SnapshotScene, Transform, Vec3, Vec4, GAME_OVER_GLYPHS,
 };
 use wgpu::util::DeviceExt;
 
@@ -25,6 +25,50 @@ pub struct PackedScene {
     pub vertices: Vec<GpuVertex>,
     pub indices: Vec<u32>,
     pub draws: Vec<(Range<u32>, Transform)>,
+}
+
+pub fn game_over_overlay_scene(width: u32, height: u32) -> Vec<(RasterMesh, Transform)> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let (left, top, scale) = game_over_layout(width, height);
+    let color = Vec4::new(1.0, 0.25, 0.19, 1.0);
+    let to_ndc = |x: u32, y: u32| {
+        Vec3::new(
+            (x as f32 / width as f32) * 2.0 - 1.0,
+            1.0 - (y as f32 / height as f32) * 2.0,
+            0.0,
+        )
+    };
+    let mut result = Vec::new();
+    for (glyph_index, glyph) in GAME_OVER_GLYPHS.iter().enumerate() {
+        let word_gap = u32::from(glyph_index >= 4) * 2 * scale;
+        let glyph_left = left + glyph_index as u32 * 6 * scale + word_gap;
+        for (row, bits) in glyph.iter().copied().enumerate() {
+            for column in 0..5u32 {
+                if bits & (1 << (4 - column)) == 0 {
+                    continue;
+                }
+                let x0 = glyph_left + column * scale;
+                let y0 = top + row as u32 * scale;
+                let x1 = x0 + scale;
+                let y1 = y0 + scale;
+                result.push((
+                    RasterMesh::new(
+                        vec![
+                            RasterVertex::new(to_ndc(x0, y1), color),
+                            RasterVertex::new(to_ndc(x1, y1), color),
+                            RasterVertex::new(to_ndc(x1, y0), color),
+                            RasterVertex::new(to_ndc(x0, y0), color),
+                        ],
+                        vec![0, 1, 2, 0, 2, 3],
+                    ),
+                    Transform::IDENTITY,
+                ));
+            }
+        }
+    }
+    result
 }
 
 impl PackedScene {

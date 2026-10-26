@@ -11,7 +11,10 @@ use winit::window::{Window, WindowId};
 
 use crate::postprocess::PostProcessPass;
 use crate::renderer::DepthTarget;
-use crate::{GpuContext, GpuError, GpuOptions, GpuRenderer, PostProcessConfig, PostProcessPreset};
+use crate::{
+    game_over_overlay_scene, GpuContext, GpuError, GpuOptions, GpuRenderer, PostProcessConfig,
+    PostProcessPreset,
+};
 
 pub struct SurfaceRenderer {
     surface: wgpu::Surface<'static>,
@@ -253,8 +256,15 @@ impl SurfaceRenderer {
         };
         let view = texture.texture.create_view(&Default::default());
         if overlay.game_over {
-            self.renderer
-                .clear_view(&view, &depth.view, [0, 0, 0, 255])?;
+            let overlay_scene = game_over_overlay_scene(self.config.width, self.config.height);
+            let mut overlay_renderer =
+                GpuRenderer::new(self.gpu.clone(), self.config.format, &overlay_scene)?;
+            overlay_renderer.render_to_view_matrix_with_clear(
+                &view,
+                &depth.view,
+                Mat4::IDENTITY,
+                [0, 0, 0, 255],
+            )?;
             self.window.pre_present_notify();
             texture.present();
             if reconfigure {

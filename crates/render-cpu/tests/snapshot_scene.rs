@@ -67,7 +67,7 @@ fn snapshot_render_reports_stats_from_its_prepared_scene() {
 }
 
 #[test]
-fn game_over_overlay_reaches_a_black_frame_without_drawing_scene_nodes() {
+fn game_over_overlay_reaches_a_black_frame_with_a_visible_indicator() {
     let mut scene = SnapshotScene::default();
     let mut snapshot = RenderSnapshot::minimal_demo();
     snapshot.overlay.fade_to_black = 1.0;
@@ -85,10 +85,11 @@ fn game_over_overlay_reaches_a_black_frame_without_drawing_scene_nodes() {
 
     assert_eq!(prepared.visible, 2);
     assert_eq!(pipeline.draws, 0);
-    assert!(framebuffer
-        .color_bytes()
-        .chunks_exact(4)
-        .all(|pixel| pixel == [0, 0, 0, 255]));
+    let pixels: Vec<_> = framebuffer.color_bytes().chunks_exact(4).collect();
+    assert!(pixels.iter().any(|pixel| pixel[0] > 200 && pixel[1] < 100));
+    assert!(pixels
+        .iter()
+        .all(|pixel| pixel == &[0, 0, 0, 255] || (pixel[0] > 200 && pixel[1] < 100)));
 }
 
 #[test]
