@@ -179,12 +179,12 @@ impl AudioManager {
                     .into_iter()
                     .collect(),
                 effects: [
-                    (SoundEffect::PlayerAttack, "assets/audio/player_attack.wav"),
+                    (SoundEffect::PlayerAttack, "assets/audio/attack.wav"),
                     (SoundEffect::EnemyDefeated, "assets/audio/enemy_defeated.wav"),
                     (SoundEffect::Collect, "assets/audio/collect.wav"),
                     (SoundEffect::Scan, "assets/audio/scan.wav"),
                     (SoundEffect::Landing, "assets/audio/landing.wav"),
-                    (SoundEffect::PlayerImpacted, "assets/audio/player_impacted.wav"),
+                    (SoundEffect::PlayerImpacted, "assets/audio/impact.wav"),
                     (SoundEffect::GameOver, "assets/audio/game_over.wav"),
                     (SoundEffect::ShipPropulsion, "assets/audio/ship_propulsion.wav"),
                 ]
@@ -505,6 +505,29 @@ mod tests {
         config.muted = true;
         assert_eq!(config.music_gain(), 0.0);
         assert_eq!(config.effects_gain(), 0.0);
+    }
+
+    #[test]
+    fn default_catalog_uses_the_expected_resource_paths() {
+        let audio = AudioManager::new();
+
+        assert_eq!(
+            audio.resources.music.get(&MusicTrack::Exploration),
+            Some(&PathBuf::from("assets/audio/exploration.ogg"))
+        );
+        let expected_effects = [
+            (SoundEffect::PlayerAttack, "assets/audio/attack.wav"),
+            (SoundEffect::EnemyDefeated, "assets/audio/enemy_defeated.wav"),
+            (SoundEffect::Collect, "assets/audio/collect.wav"),
+            (SoundEffect::Scan, "assets/audio/scan.wav"),
+            (SoundEffect::Landing, "assets/audio/landing.wav"),
+            (SoundEffect::PlayerImpacted, "assets/audio/impact.wav"),
+            (SoundEffect::GameOver, "assets/audio/game_over.wav"),
+            (SoundEffect::ShipPropulsion, "assets/audio/ship_propulsion.wav"),
+        ];
+        for (effect, path) in expected_effects {
+            assert_eq!(audio.resources.effects.get(&effect), Some(&PathBuf::from(path)));
+        }
     }
 
     #[test]
