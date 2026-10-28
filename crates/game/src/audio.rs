@@ -58,11 +58,19 @@ impl Default for AudioConfig {
 }
 
 impl AudioConfig {
+    fn clamp_volume(volume: f32) -> f32 {
+        if volume.is_finite() {
+            volume.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
     fn clamped(self) -> Self {
         Self {
-            master_volume: self.master_volume.clamp(0.0, 1.0),
-            music_volume: self.music_volume.clamp(0.0, 1.0),
-            effects_volume: self.effects_volume.clamp(0.0, 1.0),
+            master_volume: Self::clamp_volume(self.master_volume),
+            music_volume: Self::clamp_volume(self.music_volume),
+            effects_volume: Self::clamp_volume(self.effects_volume),
             ..self
         }
     }
@@ -223,17 +231,17 @@ impl AudioManager {
     }
 
     pub fn set_master_volume(&mut self, volume: f32) {
-        self.config.master_volume = volume.clamp(0.0, 1.0);
+        self.config.master_volume = AudioConfig::clamp_volume(volume);
         self.apply_volumes();
     }
 
     pub fn set_music_volume(&mut self, volume: f32) {
-        self.config.music_volume = volume.clamp(0.0, 1.0);
+        self.config.music_volume = AudioConfig::clamp_volume(volume);
         self.apply_volumes();
     }
 
     pub fn set_effects_volume(&mut self, volume: f32) {
-        self.config.effects_volume = volume.clamp(0.0, 1.0);
+        self.config.effects_volume = AudioConfig::clamp_volume(volume);
         self.apply_volumes();
     }
 
@@ -505,6 +513,19 @@ mod tests {
         config.muted = true;
         assert_eq!(config.music_gain(), 0.0);
         assert_eq!(config.effects_gain(), 0.0);
+    }
+
+    #[test]
+    fn config_replaces_non_finite_volumes_with_silence() {
+        let config = normalize_config(AudioConfig {
+            master_volume: f32::NAN,
+            music_volume: f32::INFINITY,
+            effects_volume: f32::NEG_INFINITY,
+            muted: false,
+        });
+        assert_eq!(config.master_volume, 0.0);
+        assert_eq!(config.music_volume, 0.0);
+        assert_eq!(config.effects_volume, 0.0);
     }
 
     #[test]

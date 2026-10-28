@@ -184,7 +184,8 @@ pub fn radial_deadzone(x: f32, y: f32, deadzone: f32) -> Stick {
     if magnitude <= deadzone {
         return Stick::default();
     }
-    let scale = ((magnitude - deadzone) / (1.0 - deadzone)) / magnitude;
+    let normalized_magnitude = magnitude.min(1.0);
+    let scale = ((normalized_magnitude - deadzone) / (1.0 - deadzone)) / magnitude;
     Stick {
         x: (x * scale).clamp(-1.0, 1.0),
         y: (y * scale).clamp(-1.0, 1.0),
@@ -525,6 +526,14 @@ mod tests {
         assert_eq!(value, Stick::default());
         let value = radial_deadzone(4.0, 0.0, 0.18);
         assert!(value.x <= 1.0);
+    }
+
+    #[test]
+    fn diagonal_input_is_normalized_to_the_unit_circle() {
+        let value = radial_deadzone(1.0, 1.0, 0.18);
+        let magnitude = (value.x * value.x + value.y * value.y).sqrt();
+        assert!(magnitude <= 1.0);
+        assert!((value.x - value.y).abs() < f32::EPSILON);
     }
 
     #[test]

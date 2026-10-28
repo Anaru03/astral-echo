@@ -33,6 +33,7 @@ const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 28.0, 46.0);
 pub const SHIP_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
 pub const ENEMY_MESH: MeshHandle = MeshHandle::ENEMY_PLACEHOLDER;
 pub const PLAYER_MESH: MeshHandle = MeshHandle::CUBE;
+pub const ERICK_MESH: MeshHandle = MeshHandle::DESTINATION_PLACEHOLDER;
 pub const PLACEHOLDER_MESH: MeshHandle = MeshHandle::CUBE;
 pub const DESTINATION_MESH: MeshHandle = MeshHandle::DESTINATION_PLACEHOLDER;
 pub const PLANET_MESH: MeshHandle = MeshHandle::PLANET_SPHERE;
@@ -45,6 +46,7 @@ pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
 pub const SHIP_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const ENEMY_MATERIAL: MaterialHandle = VisualAssets::ENEMY;
 pub const PLAYER_MATERIAL: MaterialHandle = VisualAssets::PLAYER;
+pub const ERICK_MATERIAL: MaterialHandle = VisualAssets::DESTINATION;
 pub const PLACEHOLDER_MATERIAL: MaterialHandle = VisualAssets::DESTINATION;
 pub const DESTINATION_MATERIAL: MaterialHandle = VisualAssets::DESTINATION;
 pub const PLANET_MATERIAL: MaterialHandle = VisualAssets::PLANET;
@@ -250,6 +252,7 @@ pub fn snapshot_from_world_with_camera(
                 gameplay::GameplayVisualEventKind::ItemCollected => {
                     RenderVisualEventKind::ItemCollected
                 }
+                gameplay::GameplayVisualEventKind::Scan => RenderVisualEventKind::Scan,
             },
             source: event.source,
             target: event.target,
@@ -315,6 +318,16 @@ pub fn snapshot_from_world_with_camera(
             PLAYER_MESH,
             PLAYER_MATERIAL,
             player.is_active && world.entities().contains(player.entity_id),
+        ));
+    }
+
+    for companion in world.companions() {
+        snapshot.push_node(SnapshotNode::new(
+            companion.entity,
+            Transform::from_translation(from_engine(companion.position)),
+            ERICK_MESH,
+            ERICK_MATERIAL,
+            companion.active && world.entities().contains(companion.entity),
         ));
     }
 
@@ -475,6 +488,11 @@ fn visual_event_nodes(snapshot: &RenderSnapshot) -> Vec<SnapshotNode> {
                     COLLECTIBLE_MATERIAL,
                     Vec3::splat(0.15 + intensity * 0.35),
                 ),
+                RenderVisualEventKind::Scan => (
+                    DESTINATION_MESH,
+                    DESTINATION_MATERIAL,
+                    Vec3::splat(0.3 + intensity * 0.8),
+                ),
             };
             Some(SnapshotNode::visual_event(
                 event.id,
@@ -546,6 +564,7 @@ fn expected_snapshot_node_count(
         count += 1;
     }
     count += world.players().count();
+    count += world.companions().count();
     count += station_nodes(world).len();
     count += derelict_nodes(world).len();
     count += asteroid_field_nodes(world).len();
