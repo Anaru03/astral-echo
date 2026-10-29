@@ -7,6 +7,7 @@ pub enum GameplayVisualEventKind {
     Attack,
     EnemyDefeated,
     ItemCollected,
+    Scan,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

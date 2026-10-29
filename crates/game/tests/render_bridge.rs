@@ -886,6 +886,120 @@ fn public_attack_command_produces_attack_event_for_contextual_fallback() {
 }
 
 #[test]
+fn companion_snapshot_uses_gameplay_position_and_stable_identity() {
+    let mut session = game::ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let position = engine::Vec3 {
+        x: 7.0,
+        y: 2.0,
+        z: -4.0,
+    };
+    let companion = session
+        .world_mut()
+        .create_companion(player, position)
+        .expect("active player should be able to create a companion");
+
+    let first = snapshot_from_world(session.world(), Default::default());
+    let node = first
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Entity(companion))
+        .expect("ERICK should be represented by a snapshot node");
+    assert!(node.visible);
+    assert_eq!(node.transform.translation, render_core::from_engine(position));
+    assert_eq!((node.mesh, node.material), (ERICK_MESH, ERICK_MATERIAL));
+    assert_eq!(
+        first
+            .nodes
+            .iter()
+            .filter(|node| node.entity == SnapshotId::Entity(companion))
+            .count(),
+        1
+    );
+
+    let repeated = snapshot_from_world(session.world(), Default::default());
+    assert_eq!(
+        repeated
+            .nodes
+            .iter()
+            .filter(|node| node.entity == SnapshotId::Entity(companion))
+            .count(),
+        1
+    );
+    assert_eq!(
+        repeated
+            .nodes
+            .iter()
+            .find(|node| node.entity == SnapshotId::Entity(companion))
+            .unwrap()
+            .transform,
+        node.transform
+    );
+}
+
+#[test]
+fn accepted_scan_emits_one_expiring_visual_signal() {
+    let mut session = game::ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let setup = session.update([
+        gameplay::GameplayCommand::ConfigureSignalScanner {
+            ship,
+            range: 100.0,
+            cooldown: engine::Duration(1_000),
+        },
+        gameplay::GameplayCommand::SetSignalScannerEnabled {
+            ship,
+            enabled: true,
+        },
+    ]);
+    assert!(setup
+        .iter()
+        .all(|result| matches!(result.status, gameplay::CommandStatus::Success { .. })));
+
+    let scan = session.update([gameplay::GameplayCommand::ScanSignals { player, ship }]);
+    assert!(matches!(
+        scan.first().map(|result| &result.status),
+        Some(gameplay::CommandStatus::Success { .. })
+    ));
+
+    let first = snapshot_from_world(session.world(), Default::default());
+    assert_eq!(first.visual_events.len(), 1);
+    let event = &first.visual_events[0];
+    assert_eq!(event.id, 1);
+    assert_eq!(event.kind, render_core::RenderVisualEventKind::Scan);
+    assert_eq!(event.source, Some(ship));
+    assert_eq!(event.position, Some(render_core::from_engine(session.world().ship_position().unwrap())));
+    let effect = first
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::VisualEvent(event.id))
+        .expect("scan should produce a visual event node");
+    assert_eq!((effect.mesh, effect.material), (DESTINATION_MESH, DESTINATION_MATERIAL));
+
+    let repeated = snapshot_from_world(session.world(), Default::default());
+    assert_eq!(repeated.visual_events, first.visual_events);
+    assert_eq!(
+        repeated
+            .nodes
+            .iter()
+            .filter(|node| node.entity == SnapshotId::VisualEvent(event.id))
+            .count(),
+        1
+    );
+
+    session.update([gameplay::GameplayCommand::AdvanceTime {
+        delta: engine::Duration(250),
+    }]);
+    let expired = snapshot_from_world(session.world(), Default::default());
+    assert!(expired.visual_events.is_empty());
+    assert!(!expired
+        .nodes
+        .iter()
+        .any(|node| node.entity == SnapshotId::VisualEvent(event.id)));
+}
+
+#[test]
 fn visual_events_are_persistent_unique_and_time_bounded() {
     let mut session = game::ProjectEchoSession::new();
     let player = session.ids.first_player;

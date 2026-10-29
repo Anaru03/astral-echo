@@ -6154,6 +6154,12 @@ impl GameplayWorld {
                 Some(*collectible),
                 self.collectibles.get(collectible).map(|item| item.position),
             ),
+            crate::events::GameplayEvent::SignalScanCompleted { ship, .. } => (
+                GameplayVisualEventKind::Scan,
+                Some(*ship),
+                None,
+                self.ship_position(),
+            ),
             _ => return,
         };
         let Some(id) = self.next_visual_event_id.checked_add(1) else {

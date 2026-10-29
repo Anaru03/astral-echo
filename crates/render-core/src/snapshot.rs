@@ -133,6 +133,7 @@ pub enum RenderVisualEventKind {
     Attack,
     EnemyDefeated,
     ItemCollected,
+    Scan,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
