@@ -1,5 +1,8 @@
 use glam::{Mat4, Vec3, Vec4};
-use render_cpu::pipeline::raster::{raster_triangle, to_screen, FillRule, ScreenVertex};
+use render_cpu::pipeline::raster::{
+    raster_triangle, shade_fragment_with_shader, shade_fragment_with_time, to_screen, FillRule,
+    Fragment, FragmentShader, ScreenVertex,
+};
 use render_cpu::pipeline::CpuPipeline;
 use render_cpu::{
     Color, Framebuffer, PipelineConfig, RasterMesh, RasterVertex, Stage, Topology, Viewport,
@@ -21,6 +24,74 @@ fn screen(x: f32, y: f32) -> ScreenVertex {
         inv_w: 1.0,
         color: Vec4::ONE,
     }
+}
+
+#[test]
+fn solar_fragment_shader_applies_position_dependent_effect() {
+    let color = glam::Vec4::new(0.8, 0.4, 0.2, 1.0);
+    let left = Fragment {
+        x: 0,
+        y: 0,
+        depth: 0.5,
+        color,
+    };
+    let right = Fragment {
+        x: 16,
+        y: 0,
+        depth: 0.5,
+        color,
+    };
+
+    assert_ne!(
+        shade_fragment_with_shader(&left, FragmentShader::SolarBands),
+        shade_fragment_with_shader(&right, FragmentShader::SolarBands)
+    );
+    assert_eq!(
+        shade_fragment_with_shader(&left, FragmentShader::VertexColor),
+        shade_fragment_with_shader(&right, FragmentShader::VertexColor)
+    );
+}
+
+#[test]
+fn solar_fragment_shader_is_deterministic_and_animated() {
+    let fragment = Fragment {
+        x: 7,
+        y: 3,
+        depth: 0.5,
+        color: glam::Vec4::new(0.8, 0.4, 0.2, 1.0),
+    };
+    let first = shade_fragment_with_time(&fragment, FragmentShader::SolarBands, 0.0);
+    let repeat = shade_fragment_with_time(&fragment, FragmentShader::SolarBands, 0.0);
+    let later = shade_fragment_with_time(&fragment, FragmentShader::SolarBands, 2.0);
+
+    assert_eq!(first, repeat);
+    assert_ne!(first, later);
+    assert_eq!(
+        shade_fragment_with_time(&fragment, FragmentShader::SolarBands, f32::NAN),
+        shade_fragment_with_time(&fragment, FragmentShader::SolarBands, 0.0)
+    );
+}
+
+#[test]
+fn sequential_and_tiled_paths_apply_the_same_animated_shader() {
+    let mesh = RasterMesh::triangle(
+        vertex(-1.0, -1.0, 0.5),
+        vertex(1.0, -1.0, 0.5),
+        vertex(0.0, 1.0, 0.5),
+    );
+    let render = |mode| {
+        let mut framebuffer = Framebuffer::new(32, 32).expect("framebuffer");
+        let viewport = Viewport::from_size(32, 32).expect("viewport");
+        CpuPipeline::new(&mut framebuffer, viewport, PipelineConfig::default())
+            .with_fragment_shader(FragmentShader::SolarBands)
+            .with_fragment_time(3.0)
+            .with_tile_config(render_cpu::TileConfig { tile_size: 8, mode })
+            .draw_mesh(&mesh, Mat4::IDENTITY, Topology::TriangleList)
+            .expect("draws");
+        framebuffer.color_bytes().to_vec()
+    };
+
+    assert_eq!(render(render_cpu::RasterMode::Secuencial), render(render_cpu::RasterMode::Paralelo));
 }
 
 #[test]

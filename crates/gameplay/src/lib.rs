@@ -34,6 +34,7 @@ pub mod scaling;
 pub mod station;
 pub mod systems;
 pub mod types;
+pub mod visual_events;
 pub mod world;
 pub mod world_activity;
 
@@ -128,8 +129,8 @@ pub use navigation::{
     AutopilotError, AutopilotState, Destination, DestinationId, DestinationType, DiscoveryState,
     NavigationInitializationError, NavigationMovementError, NavigationRegistrationError,
     NavigationRoute, NavigationRouteError, NavigationRouteState, NavigationState, ScannerError,
-    ShipMovementParameters, ShipOrientation, SignalDetection, SignalKnowledge, SignalScanner,
-    TravelProgress, TravelState,
+    PlanetFlightState, PlanetPhysics, ShipMovementParameters, ShipOrientation, SignalDetection,
+    SignalKnowledge, SignalScanner, TravelProgress, TravelState,
 };
 pub use objective::{Objective, ObjectiveTrigger, ObjectiveTriggerError};
 pub use pipeline::GameplayProcessor;
@@ -151,6 +152,7 @@ pub use systems::{
     DerelictSystem, FunctionalWorldSystem,
 };
 pub use types::{GameResult, GameplayState, SimulationPhase};
+pub use visual_events::{GameplayVisualEvent, GameplayVisualEventKind, VISUAL_EVENT_DURATION};
 pub use world::{GameplayWorld, InventoryTransferError, PlayerCreationError, MAX_LOCAL_PLAYERS};
 pub use world_activity::{
     CombatZone, FunctionalWorld, FunctionalWorldError, ResourceSite, StorySite, TradeMarket,

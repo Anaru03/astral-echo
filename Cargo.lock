@@ -2685,11 +2685,13 @@ dependencies = [
  "bevy",
  "engine",
  "gameplay",
+ "gilrs",
  "networking",
  "render-core",
  "render-cpu",
  "render-gpu",
  "render-present",
+ "rodio",
 ]
 
 [[package]]

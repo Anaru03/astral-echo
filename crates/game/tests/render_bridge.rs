@@ -68,6 +68,242 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
 }
 
 #[test]
+fn snapshot_hud_reflects_flight_target_and_encounter_state() {
+    let world = support::fixture_world();
+    let snapshot = snapshot_from_world(&world, Default::default());
+    assert_eq!(snapshot.overlay.hud.flight, render_core::HudFlightState::Free);
+    assert_eq!(
+        snapshot.overlay.hud.autopilot,
+        render_core::HudAutopilotState::Inactive
+    );
+    assert_eq!(snapshot.overlay.hud.target, None);
+    assert_eq!(snapshot.overlay.hud.active_enemies, 1);
+    assert!(!snapshot.overlay.hud.landing_available);
+}
+
+#[test]
+fn station_nodes_use_stable_ids_positions_and_registered_assets() {
+    let mut world = support::fixture_world();
+    let position = engine::Vec3 {
+        x: 4.0,
+        y: 2.0,
+        z: -3.0,
+    };
+    let station = world
+        .create_station(position, 3.0, gameplay::StationType::Engineering)
+        .unwrap();
+
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let nodes: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.entity == SnapshotId::Entity(station))
+        .collect();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].transform.translation, render_core::from_engine(position));
+    assert_eq!((nodes[0].mesh, nodes[0].material), (STATION_MESH, STATION_MATERIAL));
+    SnapshotScene::default()
+        .update(&snapshot)
+        .expect("station asset pair must resolve");
+    assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
+}
+
+#[test]
+fn station_visibility_and_identity_are_preserved_across_snapshots() {
+    let mut world = support::fixture_world();
+    let first = world
+        .create_station(
+            engine::Vec3 {
+                x: 2.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            2.0,
+            gameplay::StationType::Piloting,
+        )
+        .unwrap();
+    let second = world
+        .create_station(
+            engine::Vec3 {
+                x: -2.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            2.0,
+            gameplay::StationType::Weapons,
+        )
+        .unwrap();
+    let mut processor = gameplay::GameplayProcessor::new();
+    processor.add_system(gameplay::systems::StationSystem);
+    let result = processor.update(
+        &mut world,
+        [gameplay::GameplayCommand::SetStationEnabled {
+            station: first,
+            enabled: false,
+        }],
+    );
+    assert!(matches!(
+        result[0].status,
+        gameplay::CommandStatus::Success { changed: true }
+    ));
+
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let stations: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.mesh == STATION_MESH)
+        .collect();
+    assert_eq!(stations.len(), 2);
+    assert_eq!(stations.iter().filter(|node| !node.visible).count(), 1);
+    assert!(stations.iter().any(|node| {
+        node.entity == SnapshotId::Entity(first) && !node.visible
+    }));
+    assert!(stations.iter().any(|node| {
+        node.entity == SnapshotId::Entity(second) && node.visible
+    }));
+    assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
+    SnapshotScene::default()
+        .update(&snapshot)
+        .expect("all station pairs must resolve");
+}
+
+#[test]
+fn discovered_derelicts_use_stable_ids_positions_and_registered_assets() {
+    let mut world = support::fixture_world();
+    let first_position = engine::Vec3 {
+        x: 6.0,
+        y: 1.0,
+        z: -4.0,
+    };
+    let second_position = engine::Vec3 {
+        x: -7.0,
+        y: 0.5,
+        z: 3.0,
+    };
+    let mut first = gameplay::Derelict::new(
+        gameplay::DerelictId::new(41),
+        first_position,
+        4.0,
+    );
+    first.state = gameplay::DerelictState::Discovered;
+    let mut second = gameplay::Derelict::new(
+        gameplay::DerelictId::new(42),
+        second_position,
+        4.0,
+    );
+    second.state = gameplay::DerelictState::Resolved;
+    world.register_derelict(first).unwrap();
+    world.register_derelict(second).unwrap();
+    world
+        .register_derelict(gameplay::Derelict::new(
+            gameplay::DerelictId::new(43),
+            engine::Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 5.0,
+            },
+            4.0,
+        ))
+        .unwrap();
+
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let derelicts: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.mesh == DERELICT_MESH)
+        .collect();
+    assert_eq!(derelicts.len(), 2);
+    assert!(derelicts.iter().any(|node| {
+        node.entity == SnapshotId::Derelict(41)
+            && node.transform.translation == render_core::from_engine(first_position)
+            && node.material == DERELICT_MATERIAL
+            && node.visible
+    }));
+    assert!(derelicts.iter().any(|node| {
+        node.entity == SnapshotId::Derelict(42)
+            && node.transform.translation == render_core::from_engine(second_position)
+            && node.visible
+    }));
+    assert!(!snapshot
+        .nodes
+        .iter()
+        .any(|node| node.entity == SnapshotId::Derelict(43)));
+    assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
+    SnapshotScene::default()
+        .update(&snapshot)
+        .expect("derelict asset pair must resolve");
+}
+
+#[test]
+fn active_debris_fields_use_stable_ids_and_registered_assets() {
+    let mut world = support::fixture_world();
+    let debris_position = engine::Vec3 {
+        x: 8.0,
+        y: -1.0,
+        z: 6.0,
+    };
+    world
+        .register_environmental_hazard(gameplay::EnvironmentalHazard::new(
+            gameplay::HazardId::new(77),
+            gameplay::EnvironmentalHazardType::DebrisField,
+            debris_position,
+            5.0,
+            1,
+            engine::Duration(1_000),
+            true,
+        ))
+        .unwrap();
+    world
+        .register_environmental_hazard(gameplay::EnvironmentalHazard::new(
+            gameplay::HazardId::new(78),
+            gameplay::EnvironmentalHazardType::DebrisField,
+            engine::Vec3 {
+                x: -8.0,
+                y: 1.0,
+                z: -6.0,
+            },
+            5.0,
+            1,
+            engine::Duration(1_000),
+            false,
+        ))
+        .unwrap();
+    world
+        .register_environmental_hazard(gameplay::EnvironmentalHazard::new(
+            gameplay::HazardId::new(79),
+            gameplay::EnvironmentalHazardType::Radiation,
+            engine::Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 8.0,
+            },
+            5.0,
+            1,
+            engine::Duration(1_000),
+            true,
+        ))
+        .unwrap();
+
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let fields: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.mesh == ASTEROID_FIELD_MESH)
+        .collect();
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].entity, SnapshotId::Hazard(77));
+    assert_eq!(
+        fields[0].transform.translation,
+        render_core::from_engine(debris_position)
+    );
+    assert_eq!(fields[0].material, ASTEROID_MATERIAL);
+    assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
+    SnapshotScene::default()
+        .update(&snapshot)
+        .expect("debris field asset pair must resolve");
+}
+
+#[test]
 fn updates_positions_visibility_spawn_and_missing_entities() {
     let mut world = support::fixture_world();
     let player = world.players().next().unwrap().entity_id;
@@ -138,6 +374,40 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
         11
     );
     assert!(scene.snapshot().nodes.is_empty());
+}
+
+#[test]
+fn gameplay_snapshot_reaches_prepared_scene_without_losing_visual_data() {
+    let world = support::fixture_world();
+    let snapshot = snapshot_from_world_with_camera(
+        &world,
+        Default::default(),
+        &render_core::Camera::demo(),
+    );
+    let mut scene = SnapshotScene::default();
+    scene.update(&snapshot).unwrap();
+
+    let prepared = scene.prepare(render_core::CullingConfig {
+        width: 640,
+        height: 360,
+        ..Default::default()
+    });
+    let stats = prepared.stats();
+
+    assert_eq!(stats.considered, snapshot.nodes.len());
+    assert_eq!(stats.visible, prepared.draws().count());
+    assert_eq!(stats.discarded, stats.considered - stats.visible);
+    assert!(stats.visible > 0);
+    for draw in prepared.draws() {
+        let source = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == draw.node.entity)
+            .expect("prepared draw must originate from the gameplay snapshot");
+        assert_eq!(draw.node.transform, source.transform);
+        assert_eq!(draw.node.mesh, source.mesh);
+        assert_eq!(draw.node.material, source.material);
+    }
 }
 
 #[test]
@@ -284,6 +554,9 @@ fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
         let id = match node.entity {
             SnapshotId::Entity(id) => id,
             SnapshotId::Destination(_) => panic!("surface object must have a stable entity id"),
+            SnapshotId::Derelict(_) => panic!("surface object must have a stable entity id"),
+            SnapshotId::Hazard(_) => panic!("surface object must have a stable entity id"),
+            SnapshotId::VisualEvent(_) => panic!("surface object must have a stable entity id"),
         };
         assert!(ids.insert(id), "duplicate surface object id {id:?}");
 
@@ -311,6 +584,66 @@ fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
     }
     assert_eq!(ids.len(), SURFACE_OBJECT_IDS.len());
     assert!(SURFACE_OBJECT_IDS.iter().all(|id| ids.contains(id)));
+}
+
+#[test]
+fn seeded_surface_distribution_is_reproducible_and_local_to_the_planet() {
+    let first = academic_surface_objects_with_seed(0.0, 17, 12);
+    let repeated = academic_surface_objects_with_seed(0.0, 17, 12);
+    let other_seed = academic_surface_objects_with_seed(0.0, 18, 12);
+    assert_eq!(first, repeated);
+    assert_ne!(first, other_seed);
+
+    let planet = academic_planet_transform(0.0);
+    let inverse = planet.matrix().inverse();
+    let assets = VisualAssets::default();
+    for node in &first {
+        let local = inverse * node.transform.matrix();
+        let local_center = local.transform_point3(Vec3::ZERO);
+        let local_up = local.transform_vector3(Vec3::Y).normalize();
+        assert!(local.is_finite());
+        assert!((local_center.length() - SURFACE_OBJECT_RADIAL_OFFSET).abs() < 0.0001);
+        assert!(local_up.dot(local_center.normalize()) > 0.999);
+        let mesh = assets.mesh(node.mesh, node.material).unwrap();
+        assert!(mesh.vertices.iter().all(|vertex| {
+            node.transform
+                .matrix()
+                .transform_point3(vertex.position)
+                .distance(planet.translation)
+                > PLANET_SURFACE_RADIUS
+        }));
+    }
+}
+
+#[test]
+fn seeded_surface_distribution_handles_empty_and_capped_counts() {
+    assert!(academic_surface_objects_with_seed(0.0, 1, 0).is_empty());
+    assert_eq!(
+        academic_surface_objects_with_seed(0.0, 1, MAX_ACADEMIC_SURFACE_OBJECTS + 10).len(),
+        MAX_ACADEMIC_SURFACE_OBJECTS
+    );
+    let ids: std::collections::BTreeSet<_> = academic_surface_objects_with_seed(
+        0.0,
+        ACADEMIC_SURFACE_OBJECT_SEED,
+        MAX_ACADEMIC_SURFACE_OBJECTS,
+    )
+    .into_iter()
+    .map(|node| node.entity)
+    .collect();
+    assert_eq!(ids.len(), MAX_ACADEMIC_SURFACE_OBJECTS);
+}
+
+#[test]
+fn seeded_surface_distribution_follows_orbit_and_rotation_as_a_local_layout() {
+    let at_start = academic_surface_objects_with_seed(0.0, 91, 8);
+    let at_later = academic_surface_objects_with_seed(3.0, 91, 8);
+    let start_inverse = academic_planet_transform(0.0).matrix().inverse();
+    let later_inverse = academic_planet_transform(3.0).matrix().inverse();
+    for (start, later) in at_start.iter().zip(at_later.iter()) {
+        let start_local = start_inverse * start.transform.matrix();
+        let later_local = later_inverse * later.transform.matrix();
+        assert!((start_local - later_local).abs_diff_eq(render_core::Mat4::ZERO, 0.0001));
+    }
 }
 
 #[test]
@@ -384,6 +717,381 @@ fn observation_transition_reverses_from_current_progress_without_frame_state() {
     assert_ne!(start.position(), middle.position());
     assert_ne!(middle.position(), end.position());
     assert_eq!(before, format!("{world:?}"));
+}
+
+#[test]
+fn deterministic_flight_observation_demo_uses_one_world_and_two_snapshots() {
+    let (mut session, planet) = support::deterministic_flight_session();
+    let initial = snapshot_from_world(session.world(), Default::default());
+    session.update([gameplay::GameplayCommand::AdvanceTime {
+        delta: engine::Duration(500),
+    }]);
+    assert!(matches!(
+        session.world().travel_state(),
+        gameplay::TravelState::InProgress { .. }
+    ));
+    let mid = snapshot_from_world(session.world(), Default::default());
+    let repeat = snapshot_from_world(session.world(), Default::default());
+    assert_ne!(initial, mid);
+    assert_eq!(mid, repeat);
+    assert_ne!(
+        initial
+            .nodes
+            .iter()
+            .find(|node| node.entity == SnapshotId::Destination(planet.value()))
+            .unwrap()
+            .transform
+            .translation,
+        mid.nodes
+            .iter()
+            .find(|node| node.entity == SnapshotId::Destination(planet.value()))
+            .unwrap()
+            .transform
+            .translation
+    );
+
+    let before_camera = format!("{:?}", session.world());
+    let close = observation_camera(session.world(), 16.0 / 9.0, 1.0, 0.0, 0.0).unwrap();
+    let retreat = observation_camera(session.world(), 16.0 / 9.0, 0.0, 0.0, 0.0).unwrap();
+    assert_ne!(close.position(), retreat.position());
+    assert_eq!(before_camera, format!("{:?}", session.world()));
+}
+
+#[test]
+fn real_impact_propagates_to_terminal_render_overlay() {
+    let (mut session, planet) = support::deterministic_flight_session();
+    for _ in 0..20 {
+        session.update([gameplay::GameplayCommand::AdvanceTime {
+            delta: engine::Duration(100),
+        }]);
+        if matches!(
+            session.world().planet_flight_state(),
+            gameplay::PlanetFlightState::Impacted { planet: active } if active == planet
+        ) {
+            break;
+        }
+    }
+    assert!(matches!(
+        session.world().planet_flight_state(),
+        gameplay::PlanetFlightState::Impacted { planet: active } if active == planet
+    ));
+
+    let impact_snapshot = snapshot_from_world(session.world(), Default::default());
+    assert!(impact_snapshot.overlay.fade_to_black.is_finite());
+    assert!(impact_snapshot.overlay.fade_to_black < 1.0);
+    assert!(!impact_snapshot.overlay.game_over);
+    let flash = impact_snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Entity(IMPACT_FLASH_ENTITY))
+        .expect("impact snapshot should contain its flash node");
+    assert_eq!((flash.mesh, flash.material), (SUN_MESH, SUN_MATERIAL));
+    let mut scene = SnapshotScene::default();
+    scene
+        .update(&impact_snapshot)
+        .expect("impact flash assets should resolve through SnapshotScene");
+    assert!(scene.mesh(flash).is_ok());
+
+    session.update([gameplay::GameplayCommand::AdvanceTime {
+        delta: engine::Duration(1_000),
+    }]);
+    let terminal_snapshot = snapshot_from_world(session.world(), Default::default());
+    assert_eq!(terminal_snapshot.overlay.fade_to_black, 1.0);
+    assert!(terminal_snapshot.overlay.game_over);
+}
+
+#[test]
+fn public_landing_request_accepts_valid_context_and_rejects_repeat() {
+    let mut session = game::ProjectEchoSession::new();
+    let planet = gameplay::DestinationId::new(9_101);
+    session
+        .register_destination(gameplay::Destination {
+            id: planet,
+            destination_type: gameplay::DestinationType::Planet,
+            position: engine::Vec3::ZERO,
+            travel_duration: engine::Duration(1_000),
+            fuel_cost: 1,
+            discovery: gameplay::DiscoveryState::Discovered,
+        })
+        .unwrap();
+    assert!(session.world_mut().configure_planet_physics(gameplay::PlanetPhysics {
+        destination: planet,
+        orbit_center: engine::Vec3 {
+            x: -10.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        orbit_radius: 10.0,
+        orbit_angular_speed: 0.0,
+        surface_radius: 2.0,
+        ship_radius: 1.0,
+        gravity_influence_radius: 20.0,
+        gravitational_parameter: 4.0,
+        atmosphere_height: 2.0,
+    }));
+    assert!(session.world().landing_available(planet));
+    assert!(session.world_mut().request_planet_landing(planet));
+    assert!(session
+        .world()
+        .events()
+        .iter()
+        .any(|event| matches!(event, gameplay::GameplayEvent::PlanetLandingRequested { planet: active, .. } if *active == planet)));
+    assert!(!session.world_mut().request_planet_landing(planet));
+}
+
+#[test]
+fn public_attack_command_produces_attack_event_for_contextual_fallback() {
+    let mut session = game::ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let player_position = session.world().players().next().unwrap().position;
+    let results = session.update([
+        gameplay::GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: gameplay::WeaponConfiguration::new(
+                gameplay::AttackType::Kinetic,
+                10,
+                20,
+                engine::Duration(1),
+            ),
+        },
+        gameplay::GameplayCommand::CreateEnemy {
+            configuration: gameplay::EnemyConfiguration::for_archetype(
+                gameplay::EnemyArchetype::Shooter,
+                player_position,
+            ),
+        },
+    ]);
+    assert!(results
+        .iter()
+        .all(|result| matches!(result.status, gameplay::CommandStatus::Success { .. })));
+    let enemy = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            gameplay::GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .unwrap();
+    let attack = session.update([gameplay::GameplayCommand::AttackEnemy { player, enemy }]);
+    assert!(matches!(
+        attack.first().map(|result| &result.status),
+        Some(gameplay::CommandStatus::Success { .. })
+    ));
+    assert!(session
+        .world()
+        .events()
+        .iter()
+        .any(|event| matches!(event, gameplay::GameplayEvent::AttackExecuted { attacker, target, .. } if *attacker == player && *target == enemy)));
+}
+
+#[test]
+fn companion_snapshot_uses_gameplay_position_and_stable_identity() {
+    let mut session = game::ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let position = engine::Vec3 {
+        x: 7.0,
+        y: 2.0,
+        z: -4.0,
+    };
+    let companion = session
+        .world_mut()
+        .create_companion(player, position)
+        .expect("active player should be able to create a companion");
+
+    let first = snapshot_from_world(session.world(), Default::default());
+    let node = first
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Entity(companion))
+        .expect("ERICK should be represented by a snapshot node");
+    assert!(node.visible);
+    assert_eq!(node.transform.translation, render_core::from_engine(position));
+    assert_eq!((node.mesh, node.material), (ERICK_MESH, ERICK_MATERIAL));
+    assert_eq!(
+        first
+            .nodes
+            .iter()
+            .filter(|node| node.entity == SnapshotId::Entity(companion))
+            .count(),
+        1
+    );
+
+    let repeated = snapshot_from_world(session.world(), Default::default());
+    assert_eq!(
+        repeated
+            .nodes
+            .iter()
+            .filter(|node| node.entity == SnapshotId::Entity(companion))
+            .count(),
+        1
+    );
+    assert_eq!(
+        repeated
+            .nodes
+            .iter()
+            .find(|node| node.entity == SnapshotId::Entity(companion))
+            .unwrap()
+            .transform,
+        node.transform
+    );
+}
+
+#[test]
+fn accepted_scan_emits_one_expiring_visual_signal() {
+    let mut session = game::ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let ship = session.ids.first_ship;
+    let setup = session.update([
+        gameplay::GameplayCommand::ConfigureSignalScanner {
+            ship,
+            range: 100.0,
+            cooldown: engine::Duration(1_000),
+        },
+        gameplay::GameplayCommand::SetSignalScannerEnabled {
+            ship,
+            enabled: true,
+        },
+    ]);
+    assert!(setup
+        .iter()
+        .all(|result| matches!(result.status, gameplay::CommandStatus::Success { .. })));
+
+    let scan = session.update([gameplay::GameplayCommand::ScanSignals { player, ship }]);
+    assert!(matches!(
+        scan.first().map(|result| &result.status),
+        Some(gameplay::CommandStatus::Success { .. })
+    ));
+
+    let first = snapshot_from_world(session.world(), Default::default());
+    assert_eq!(first.visual_events.len(), 1);
+    let event = &first.visual_events[0];
+    assert_eq!(event.id, 1);
+    assert_eq!(event.kind, render_core::RenderVisualEventKind::Scan);
+    assert_eq!(event.source, Some(ship));
+    assert_eq!(event.position, Some(render_core::from_engine(session.world().ship_position().unwrap())));
+    let effect = first
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::VisualEvent(event.id))
+        .expect("scan should produce a visual event node");
+    assert_eq!((effect.mesh, effect.material), (DESTINATION_MESH, DESTINATION_MATERIAL));
+
+    let repeated = snapshot_from_world(session.world(), Default::default());
+    assert_eq!(repeated.visual_events, first.visual_events);
+    assert_eq!(
+        repeated
+            .nodes
+            .iter()
+            .filter(|node| node.entity == SnapshotId::VisualEvent(event.id))
+            .count(),
+        1
+    );
+
+    session.update([gameplay::GameplayCommand::AdvanceTime {
+        delta: engine::Duration(250),
+    }]);
+    let expired = snapshot_from_world(session.world(), Default::default());
+    assert!(expired.visual_events.is_empty());
+    assert!(!expired
+        .nodes
+        .iter()
+        .any(|node| node.entity == SnapshotId::VisualEvent(event.id)));
+}
+
+#[test]
+fn visual_events_are_persistent_unique_and_time_bounded() {
+    let mut session = game::ProjectEchoSession::new();
+    let player = session.ids.first_player;
+    let player_position = session.world().players().next().unwrap().position;
+    session.update([
+        gameplay::GameplayCommand::EquipPlayerWeapon {
+            player,
+            weapon: gameplay::WeaponConfiguration::new(
+                gameplay::AttackType::Kinetic,
+                10,
+                20,
+                engine::Duration(1),
+            ),
+        },
+        gameplay::GameplayCommand::CreateEnemy {
+            configuration: gameplay::EnemyConfiguration::for_archetype(
+                gameplay::EnemyArchetype::Shooter,
+                player_position,
+            ),
+        },
+    ]);
+    let enemy = session
+        .world()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            gameplay::GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
+            _ => None,
+        })
+        .unwrap();
+
+    session.update([gameplay::GameplayCommand::AttackEnemy { player, enemy }]);
+    let first = snapshot_from_world(session.world(), Default::default());
+    assert_eq!(first.visual_events.len(), 1);
+    assert_eq!(first.visual_events[0].id, 1);
+    assert_eq!(first.visual_events[0].kind, render_core::RenderVisualEventKind::Attack);
+    let first_effect = first
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::VisualEvent(1))
+        .expect("an attack event with a position should produce an effect node");
+    assert_eq!((first_effect.mesh, first_effect.material), (SUN_MESH, SUN_MATERIAL));
+    let mut scene = SnapshotScene::default();
+    scene
+        .update(&first)
+        .expect("visual event assets should resolve through SnapshotScene");
+    let repeated = snapshot_from_world(session.world(), Default::default());
+    assert_eq!(first.visual_events, repeated.visual_events);
+    assert_eq!(
+        first_effect.transform.scale,
+        repeated
+            .nodes
+            .iter()
+            .find(|node| node.entity == SnapshotId::VisualEvent(1))
+            .unwrap()
+            .transform
+            .scale
+    );
+    assert!(!session.world().events().is_empty());
+
+    session.update([gameplay::GameplayCommand::AdvanceTime {
+        delta: engine::Duration(1),
+    }]);
+    let second = snapshot_from_world(session.world(), Default::default());
+    assert!(second
+        .visual_events
+        .iter()
+        .any(|event| event.id == first.visual_events[0].id));
+    let second_effect = second
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::VisualEvent(1))
+        .unwrap();
+    assert!(second_effect.transform.scale.x < first_effect.transform.scale.x);
+
+    session.update([gameplay::GameplayCommand::AttackEnemy { player, enemy }]);
+    let two_events = snapshot_from_world(session.world(), Default::default());
+    assert!(two_events.visual_events.len() >= 2);
+    for (index, event) in two_events.visual_events.iter().enumerate() {
+        assert!(two_events
+            .visual_events
+            .iter()
+            .skip(index + 1)
+            .all(|other| other.id != event.id));
+    }
+
+    session.update([gameplay::GameplayCommand::AdvanceTime {
+        delta: engine::Duration(250),
+    }]);
+    assert!(snapshot_from_world(session.world(), Default::default())
+        .visual_events
+        .is_empty());
 }
 
 #[test]

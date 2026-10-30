@@ -116,6 +116,20 @@ pub enum GameplayEvent {
         destination: crate::navigation::DestinationId,
         position: Vec3,
     },
+    PlanetLandingRequested {
+        ship: EntityId,
+        planet: crate::navigation::DestinationId,
+    },
+    PlanetLanded {
+        ship: EntityId,
+        planet: crate::navigation::DestinationId,
+        position: Vec3,
+    },
+    PlanetImpact {
+        ship: EntityId,
+        planet: crate::navigation::DestinationId,
+        position: Vec3,
+    },
     PlanetDiscovered {
         destination: crate::navigation::DestinationId,
     },

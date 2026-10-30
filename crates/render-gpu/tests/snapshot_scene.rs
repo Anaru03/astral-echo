@@ -61,6 +61,32 @@ fn snapshot_updates_preserve_buffers_until_topology_changes() {
 }
 
 #[test]
+fn game_over_overlay_reaches_gpu_target_with_visible_indicator() {
+    let gpu = match GpuContext::new(Default::default()) {
+        Ok(gpu) => Arc::new(gpu),
+        Err(GpuError::Unavailable(reason)) => {
+            eprintln!("SKIP GPU: {reason}");
+            return;
+        }
+        Err(error) => panic!("{error}"),
+    };
+    let mut snapshot = RenderSnapshot::minimal_demo();
+    snapshot.overlay.fade_to_black = 1.0;
+    snapshot.overlay.game_over = true;
+    let mut scene = SnapshotScene::default();
+    scene.update(&snapshot).unwrap();
+    let mut renderer = GpuRenderer::from_snapshot(gpu.clone(), &scene).unwrap();
+    let target = OffscreenTarget::new(gpu, 321, 181).unwrap();
+
+    target.render_snapshot(&mut renderer, &scene).unwrap();
+    let image = target.readback().unwrap();
+    assert!(image
+        .rgba
+        .chunks_exact(4)
+        .any(|pixel| pixel[0] > 200 && pixel[1] < 100 && pixel[2] < 100));
+}
+
+#[test]
 fn shared_preparation_matches_cpu_and_updates_same_count_lod_and_identity() {
     let gpu = match GpuContext::new(Default::default()) {
         Ok(gpu) => Arc::new(gpu),

@@ -61,7 +61,7 @@ use crate::{
     mission::{Mission, MissionRegistrationError},
     navigation::{
         AutopilotState, Destination, DestinationId, NavigationInitializationError, NavigationRegistrationError,
-        NavigationState, TravelProgress, TravelState,
+        NavigationState, PlanetFlightState, PlanetPhysics, TravelProgress, TravelState,
     },
     player::Player,
     resources::{FuelError, FuelTank, ShipResources, ShipUpgrade},
@@ -74,6 +74,7 @@ use crate::{
     scaling::{GameplayScaling, GroupSize, ScalingError},
     station::{Station, StationType},
     types::{GameplayState, SimulationPhase},
+    visual_events::{GameplayVisualEvent, GameplayVisualEventKind, VISUAL_EVENT_DURATION},
     world_activity::{
         FunctionalWorld, FunctionalWorldError, WorldActivity, WorldActivityError,
     },
@@ -127,6 +128,8 @@ pub struct GameplayWorld {
     processed_enemy_rewards: BTreeSet<EntityId>,
     knowledge: BTreeMap<KnowledgeTarget, KnowledgeState>,
     events: EventLog,
+    visual_events: Vec<GameplayVisualEvent>,
+    next_visual_event_id: u64,
 }
 
 impl GameplayWorld {
@@ -5164,6 +5167,45 @@ impl GameplayWorld {
     pub fn navigation(&self) -> &NavigationState {
         &self.navigation
     }
+    pub fn configure_planet_physics(&mut self, physics: PlanetPhysics) -> bool {
+        self.navigation.configure_planet_physics(physics)
+    }
+    pub fn planet_position_at(
+        &self,
+        destination: DestinationId,
+        elapsed: Duration,
+    ) -> Option<engine::Vec3> {
+        self.navigation.planet_position_at(destination, elapsed)
+    }
+    pub fn planet_flight_state(&self) -> PlanetFlightState {
+        self.navigation.planet_flight_state()
+    }
+    pub fn impact_flash_intensity(&self) -> Option<f32> {
+        self.navigation.impact_flash_intensity(self.time().elapsed)
+    }
+    pub fn impact_fade_to_black(&self) -> Option<f32> {
+        self.navigation.impact_fade_to_black(self.time().elapsed)
+    }
+    pub fn landing_available(&self, destination: DestinationId) -> bool {
+        self.navigation
+            .landing_available(destination, self.time().elapsed)
+    }
+    pub fn request_planet_landing(&mut self, destination: DestinationId) -> bool {
+        if !self.navigation.landing_available(destination, self.time().elapsed) {
+            return false;
+        }
+        let Some(ship) = self.navigation.ship_id() else {
+            return false;
+        };
+        if !self.navigation.request_landing(destination, self.time().elapsed) {
+            return false;
+        }
+        self.publish(crate::events::GameplayEvent::PlanetLandingRequested {
+            ship,
+            planet: destination,
+        });
+        true
+    }
     pub fn destination(&self, destination: DestinationId) -> Option<&Destination> {
         self.navigation.destination(destination)
     }
@@ -5673,6 +5715,13 @@ impl GameplayWorld {
     pub fn events(&self) -> &EventLog {
         &self.events
     }
+
+    pub fn visual_events(&self) -> impl Iterator<Item = &GameplayVisualEvent> {
+        let now = self.time().elapsed;
+        self.visual_events
+            .iter()
+            .filter(move |event| event.is_active_at(now))
+    }
     pub fn create_entity(&mut self) -> EntityId {
         self.entities.create()
     }
@@ -6077,9 +6126,56 @@ impl GameplayWorld {
     }
     pub(crate) fn set_time(&mut self, time: GameTime) {
         self.state.time = time;
+        self.visual_events
+            .retain(|event| event.is_active_at(time.elapsed));
     }
     pub(crate) fn publish(&mut self, event: crate::events::GameplayEvent) {
+        self.record_visual_event(&event);
         self.events.push(event);
+    }
+
+    fn record_visual_event(&mut self, event: &crate::events::GameplayEvent) {
+        let (kind, source, target, position) = match event {
+            crate::events::GameplayEvent::AttackExecuted { attacker, target, .. } => (
+                GameplayVisualEventKind::Attack,
+                Some(*attacker),
+                Some(*target),
+                self.combatants.get(target).map(|combatant| combatant.position),
+            ),
+            crate::events::GameplayEvent::EnemyDefeated { enemy, .. } => (
+                GameplayVisualEventKind::EnemyDefeated,
+                Some(*enemy),
+                None,
+                self.combatants.get(enemy).map(|combatant| combatant.position),
+            ),
+            crate::events::GameplayEvent::ItemCollected { player, collectible, .. } => (
+                GameplayVisualEventKind::ItemCollected,
+                Some(*player),
+                Some(*collectible),
+                self.collectibles.get(collectible).map(|item| item.position),
+            ),
+            crate::events::GameplayEvent::SignalScanCompleted { ship, .. } => (
+                GameplayVisualEventKind::Scan,
+                Some(*ship),
+                None,
+                self.ship_position(),
+            ),
+            _ => return,
+        };
+        let Some(id) = self.next_visual_event_id.checked_add(1) else {
+            return;
+        };
+        self.next_visual_event_id = id;
+        let emitted_at = self.time().elapsed;
+        self.visual_events.push(GameplayVisualEvent {
+            id,
+            kind,
+            source,
+            target,
+            position,
+            emitted_at,
+            expires_at: Duration(emitted_at.0.saturating_add(VISUAL_EVENT_DURATION.0)),
+        });
     }
     pub(crate) fn knowledge_target_exists(&self, target: KnowledgeTarget) -> bool {
         match target {

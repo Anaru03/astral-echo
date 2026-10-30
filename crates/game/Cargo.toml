@@ -12,6 +12,8 @@ render-core.workspace = true
 render-cpu = { path = "../render-cpu" }
 render-present = { path = "../render-present" }
 bevy = "0.19"
+gilrs = "0.11.2"
+rodio = { version = "0.22.2", default-features = false, features = ["playback"] }
 
 [lib]
 path = "src/lib.rs"

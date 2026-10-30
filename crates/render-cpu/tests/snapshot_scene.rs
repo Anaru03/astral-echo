@@ -67,6 +67,32 @@ fn snapshot_render_reports_stats_from_its_prepared_scene() {
 }
 
 #[test]
+fn game_over_overlay_reaches_a_black_frame_with_a_visible_indicator() {
+    let mut scene = SnapshotScene::default();
+    let mut snapshot = RenderSnapshot::minimal_demo();
+    snapshot.overlay.fade_to_black = 1.0;
+    snapshot.overlay.game_over = true;
+    scene.update(&snapshot).unwrap();
+
+    let mut framebuffer = Framebuffer::new(32, 18).unwrap();
+    framebuffer.clear(render_cpu::Color::new(255, 0, 255, 255));
+    let (prepared, pipeline) = render_snapshot_scene_with_stats(
+        &mut framebuffer,
+        &scene,
+        RasterMode::Secuencial,
+    )
+    .unwrap();
+
+    assert_eq!(prepared.visible, 2);
+    assert_eq!(pipeline.draws, 0);
+    let pixels: Vec<_> = framebuffer.color_bytes().chunks_exact(4).collect();
+    assert!(pixels.iter().any(|pixel| pixel[0] > 200 && pixel[1] < 100));
+    assert!(pixels
+        .iter()
+        .all(|pixel| pixel == &[0, 0, 0, 255] || (pixel[0] > 200 && pixel[1] < 100)));
+}
+
+#[test]
 fn optimized_color_and_depth_match_reference_with_low_and_partial_objects() {
     let mut scene = SnapshotScene::procedural_lod_fixture();
     let mut snapshot = RenderSnapshot::minimal_demo();

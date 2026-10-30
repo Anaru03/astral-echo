@@ -11,7 +11,9 @@ mod snapshot;
 pub mod viewport;
 pub use snapshot::{
     render_prepared_scene, render_snapshot_scene, render_snapshot_scene_reference,
-    render_snapshot_scene_with_stats,
+    render_snapshot_scene_with_shader, render_snapshot_scene_with_shader_at_time,
+    render_snapshot_scene_with_shader_at_time_with_stats,
+    render_snapshot_scene_with_shader_with_stats, render_snapshot_scene_with_stats,
 };
 
 pub use clip::{
@@ -23,7 +25,9 @@ pub use framebuffer::{Color, Framebuffer};
 pub use geometry::{RasterMesh, RasterVertex};
 pub use image::{write_png, write_png_bytes};
 pub use pipeline::assembly::{AssemblyStats, Topology, Triangle};
-pub use pipeline::raster::{FillRule, Fragment, ScreenVertex};
+pub use pipeline::raster::{
+    shade_fragment_with_time, FillRule, Fragment, FragmentShader, ScreenVertex,
+};
 pub use pipeline::stages::{PipelineConfig, PipelineStats, Stage, StageMetrics, StageTimings};
 pub use pipeline::tiles::{
     rasterize_triangles_tiled, RasterMode, RasterWorkload, TileConfig, TileGrid, TileRect,

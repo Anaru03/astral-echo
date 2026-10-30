@@ -8,12 +8,20 @@ use gameplay::{
     AttackType, Destination, DestinationId, DestinationType, DiscoveryState, EnemyArchetype,
     EnemyConfiguration, EncounterId, GameplayCommand, GameplayEvent, NavigationRoute,
     NavigationRouteState, SpatialEncounter, SpatialEncounterKind, StationType, WeaponAmmunition,
-    WeaponConfiguration,
+    WeaponConfiguration, PlanetPhysics,
 };
 use render_core::{LightingMode, MaterialInfo, VisualAssets};
 use render_present::{
-    run_hot_swap_window_with_input_and_scene, GraphicsDebugConfig, KeyCode, Preset, WindowConfig,
+    run_hot_swap_window_with_input_and_scene_and_focus, ElementState, GraphicsDebugConfig,
+    KeyCode, Preset, WindowConfig,
 };
+
+#[path = "gamepad.rs"]
+mod gamepad;
+#[path = "audio.rs"]
+mod audio;
+use gamepad::{ControllerButton, GamepadInput, HapticEvent};
+use audio::{AudioEvent, AudioManager, SoundEffect};
 
 const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
@@ -21,6 +29,36 @@ const SIGNAL: DestinationId = DestinationId::new(9_003);
 const ENCOUNTER: EncounterId = EncounterId::new(9_004);
 const OBSERVATION_AZIMUTH_STEP: f32 = 0.2;
 const OBSERVATION_ELEVATION_STEP: f32 = 0.1;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FlightKeys {
+    forward: bool,
+    backward: bool,
+    left: bool,
+    right: bool,
+}
+
+impl FlightKeys {
+    fn set(&mut self, key: KeyCode, active: bool) -> bool {
+        let slot = match key {
+            KeyCode::KeyW => &mut self.forward,
+            KeyCode::KeyS => &mut self.backward,
+            KeyCode::KeyA => &mut self.left,
+            KeyCode::KeyD => &mut self.right,
+            _ => return false,
+        };
+        *slot = active;
+        true
+    }
+
+    fn input(self) -> GameplayVec3 {
+        GameplayVec3 {
+            x: if self.right { 1.0 } else { 0.0 } - if self.left { 1.0 } else { 0.0 },
+            y: 0.0,
+            z: if self.backward { 1.0 } else { 0.0 } - if self.forward { 1.0 } else { 0.0 },
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct ObservationTransition {
@@ -73,6 +111,16 @@ struct VisualBridge {
     enemy: EntityId,
     feedback: String,
     observation: ObservationTransition,
+    flight_keys: FlightKeys,
+    gamepad: GamepadInput,
+    audio: AudioManager,
+    gamepad_flight: GameplayVec3,
+    last_discrete_action: Option<KeyCode>,
+    haptic_event_cursor: u64,
+    last_impacted: bool,
+    last_audio_impacted: bool,
+    last_landed: bool,
+    last_game_over: bool,
 }
 
 impl VisualBridge {
@@ -97,7 +145,7 @@ impl VisualBridge {
                 position: GameplayVec3 {
                     x: 42.0,
                     y: 0.0,
-                    z: -25.0,
+                    z: -18.0,
                 },
                 travel_duration: Duration(1_000),
                 fuel_cost: 1,
@@ -138,6 +186,23 @@ impl VisualBridge {
                 state: NavigationRouteState::Available,
             },
         }]);
+        if !session.world_mut().configure_planet_physics(PlanetPhysics {
+            destination: DESTINATION,
+            orbit_center: GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0,
+            },
+            orbit_radius: game::render_bridge::PLANET_ORBIT_RADIUS,
+            orbit_angular_speed: game::render_bridge::PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
+            surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }) {
+            return Err("configurar la fÃ­sica planetaria visual".to_owned());
+        }
         let pilot_station = session
             .create_station(GameplayVec3::ZERO, 3.0, StationType::Piloting)
             .map_err(|error| format!("crear estación visual: {error:?}"))?;
@@ -199,6 +264,17 @@ impl VisualBridge {
                 _ => None,
             })
             .ok_or_else(|| "el escenario visual no creó el enemigo".to_owned())?;
+        session.update([GameplayCommand::Interact {
+            player,
+            target: pilot_station,
+        }]);
+        session.update([GameplayCommand::SetShipControlActive {
+            player,
+            pilot_station,
+            active: true,
+        }]);
+        let mut audio = AudioManager::new();
+        audio.request_exploration_music();
         Ok(Self {
             session,
             player,
@@ -207,11 +283,24 @@ impl VisualBridge {
             enemy,
             feedback: "ESCENA INICIALIZADA".to_owned(),
             observation: ObservationTransition::default(),
+            flight_keys: FlightKeys::default(),
+            gamepad: GamepadInput::new(),
+            audio,
+            gamepad_flight: GameplayVec3::ZERO,
+            last_discrete_action: None,
+            haptic_event_cursor: 0,
+            last_impacted: false,
+            last_audio_impacted: false,
+            last_landed: false,
+            last_game_over: false,
         })
     }
 
-    fn issue(&mut self, commands: impl IntoIterator<Item = GameplayCommand>) {
+    fn issue(&mut self, commands: impl IntoIterator<Item = GameplayCommand>) -> bool {
         let results = self.session.update(commands);
+        let succeeded = results.last().is_some_and(|result| {
+            matches!(result.status, gameplay::CommandStatus::Success { .. })
+        });
         let status = results
             .last()
             .map(|result| format!("{:?}", result.status))
@@ -226,55 +315,43 @@ impl VisualBridge {
             .unwrap_or_else(|| "sin evento".to_owned());
         self.feedback = format!("{status}; {event}");
         println!("visual gameplay: {}", self.feedback);
+        succeeded
     }
 
-    fn handle_key(&mut self, key: KeyCode) {
+    fn handle_key(&mut self, key: KeyCode, state: ElementState) {
         let player = self.player;
         let ship = self.ship;
         let enemy = self.enemy;
         let pilot_station = self.pilot_station;
+        if self.flight_keys.set(key, state == ElementState::Pressed) {
+            self.accelerate_ship(player, pilot_station, self.current_flight_input());
+            return;
+        }
+        if state != ElementState::Pressed {
+            return;
+        }
+        self.last_discrete_action = Some(key);
         match key {
-            KeyCode::Space => self.issue([GameplayCommand::AdvanceTime {
-                delta: Duration(100),
-            }]),
-            KeyCode::KeyW => self.issue([GameplayCommand::MovePlayer {
-                player,
-                direction: GameplayVec3 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: -1.0,
-                },
-                delta: Duration(100),
-            }]),
-            KeyCode::KeyA => self.issue([GameplayCommand::MovePlayer {
-                player,
-                direction: GameplayVec3 {
-                    x: -1.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-                delta: Duration(100),
-            }]),
-            KeyCode::KeyS => self.issue([GameplayCommand::MovePlayer {
-                player,
-                direction: GameplayVec3 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 1.0,
-                },
-                delta: Duration(100),
-            }]),
-            KeyCode::KeyD => self.issue([GameplayCommand::MovePlayer {
-                player,
-                direction: GameplayVec3 {
-                    x: 1.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-                delta: Duration(100),
-            }]),
-            KeyCode::KeyQ => self.issue([GameplayCommand::ScanSignals { player, ship }]),
-            KeyCode::KeyF => self.issue([GameplayCommand::AttackEnemy { player, enemy }]),
+            KeyCode::Space => {
+                self.issue([GameplayCommand::AdvanceTime {
+                    delta: Duration(100),
+                }]);
+            }
+            KeyCode::KeyQ => {
+                if self.issue([GameplayCommand::ScanSignals { player, ship }]) {
+                    self.audio.request_effect(SoundEffect::Scan);
+                }
+            }
+            KeyCode::KeyF => {
+                if self.session.world().landing_available(DESTINATION) {
+                    if self.session.world_mut().request_planet_landing(DESTINATION) {
+                        self.feedback = "ATERRIZAJE CONFIRMADO".to_owned();
+                        println!("visual gameplay: {}", self.feedback);
+                    }
+                } else {
+                    self.issue([GameplayCommand::AttackEnemy { player, enemy }]);
+                }
+            }
             KeyCode::KeyE => {
                 let collectible = self
                     .session
@@ -298,6 +375,164 @@ impl VisualBridge {
             KeyCode::ArrowDown => self.observation.adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP),
             _ => {}
         }
+    }
+
+    fn accelerate_ship(&mut self, player: EntityId, pilot_station: EntityId, input: GameplayVec3) {
+        self.issue([
+            GameplayCommand::AccelerateShip {
+                player,
+                pilot_station,
+                input,
+            },
+            GameplayCommand::AdvanceTime {
+                delta: Duration(100),
+            },
+        ]);
+    }
+
+    fn current_flight_input(&self) -> GameplayVec3 {
+        let keyboard = self.flight_keys.input();
+        GameplayVec3 {
+            x: (keyboard.x + self.gamepad_flight.x).clamp(-1.0, 1.0),
+            y: 0.0,
+            z: (keyboard.z + self.gamepad_flight.z).clamp(-1.0, 1.0),
+        }
+    }
+
+    fn set_gamepad_flight(&mut self, input: GameplayVec3) {
+        if input == self.gamepad_flight {
+            return;
+        }
+        self.gamepad_flight = input;
+        self.issue([GameplayCommand::AccelerateShip {
+            player: self.player,
+            pilot_station: self.pilot_station,
+            input: self.current_flight_input(),
+        }]);
+    }
+
+    fn poll_gamepad(&mut self) {
+        self.audio.poll();
+        let keyboard_action = self.last_discrete_action.take();
+        let frame = self.gamepad.poll();
+        self.poll_audio_events();
+        self.poll_haptics();
+        if !frame.connected {
+            self.set_gamepad_flight(GameplayVec3::ZERO);
+            return;
+        }
+        self.set_gamepad_flight(GameplayVec3 {
+            x: frame.left_stick.x,
+            y: 0.0,
+            z: frame.left_stick.y,
+        });
+        self.observation.adjust_orbit(
+            frame.right_stick.x * OBSERVATION_AZIMUTH_STEP,
+            -frame.right_stick.y * OBSERVATION_ELEVATION_STEP,
+        );
+        let mut handled = Vec::new();
+        for button in frame.pressed {
+            let Some(key) = controller_key(button) else {
+                continue;
+            };
+            if handled.contains(&key) {
+                continue;
+            }
+            if keyboard_action == Some(key) {
+                continue;
+            }
+            handled.push(key);
+            self.handle_key(key, ElementState::Pressed);
+        }
+    }
+
+    fn neutralize_gamepad(&mut self) {
+        self.discard_pending_haptics();
+        self.gamepad.neutralize();
+        self.set_gamepad_flight(GameplayVec3::ZERO);
+    }
+
+    fn poll_haptics(&mut self) {
+        let events: Vec<_> = self.session.world().visual_events().copied().collect();
+        for event in events {
+            if event.id <= self.haptic_event_cursor {
+                continue;
+            }
+            self.haptic_event_cursor = self.haptic_event_cursor.max(event.id);
+            let haptic = match event.kind {
+                gameplay::GameplayVisualEventKind::Attack
+                    if event.source == Some(self.player) => Some(HapticEvent::AttackExecuted),
+                gameplay::GameplayVisualEventKind::EnemyDefeated => {
+                    Some(HapticEvent::EnemyDefeated)
+                }
+                gameplay::GameplayVisualEventKind::ItemCollected
+                    if event.source == Some(self.player) => Some(HapticEvent::ItemCollected),
+                _ => None,
+            };
+            if let Some(haptic) = haptic {
+                self.gamepad.request_haptic(haptic);
+            }
+        }
+        let impacted = matches!(
+            self.session.world().planet_flight_state(),
+            gameplay::PlanetFlightState::Impacted { .. }
+        );
+        if impacted && !self.last_impacted {
+            self.gamepad.request_haptic(HapticEvent::Impact);
+        }
+        self.last_impacted = impacted;
+    }
+
+    fn poll_audio_events(&mut self) {
+        let events: Vec<_> = self.session.world().visual_events().copied().collect();
+        for event in events {
+            let effect = match event.kind {
+                gameplay::GameplayVisualEventKind::Attack
+                    if event.source == Some(self.player) => Some(SoundEffect::PlayerAttack),
+                gameplay::GameplayVisualEventKind::EnemyDefeated => {
+                    Some(SoundEffect::EnemyDefeated)
+                }
+                gameplay::GameplayVisualEventKind::ItemCollected
+                    if event.source == Some(self.player) => Some(SoundEffect::Collect),
+                _ => None,
+            };
+            if let Some(effect) = effect {
+                self.audio.dispatch_event(AudioEvent { id: event.id, effect });
+            }
+        }
+
+        let flight_state = self.session.world().planet_flight_state();
+        let impacted = matches!(flight_state, gameplay::PlanetFlightState::Impacted { .. });
+        if impacted && !self.last_audio_impacted {
+            self.audio.request_effect(SoundEffect::PlayerImpacted);
+        }
+        self.last_audio_impacted = impacted;
+
+        let landed = matches!(flight_state, gameplay::PlanetFlightState::Landed { .. });
+        if landed && !self.last_landed {
+            self.audio.request_effect(SoundEffect::Landing);
+        }
+        self.last_landed = landed;
+
+        let game_over = self
+            .session
+            .world()
+            .impact_fade_to_black()
+            .is_some_and(|fade| fade >= 1.0);
+        if game_over && !self.last_game_over {
+            self.audio.request_effect(SoundEffect::GameOver);
+        }
+        self.last_game_over = game_over;
+    }
+
+    fn discard_pending_haptics(&mut self) {
+        self.haptic_event_cursor = self
+            .session
+            .world()
+            .visual_events()
+            .map(|event| event.id)
+            .max()
+            .unwrap_or(self.haptic_event_cursor);
     }
 
     fn toggle_observation(&mut self) {
@@ -346,16 +581,18 @@ pub fn run() -> Result<(), String> {
     let runtime = Rc::new(RefCell::new(VisualBridge::new()?));
     let snapshot_runtime = Rc::clone(&runtime);
     let input_runtime = Rc::clone(&runtime);
+    let focus_runtime = Rc::clone(&runtime);
     let config = WindowConfig {
         title: "Astral Echo — CPU propio".into(),
         preset: Preset::Low,
         raster_controls: false,
         ..Default::default()
     };
-    run_hot_swap_window_with_input_and_scene(
+    run_hot_swap_window_with_input_and_scene_and_focus(
         config,
         Box::new(move |width, height| {
-            let bridge = snapshot_runtime.borrow();
+            let mut bridge = snapshot_runtime.borrow_mut();
+            bridge.poll_gamepad();
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
@@ -366,11 +603,21 @@ pub fn run() -> Result<(), String> {
             ))
         }),
         true,
-        move |key| input_runtime.borrow_mut().handle_key(key),
+        move |key, state| input_runtime.borrow_mut().handle_key(key, state),
+        move |focused| {
+            let mut bridge = focus_runtime.borrow_mut();
+            bridge.audio.on_focus(focused);
+            if !focused {
+                bridge.neutralize_gamepad();
+            }
+        },
         |scene| {
             scene.set_lighting_mode(LightingMode::Lambert);
             scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
             scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
+            scene.set_material(VisualAssets::STATION, MaterialInfo::station());
+            scene.set_material(VisualAssets::DERELICT, MaterialInfo::derelict());
+            scene.set_material(VisualAssets::ASTEROID, MaterialInfo::asteroid());
         },
         GraphicsDebugConfig::default(),
     )
@@ -381,4 +628,289 @@ pub fn run() -> Result<(), String> {
         );
     })
     .map_err(|error| format!("ventana visual propia: {error}"))
+}
+
+fn controller_key(button: ControllerButton) -> Option<KeyCode> {
+    match button {
+        ControllerButton::South | ControllerButton::RightTrigger => Some(KeyCode::KeyF),
+        ControllerButton::North | ControllerButton::East => Some(KeyCode::KeyO),
+        ControllerButton::West => Some(KeyCode::KeyQ),
+        ControllerButton::DPadUp => Some(KeyCode::ArrowUp),
+        ControllerButton::DPadDown => Some(KeyCode::ArrowDown),
+        ControllerButton::DPadLeft => Some(KeyCode::ArrowLeft),
+        ControllerButton::DPadRight => Some(KeyCode::ArrowRight),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controller_bindings_reuse_existing_keyboard_actions() {
+        assert_eq!(controller_key(ControllerButton::South), Some(KeyCode::KeyF));
+        assert_eq!(controller_key(ControllerButton::RightTrigger), Some(KeyCode::KeyF));
+        assert_eq!(controller_key(ControllerButton::West), Some(KeyCode::KeyQ));
+        assert_eq!(controller_key(ControllerButton::North), Some(KeyCode::KeyO));
+        assert_eq!(controller_key(ControllerButton::DPadLeft), Some(KeyCode::ArrowLeft));
+    }
+
+    #[test]
+    fn flight_keys_produce_distinct_individual_directions() {
+        let cases = [
+            (KeyCode::KeyW, GameplayVec3 { x: 0.0, y: 0.0, z: -1.0 }),
+            (KeyCode::KeyS, GameplayVec3 { x: 0.0, y: 0.0, z: 1.0 }),
+            (KeyCode::KeyA, GameplayVec3 { x: -1.0, y: 0.0, z: 0.0 }),
+            (KeyCode::KeyD, GameplayVec3 { x: 1.0, y: 0.0, z: 0.0 }),
+        ];
+
+        for (key, expected) in cases {
+            let mut keys = FlightKeys::default();
+            assert!(keys.set(key, true));
+            assert_eq!(keys.input(), expected);
+        }
+    }
+
+    #[test]
+    fn flight_keys_support_opposite_and_combined_inputs() {
+        let mut keys = FlightKeys::default();
+        keys.set(KeyCode::KeyW, true);
+        keys.set(KeyCode::KeyD, true);
+        assert_eq!(keys.input(), GameplayVec3 { x: 1.0, y: 0.0, z: -1.0 });
+
+        keys.set(KeyCode::KeyW, false);
+        keys.set(KeyCode::KeyA, true);
+        assert_eq!(keys.input(), GameplayVec3 { x: 0.0, y: 0.0, z: 0.0 });
+
+        keys.set(KeyCode::KeyD, false);
+        keys.set(KeyCode::KeyS, true);
+        assert_eq!(keys.input(), GameplayVec3 { x: -1.0, y: 0.0, z: 1.0 });
+    }
+
+    #[test]
+    fn releasing_a_flight_key_preserves_other_active_inputs() {
+        let mut keys = FlightKeys::default();
+        keys.set(KeyCode::KeyW, true);
+        keys.set(KeyCode::KeyA, true);
+        keys.set(KeyCode::KeyW, false);
+        assert_eq!(keys.input(), GameplayVec3 { x: -1.0, y: 0.0, z: 0.0 });
+
+        keys.set(KeyCode::KeyA, false);
+        assert_eq!(keys.input(), GameplayVec3::ZERO);
+    }
+
+    #[test]
+    fn simultaneous_flight_key_sequences_keep_only_remaining_contributions() {
+        let mut keys = FlightKeys::default();
+        keys.set(KeyCode::KeyD, true);
+        keys.set(KeyCode::KeyW, true);
+        keys.set(KeyCode::KeyD, false);
+        assert_eq!(keys.input(), GameplayVec3 { x: 0.0, y: 0.0, z: -1.0 });
+
+        keys = FlightKeys::default();
+        keys.set(KeyCode::KeyD, true);
+        keys.set(KeyCode::KeyS, true);
+        keys.set(KeyCode::KeyD, false);
+        assert_eq!(keys.input(), GameplayVec3 { x: 0.0, y: 0.0, z: 1.0 });
+
+        keys = FlightKeys::default();
+        keys.set(KeyCode::KeyW, true);
+        keys.set(KeyCode::KeyD, true);
+        keys.set(KeyCode::KeyD, false);
+        assert_eq!(keys.input(), GameplayVec3 { x: 0.0, y: 0.0, z: -1.0 });
+
+        keys = FlightKeys::default();
+        keys.set(KeyCode::KeyS, true);
+        keys.set(KeyCode::KeyD, true);
+        keys.set(KeyCode::KeyS, false);
+        assert_eq!(keys.input(), GameplayVec3 { x: 1.0, y: 0.0, z: 0.0 });
+    }
+
+    #[test]
+    fn repeated_press_does_not_accumulate_and_release_clears_each_key() {
+        let mut keys = FlightKeys::default();
+        for _ in 0..3 {
+            keys.set(KeyCode::KeyD, true);
+        }
+        assert_eq!(keys.input(), GameplayVec3 { x: 1.0, y: 0.0, z: 0.0 });
+        keys.set(KeyCode::KeyD, false);
+        assert_eq!(keys.input(), GameplayVec3::ZERO);
+
+        for key in [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS] {
+            keys.set(key, true);
+            keys.set(key, false);
+        }
+        assert_eq!(keys.input(), GameplayVec3::ZERO);
+    }
+
+    #[test]
+    fn flight_keys_update_authoritative_ship_position() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let before = bridge
+            .session
+            .world()
+            .ship_position()
+            .expect("visual session should have a ship");
+
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+
+        let after = bridge
+            .session
+            .world()
+            .ship_position()
+            .expect("visual session should retain its ship");
+        assert_ne!(after, before);
+    }
+
+    #[test]
+    fn releasing_flight_key_clears_acceleration_without_erasing_inertia() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        let moving = bridge
+            .session
+            .world()
+            .ship_velocity()
+            .expect("visual session should have a ship velocity");
+        assert!(moving.x.is_finite() && moving.y.is_finite() && moving.z.is_finite());
+        assert_ne!(moving, GameplayVec3::ZERO);
+
+        bridge.handle_key(KeyCode::KeyW, ElementState::Released);
+        assert_eq!(bridge.flight_keys.input(), GameplayVec3::ZERO);
+        let residual = bridge
+            .session
+            .world()
+            .ship_velocity()
+            .expect("visual session should retain a ship velocity");
+        assert!(residual.x.is_finite() && residual.y.is_finite() && residual.z.is_finite());
+        assert_ne!(residual, GameplayVec3::ZERO);
+    }
+
+    #[test]
+    fn s_then_w_can_invert_forward_velocity_after_releasing_s() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyS, ElementState::Pressed);
+        for _ in 0..12 {
+            bridge.handle_key(KeyCode::Space, ElementState::Pressed);
+        }
+        bridge.handle_key(KeyCode::KeyS, ElementState::Released);
+        let backward = bridge
+            .session
+            .world()
+            .ship_velocity()
+            .expect("ship velocity should exist");
+        assert!(backward.z > 0.0);
+
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        for _ in 0..30 {
+            bridge.handle_key(KeyCode::Space, ElementState::Pressed);
+        }
+        let forward = bridge
+            .session
+            .world()
+            .ship_velocity()
+            .expect("ship velocity should exist");
+        assert!(forward.z < 0.0);
+    }
+
+    #[test]
+    fn w_then_s_can_invert_backward_velocity_after_releasing_w() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        for _ in 0..12 {
+            bridge.handle_key(KeyCode::Space, ElementState::Pressed);
+        }
+        bridge.handle_key(KeyCode::KeyW, ElementState::Released);
+        let forward = bridge
+            .session
+            .world()
+            .ship_velocity()
+            .expect("ship velocity should exist");
+        assert!(forward.z < 0.0);
+
+        bridge.handle_key(KeyCode::KeyS, ElementState::Pressed);
+        for _ in 0..30 {
+            bridge.handle_key(KeyCode::Space, ElementState::Pressed);
+        }
+        let backward = bridge
+            .session
+            .world()
+            .ship_velocity()
+            .expect("ship velocity should exist");
+        assert!(backward.z > 0.0);
+    }
+
+    #[test]
+    fn arrow_keys_change_flight_camera_without_observation_transition() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let before = bridge.camera(1.0).expect("camera should be valid").position();
+
+        bridge.handle_key(KeyCode::ArrowLeft, ElementState::Pressed);
+
+        let after = bridge.camera(1.0).expect("camera should remain valid").position();
+        assert_ne!(after, before);
+        assert!(after.is_finite());
+    }
+
+    #[test]
+    fn p_starts_the_configured_autopilot_route() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+
+        assert!(matches!(
+            bridge.session.world().autopilot_state(),
+            gameplay::AutopilotState::InTransit { destination, .. } if *destination == DESTINATION
+        ));
+        assert!(matches!(
+            bridge.session.world().travel_state(),
+            gameplay::TravelState::InProgress { destination, .. } if destination == DESTINATION
+        ));
+    }
+
+    #[test]
+    fn f_attacks_outside_landing_window_and_lands_only_when_valid() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+
+        bridge.handle_key(KeyCode::KeyF, ElementState::Pressed);
+        assert!(bridge
+            .session
+            .world()
+            .events()
+            .iter()
+            .any(|event| matches!(event, GameplayEvent::AttackExecuted { .. })));
+        assert!(!bridge.session.world().landing_available(DESTINATION));
+
+        let landing_physics = PlanetPhysics {
+            destination: DESTINATION,
+            orbit_center: GameplayVec3::ZERO,
+            orbit_radius: 5.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        };
+        assert!(bridge
+            .session
+            .world_mut()
+            .configure_planet_physics(landing_physics));
+        assert!(bridge.session.world().landing_available(DESTINATION));
+        bridge.handle_key(KeyCode::KeyF, ElementState::Pressed);
+        assert!(matches!(
+            bridge.session.world().planet_flight_state(),
+            gameplay::PlanetFlightState::Landing { planet } if planet == DESTINATION
+        ));
+    }
+
+    #[test]
+    fn haptic_event_cursor_does_not_reconsume_visual_events() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyF, ElementState::Pressed);
+        bridge.poll_haptics();
+        let cursor = bridge.haptic_event_cursor;
+        assert!(cursor > 0);
+        bridge.poll_haptics();
+        assert_eq!(bridge.haptic_event_cursor, cursor);
+    }
 }

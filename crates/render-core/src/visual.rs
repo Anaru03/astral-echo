@@ -146,6 +146,9 @@ impl VisualAssets {
     pub const COLLECTIBLE: MaterialHandle = MaterialHandle::new(4);
     pub const SUN: MaterialHandle = MaterialHandle::new(5);
     pub const PLANET: MaterialHandle = MaterialHandle::new(6);
+    pub const STATION: MaterialHandle = MaterialHandle::new(7);
+    pub const DERELICT: MaterialHandle = MaterialHandle::new(8);
+    pub const ASTEROID: MaterialHandle = MaterialHandle::new(9);
 
     pub fn mesh(
         &self,
@@ -218,6 +221,18 @@ impl Default for VisualAssets {
             (
                 (MeshHandle::PLANET_SPHERE, Self::PLANET),
                 RasterMesh::planet_surface(Vec3::ZERO, 1.0),
+            ),
+            (
+                (MeshHandle::STATION, Self::STATION),
+                RasterMesh::station(Vec4::new(0.2, 0.55, 0.85, 1.0)),
+            ),
+            (
+                (MeshHandle::DERELICT, Self::DERELICT),
+                RasterMesh::derelict(Vec4::new(0.28, 0.22, 0.18, 1.0)),
+            ),
+            (
+                (MeshHandle::ASTEROID_FIELD, Self::ASTEROID),
+                RasterMesh::asteroid_field(Vec4::new(0.34, 0.31, 0.27, 1.0), 1.0, 0xA57E_001D),
             ),
         ])
         .into_iter()
@@ -359,6 +374,10 @@ impl SnapshotScene {
 
     pub fn snapshot(&self) -> &RenderSnapshot {
         &self.snapshot
+    }
+
+    pub fn overlay(&self) -> crate::RenderOverlay {
+        self.snapshot.overlay
     }
 
     pub fn view_projection(&self) -> Mat4 {

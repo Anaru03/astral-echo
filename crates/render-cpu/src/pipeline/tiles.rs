@@ -4,7 +4,8 @@ use rayon::prelude::*;
 
 use crate::framebuffer::Framebuffer;
 use crate::pipeline::raster::{
-    edge_function, raster_triangle_visit, shade_fragment, FillRule, ScreenVertex,
+    edge_function, raster_triangle_visit, shade_fragment_with_time, FillRule, FragmentShader,
+    ScreenVertex,
 };
 
 /// Rectangle que representa un tile en la cuadrícula de tiles.
@@ -182,6 +183,28 @@ pub fn rasterize_triangles_tiled(
     depth_write: bool,
     config: TileConfig,
 ) -> TileStats {
+    rasterize_triangles_tiled_with_shader(
+        triangles,
+        framebuffer,
+        fill_rule,
+        depth_test,
+        depth_write,
+        config,
+        FragmentShader::VertexColor,
+        0.0,
+    )
+}
+
+pub(crate) fn rasterize_triangles_tiled_with_shader(
+    triangles: &[(ScreenVertex, ScreenVertex, ScreenVertex)],
+    framebuffer: &mut Framebuffer,
+    fill_rule: FillRule,
+    depth_test: bool,
+    depth_write: bool,
+    config: TileConfig,
+    fragment_shader: FragmentShader,
+    fragment_time: f32,
+) -> TileStats {
     let grid = TileGrid::new(framebuffer.width(), framebuffer.height(), config.tile_size);
     let mut stats = TileStats::default();
     if triangles.is_empty() {
@@ -251,6 +274,8 @@ pub fn rasterize_triangles_tiled(
         fill_rule,
         depth_test,
         depth_write,
+        fragment_shader,
+        fragment_time,
     };
     let start = Instant::now();
     let band_pixels = grid.framebuffer_w as usize * grid.tile_size.min(grid.framebuffer_h) as usize;
@@ -328,6 +353,8 @@ struct RasterJob<'a> {
     fill_rule: FillRule,
     depth_test: bool,
     depth_write: bool,
+    fragment_shader: FragmentShader,
+    fragment_time: f32,
 }
 
 impl RasterJob<'_> {
@@ -354,7 +381,12 @@ impl RasterJob<'_> {
                             output.rejected += 1;
                             return;
                         }
-                        let rgba = shade_fragment(&fragment).to_rgba8();
+                        let rgba = shade_fragment_with_time(
+                            &fragment,
+                            self.fragment_shader,
+                            self.fragment_time,
+                        )
+                        .to_rgba8();
                         color[pixel * 4..pixel * 4 + 4].copy_from_slice(&rgba);
                         if self.depth_write {
                             depth[pixel] = fragment.depth;
