@@ -67,7 +67,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut demo_impact = false;
     let mut graphics_debug = false;
     let mut lights = String::from("both");
-    let mut lambert_specialized = false;
     let mut args = std::env::args().skip(1);
     while let Some(option) = args.next() {
         match option.as_str() {
@@ -86,13 +85,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 shader_time = Some(args.next().ok_or("missing shader time")?.parse::<f32>()?)
             }
             "--lights" => lights = args.next().ok_or("missing lights variant")?,
-            "--lambert-specialized" => lambert_specialized = true,
             "--profile-cpu" => profile_cpu = true,
             "--demo-flight" => demo_flight = true,
             "--demo-impact" => demo_impact = true,
             "--help" => {
                 println!(
-                    "gameplay_visual [--backend cpu|gpu|auto] [--window] [--graphics-validate] [--frames N] [--output PATH] [--shader-time T] [--profile-cpu] [--lights none|directional|point|both] [--lambert-specialized] [--demo-flight|--demo-impact]"
+                    "gameplay_visual [--backend cpu|gpu|auto] [--window] [--graphics-validate] [--frames N] [--output PATH] [--shader-time T] [--profile-cpu] [--lights none|directional|point|both] [--demo-flight|--demo-impact]"
                 );
                 return Ok(());
             }
@@ -227,7 +225,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         validate_impact_snapshots(&snapshots)?;
     }
     let mut scene = SnapshotScene::default();
-    scene.set_lambert_specialized(lambert_specialized);
     let register_started = Instant::now();
     scene.register_mesh(
         MeshHandle::ENEMY_PLACEHOLDER,
@@ -385,17 +382,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 render_cpu::write_png(&image, &framebuffer)?;
             }
         }
-        let render_end = Instant::now();
-        let render_ms = render_end.duration_since(start).as_secs_f64() * 1000.0 / iterations as f64;
-        let png_started = Instant::now();
+        let render_ms = start.elapsed().as_secs_f64() * 1000.0 / iterations as f64;
         if !demo_flight {
             render_cpu::write_png(&path, &framebuffer)?;
         }
-        let png_write_ms = png_started.elapsed().as_secs_f64() * 1000.0;
-        let total_process_ms = start.elapsed().as_secs_f64() * 1000.0;
         let min_ms = frame_times_ms.iter().copied().fold(f64::INFINITY, f64::min);
         let max_ms = frame_times_ms.iter().copied().fold(0.0, f64::max);
-        println!("CPU frames={iterations} render_avg_ms={render_ms:.3} png_write_ms={png_write_ms:.3} total_process_ms={total_process_ms:.3} measured_min_ms={min_ms:.3} measured_max_ms={max_ms:.3}");
+        println!("CPU frames={iterations} render_avg_ms={render_ms:.3} measured_min_ms={min_ms:.3} measured_max_ms={max_ms:.3}");
     } else {
         let gpu = Arc::new(GpuContext::new(Default::default())?);
         println!("ADAPTER {:?}", gpu.adapter_info());

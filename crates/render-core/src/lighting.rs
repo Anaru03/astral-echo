@@ -19,7 +19,6 @@ pub struct LightingEnvironment {
     pub camera_position: Vec3,
     pub ambient: Vec3,
     lights: Vec<RenderLight>,
-    lambert_specialized: bool,
 }
 
 impl Default for LightingEnvironment {
@@ -30,7 +29,6 @@ impl Default for LightingEnvironment {
             camera_position: Vec3::ZERO,
             ambient: Vec3::splat(0.03),
             lights: Vec::new(),
-            lambert_specialized: false,
         }
     }
 }
@@ -48,10 +46,6 @@ impl LightingEnvironment {
 
     pub fn lights(&self) -> &[RenderLight] {
         &self.lights
-    }
-
-    pub fn set_lambert_specialized(&mut self, enabled: bool) {
-        self.lambert_specialized = enabled;
     }
 
     pub fn set_lights(&mut self, lights: impl IntoIterator<Item = RenderLight>) {
@@ -242,17 +236,6 @@ fn shade_surface_impl(
     if environment.mode == LightingMode::Unlit {
         return color;
     }
-    if environment.mode == LightingMode::Lambert && environment.lambert_specialized {
-        return shade_surface_lambert_specialized(
-            environment,
-            material,
-            color,
-            position,
-            normal,
-            timings,
-            normal_is_normalized,
-        );
-    }
     let base = color * material.base_color;
     let albedo = base.truncate().max(Vec3::ZERO);
     if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
@@ -364,98 +347,6 @@ fn shade_surface_impl(
         }
         let started = timings.as_ref().map(|_| std::time::Instant::now());
         result += reflected * radiance * nl;
-        if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
-            timing.composition_ns += started.elapsed().as_nanos() as u64;
-        }
-    }
-    result
-        .clamp(Vec3::ZERO, Vec3::ONE)
-        .extend(base.w.clamp(0.0, 1.0))
-}
-
-fn shade_surface_lambert_specialized(
-    environment: &LightingEnvironment,
-    material: MaterialInfo,
-    color: Vec4,
-    position: Vec3,
-    normal: Vec3,
-    mut timings: Option<&mut ShadeTimings>,
-    normal_is_normalized: bool,
-) -> Vec4 {
-    let started = timings.as_ref().map(|_| std::time::Instant::now());
-    let base = color * material.base_color;
-    let albedo = base.truncate().max(Vec3::ZERO);
-    if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
-        timing.inputs_ns += started.elapsed().as_nanos() as u64;
-    }
-    let started = timings.as_ref().map(|_| std::time::Instant::now());
-    let normal = if normal_is_normalized {
-        normal
-    } else {
-        crate::normalize_direction(normal)
-    };
-    if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
-        timing.normal_ns += started.elapsed().as_nanos() as u64;
-    }
-    let started = timings.as_ref().map(|_| std::time::Instant::now());
-    let mut result = albedo * environment.ambient.max(Vec3::ZERO) + material.emissive;
-    if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
-        timing.ambient_ns += started.elapsed().as_nanos() as u64;
-    }
-    for light in environment.lights() {
-        if let Some(timing) = timings.as_deref_mut() {
-            timing.light_calls += 1;
-        }
-        let started = timings.as_ref().map(|_| std::time::Instant::now());
-        let (direction, attenuation) = match light.kind {
-            RenderLightKind::Directional { direction } => {
-                if let Some(timing) = timings.as_deref_mut() {
-                    timing.directional_lights += 1;
-                }
-                (-direction, 1.0)
-            }
-            RenderLightKind::Point {
-                position: light_position,
-                range,
-            } => {
-                if let Some(timing) = timings.as_deref_mut() {
-                    timing.point_lights += 1;
-                    timing.point_distance_calculations += 1;
-                    timing.point_normalizations += 1;
-                }
-                let delta = light_position - position;
-                let distance_squared = delta.length_squared();
-                let falloff = (1.0 - distance_squared / (range * range)).clamp(0.0, 1.0);
-                (
-                    crate::normalize_direction(delta),
-                    falloff * falloff / (1.0 + distance_squared),
-                )
-            }
-        };
-        if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
-            timing.light_direction_ns += started.elapsed().as_nanos() as u64;
-        }
-        let started = timings.as_ref().map(|_| std::time::Instant::now());
-        if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
-            timing.attenuation_ns += started.elapsed().as_nanos() as u64;
-        }
-        let started = timings.as_ref().map(|_| std::time::Instant::now());
-        let nl = normal.dot(direction).max(0.0);
-        if nl <= 0.0 {
-            continue;
-        }
-        if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
-            timing.diffuse_ns += started.elapsed().as_nanos() as u64;
-        }
-        let radiance = light.color * light.intensity * attenuation;
-        if let (Some(timing), Some(started)) = (
-            timings.as_deref_mut(),
-            Some(std::time::Instant::now()),
-        ) {
-            timing.specular_ns += started.elapsed().as_nanos() as u64;
-        }
-        let started = timings.as_ref().map(|_| std::time::Instant::now());
-        result += albedo * radiance * nl;
         if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
             timing.composition_ns += started.elapsed().as_nanos() as u64;
         }

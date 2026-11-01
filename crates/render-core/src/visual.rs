@@ -293,7 +293,6 @@ pub struct SnapshotScene {
     assets: VisualAssets,
     snapshot: RenderSnapshot,
     lighting_mode: crate::LightingMode,
-    lambert_specialized: bool,
     shadow_config: crate::ShadowConfig,
     materials: BTreeMap<MaterialHandle, crate::MaterialInfo>,
     lod_history: RefCell<BTreeMap<SnapshotId, (MeshHandle, MaterialHandle, LodLevel)>>,
@@ -306,7 +305,6 @@ impl Default for SnapshotScene {
             assets: VisualAssets::default(),
             lod_history: RefCell::default(),
             lighting_mode: crate::LightingMode::Unlit,
-            lambert_specialized: false,
             shadow_config: crate::ShadowConfig::default(),
             materials: BTreeMap::new(),
             snapshot: RenderSnapshot::new(
@@ -331,10 +329,6 @@ impl SnapshotScene {
 
     pub fn set_lighting_mode(&mut self, mode: crate::LightingMode) {
         self.lighting_mode = mode;
-    }
-
-    pub fn set_lambert_specialized(&mut self, enabled: bool) {
-        self.lambert_specialized = enabled;
     }
 
     pub fn set_shadow_config(&mut self, config: crate::ShadowConfig) {
@@ -438,9 +432,6 @@ impl SnapshotScene {
             materials: self.materials.clone(),
             ..Default::default()
         };
-        prepared
-            .lighting
-            .set_lambert_specialized(self.lambert_specialized);
         prepared.lighting.shadows = self.shadow_config;
         let shadow_frustum = prepared
             .lighting

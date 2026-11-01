@@ -41,13 +41,12 @@ fn inputs() -> Result<Vec<Input>, Box<dyn std::error::Error>> {
         .collect())
 }
 
-fn environment(lights: &[RenderLight], specialized: bool) -> LightingEnvironment {
+fn environment(lights: &[RenderLight]) -> LightingEnvironment {
     let mut environment = LightingEnvironment::default();
     environment.mode = LightingMode::Lambert;
     environment.camera_position = Vec3::new(0.0, 2.0, 12.0);
     environment.ambient = Vec3::splat(0.03);
     environment.set_lights(lights.iter().copied());
-    environment.set_lambert_specialized(specialized);
     environment
 }
 
@@ -125,7 +124,6 @@ fn print_result(name: &str, measurement: &Measurement) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let values = inputs()?;
-    let specialized = std::env::args().any(|argument| argument == "--lambert-specialized");
     let material = MaterialInfo::default().sanitized();
     let point = RenderLight::demo_point();
     let directional = RenderLight::demo_sun();
@@ -134,15 +132,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "lighting_benchmark source=assets/models/shooter/shooter.obj samples={} warmup_repetitions={} measured_repetitions={} mode=Lambert material=MaterialInfo::default lights=demo_point_then_demo_sun",
         values.len(), WARMUP_REPETITIONS, MEASURED_REPETITIONS
     );
-    print_result("none", &measure(&environment(&[], specialized), material, &values));
+    print_result("none", &measure(&environment(&[]), material, &values));
     print_result(
         "directional",
-        &measure(&environment(&[directional], specialized), material, &values),
+        &measure(&environment(&[directional]), material, &values),
     );
-    print_result("point", &measure(&environment(&[point], specialized), material, &values));
+    print_result("point", &measure(&environment(&[point]), material, &values));
     print_result(
         "both",
-        &measure(&environment(&[point, directional], specialized), material, &values),
+        &measure(&environment(&[point, directional]), material, &values),
     );
     Ok(())
 }
