@@ -217,6 +217,8 @@ mod tests {
 
     #[test]
     fn loads_repository_shooter_obj() {
+        use std::collections::HashSet;
+
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../assets/models/shooter/shooter.obj");
         let mesh = load_obj(path).expect("repository Shooter OBJ should load");
@@ -227,5 +229,31 @@ mod tests {
             .vertices
             .iter()
             .all(|vertex| vertex.position.is_finite() && vertex.normal.is_finite()));
+        let unique_positions: HashSet<_> = mesh
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position.to_array().map(f32::to_bits))
+            .collect();
+        let degenerate_triangles = mesh
+            .indices
+            .chunks_exact(3)
+            .filter(|triangle| {
+                let a = mesh.vertices[triangle[0] as usize].position;
+                let b = mesh.vertices[triangle[1] as usize].position;
+                let c = mesh.vertices[triangle[2] as usize].position;
+                (b - a).cross(c - a).length_squared() <= 1e-12
+            })
+            .count();
+        println!(
+            "Shooter RasterMesh vertices={} indices={} triangles={} unique_positions={} duplicate_position_vertices={} degenerate_triangles={} approx_bytes={}",
+            mesh.vertices.len(),
+            mesh.indices.len(),
+            mesh.indices.len() / 3,
+            unique_positions.len(),
+            mesh.vertices.len().saturating_sub(unique_positions.len()),
+            degenerate_triangles,
+            mesh.vertices.len() * std::mem::size_of::<RasterVertex>()
+                + mesh.indices.len() * std::mem::size_of::<u32>()
+        );
     }
 }

@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use render_core::{InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene};
 use render_cpu::{
-    render_snapshot_scene_with_shader, render_snapshot_scene_with_shader_with_stats, write_png,
-    Framebuffer, FragmentShader, RasterMode,
+    render_snapshot_scene_with_stats, render_snapshot_scene_with_shader, write_png, Framebuffer,
+    FragmentShader, RasterMode,
 };
 use render_gpu::{GpuError, GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
@@ -905,11 +905,10 @@ impl Host {
             }
             return;
         }
-        if let Ok((stats, _)) = render_snapshot_scene_with_shader_with_stats(
+        if let Ok((stats, _)) = render_snapshot_scene_with_stats(
             &mut state.framebuffer,
             &state.snapshot,
             self.config.raster_mode,
-            FragmentShader::SolarBands,
         ) {
             if trace_frame {
                 println!(

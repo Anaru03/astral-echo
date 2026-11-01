@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use game::render_backend::{select_backend, BackendDecision, BackendRequest};
-use render_core::{LightingMode, MaterialInfo, MeshHandle, SnapshotScene, VisualAssets};
+use render_core::{CullingConfig, LightingMode, MaterialInfo, MeshHandle, SnapshotScene, VisualAssets};
 use render_gpu::{GpuContext, GpuRenderer, OffscreenTarget};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -72,8 +72,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     if window && output.is_some() {
         return Err("PNG output uses offscreen mode; omit --window".into());
     }
+    let load_started = Instant::now();
     let shooter_mesh = render_core::load_obj(shooter_obj_path())
         .map_err(|error| format!("failed to load Shooter OBJ: {error}"))?;
+    println!(
+        "shooter-load elapsed_ms={:.3} vertices={} indices={} triangles={} approx_bytes={}",
+        load_started.elapsed().as_secs_f64() * 1000.0,
+        shooter_mesh.vertices.len(),
+        shooter_mesh.indices.len(),
+        shooter_mesh.indices.len() / 3,
+        shooter_mesh.vertices.len() * std::mem::size_of::<render_core::RasterVertex>()
+            + shooter_mesh.indices.len() * std::mem::size_of::<u32>()
+    );
     if window {
         let source: render_present::SnapshotSource = if demo_flight {
             let session = Rc::new(RefCell::new(support::deterministic_flight_session().0));
@@ -155,12 +165,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         validate_impact_snapshots(&snapshots)?;
     }
     let mut scene = SnapshotScene::default();
+    let register_started = Instant::now();
     scene.register_mesh(
         MeshHandle::ENEMY_PLACEHOLDER,
         VisualAssets::ENEMY,
         shooter_mesh,
     );
+    println!(
+        "shooter-register elapsed_ms={:.3}",
+        register_started.elapsed().as_secs_f64() * 1000.0
+    );
+    let update_started = Instant::now();
     scene.update(&snapshots[0])?;
+    println!(
+        "scene-update elapsed_ms={:.3} nodes={}",
+        update_started.elapsed().as_secs_f64() * 1000.0,
+        scene.snapshot().nodes.len()
+    );
     scene.set_lighting_mode(LightingMode::Lambert);
     scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
     scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
@@ -177,6 +198,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
     let impact_paths = demo_impact.then(|| unique_impact_paths(&path));
     if matches!(decision, BackendDecision::Cpu { .. }) {
+        let mut baseline_scene = SnapshotScene::default();
+        baseline_scene.update(&snapshots[0])?;
+        let mut baseline_framebuffer = render_cpu::Framebuffer::new(width, height)?;
+        let baseline_started = Instant::now();
+        let (baseline_prepared, baseline_pipeline) = if let Some(time) = shader_time {
+            render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
+                &mut baseline_framebuffer,
+                &baseline_scene,
+                render_cpu::RasterMode::Secuencial,
+                render_cpu::FragmentShader::SolarBands,
+                time,
+            )?
+        } else {
+            render_cpu::render_snapshot_scene_with_stats(
+                &mut baseline_framebuffer,
+                &baseline_scene,
+                render_cpu::RasterMode::Secuencial,
+            )?
+        };
+        println!(
+            "cpu-baseline elapsed_ms={:.3} prepared_triangles={} fragments={} pixels_written={}",
+            baseline_started.elapsed().as_secs_f64() * 1000.0,
+            baseline_prepared.triangles,
+            baseline_pipeline.metrics.fragments_rasterized,
+            baseline_pipeline.metrics.pixels_written
+        );
         let mut framebuffer = render_cpu::Framebuffer::new(width, height)?;
         let start = Instant::now();
         let iterations = if demo_flight || demo_impact {
@@ -188,13 +235,41 @@ fn main() -> Result<(), Box<dyn Error>> {
             if index > 0 {
                 scene.update(&snapshots[index])?;
             }
-            render_cpu::render_snapshot_scene_with_shader_at_time(
-                &mut framebuffer,
-                &scene,
-                render_cpu::RasterMode::Secuencial,
-                render_cpu::FragmentShader::SolarBands,
-                shader_time.unwrap_or((tick.0 % 4096) as f32),
-            )?;
+            let render_started = Instant::now();
+            let (prepared, pipeline) = if let Some(time) = shader_time {
+                render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
+                    &mut framebuffer,
+                    &scene,
+                    render_cpu::RasterMode::Secuencial,
+                    render_cpu::FragmentShader::SolarBands,
+                    time,
+                )?
+            } else {
+                render_cpu::render_snapshot_scene_with_stats(
+                    &mut framebuffer,
+                    &scene,
+                    render_cpu::RasterMode::Secuencial,
+                )?
+            };
+            if index == 0 {
+                println!(
+                    "cpu-shooter-frame elapsed_ms={:.3} considered={} visible={} discarded={} triangles={} vertices_in={} rejected={} clipped={} culled={} degenerate={} fragments={} shaded={} depth_rejected={} pixels_written={}",
+                    render_started.elapsed().as_secs_f64() * 1000.0,
+                    prepared.considered,
+                    prepared.visible,
+                    prepared.discarded,
+                    prepared.triangles,
+                    pipeline.metrics.vertices_in,
+                    pipeline.metrics.triangles_rejected,
+                    pipeline.metrics.triangles_clipped,
+                    pipeline.metrics.triangles_culled,
+                    pipeline.metrics.triangles_degenerate,
+                    pipeline.metrics.fragments_rasterized,
+                    pipeline.metrics.fragments_shaded,
+                    pipeline.metrics.fragments_depth_rejected,
+                    pipeline.metrics.pixels_written
+                );
+            }
             if demo_flight {
                 render_cpu::write_png(&demo_path(&path, index), &framebuffer)?;
             } else if demo_impact {
@@ -225,7 +300,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         let gpu = Arc::new(GpuContext::new(Default::default())?);
         println!("ADAPTER {:?}", gpu.adapter_info());
-        let mut renderer = GpuRenderer::from_snapshot(gpu.clone(), &scene)?;
+        let mut prepared = scene.prepare(CullingConfig {
+            width,
+            height,
+            ..Default::default()
+        });
+        let mut renderer = GpuRenderer::from_prepared(gpu.clone(), &prepared)?;
         let target = OffscreenTarget::new(gpu.clone(), width, height)?;
         let start = Instant::now();
         let iterations = if demo_flight || demo_impact {
@@ -236,9 +316,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         for index in 0..iterations {
             if index > 0 {
                 scene.update(&snapshots[index])?;
-                renderer.sync_snapshot(&scene)?;
+                prepared = scene.prepare(CullingConfig {
+                    width,
+                    height,
+                    ..Default::default()
+                });
+                renderer.sync_prepared(&prepared)?;
             }
-            target.render_snapshot(&mut renderer, &scene)?;
+            target.render_prepared(&mut renderer, &prepared, scene.view_projection())?;
             gpu.wait()?;
             if demo_flight {
                 target.readback()?.write_png(&demo_path(&path, index))?;
@@ -269,6 +354,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let readback_ms = start.elapsed().as_secs_f64() * 1000.0;
         println!("GPU frames={iterations} submit_to_completion_avg_ms={render_ms:.3} readback_ms={readback_ms:.3}");
         if !demo_flight && !demo_impact {
+            image.write_png("target/f13-shooter-gpu-readback.png")?;
             println!(
                 "CPU/GPU comparison {:?}",
                 support::compare(&support::cpu_image(&scene, width, height), &image)
