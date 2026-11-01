@@ -82,6 +82,35 @@ impl LightingEnvironment {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ShadeTimings {
+    pub calls: u64,
+    pub inputs_ns: u64,
+    pub normal_ns: u64,
+    pub view_ns: u64,
+    pub light_direction_ns: u64,
+    pub attenuation_ns: u64,
+    pub diffuse_ns: u64,
+    pub specular_ns: u64,
+    pub ambient_ns: u64,
+    pub composition_ns: u64,
+}
+
+impl ShadeTimings {
+    pub fn merge(&mut self, other: Self) {
+        self.calls += other.calls;
+        self.inputs_ns += other.inputs_ns;
+        self.normal_ns += other.normal_ns;
+        self.view_ns += other.view_ns;
+        self.light_direction_ns += other.light_direction_ns;
+        self.attenuation_ns += other.attenuation_ns;
+        self.diffuse_ns += other.diffuse_ns;
+        self.specular_ns += other.specular_ns;
+        self.ambient_ns += other.ambient_ns;
+        self.composition_ns += other.composition_ns;
+    }
+}
+
 pub fn shade_surface(
     environment: &LightingEnvironment,
     material: MaterialInfo,
@@ -89,16 +118,91 @@ pub fn shade_surface(
     position: Vec3,
     normal: Vec3,
 ) -> Vec4 {
+    shade_surface_sanitized(environment, material.sanitized(), color, position, normal)
+}
+
+pub fn shade_surface_sanitized(
+    environment: &LightingEnvironment,
+    material: MaterialInfo,
+    color: Vec4,
+    position: Vec3,
+    normal: Vec3,
+) -> Vec4 {
+    shade_surface_impl(environment, material, color, position, normal, None)
+}
+
+pub fn shade_surface_profiled(
+    environment: &LightingEnvironment,
+    material: MaterialInfo,
+    color: Vec4,
+    position: Vec3,
+    normal: Vec3,
+) -> (Vec4, ShadeTimings) {
+    shade_surface_profiled_sanitized(
+        environment,
+        material.sanitized(),
+        color,
+        position,
+        normal,
+    )
+}
+
+pub fn shade_surface_profiled_sanitized(
+    environment: &LightingEnvironment,
+    material: MaterialInfo,
+    color: Vec4,
+    position: Vec3,
+    normal: Vec3,
+) -> (Vec4, ShadeTimings) {
+    let mut timings = ShadeTimings {
+        calls: 1,
+        ..Default::default()
+    };
+    let result = shade_surface_impl(
+        environment,
+        material,
+        color,
+        position,
+        normal,
+        Some(&mut timings),
+    );
+    (result, timings)
+}
+
+fn shade_surface_impl(
+    environment: &LightingEnvironment,
+    material: MaterialInfo,
+    color: Vec4,
+    position: Vec3,
+    normal: Vec3,
+    mut timings: Option<&mut ShadeTimings>,
+) -> Vec4 {
+    let started = timings.as_ref().map(|_| std::time::Instant::now());
     if environment.mode == LightingMode::Unlit {
         return color;
     }
-    let material = material.sanitized();
     let base = color * material.base_color;
     let albedo = base.truncate().max(Vec3::ZERO);
+    if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
+        timing.inputs_ns += started.elapsed().as_nanos() as u64;
+    }
+    let started = timings.as_ref().map(|_| std::time::Instant::now());
     let normal = crate::normalize_direction(normal);
+    if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
+        timing.normal_ns += started.elapsed().as_nanos() as u64;
+    }
+    let started = timings.as_ref().map(|_| std::time::Instant::now());
     let view = crate::normalize_direction(environment.camera_position - position);
+    if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
+        timing.view_ns += started.elapsed().as_nanos() as u64;
+    }
+    let started = timings.as_ref().map(|_| std::time::Instant::now());
     let mut result = albedo * environment.ambient.max(Vec3::ZERO) + material.emissive;
+    if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
+        timing.ambient_ns += started.elapsed().as_nanos() as u64;
+    }
     for light in environment.lights() {
+        let started = timings.as_ref().map(|_| std::time::Instant::now());
         let (direction, attenuation) = match light.kind {
             RenderLightKind::Directional { direction } => (-direction, 1.0),
             RenderLightKind::Point {
@@ -114,16 +218,29 @@ pub fn shade_surface(
                 )
             }
         };
+        if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
+            timing.light_direction_ns += started.elapsed().as_nanos() as u64;
+        }
+        let started = timings.as_ref().map(|_| std::time::Instant::now());
+        let attenuation = attenuation;
+        if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
+            timing.attenuation_ns += started.elapsed().as_nanos() as u64;
+        }
+        let started = timings.as_ref().map(|_| std::time::Instant::now());
         let nl = normal.dot(direction).max(0.0);
         if nl <= 0.0 {
             continue;
         }
+        if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
+            timing.diffuse_ns += started.elapsed().as_nanos() as u64;
+        }
         let radiance = light.color * light.intensity * attenuation;
-        let half = crate::normalize_direction(view + direction);
-        let nh = normal.dot(half).max(0.0);
-        let f0 = Vec3::splat(0.04).lerp(albedo, material.metallic);
+        let started = timings.as_ref().map(|_| std::time::Instant::now());
         let reflected = match environment.mode {
             LightingMode::Pbr => {
+                let half = crate::normalize_direction(view + direction);
+                let nh = normal.dot(half).max(0.0);
+                let f0 = Vec3::splat(0.04).lerp(albedo, material.metallic);
                 let nv = normal.dot(view).max(0.0001);
                 let vh = view.dot(half).max(0.0);
                 let a2 = material.roughness.powi(4);
@@ -138,13 +255,23 @@ pub fn shade_surface(
                 diffuse + fresnel * (distribution * visibility / (4.0 * nv * nl).max(0.0001))
             }
             LightingMode::BlinnPhong => {
+                let half = crate::normalize_direction(view + direction);
+                let nh = normal.dot(half).max(0.0);
+                let f0 = Vec3::splat(0.04).lerp(albedo, material.metallic);
                 let power =
                     (2.0 / (material.roughness * material.roughness) - 2.0).clamp(1.0, 512.0);
                 albedo * (1.0 - material.metallic) + f0 * nh.powf(power) * ((power + 2.0) / 8.0)
             }
             _ => albedo,
         };
+        if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
+            timing.specular_ns += started.elapsed().as_nanos() as u64;
+        }
+        let started = timings.as_ref().map(|_| std::time::Instant::now());
         result += reflected * radiance * nl;
+        if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
+            timing.composition_ns += started.elapsed().as_nanos() as u64;
+        }
     }
     result
         .clamp(Vec3::ZERO, Vec3::ONE)

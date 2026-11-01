@@ -43,7 +43,8 @@ pub use geometry::{RasterMesh, RasterVertex};
 pub use model_loader::{load_obj, load_obj_reader, ObjLoadError};
 
 pub use lighting::{
-    material_fixture, shade_surface, LightingEnvironment, LightingMode, MAX_POINT_LIGHTS,
+    material_fixture, shade_surface, shade_surface_profiled, shade_surface_profiled_sanitized,
+    shade_surface_sanitized, LightingEnvironment, LightingMode, ShadeTimings, MAX_POINT_LIGHTS,
 };
 
 pub use shadows::{shadow_fixture, ShadowConfig, ShadowConfigError, ShadowResolution};

@@ -39,6 +39,34 @@ pub fn render_snapshot_scene_with_stats(
     Ok((prepared_stats, pipeline_stats))
 }
 
+pub fn render_snapshot_scene_with_timing(
+    framebuffer: &mut Framebuffer,
+    scene: &SnapshotScene,
+    mode: RasterMode,
+) -> Result<(PreparedSceneStats, PipelineStats, u64), RasterError> {
+    let preparation_started = std::time::Instant::now();
+    let prepared = scene.prepare(render_core::CullingConfig {
+        width: framebuffer.width(),
+        height: framebuffer.height(),
+        ..Default::default()
+    });
+    let preparation_ns = preparation_started.elapsed().as_nanos() as u64;
+    let prepared_stats = prepared.stats();
+    let pipeline_stats = render_prepared_scene_with_config(
+        framebuffer,
+        &prepared,
+        scene.view_projection(),
+        mode,
+        overlay_clear_color(scene.overlay()),
+        scene.overlay().game_over,
+        PipelineConfig {
+            timing: true,
+            ..Default::default()
+        },
+    )?;
+    Ok((prepared_stats, pipeline_stats, preparation_ns))
+}
+
 pub fn render_snapshot_scene_with_shader_with_stats(
     framebuffer: &mut Framebuffer,
     scene: &SnapshotScene,
@@ -77,6 +105,7 @@ pub fn render_snapshot_scene_with_shader_at_time_with_stats(
         scene.overlay().game_over,
         shader,
         time,
+        PipelineConfig::default(),
     )?;
     Ok((prepared_stats, pipeline_stats))
 }
@@ -156,6 +185,26 @@ fn render_prepared_scene_with_clear(
     clear: Color,
     game_over: bool,
 ) -> Result<PipelineStats, RasterError> {
+    render_prepared_scene_with_config(
+        framebuffer,
+        scene,
+        view_projection,
+        mode,
+        clear,
+        game_over,
+        PipelineConfig::default(),
+    )
+}
+
+fn render_prepared_scene_with_config(
+    framebuffer: &mut Framebuffer,
+    scene: &PreparedScene,
+    view_projection: render_core::Mat4,
+    mode: RasterMode,
+    clear: Color,
+    game_over: bool,
+    config: PipelineConfig,
+) -> Result<PipelineStats, RasterError> {
     render_prepared_scene_with_shader(
         framebuffer,
         scene,
@@ -165,6 +214,7 @@ fn render_prepared_scene_with_clear(
         game_over,
         FragmentShader::VertexColor,
         0.0,
+        config,
     )
 }
 
@@ -177,9 +227,10 @@ fn render_prepared_scene_with_shader(
     game_over: bool,
     shader: FragmentShader,
     time: f32,
+    config: PipelineConfig,
 ) -> Result<PipelineStats, RasterError> {
     let viewport = Viewport::from_size(framebuffer.width(), framebuffer.height())?;
-    let mut pipeline = CpuPipeline::new(framebuffer, viewport, PipelineConfig::default())
+    let mut pipeline = CpuPipeline::new(framebuffer, viewport, config)
         .with_fragment_shader(shader)
         .with_fragment_time(time)
         .with_tile_config(TileConfig {

@@ -13,12 +13,43 @@ use game::render_backend::{select_backend, BackendDecision, BackendRequest};
 use render_core::{CullingConfig, LightingMode, MaterialInfo, MeshHandle, SnapshotScene, VisualAssets};
 use render_gpu::{GpuContext, GpuRenderer, OffscreenTarget};
 
+fn print_cpu_timing(label: &str, preparation_ns: u64, stats: &render_cpu::PipelineStats) {
+    let timings = stats.metrics.timings;
+    println!(
+        "cpu-profile label={label} preparation_ms={:.3} vertex_ms={:.3} clip_position_ms={:.3} world_position_ms={:.3} normal_ms={:.3} shading_ms={:.3} vertex_write_ms={:.3} shade_calls={} shade_inputs_ms={:.3} shade_normal_ms={:.3} shade_view_ms={:.3} shade_light_direction_ms={:.3} shade_attenuation_ms={:.3} shade_diffuse_ms={:.3} shade_specular_ms={:.3} shade_ambient_ms={:.3} shade_composition_ms={:.3} assembly_ms={:.3} clipping_ms={:.3} raster_ms={:.3} fragment_ms={:.3} depth_ms={:.3} pipeline_timed_ms={:.3}",
+        preparation_ns as f64 / 1_000_000.0,
+        timings.vertex_ns as f64 / 1_000_000.0,
+        timings.vertex_clip_ns as f64 / 1_000_000.0,
+        timings.vertex_world_ns as f64 / 1_000_000.0,
+        timings.vertex_normal_ns as f64 / 1_000_000.0,
+        timings.vertex_shading_ns as f64 / 1_000_000.0,
+        timings.vertex_write_ns as f64 / 1_000_000.0,
+        timings.shade.calls,
+        timings.shade.inputs_ns as f64 / 1_000_000.0,
+        timings.shade.normal_ns as f64 / 1_000_000.0,
+        timings.shade.view_ns as f64 / 1_000_000.0,
+        timings.shade.light_direction_ns as f64 / 1_000_000.0,
+        timings.shade.attenuation_ns as f64 / 1_000_000.0,
+        timings.shade.diffuse_ns as f64 / 1_000_000.0,
+        timings.shade.specular_ns as f64 / 1_000_000.0,
+        timings.shade.ambient_ns as f64 / 1_000_000.0,
+        timings.shade.composition_ns as f64 / 1_000_000.0,
+        timings.assembly_ns as f64 / 1_000_000.0,
+        timings.clipping_ns as f64 / 1_000_000.0,
+        timings.raster_ns as f64 / 1_000_000.0,
+        timings.fragment_ns as f64 / 1_000_000.0,
+        timings.depth_ns as f64 / 1_000_000.0,
+        timings.total_ns() as f64 / 1_000_000.0,
+    );
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut backend = String::from("cpu");
     let mut window = false;
     let mut frames = None;
     let mut output = None;
     let mut shader_time = None;
+    let mut profile_cpu = false;
     let mut demo_flight = false;
     let mut demo_impact = false;
     let mut graphics_debug = false;
@@ -39,11 +70,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--shader-time" => {
                 shader_time = Some(args.next().ok_or("missing shader time")?.parse::<f32>()?)
             }
+            "--profile-cpu" => profile_cpu = true,
             "--demo-flight" => demo_flight = true,
             "--demo-impact" => demo_impact = true,
             "--help" => {
                 println!(
-                    "gameplay_visual [--backend cpu|gpu|auto] [--window] [--graphics-validate] [--frames N] [--output PATH] [--shader-time T] [--demo-flight|--demo-impact]"
+                    "gameplay_visual [--backend cpu|gpu|auto] [--window] [--graphics-validate] [--frames N] [--output PATH] [--shader-time T] [--profile-cpu] [--demo-flight|--demo-impact]"
                 );
                 return Ok(());
             }
@@ -202,28 +234,44 @@ fn main() -> Result<(), Box<dyn Error>> {
         baseline_scene.update(&snapshots[0])?;
         let mut baseline_framebuffer = render_cpu::Framebuffer::new(width, height)?;
         let baseline_started = Instant::now();
-        let (baseline_prepared, baseline_pipeline) = if let Some(time) = shader_time {
-            render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
+        let (baseline_prepared, baseline_pipeline, baseline_preparation_ns) = if profile_cpu && shader_time.is_none() {
+            let (prepared, pipeline, preparation_ns) = render_cpu::render_snapshot_scene_with_timing(
+                &mut baseline_framebuffer,
+                &baseline_scene,
+                render_cpu::RasterMode::Secuencial,
+            )?;
+            (prepared, pipeline, preparation_ns)
+        } else if let Some(time) = shader_time {
+            let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
                 &mut baseline_framebuffer,
                 &baseline_scene,
                 render_cpu::RasterMode::Secuencial,
                 render_cpu::FragmentShader::SolarBands,
                 time,
-            )?
+            )?;
+            (prepared, pipeline, 0)
         } else {
-            render_cpu::render_snapshot_scene_with_stats(
+            let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_stats(
                 &mut baseline_framebuffer,
                 &baseline_scene,
                 render_cpu::RasterMode::Secuencial,
-            )?
+            )?;
+            (prepared, pipeline, 0)
         };
         println!(
-            "cpu-baseline elapsed_ms={:.3} prepared_triangles={} fragments={} pixels_written={}",
+            "cpu-baseline elapsed_ms={:.3} prepared_triangles={} vertices_in={} culled={} degenerate={} fragments={} depth_rejected={} pixels_written={}",
             baseline_started.elapsed().as_secs_f64() * 1000.0,
             baseline_prepared.triangles,
+            baseline_pipeline.metrics.vertices_in,
+            baseline_pipeline.metrics.triangles_culled,
+            baseline_pipeline.metrics.triangles_degenerate,
             baseline_pipeline.metrics.fragments_rasterized,
+            baseline_pipeline.metrics.fragments_depth_rejected,
             baseline_pipeline.metrics.pixels_written
         );
+        if profile_cpu && shader_time.is_none() {
+            print_cpu_timing("placeholder", baseline_preparation_ns, &baseline_pipeline);
+        }
         let mut framebuffer = render_cpu::Framebuffer::new(width, height)?;
         let start = Instant::now();
         let iterations = if demo_flight || demo_impact {
@@ -231,26 +279,37 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else {
             count as usize
         };
+        let mut frame_times_ms = Vec::with_capacity(iterations);
         for index in 0..iterations {
-            if index > 0 {
+            if index > 0 && index < snapshots.len() {
                 scene.update(&snapshots[index])?;
             }
             let render_started = Instant::now();
-            let (prepared, pipeline) = if let Some(time) = shader_time {
-                render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
+            let (prepared, pipeline, preparation_ns) = if profile_cpu && shader_time.is_none() {
+                let (prepared, pipeline, preparation_ns) = render_cpu::render_snapshot_scene_with_timing(
+                    &mut framebuffer,
+                    &scene,
+                    render_cpu::RasterMode::Secuencial,
+                )?;
+                (prepared, pipeline, preparation_ns)
+            } else if let Some(time) = shader_time {
+                let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
                     &mut framebuffer,
                     &scene,
                     render_cpu::RasterMode::Secuencial,
                     render_cpu::FragmentShader::SolarBands,
                     time,
-                )?
+                )?;
+                (prepared, pipeline, 0)
             } else {
-                render_cpu::render_snapshot_scene_with_stats(
+                let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_stats(
                     &mut framebuffer,
                     &scene,
                     render_cpu::RasterMode::Secuencial,
-                )?
+                )?;
+                (prepared, pipeline, 0)
             };
+            frame_times_ms.push(render_started.elapsed().as_secs_f64() * 1000.0);
             if index == 0 {
                 println!(
                     "cpu-shooter-frame elapsed_ms={:.3} considered={} visible={} discarded={} triangles={} vertices_in={} rejected={} clipped={} culled={} degenerate={} fragments={} shaded={} depth_rejected={} pixels_written={}",
@@ -269,6 +328,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     pipeline.metrics.fragments_depth_rejected,
                     pipeline.metrics.pixels_written
                 );
+                if profile_cpu && shader_time.is_none() {
+                    print_cpu_timing("shooter", preparation_ns, &pipeline);
+                }
             }
             if demo_flight {
                 render_cpu::write_png(&demo_path(&path, index), &framebuffer)?;
@@ -296,7 +358,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         if !demo_flight {
             render_cpu::write_png(&path, &framebuffer)?;
         }
-        println!("CPU frames={iterations} render_avg_ms={render_ms:.3}");
+        let min_ms = frame_times_ms.iter().copied().fold(f64::INFINITY, f64::min);
+        let max_ms = frame_times_ms.iter().copied().fold(0.0, f64::max);
+        println!("CPU frames={iterations} render_avg_ms={render_ms:.3} measured_min_ms={min_ms:.3} measured_max_ms={max_ms:.3}");
     } else {
         let gpu = Arc::new(GpuContext::new(Default::default())?);
         println!("ADAPTER {:?}", gpu.adapter_info());
@@ -314,7 +378,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             count as usize
         };
         for index in 0..iterations {
-            if index > 0 {
+            if index > 0 && index < snapshots.len() {
                 scene.update(&snapshots[index])?;
                 prepared = scene.prepare(CullingConfig {
                     width,
