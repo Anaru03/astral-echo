@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use game::render_backend::{select_backend, BackendDecision, BackendRequest};
-use render_core::{LightingMode, MaterialInfo, SnapshotScene, VisualAssets};
+use render_core::{LightingMode, MaterialInfo, MeshHandle, SnapshotScene, VisualAssets};
 use render_gpu::{GpuContext, GpuRenderer, OffscreenTarget};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -72,6 +72,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     if window && output.is_some() {
         return Err("PNG output uses offscreen mode; omit --window".into());
     }
+    let shooter_mesh = render_core::load_obj(shooter_obj_path())
+        .map_err(|error| format!("failed to load Shooter OBJ: {error}"))?;
     if window {
         let source: render_present::SnapshotSource = if demo_flight {
             let session = Rc::new(RefCell::new(support::deterministic_flight_session().0));
@@ -109,12 +111,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         let debug = render_present::GraphicsDebugConfig {
             directory: graphics_debug.then(|| PathBuf::from("target/graphics-debug")),
         };
+        let mut shooter_mesh = Some(shooter_mesh);
         let report = render_present::run_hot_swap_window_with_input_and_scene(
             config,
             source,
             start_gpu,
             |_, _| {},
-            |scene| {
+            move |scene| {
+                scene.register_mesh(
+                    MeshHandle::ENEMY_PLACEHOLDER,
+                    VisualAssets::ENEMY,
+                    shooter_mesh
+                        .take()
+                        .expect("scene configuration should run once"),
+                );
                 scene.set_lighting_mode(LightingMode::Lambert);
                 scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
                 scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
@@ -145,6 +155,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         validate_impact_snapshots(&snapshots)?;
     }
     let mut scene = SnapshotScene::default();
+    scene.register_mesh(
+        MeshHandle::ENEMY_PLACEHOLDER,
+        VisualAssets::ENEMY,
+        shooter_mesh,
+    );
     scene.update(&snapshots[0])?;
     scene.set_lighting_mode(LightingMode::Lambert);
     scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
@@ -268,6 +283,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("PNG={} demo_flight={} gameplay_tick_unchanged={}", path.display(), demo_flight, tick.0);
     Ok(())
+}
+
+fn shooter_obj_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/shooter/shooter.obj")
 }
 
 fn demo_path(path: &Path, index: usize) -> PathBuf {

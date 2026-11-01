@@ -318,6 +318,15 @@ impl Default for SnapshotScene {
 }
 
 impl SnapshotScene {
+    pub fn register_mesh(
+        &mut self,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+        raster_mesh: RasterMesh,
+    ) {
+        self.assets.register_mesh(mesh, material, raster_mesh);
+    }
+
     pub fn set_lighting_mode(&mut self, mode: crate::LightingMode) {
         self.lighting_mode = mode;
     }

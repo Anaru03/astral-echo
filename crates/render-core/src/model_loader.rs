@@ -214,4 +214,18 @@ mod tests {
             3
         );
     }
+
+    #[test]
+    fn loads_repository_shooter_obj() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/models/shooter/shooter.obj");
+        let mesh = load_obj(path).expect("repository Shooter OBJ should load");
+        assert!(!mesh.vertices.is_empty());
+        assert!(!mesh.indices.is_empty());
+        assert_eq!(mesh.indices.len() % 3, 0);
+        assert!(mesh
+            .vertices
+            .iter()
+            .all(|vertex| vertex.position.is_finite() && vertex.normal.is_finite()));
+    }
 }
