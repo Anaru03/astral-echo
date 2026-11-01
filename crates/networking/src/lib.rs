@@ -1,5 +1,6 @@
 pub mod client;
 pub mod protocol;
+pub mod remote_players;
 pub mod server;
 pub mod sync;
 
@@ -44,9 +45,14 @@ impl ServerEventQueue {
 }
 
 pub use client::GameClient;
+
 pub use protocol::{
     decode_client, decode_server, encode, ClientMessage, NetworkPlayerId, ProtocolError,
     ServerMessage, MAX_PLAYERS, PROTOCOL_VERSION,
 };
+
+pub use remote_players::{RemotePlayer, RemotePlayers};
+
 pub use server::{GameServer, GameServerHandle};
+
 pub use sync::{NetworkOrientation, NetworkVec3, PlayerTransform};
