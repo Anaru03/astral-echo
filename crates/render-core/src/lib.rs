@@ -7,6 +7,7 @@ pub mod lighting;
 pub mod material;
 pub mod math;
 pub mod mesh;
+pub mod model_loader;
 pub mod scene;
 pub mod shadows;
 pub mod snapshot;
@@ -31,8 +32,7 @@ pub use snapshot::{
 pub use transform::Transform;
 pub use visual::{
     CullingConfig, LodLevel, PreparedDraw, PreparedScene, PreparedSceneStats, SceneUpdate,
-    SnapshotScene,
-    VisibilityClass, VisualAssets, VisualError,
+    SnapshotScene, VisibilityClass, VisualAssets, VisualError,
 };
 
 pub use demo::{
@@ -40,6 +40,7 @@ pub use demo::{
     TERRAIN_HEIGHT,
 };
 pub use geometry::{RasterMesh, RasterVertex};
+pub use model_loader::{load_obj, load_obj_reader, ObjLoadError};
 
 pub use lighting::{
     material_fixture, shade_surface, LightingEnvironment, LightingMode, MAX_POINT_LIGHTS,

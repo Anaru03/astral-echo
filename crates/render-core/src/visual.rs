@@ -160,6 +160,19 @@ impl VisualAssets {
             .map(Arc::as_ref)
             .ok_or(VisualError::UnknownAsset(mesh, material))
     }
+
+    pub fn register_mesh(
+        &mut self,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+        raster_mesh: RasterMesh,
+    ) {
+        let raster_mesh = Arc::new(raster_mesh);
+        self.bounds
+            .insert((mesh, material), mesh_bounds(&raster_mesh));
+        self.meshes.insert((mesh, material), raster_mesh.clone());
+        self.low.insert((mesh, material), raster_mesh);
+    }
 }
 
 impl Default for VisualAssets {
@@ -212,11 +225,7 @@ impl Default for VisualAssets {
             ),
             (
                 (MeshHandle::SUN_SPHERE, Self::SUN),
-                RasterMesh::sphere(
-                    Vec3::ZERO,
-                    1.0,
-                    Vec4::new(1.0, 0.55, 0.08, 1.0),
-                ),
+                RasterMesh::sphere(Vec3::ZERO, 1.0, Vec4::new(1.0, 0.55, 0.08, 1.0)),
             ),
             (
                 (MeshHandle::PLANET_SPHERE, Self::PLANET),
