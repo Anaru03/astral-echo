@@ -8,7 +8,10 @@ use glam::Mat4;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::clip::{clip_triangle, clip_triangle_fast, ClipVertex};
+use crate::clip::{
+    clip_triangle, clip_triangle_fast, clip_triangle_fast_profiled, clip_triangle_profiled,
+    ClipVertex,
+};
 use crate::error::RasterError;
 use crate::framebuffer::{Color, Framebuffer};
 use crate::geometry::RasterMesh;
@@ -291,7 +294,11 @@ impl<'a> CpuPipeline<'a> {
             };
 
             let t0 = self.timer();
-            let clipped = match clip_triangle_fast(*a, *b, *c) {
+            let clipped = match if self.config.timing {
+                clip_triangle_fast_profiled(*a, *b, *c, &mut self.stats.metrics.clipping)
+            } else {
+                clip_triangle_fast(*a, *b, *c)
+            } {
                 Ok(polygon) => polygon,
                 Err(_) => {
                     self.stats.record_error();
@@ -389,7 +396,11 @@ impl<'a> CpuPipeline<'a> {
             }
         };
         let t0 = self.timer();
-        let clipped = match clip_triangle(*a, *b, *c) {
+        let clipped = match if self.config.timing {
+            clip_triangle_profiled(*a, *b, *c, &mut self.stats.metrics.clipping)
+        } else {
+            clip_triangle(*a, *b, *c)
+        } {
             Ok(polygon) => polygon,
             Err(_) => {
                 self.stats.record_error();

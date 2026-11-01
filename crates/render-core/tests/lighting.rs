@@ -1,5 +1,6 @@
 use render_core::{
-    normal_matrix, shade_surface, LightingEnvironment, LightingMode, Mat4, MaterialInfo,
+    normal_matrix, shade_surface, shade_surface_sanitized_normalized, LightingEnvironment,
+    LightingMode, Mat4, MaterialInfo,
     RasterMesh, RasterVertex, RenderLight, RenderLightKind, RenderSnapshot, SnapshotScene, Vec3,
     Vec4,
 };
@@ -183,4 +184,62 @@ fn ggx_metallic_and_roughness_change_response_with_constant_albedo() {
     };
     assert!(sample(0.15, 0.0) > sample(0.95, 0.0));
     assert!(sample(0.5, 1.0) > sample(0.5, 0.0));
+}
+
+#[test]
+fn normalized_internal_lighting_path_matches_defensive_path() {
+    let mut environment = LightingEnvironment::default();
+    environment.mode = LightingMode::Lambert;
+    environment.camera_position = Vec3::new(0.0, 0.0, 4.0);
+    environment.set_lights([RenderLight {
+        color: Vec3::ONE,
+        intensity: 0.8,
+        kind: RenderLightKind::Directional {
+            direction: Vec3::new(0.2, -0.4, -1.0),
+        },
+        casts_shadow: false,
+    }]);
+    let material = MaterialInfo::new(Vec4::splat(0.7), 0.4, 0.2);
+    let color = Vec4::new(0.8, 0.6, 0.4, 1.0);
+    let normal = Vec3::new(0.3, 0.4, 0.8660254).normalize();
+    let defensive = shade_surface(
+            &environment,
+            material,
+            color,
+            Vec3::new(0.2, -0.1, 0.5),
+            normal,
+        );
+    let fast = shade_surface_sanitized_normalized(
+            &environment,
+            material.sanitized(),
+            color,
+            Vec3::new(0.2, -0.1, 0.5),
+            normal,
+        );
+    assert!((defensive - fast).abs().max_element() < 1e-6);
+}
+
+#[test]
+fn lambert_does_not_depend_on_camera_position() {
+    let mut first = LightingEnvironment::default();
+    first.mode = LightingMode::Lambert;
+    first.camera_position = Vec3::new(0.0, 0.0, 4.0);
+    first.set_lights([RenderLight {
+        color: Vec3::ONE,
+        intensity: 0.8,
+        kind: RenderLightKind::Directional {
+            direction: Vec3::new(0.2, -0.4, -1.0),
+        },
+        casts_shadow: false,
+    }]);
+    let mut second = first.clone();
+    second.camera_position = Vec3::new(100.0, -40.0, 2.0);
+    let material = MaterialInfo::new(Vec4::splat(0.7), 0.4, 0.2).sanitized();
+    let color = Vec4::new(0.8, 0.6, 0.4, 1.0);
+    let position = Vec3::new(0.2, -0.1, 0.5);
+    let normal = Vec3::new(0.3, 0.4, 0.8660254).normalize();
+    assert_eq!(
+        shade_surface_sanitized_normalized(&first, material, color, position, normal),
+        shade_surface_sanitized_normalized(&second, material, color, position, normal)
+    );
 }

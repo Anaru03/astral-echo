@@ -85,6 +85,11 @@ impl LightingEnvironment {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ShadeTimings {
     pub calls: u64,
+    pub light_calls: u64,
+    pub directional_lights: u64,
+    pub point_lights: u64,
+    pub point_distance_calculations: u64,
+    pub point_normalizations: u64,
     pub inputs_ns: u64,
     pub normal_ns: u64,
     pub view_ns: u64,
@@ -99,6 +104,11 @@ pub struct ShadeTimings {
 impl ShadeTimings {
     pub fn merge(&mut self, other: Self) {
         self.calls += other.calls;
+        self.light_calls += other.light_calls;
+        self.directional_lights += other.directional_lights;
+        self.point_lights += other.point_lights;
+        self.point_distance_calculations += other.point_distance_calculations;
+        self.point_normalizations += other.point_normalizations;
         self.inputs_ns += other.inputs_ns;
         self.normal_ns += other.normal_ns;
         self.view_ns += other.view_ns;
@@ -128,7 +138,27 @@ pub fn shade_surface_sanitized(
     position: Vec3,
     normal: Vec3,
 ) -> Vec4 {
-    shade_surface_impl(environment, material, color, position, normal, None)
+    shade_surface_impl(environment, material, color, position, normal, None, false)
+}
+
+/// Internal fast path for callers that have already normalized `normal`.
+/// The public `shade_surface` path remains defensive and normalizes its input.
+pub fn shade_surface_sanitized_normalized(
+    environment: &LightingEnvironment,
+    material: MaterialInfo,
+    color: Vec4,
+    position: Vec3,
+    normal: Vec3,
+) -> Vec4 {
+    shade_surface_impl(
+        environment,
+        material,
+        color,
+        position,
+        normal,
+        None,
+        true,
+    )
 }
 
 pub fn shade_surface_profiled(
@@ -165,6 +195,30 @@ pub fn shade_surface_profiled_sanitized(
         position,
         normal,
         Some(&mut timings),
+        false,
+    );
+    (result, timings)
+}
+
+pub fn shade_surface_profiled_sanitized_normalized(
+    environment: &LightingEnvironment,
+    material: MaterialInfo,
+    color: Vec4,
+    position: Vec3,
+    normal: Vec3,
+) -> (Vec4, ShadeTimings) {
+    let mut timings = ShadeTimings {
+        calls: 1,
+        ..Default::default()
+    };
+    let result = shade_surface_impl(
+        environment,
+        material,
+        color,
+        position,
+        normal,
+        Some(&mut timings),
+        true,
     );
     (result, timings)
 }
@@ -176,6 +230,7 @@ fn shade_surface_impl(
     position: Vec3,
     normal: Vec3,
     mut timings: Option<&mut ShadeTimings>,
+    normal_is_normalized: bool,
 ) -> Vec4 {
     let started = timings.as_ref().map(|_| std::time::Instant::now());
     if environment.mode == LightingMode::Unlit {
@@ -187,28 +242,51 @@ fn shade_surface_impl(
         timing.inputs_ns += started.elapsed().as_nanos() as u64;
     }
     let started = timings.as_ref().map(|_| std::time::Instant::now());
-    let normal = crate::normalize_direction(normal);
+    let normal = if normal_is_normalized {
+        normal
+    } else {
+        crate::normalize_direction(normal)
+    };
     if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
         timing.normal_ns += started.elapsed().as_nanos() as u64;
     }
-    let started = timings.as_ref().map(|_| std::time::Instant::now());
-    let view = crate::normalize_direction(environment.camera_position - position);
-    if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
-        timing.view_ns += started.elapsed().as_nanos() as u64;
-    }
+    let view = match environment.mode {
+        LightingMode::BlinnPhong | LightingMode::Pbr => {
+            let started = timings.as_ref().map(|_| std::time::Instant::now());
+            let view = crate::normalize_direction(environment.camera_position - position);
+            if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
+                timing.view_ns += started.elapsed().as_nanos() as u64;
+            }
+            view
+        }
+        LightingMode::Unlit | LightingMode::Lambert => Vec3::ZERO,
+    };
     let started = timings.as_ref().map(|_| std::time::Instant::now());
     let mut result = albedo * environment.ambient.max(Vec3::ZERO) + material.emissive;
     if let (Some(timing), Some(started)) = (timings.as_deref_mut(), started) {
         timing.ambient_ns += started.elapsed().as_nanos() as u64;
     }
     for light in environment.lights() {
+        if let Some(timing) = timings.as_deref_mut() {
+            timing.light_calls += 1;
+        }
         let started = timings.as_ref().map(|_| std::time::Instant::now());
         let (direction, attenuation) = match light.kind {
-            RenderLightKind::Directional { direction } => (-direction, 1.0),
+            RenderLightKind::Directional { direction } => {
+                if let Some(timing) = timings.as_deref_mut() {
+                    timing.directional_lights += 1;
+                }
+                (-direction, 1.0)
+            }
             RenderLightKind::Point {
                 position: light_position,
                 range,
             } => {
+                if let Some(timing) = timings.as_deref_mut() {
+                    timing.point_lights += 1;
+                    timing.point_distance_calculations += 1;
+                    timing.point_normalizations += 1;
+                }
                 let delta = light_position - position;
                 let distance_squared = delta.length_squared();
                 let falloff = (1.0 - distance_squared / (range * range)).clamp(0.0, 1.0);
