@@ -165,6 +165,37 @@ pub fn clip_triangle(
     clip_polygon(&polygon)
 }
 
+pub fn clip_triangle_fast(
+    a: ClipVertex,
+    b: ClipVertex,
+    c: ClipVertex,
+) -> Result<Vec<ClipVertex>, RasterError> {
+    if !a.is_finite() || !b.is_finite() || !c.is_finite() {
+        return Err(RasterError::InvalidClip);
+    }
+    for plane in ClipPlane::ALL {
+        let distances = [
+            plane.distance(&a.clip),
+            plane.distance(&b.clip),
+            plane.distance(&c.clip),
+        ];
+        if distances.iter().all(|distance| *distance < 0.0) {
+            return Ok(Vec::new());
+        }
+        if distances.iter().any(|distance| !distance.is_finite()) {
+            return Err(RasterError::InvalidClip);
+        }
+    }
+    if ClipPlane::ALL.into_iter().all(|plane| {
+        [a, b, c]
+            .into_iter()
+            .all(|vertex| plane.distance(&vertex.clip) >= 0.0)
+    }) {
+        return Ok(vec![a, b, c]);
+    }
+    clip_triangle(a, b, c)
+}
+
 pub fn clip_triangle_near(
     a: ClipVertex,
     b: ClipVertex,

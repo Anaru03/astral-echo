@@ -42,6 +42,12 @@ pub struct StageTimings {
     pub raster_ns: u64,
     pub fragment_ns: u64,
     pub depth_ns: u64,
+    pub vertex_clip_ns: u64,
+    pub vertex_world_ns: u64,
+    pub vertex_normal_ns: u64,
+    pub vertex_shading_ns: u64,
+    pub vertex_write_ns: u64,
+    pub shade: render_core::ShadeTimings,
 }
 
 impl StageTimings {
@@ -115,6 +121,12 @@ impl StageMetrics {
         self.timings.raster_ns += other.timings.raster_ns;
         self.timings.fragment_ns += other.timings.fragment_ns;
         self.timings.depth_ns += other.timings.depth_ns;
+        self.timings.vertex_clip_ns += other.timings.vertex_clip_ns;
+        self.timings.vertex_world_ns += other.timings.vertex_world_ns;
+        self.timings.vertex_normal_ns += other.timings.vertex_normal_ns;
+        self.timings.vertex_shading_ns += other.timings.vertex_shading_ns;
+        self.timings.vertex_write_ns += other.timings.vertex_write_ns;
+        self.timings.shade.merge(other.timings.shade);
     }
 }
 
