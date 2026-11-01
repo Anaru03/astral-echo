@@ -1,12 +1,12 @@
 use std::hint::black_box;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use render_core::{
-    shade_surface_sanitized_normalized, LightingEnvironment, LightingMode, MaterialInfo,
-    RenderLight, RenderLightKind, Vec3, Vec4,
+    load_obj, shade_surface_sanitized_normalized, LightingEnvironment, LightingMode, MaterialInfo,
+    RenderLight, Vec3, Vec4,
 };
 
-const SAMPLES: usize = 172_317;
 const WARMUP_REPETITIONS: usize = 2;
 const MEASURED_REPETITIONS: usize = 7;
 
@@ -24,36 +24,30 @@ struct Measurement {
     checksum: Vec4,
 }
 
-fn inputs() -> Vec<Input> {
-    (0..SAMPLES)
-        .map(|index| {
-            let t = index as f32;
-            let position = Vec3::new(
-                (t * 0.017).sin() * 12.0,
-                (t * 0.013).cos() * 7.0,
-                -4.0 - (t * 0.007).sin() * 5.0,
-            );
-            let normal = Vec3::new(
-                (t * 0.011).sin(),
-                (t * 0.019).cos(),
-                (t * 0.023).sin(),
-            )
-            .normalize_or_zero();
-            Input {
-                color: Vec4::new(0.8, 0.6, 0.35, 1.0),
-                position,
-                normal,
-            }
+fn inputs() -> Result<Vec<Input>, Box<dyn std::error::Error>> {
+    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/shooter/shooter.obj");
+    let mesh = load_obj(path)?;
+    let normals = mesh.resolved_normals();
+    Ok(mesh
+        .vertices
+        .iter()
+        .zip(normals)
+        .map(|(vertex, normal)| Input {
+            color: vertex.color,
+            position: vertex.position,
+            normal,
         })
-        .collect()
+        .collect())
 }
 
-fn environment(lights: &[RenderLight]) -> LightingEnvironment {
+fn environment(lights: &[RenderLight], specialized: bool) -> LightingEnvironment {
     let mut environment = LightingEnvironment::default();
     environment.mode = LightingMode::Lambert;
     environment.camera_position = Vec3::new(0.0, 2.0, 12.0);
     environment.ambient = Vec3::splat(0.03);
     environment.set_lights(lights.iter().copied());
+    environment.set_lambert_specialized(specialized);
     environment
 }
 
@@ -129,39 +123,26 @@ fn print_result(name: &str, measurement: &Measurement) {
     );
 }
 
-fn main() {
-    let values = inputs();
-    let material = MaterialInfo::new(Vec4::splat(0.7), 0.55, 0.1).sanitized();
-    let directional = RenderLight {
-        color: Vec3::new(1.0, 0.98, 0.95),
-        intensity: 1.2,
-        kind: RenderLightKind::Directional {
-            direction: Vec3::new(-0.3, -1.0, -0.2),
-        },
-        casts_shadow: false,
-    };
-    let point = RenderLight {
-        color: Vec3::new(1.0, 0.8, 0.6),
-        intensity: 12.0,
-        kind: RenderLightKind::Point {
-            position: Vec3::new(-2.0, 2.0, -2.0),
-            range: 12.0,
-        },
-        casts_shadow: false,
-    };
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let values = inputs()?;
+    let specialized = std::env::args().any(|argument| argument == "--lambert-specialized");
+    let material = MaterialInfo::default().sanitized();
+    let point = RenderLight::demo_point();
+    let directional = RenderLight::demo_sun();
 
     println!(
-        "lighting_benchmark samples={} warmup_repetitions={} measured_repetitions={} mode=Lambert",
-        SAMPLES, WARMUP_REPETITIONS, MEASURED_REPETITIONS
+        "lighting_benchmark source=assets/models/shooter/shooter.obj samples={} warmup_repetitions={} measured_repetitions={} mode=Lambert material=MaterialInfo::default lights=demo_point_then_demo_sun",
+        values.len(), WARMUP_REPETITIONS, MEASURED_REPETITIONS
     );
-    print_result("none", &measure(&environment(&[]), material, &values));
+    print_result("none", &measure(&environment(&[], specialized), material, &values));
     print_result(
         "directional",
-        &measure(&environment(&[directional]), material, &values),
+        &measure(&environment(&[directional], specialized), material, &values),
     );
-    print_result("point", &measure(&environment(&[point]), material, &values));
+    print_result("point", &measure(&environment(&[point], specialized), material, &values));
     print_result(
         "both",
-        &measure(&environment(&[directional, point]), material, &values),
+        &measure(&environment(&[point, directional], specialized), material, &values),
     );
+    Ok(())
 }
