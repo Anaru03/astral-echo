@@ -48,11 +48,11 @@ pub(crate) fn unlock_following_missions(session: &mut ProjectEchoSession) {
 
 #[cfg(test)]
 mod tests {
-    use engine::Vec3;
+    use engine::{Duration, Vec3};
     use gameplay::{
         BreakerId, BreakerState, ElectricalBreakerConfiguration, ElectricalPanelConfiguration,
-        GameplayCommand, LifeSupportConfiguration, OxygenCompartmentConfiguration,
-        StationType,
+        Destination, DestinationType, DiscoveryState, GameplayCommand, LifeSupportConfiguration,
+        OxygenCompartmentConfiguration, StationType,
     };
     use gameplay::domains::mission::MissionState;
 
@@ -83,6 +83,194 @@ mod tests {
                 assert_eq!(progress.state, MissionState::Locked);
             }
         }
+    }
+
+    #[test]
+    fn cooperative_content_is_prepared_only_after_accepted_start() {
+        let mut session = ProjectEchoSession::new();
+        assert!(session.world().destination(crate::cooperacion::SIGNAL_DESTINATION).is_none());
+        assert_eq!(session.world().combatants().filter(|value| {
+            !value.is_player
+                && value.active
+                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+        }).count(), 0);
+
+        let unlock = session.update([GameplayCommand::UnlockMission {
+            mission: crate::cooperacion::PROGRESION_COOPERATIVA,
+        }]);
+        assert!(matches!(unlock[0].status, gameplay::CommandStatus::Success { changed: true }));
+        assert!(session.world().destination(crate::cooperacion::SIGNAL_DESTINATION).is_none());
+
+        let start = session.update([GameplayCommand::StartMission {
+            mission: crate::cooperacion::PROGRESION_COOPERATIVA,
+        }]);
+        assert!(matches!(start[0].status, gameplay::CommandStatus::Success { changed: true }));
+        assert!(session.world().destination(crate::cooperacion::SIGNAL_DESTINATION).is_some());
+        assert_eq!(session.world().combatants().filter(|value| {
+            !value.is_player
+                && value.active
+                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+        }).count(), 1);
+
+        let repeated = session.update([GameplayCommand::StartMission {
+            mission: crate::cooperacion::PROGRESION_COOPERATIVA,
+        }]);
+        assert!(matches!(repeated[0].status, gameplay::CommandStatus::Rejected { .. }));
+        assert_eq!(session.world().combatants().filter(|value| {
+            !value.is_player
+                && value.active
+                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+        }).count(), 1);
+    }
+
+    #[test]
+    fn incompatible_cooperative_destination_reports_preparation_failure() {
+        let mut session = ProjectEchoSession::new();
+        session
+            .register_destination(Destination {
+                id: crate::cooperacion::SIGNAL_DESTINATION,
+                destination_type: DestinationType::Planet,
+                position: Vec3::ZERO,
+                travel_duration: Duration(1),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Unknown,
+            })
+            .expect("el destino incompatible debe poder registrarse como fixture");
+        session.update([GameplayCommand::UnlockMission {
+            mission: crate::cooperacion::PROGRESION_COOPERATIVA,
+        }]);
+        let result = session.update([GameplayCommand::StartMission {
+            mission: crate::cooperacion::PROGRESION_COOPERATIVA,
+        }]);
+        assert!(matches!(result[0].status, gameplay::CommandStatus::Success { changed: true }));
+        assert!(matches!(
+            result[1].status,
+            gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::MissionContentUnavailable
+            }
+        ));
+        assert_eq!(session.world().combatants().filter(|value| {
+            !value.is_player
+                && value.active
+                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+        }).count(), 0);
+        assert_eq!(
+            session
+                .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+                .unwrap()
+                .state,
+            MissionState::Active
+        );
+        let retry = session.update([GameplayCommand::RetryCooperativeMissionContent]);
+        let retry = &retry[0];
+        assert!(matches!(
+            retry.status,
+            gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::MissionContentUnavailable
+            }
+        ));
+    }
+
+    #[test]
+    fn failed_cooperative_preparation_can_be_retried_without_resetting_mission() {
+        let mut session = ProjectEchoSession::new();
+        let player = session.ids.first_player;
+        session.update([GameplayCommand::UnlockMission {
+            mission: crate::cooperacion::PROGRESION_COOPERATIVA,
+        }]);
+        session.update([GameplayCommand::SetPlayerActive {
+            player,
+            active: false,
+        }]);
+
+        let start = session.update([GameplayCommand::StartMission {
+            mission: crate::cooperacion::PROGRESION_COOPERATIVA,
+        }]);
+        assert!(matches!(
+            start.last().map(|value| value.status),
+            Some(gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::MissionContentUnavailable
+            })
+        ));
+        assert_eq!(
+            session
+                .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+                .unwrap()
+                .state,
+            MissionState::Active
+        );
+        assert!(session
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .is_none());
+
+        session.update([GameplayCommand::SetPlayerActive {
+            player,
+            active: true,
+        }]);
+        let retry = session.update([GameplayCommand::RetryCooperativeMissionContent]);
+        let retry = &retry[0];
+        assert!(matches!(
+            retry.status,
+            gameplay::CommandStatus::Success { changed: true }
+        ));
+        assert_eq!(
+            session
+                .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+                .unwrap()
+                .state,
+            MissionState::Active
+        );
+        assert!(session
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .is_some());
+        assert_eq!(session.world().combatants().filter(|value| {
+            !value.is_player
+                && value.active
+                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+        }).count(), 1);
+    }
+
+    #[test]
+    fn cooperative_content_retry_is_idempotent_and_unavailable_missions_are_not_repaired() {
+        let mut session = ProjectEchoSession::new();
+        session.update([GameplayCommand::UnlockMission {
+            mission: crate::cooperacion::PROGRESION_COOPERATIVA,
+        }]);
+        session.update([GameplayCommand::StartMission {
+            mission: crate::cooperacion::PROGRESION_COOPERATIVA,
+        }]);
+        let before = session.world().combatants().filter(|value| {
+            !value.is_player
+                && value.active
+                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+        }).count();
+        let retry = session.update([GameplayCommand::RetryCooperativeMissionContent]);
+        let retry = &retry[0];
+        assert!(matches!(
+            retry.status,
+            gameplay::CommandStatus::Success { changed: true }
+        ));
+        assert_eq!(session.world().combatants().filter(|value| {
+            !value.is_player
+                && value.active
+                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+        }).count(), before);
+
+        let mut unavailable = ProjectEchoSession::new();
+        let no_repair = unavailable.update([GameplayCommand::RetryCooperativeMissionContent]);
+        let no_repair = &no_repair[0];
+        assert!(matches!(
+            no_repair.status,
+            gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::InvalidMissionTransition
+            }
+        ));
+        assert!(unavailable
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .is_none());
     }
 
     #[test]

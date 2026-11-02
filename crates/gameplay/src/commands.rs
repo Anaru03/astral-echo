@@ -332,6 +332,7 @@ pub enum GameplayCommand {
     StartMission {
         mission: MissionId,
     },
+    RetryCooperativeMissionContent,
     FailMission {
         mission: MissionId,
     },

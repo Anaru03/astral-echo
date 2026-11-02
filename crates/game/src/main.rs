@@ -11924,6 +11924,9 @@ fn parse_runtime_command(line: &str) -> Result<RuntimeCommand, String> {
             }
             RuntimeCommand::StartMission(mission)
         }
+        "retrymission5" | "reintentarcooperativa" if parts.next().is_none() => {
+            RuntimeCommand::RetryCooperativeMissionContent
+        }
         "scan" | "escanear" if parts.next().is_none() => RuntimeCommand::Scan,
         "collectibles" | "recompensas" if parts.next().is_none() => RuntimeCommand::Collectibles,
         "collect" | "recoger" => {
@@ -12013,7 +12016,7 @@ fn parse_runtime_command(line: &str) -> Result<RuntimeCommand, String> {
 fn write_runtime_help(output: &mut dyn Write) -> Result<(), String> {
     writeln!(
         output,
-        "Comandos: help, status, ship, players, inventory [jugador], resources, economy, upgrades, missions, mission <id>, unlock <id>, startmission <id>, scan, collectibles, collect <coleccionable> <cantidad> [jugador], erick [status|navigation|tactical|support|recovery|all], checkpoint [status], restore, breaker <panel> <breaker> <on|off>, oxygen <panel> <compartimento> <asignacion>, unlockdoor <puerta>, release <estacion>, equip <kinetic|energy>, spawn <shooter|shielded>, navigation, combat, pilot, select <destino>, travel, plan <origen> <destino>, start, encounter, activate, continue, cancel, attack <enemigo> [jugador], damage <cantidad>, interact <objetivo>, repair <estacion>, enemyattack <enemigo> <jugador>, revive <ayudante> <objetivo> <item>, heal <jugador> <item> <cantidad>, extract <destino>, transfer <origen> <destino> <item> <cantidad>, buy <destino> <item> <cantidad>, sell <destino> <item> <cantidad>, upgrade <codigo> <destino>, move <x> <y> <z> <ms>, advance <duracion>, events, quit"
+        "Comandos: help, status, ship, players, inventory [jugador], resources, economy, upgrades, missions, mission <id>, unlock <id>, startmission <id>, retrymission5, scan, collectibles, collect <coleccionable> <cantidad> [jugador], erick [status|navigation|tactical|support|recovery|all], checkpoint [status], restore, breaker <panel> <breaker> <on|off>, oxygen <panel> <compartimento> <asignacion>, unlockdoor <puerta>, release <estacion>, equip <kinetic|energy>, spawn <shooter|shielded>, navigation, combat, pilot, select <destino>, travel, plan <origen> <destino>, start, encounter, activate, continue, cancel, attack <enemigo> [jugador], damage <cantidad>, interact <objetivo>, repair <estacion>, enemyattack <enemigo> <jugador>, revive <ayudante> <objetivo> <item>, heal <jugador> <item> <cantidad>, extract <destino>, transfer <origen> <destino> <item> <cantidad>, buy <destino> <item> <cantidad>, sell <destino> <item> <cantidad>, upgrade <codigo> <destino>, move <x> <y> <z> <ms>, advance <duracion>, events, quit"
     )
         .map_err(|error| format!("escribir ayuda: {error}"))
 }
@@ -12483,6 +12486,11 @@ fn execute_runtime_command(
             }]);
             writeln!(output, "startmission {id}: {:?}", result)
                 .map_err(|error| format!("escribir resultado de inicio de misión: {error}"))?;
+        }
+        RuntimeCommand::RetryCooperativeMissionContent => {
+            let result = session.update([GameplayCommand::RetryCooperativeMissionContent]);
+            writeln!(output, "retrymission5: {:?}", result)
+                .map_err(|error| format!("escribir resultado de recuperaciÃ³n: {error}"))?;
         }
         RuntimeCommand::Scan => {
             let result = session.update([GameplayCommand::ScanSignals {

@@ -305,12 +305,56 @@ impl ProjectEchoSession {
         self.world.mission(mission).map(Mission::progress)
     }
 
+    /// Reintenta preparar el contenido de la misión cooperativa después de un
+    /// inicio aceptado cuya preparación no pudo completarse.
+    ///
+    /// La operación no cambia el estado de la misión ni reinicia objetivos;
+    /// únicamente puede ejecutarse mientras Mission5 permanece activa.
+    pub fn retry_cooperative_mission_content(&mut self) -> CommandResult {
+        let mission = cooperacion::PROGRESION_COOPERATIVA;
+        if !self
+            .world
+            .mission(mission)
+            .is_some_and(|value| value.state() == gameplay::domains::mission::MissionState::Active)
+        {
+            return CommandResult::rejected(
+                gameplay::CommandRejection::InvalidMissionTransition,
+            );
+        }
+
+        match self.ensure_cooperative_mission_content() {
+            Ok(()) => CommandResult::success(true),
+            Err(error) => {
+                eprintln!("Preparación cooperativa fallida: {error}");
+                CommandResult::rejected(gameplay::CommandRejection::MissionContentUnavailable)
+            }
+        }
+    }
+
     pub fn update<I>(&mut self, commands: I) -> Vec<CommandResult>
     where
         I: IntoIterator<Item = GameplayCommand>,
     {
         let commands: Vec<_> = commands.into_iter().collect();
-        let mut results = self.processor.update(&mut self.world, commands.clone());
+        let gameplay_commands: Vec<_> = commands
+            .iter()
+            .filter(|command| !matches!(command, GameplayCommand::RetryCooperativeMissionContent))
+            .cloned()
+            .collect();
+        let processor_results = self.processor.update(&mut self.world, gameplay_commands);
+        let mut processor_results = processor_results.into_iter();
+        let mut results = Vec::with_capacity(commands.len());
+        for command in &commands {
+            if matches!(command, GameplayCommand::RetryCooperativeMissionContent) {
+                results.push(self.retry_cooperative_mission_content());
+            } else {
+                results.push(
+                    processor_results
+                        .next()
+                        .expect("cada comando de gameplay debe producir un resultado"),
+                );
+            }
+        }
         let should_prepare_cooperative_mission = commands.iter().zip(results.iter()).any(
             |(command, result)| {
                 matches!(
@@ -334,6 +378,14 @@ impl ProjectEchoSession {
 
     fn ensure_cooperative_mission_content(&mut self) -> Result<(), String> {
         let destination = cooperacion::SIGNAL_DESTINATION;
+        if !self.world.players().any(|player| {
+            player.is_active
+                && self.world.entities().contains(player.entity_id)
+                && self.world.inventory(player.entity_id).is_some()
+        }) {
+            return Err("no existe un jugador activo con inventario".to_owned());
+        }
+
         if let Some(existing) = self.world.destination(destination) {
             if existing.destination_type != DestinationType::SpacePoint {
                 return Err(format!("el destino {destination:?} no es una señal espacial compatible"));
@@ -349,14 +401,6 @@ impl ProjectEchoSession {
                     discovery: gameplay::DiscoveryState::Unknown,
                 })
                 .map_err(|error| format!("registrar destino cooperativo: {error:?}"))?;
-        }
-
-        if !self.world.players().any(|player| {
-            player.is_active
-                && self.world.entities().contains(player.entity_id)
-                && self.world.inventory(player.entity_id).is_some()
-        }) {
-            return Err("no existe un jugador activo con inventario".to_owned());
         }
 
         if self.world.combatants().any(|combatant| {
