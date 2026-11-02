@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
 use gameplay::GameplayWorld;
+use gameplay::domains::mission::MissionState;
+use gameplay::types::MissionId;
 use render_core::{
     from_engine, Camera, CameraError, MaterialHandle, MeshHandle, Projection, Quat,
     HudAutopilotState, HudFlightState, HudMissionState, HudState, RenderSnapshot, RenderVisualEvent,
@@ -226,6 +228,39 @@ fn surface_object_orientation(direction: Vec3, spin: f32) -> Quat {
 pub struct BridgeParams<'a> {
     pub destinations: &'a [gameplay::DestinationId],
     pub include_collectibles: bool,
+}
+
+/// Selects the mission that the visual presentation should expose.
+///
+/// Active missions have priority over available missions.  The final fallback
+/// is only for presenting the initial locked campaign state; callers that want
+/// to start a mission must still require `Available` (or use the legacy
+/// first-mission bootstrap in `VisualBridge`).
+pub fn presentation_mission(world: &GameplayWorld) -> Option<MissionId> {
+    crate::campaign::CAMPAIGN_ORDER
+        .iter()
+        .copied()
+        .find(|mission| {
+            world
+                .mission(*mission)
+                .is_some_and(|value| value.state() == MissionState::Active)
+        })
+        .or_else(|| {
+            crate::campaign::CAMPAIGN_ORDER
+                .iter()
+                .copied()
+                .find(|mission| {
+                    world
+                        .mission(*mission)
+                        .is_some_and(|value| value.state() == MissionState::Available)
+                })
+        })
+        .or_else(|| {
+            crate::campaign::CAMPAIGN_ORDER
+                .iter()
+                .copied()
+                .find(|mission| world.mission(*mission).is_some())
+        })
 }
 
 impl Default for BridgeParams<'_> {
@@ -567,7 +602,8 @@ fn hud_state(
         | gameplay::TravelState::Cancelled { destination } => Some(destination.value()),
         gameplay::TravelState::Idle => None,
     });
-    let mission = world.mission(crate::el_despertar::EL_DESPERTAR);
+    let presented_mission = presentation_mission(world);
+    let mission = presented_mission.and_then(|mission| world.mission(mission));
     let guidance = world
         .players()
         .next()
@@ -582,7 +618,10 @@ fn hud_state(
                     state
                         .objectives
                         .iter()
-                        .find(|value| value.id == objective && value.mission == crate::el_despertar::EL_DESPERTAR)
+                        .find(|value| {
+                            value.id == objective
+                                && Some(value.mission) == presented_mission
+                        })
                 })
         });
     let mission_progress = mission.map(|value| value.progress());
@@ -884,9 +923,9 @@ mod tests {
 
         let hud = super::hud_state(&world, None);
 
-        assert_eq!(hud.mission_name.as_deref(), Some("El despertar"));
-        assert_eq!(hud.mission_state, Some(HudMissionState::Locked));
-        assert_eq!(hud.objective_name, None);
+        assert_eq!(hud.mission_name.as_deref(), Some("Ecos de la anomalía"));
+        assert_eq!(hud.mission_state, Some(HudMissionState::Available));
+        assert!(hud.objective_name.is_some());
     }
 
     #[test]
@@ -908,8 +947,9 @@ mod tests {
 
         let hud = super::hud_state(&world, None);
 
-        assert_eq!(hud.mission_state, Some(HudMissionState::Completed));
-        assert_eq!(hud.objective_name, None);
+        assert_eq!(hud.mission_name.as_deref(), Some("Ecos de la anomalía"));
+        assert_eq!(hud.mission_state, Some(HudMissionState::Active));
+        assert!(hud.objective_name.is_some());
     }
 
     #[test]
@@ -928,8 +968,9 @@ mod tests {
 
         let hud = super::hud_state(&world, None);
 
-        assert_eq!(hud.mission_state, Some(HudMissionState::Failed));
-        assert_eq!(hud.objective_name, None);
+        assert_eq!(hud.mission_name.as_deref(), Some("Ecos de la anomalía"));
+        assert_eq!(hud.mission_state, Some(HudMissionState::Active));
+        assert!(hud.objective_name.is_some());
     }
 
     #[test]
@@ -950,5 +991,72 @@ mod tests {
                 && objective.recommended_action.is_some()
         }));
         assert_eq!(hud.objective_name.as_deref(), Some("Evaluar el estado de la nave"));
+    }
+
+    #[test]
+    fn presentation_prefers_active_mission_over_another_available_mission() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::UnlockMission {
+                mission: crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+            },
+        );
+
+        assert_eq!(
+            super::presentation_mission(&world),
+            Some(crate::el_despertar::EL_DESPERTAR)
+        );
+    }
+
+    #[test]
+    fn presentation_selects_first_available_in_campaign_order() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::UnlockMission {
+                mission: crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+            },
+        );
+
+        assert_eq!(
+            super::presentation_mission(&world),
+            Some(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        );
+    }
+
+    #[test]
+    fn hud_switches_to_available_successor_without_starting_it() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+        for objective in [
+            crate::el_despertar::EVALUAR_ESTADO_NAVE,
+            crate::el_despertar::RESTAURAR_ENERGIA,
+            crate::el_despertar::RESTABLECER_SOPORTE_VITAL,
+            crate::el_despertar::ACCEDER_PUENTE_MANDO,
+            crate::el_despertar::TOMAR_CONTROL_NAVE,
+        ] {
+            apply(&mut system, &mut world, GameplayCommand::StartObjective { objective });
+            apply(&mut system, &mut world, GameplayCommand::CompleteObjective { objective });
+        }
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::UnlockMission {
+                mission: crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+            },
+        );
+
+        let hud = super::hud_state(&world, None);
+        assert_eq!(hud.mission_name.as_deref(), Some("Ecos de la anomalía"));
+        assert_eq!(hud.mission_state, Some(HudMissionState::Available));
+        assert_eq!(world.mission(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state(), MissionState::Available);
+        assert!(hud.objective_name.is_some());
     }
 }

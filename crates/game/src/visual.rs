@@ -536,7 +536,7 @@ impl VisualBridge {
         }
         self.last_discrete_action = Some(key);
         match key {
-            KeyCode::KeyM => self.start_awakening(),
+            KeyCode::KeyM => self.start_presented_mission(),
             KeyCode::KeyT => self.retry_cooperative_mission_content(),
             KeyCode::KeyI => self.guided_interaction(),
             KeyCode::KeyR => self.restore_energy(),
@@ -586,21 +586,48 @@ impl VisualBridge {
         }
     }
 
-    fn start_awakening(&mut self) {
-        let mission = crate::el_despertar::EL_DESPERTAR;
+    fn start_presented_mission(&mut self) {
+        let mission = game::render_bridge::presentation_mission(self.session.world());
+        let Some(mission) = mission else {
+            self.feedback = "NO HAY MISION DISPONIBLE".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+            return;
+        };
         let Some(progress) = self.session.mission_progress(mission) else {
             self.feedback = "MISION NO DISPONIBLE".to_owned();
             println!("visual gameplay: {}", self.feedback);
             return;
         };
         let mut aggregate = FeedbackAggregate::default();
-        if progress.state == gameplay::domains::mission::MissionState::Locked {
+        // Preserve the existing M1 shortcut: the first mission is initially
+        // locked in a new session, so the visual bootstrap unlocks it before
+        // issuing the authoritative StartMission command. Later missions must
+        // already be Available and are never unlocked by the visual layer.
+        if progress.state == gameplay::domains::mission::MissionState::Locked
+            && mission == game::campaign::CAMPAIGN_ORDER[0]
+        {
             self.issue_into([GameplayCommand::UnlockMission { mission }], &mut aggregate);
         }
         if self.session.mission_progress(mission).is_some_and(|value| {
             value.state == gameplay::domains::mission::MissionState::Available
         }) {
             self.issue_into([GameplayCommand::StartMission { mission }], &mut aggregate);
+        } else if self.session.mission_progress(mission).is_some_and(|value| {
+            value.state == gameplay::domains::mission::MissionState::Active
+        }) {
+            self.feedback = "MISION YA ACTIVA".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+            return;
+        } else if self.session.mission_progress(mission).is_some_and(|value| {
+            value.state == gameplay::domains::mission::MissionState::Completed
+        }) {
+            self.feedback = "MISION YA COMPLETADA".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+            return;
+        } else {
+            self.feedback = "MISION NO DISPONIBLE".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+            return;
         }
         self.finish_issue(aggregate);
     }
@@ -1462,12 +1489,51 @@ mod tests {
         );
         assert_eq!(
             snapshot.overlay.hud.mission_name.as_deref(),
-            Some("El despertar")
+            Some("Ecos de la anomalía")
         );
         assert_eq!(
             snapshot.overlay.hud.mission_state,
-            Some(render_core::HudMissionState::Completed)
+            Some(render_core::HudMissionState::Available)
         );
-        assert_eq!(snapshot.overlay.hud.mission_progress, Some((5, 5)));
+        assert_eq!(snapshot.overlay.hud.mission_progress, Some((0, 4)));
+    }
+
+    #[test]
+    fn visual_start_key_starts_available_successor_without_auto_starting_it() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyR, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyY, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::el_despertar::EL_DESPERTAR)
+                .expect("awakening should be registered")
+                .state,
+            gameplay::domains::mission::MissionState::Completed
+        );
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+                .expect("anomaly mission should be registered")
+                .state,
+            gameplay::domains::mission::MissionState::Available
+        );
+
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+                .expect("anomaly mission should remain registered")
+                .state,
+            gameplay::domains::mission::MissionState::Active
+        );
     }
 }

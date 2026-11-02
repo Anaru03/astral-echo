@@ -357,6 +357,7 @@ impl MultiplayerSession {
             .combatants()
             .find(|value| {
                 !value.is_player
+                    && value.active
                     && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
             })
             .map(|value| Mission5ShooterProjection {
@@ -717,6 +718,7 @@ mod tests {
         assert_eq!(content.required_total, 3);
         assert!(content.destination.is_some());
         assert!(content.shooter.is_some());
+        assert!(content.shooter.as_ref().is_some_and(|shooter| shooter.active));
         assert_eq!(first.mission5_content(), Some(&content));
 
         first.request_mission_recovery(11).unwrap();
@@ -733,6 +735,161 @@ mod tests {
 
         first.disconnect().unwrap();
         second.disconnect().unwrap();
+    }
+
+    #[test]
+    fn proyeccion_mission5_selecciona_el_shooter_activo_preparado() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut client = GameClient::connect(address, "Jugador").unwrap();
+        wait_for_update(&mut session);
+        assert!(matches!(
+            client.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
+
+        let create_result = session.gameplay.update([GameplayCommand::CreateEnemy {
+            configuration: gameplay::EnemyConfiguration::for_archetype(
+                gameplay::EnemyArchetype::Shooter,
+                Vec3::ZERO,
+            ),
+        }]);
+        assert!(matches!(
+            create_result.first().map(|result| result.status),
+            Some(CommandStatus::Success { changed: true })
+        ));
+        let inactive_id = session
+            .gameplay
+            .world()
+            .combatants()
+            .find(|combatant| {
+                !combatant.is_player
+                    && combatant.archetype == Some(gameplay::EnemyArchetype::Shooter)
+            })
+            .map(|combatant| combatant.entity)
+            .expect("debe existir el Shooter preexistente");
+        let deactivate_result = session.gameplay.update([GameplayCommand::SetEnemyActive {
+            enemy: inactive_id,
+            active: false,
+        }]);
+        assert!(matches!(
+            deactivate_result.first().map(|result| result.status),
+            Some(CommandStatus::Success { changed: true })
+        ));
+
+        let mission = crate::cooperacion::PROGRESION_COOPERATIVA;
+        let setup = session.gameplay.update([
+            GameplayCommand::UnlockMission { mission },
+            GameplayCommand::StartMission { mission },
+        ]);
+        assert!(setup.iter().all(|result| matches!(
+            result.status,
+            CommandStatus::Success { .. }
+        )));
+
+        let active_id = session
+            .gameplay
+            .world()
+            .combatants()
+            .find(|combatant| {
+                !combatant.is_player
+                    && combatant.active
+                    && combatant.archetype == Some(gameplay::EnemyArchetype::Shooter)
+            })
+            .map(|combatant| combatant.entity)
+            .expect("la preparación debe crear un Shooter activo");
+        assert_ne!(inactive_id, active_id);
+        assert!(!session.gameplay.world().combatant(inactive_id).unwrap().active);
+
+        let projection = session.mission5_content_projection();
+        let projected_id = projection
+            .shooter
+            .as_ref()
+            .expect("la proyección debe incluir un Shooter")
+            .entity_id;
+        assert_eq!(projected_id, active_id.value());
+        assert_ne!(projected_id, inactive_id.value());
+        assert_eq!(
+            session
+                .gameplay
+                .world()
+                .destination(crate::cooperacion::SIGNAL_DESTINATION)
+                .unwrap()
+                .id
+                .value(),
+            crate::cooperacion::SIGNAL_DESTINATION.value()
+        );
+
+        client.disconnect().unwrap();
+    }
+
+    #[test]
+    fn proyeccion_mission5_omite_shooters_inactivos() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut client = GameClient::connect(address, "Jugador").unwrap();
+        wait_for_update(&mut session);
+        assert!(matches!(
+            client.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
+
+        let mission = crate::cooperacion::PROGRESION_COOPERATIVA;
+        let setup = session.gameplay.update([
+            GameplayCommand::UnlockMission { mission },
+            GameplayCommand::StartMission { mission },
+        ]);
+        assert!(setup.iter().all(|result| matches!(
+            result.status,
+            CommandStatus::Success { .. }
+        )));
+
+        let active_id = session
+            .gameplay
+            .world()
+            .combatants()
+            .find(|combatant| {
+                !combatant.is_player
+                    && combatant.active
+                    && combatant.archetype == Some(gameplay::EnemyArchetype::Shooter)
+            })
+            .map(|combatant| combatant.entity)
+            .expect("la preparacion debe crear un Shooter activo");
+        let before = session.gameplay.mission_progress(mission).unwrap();
+        let destination_id = session
+            .gameplay
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .unwrap()
+            .id
+            .value();
+
+        let deactivate_result = session.gameplay.update([GameplayCommand::SetEnemyActive {
+            enemy: active_id,
+            active: false,
+        }]);
+        assert!(matches!(
+            deactivate_result.first().map(|result| result.status),
+            Some(CommandStatus::Success { changed: true })
+        ));
+
+        let projection = session.mission5_content_projection();
+        assert!(projection.shooter.is_none());
+        assert_eq!(
+            projection
+                .destination
+                .as_ref()
+                .expect("Destination104 debe conservarse")
+                .destination_id,
+            destination_id
+        );
+        let after = session.gameplay.mission_progress(mission).unwrap();
+        assert_eq!(projection.required_completed, before.required_completed as u32);
+        assert_eq!(projection.optional_completed, before.optional_completed as u32);
+        assert_eq!(after.required_completed, before.required_completed);
+        assert_eq!(after.optional_completed, before.optional_completed);
+
+        client.disconnect().unwrap();
     }
 
     #[test]
