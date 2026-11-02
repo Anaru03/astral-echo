@@ -142,6 +142,20 @@ fn process_event(
                 player_id, max_players
             );
         }
+
+        ServerMessage::MissionRecoveryResult { request_id, outcome } => {
+            println!(
+                "[Mission5] solicitud {}: {:?}",
+                request_id, outcome
+            );
+        }
+
+        ServerMessage::MissionContentUpdated { content } => {
+            println!(
+                "[Mission5] estado {:?}, progreso {}/{}",
+                content.state, content.required_completed, content.required_total
+            );
+        }
     }
 
     players.apply(message);

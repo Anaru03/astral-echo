@@ -8,12 +8,15 @@ use engine::{Duration, EntityId, Vec3};
 use gameplay::{CommandStatus, GameplayCommand};
 use networking::{
     GameServer, GameServerHandle, NetworkOrientation, NetworkPlayerId, NetworkVec3,
-    PlayerTransform, ServerEvent, ServerEventQueue, ServerMessage,
+    Mission5ContentProjection, Mission5DestinationProjection, Mission5ObjectiveProjection,
+    Mission5ShooterProjection, MissionRecoveryOutcome, MissionStateProjection,
+    ObjectiveStateProjection, PlayerTransform, ServerEvent, ServerEventQueue, ServerMessage,
 };
 
 use crate::ProjectEchoSession;
 
 const NETWORK_TICK: Duration = Duration(100);
+const MAX_RECOVERY_REQUESTS_PER_PLAYER: usize = 32;
 
 #[derive(Debug)]
 pub enum MultiplayerError {
@@ -69,6 +72,7 @@ pub struct MultiplayerSession {
     address: std::net::SocketAddr,
     events: ServerEventQueue,
     players: BTreeMap<NetworkPlayerId, EntityId>,
+    recovery_results: BTreeMap<NetworkPlayerId, BTreeMap<u64, MissionRecoveryOutcome>>,
     shutdown: Arc<AtomicBool>,
     server_thread: Option<JoinHandle<io::Result<()>>>,
 }
@@ -91,6 +95,7 @@ impl MultiplayerSession {
             address: local_address,
             events,
             players: BTreeMap::new(),
+            recovery_results: BTreeMap::new(),
             shutdown,
             server_thread: Some(server_thread),
         })
@@ -125,6 +130,10 @@ impl MultiplayerSession {
                     sequence,
                     transform,
                 } => self.apply_movement(player_id, sequence, transform)?,
+                ServerEvent::MissionRecoveryRequested {
+                    player_id,
+                    request_id,
+                } => self.handle_mission_recovery(player_id, request_id),
                 ServerEvent::PlayerLeft { player_id } => self.unregister_player(player_id),
             }
         }
@@ -195,11 +204,157 @@ impl MultiplayerSession {
     }
 
     fn unregister_player(&mut self, player_id: NetworkPlayerId) {
+        self.recovery_results.remove(&player_id);
         if let Some(entity) = self.players.remove(&player_id) {
             let _ = self.gameplay.update([GameplayCommand::SetPlayerActive {
                 player: entity,
                 active: false,
             }]);
+        }
+    }
+
+    fn handle_mission_recovery(&mut self, player_id: NetworkPlayerId, request_id: u64) {
+        if let Some(outcome) = self
+            .recovery_results
+            .get(&player_id)
+            .and_then(|results| results.get(&request_id))
+            .cloned()
+        {
+            let _ = self.server.send_to(
+                player_id,
+                &ServerMessage::MissionRecoveryResult {
+                    request_id,
+                    outcome,
+                },
+            );
+            return;
+        }
+
+        let outcome = if request_id == 0 {
+            MissionRecoveryOutcome::InvalidRequest
+        } else if !self.players.contains_key(&player_id) {
+            MissionRecoveryOutcome::Unauthorized
+        } else {
+            let result = self
+                .gameplay
+                .update([GameplayCommand::RetryCooperativeMissionContent]);
+            match result.first().map(|value| value.status) {
+                Some(CommandStatus::Success { .. }) => MissionRecoveryOutcome::Succeeded,
+                Some(CommandStatus::Rejected {
+                    reason: gameplay::CommandRejection::MissionContentUnavailable,
+                }) => MissionRecoveryOutcome::ContentUnavailable,
+                Some(CommandStatus::Rejected {
+                    reason: gameplay::CommandRejection::InvalidMissionTransition,
+                }) => MissionRecoveryOutcome::InvalidMissionTransition,
+                _ => MissionRecoveryOutcome::SessionUnavailable,
+            }
+        };
+
+        if self.players.contains_key(&player_id) {
+            let results = self.recovery_results.entry(player_id).or_default();
+            if results.len() >= MAX_RECOVERY_REQUESTS_PER_PLAYER {
+                if let Some(first) = results.keys().next().copied() {
+                    results.remove(&first);
+                }
+            }
+            results.insert(request_id, outcome.clone());
+        }
+
+        let _ = self.server.send_to(
+            player_id,
+            &ServerMessage::MissionRecoveryResult {
+                request_id,
+                outcome: outcome.clone(),
+            },
+        );
+
+        if matches!(outcome, MissionRecoveryOutcome::Succeeded) {
+            self.server.broadcast(&ServerMessage::MissionContentUpdated {
+                content: self.mission5_content_projection(),
+            });
+        }
+    }
+
+    fn mission5_content_projection(&self) -> Mission5ContentProjection {
+        let mission_id = crate::cooperacion::PROGRESION_COOPERATIVA;
+        let mission = self
+            .gameplay
+            .world()
+            .mission(mission_id)
+            .expect("Mission5 debe estar registrada");
+        let progress = mission.progress();
+        let state = match progress.state {
+            gameplay::domains::mission::MissionState::Locked => MissionStateProjection::Locked,
+            gameplay::domains::mission::MissionState::Available => {
+                MissionStateProjection::Available
+            }
+            gameplay::domains::mission::MissionState::Active => MissionStateProjection::Active,
+            gameplay::domains::mission::MissionState::Failed => MissionStateProjection::Failed,
+            gameplay::domains::mission::MissionState::Completed => {
+                MissionStateProjection::Completed
+            }
+        };
+        let objectives = mission
+            .objectives()
+            .iter()
+            .map(|objective| Mission5ObjectiveProjection {
+                objective_id: objective.id.0,
+                required: objective.required,
+                state: match objective.state() {
+                    gameplay::domains::objective::ObjectiveState::Locked => {
+                        ObjectiveStateProjection::Locked
+                    }
+                    gameplay::domains::objective::ObjectiveState::Available => {
+                        ObjectiveStateProjection::Available
+                    }
+                    gameplay::domains::objective::ObjectiveState::Active => {
+                        ObjectiveStateProjection::Active
+                    }
+                    gameplay::domains::objective::ObjectiveState::Failed => {
+                        ObjectiveStateProjection::Failed
+                    }
+                    gameplay::domains::objective::ObjectiveState::Completed => {
+                        ObjectiveStateProjection::Completed
+                    }
+                },
+                progress: objective.progress(),
+            })
+            .collect();
+        let destination = self
+            .gameplay
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .map(|value| Mission5DestinationProjection {
+                destination_id: value.id.value(),
+                position: [value.position.x, value.position.y, value.position.z],
+                travel_duration: value.travel_duration.0,
+                fuel_cost: value.fuel_cost,
+            });
+        let shooter = self
+            .gameplay
+            .world()
+            .combatants()
+            .find(|value| {
+                !value.is_player
+                    && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+            })
+            .map(|value| Mission5ShooterProjection {
+                entity_id: value.entity.value(),
+                active: value.active,
+                current_health: value.current_health,
+                maximum_health: value.maximum_health,
+            });
+
+        Mission5ContentProjection {
+            mission_id: mission_id.0,
+            state,
+            required_completed: progress.required_completed as u32,
+            required_total: progress.required_total as u32,
+            optional_completed: progress.optional_completed as u32,
+            optional_total: progress.optional_total as u32,
+            objectives,
+            destination,
+            shooter,
         }
     }
 
@@ -357,6 +512,100 @@ mod tests {
             .position;
         assert_ne!(initial, moved);
         client.disconnect().unwrap();
+    }
+
+    #[test]
+    fn recuperacion_de_mission5_devuelve_resultado_autoritativo_correlacionado() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut client = GameClient::connect(address, "Jugador").unwrap();
+        wait_for_update(&mut session);
+
+        client.request_mission_recovery(7).unwrap();
+        wait_for_update(&mut session);
+        assert_eq!(
+            client.receive().unwrap(),
+            ServerMessage::MissionRecoveryResult {
+                request_id: 7,
+                outcome: networking::MissionRecoveryOutcome::InvalidMissionTransition,
+            }
+        );
+
+        client.request_mission_recovery(7).unwrap();
+        wait_for_update(&mut session);
+        assert_eq!(
+            client.receive().unwrap(),
+            ServerMessage::MissionRecoveryResult {
+                request_id: 7,
+                outcome: networking::MissionRecoveryOutcome::InvalidMissionTransition,
+            }
+        );
+        client.disconnect().unwrap();
+    }
+
+    #[test]
+    fn recuperacion_exitosa_replicada_a_todos_sin_repetir_broadcast() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut first = GameClient::connect(address, "Jugador 1").unwrap();
+        wait_for_update(&mut session);
+        let mut second = GameClient::connect(address, "Jugador 2").unwrap();
+        wait_for_player(&mut session, second.player_id());
+
+        assert!(matches!(
+            first.receive().unwrap(),
+            ServerMessage::PlayerJoined { .. }
+        ));
+        assert!(matches!(
+            second.receive().unwrap(),
+            ServerMessage::PlayerJoined { .. }
+        ));
+
+        let mission = crate::cooperacion::PROGRESION_COOPERATIVA;
+        let setup = session.gameplay.update([
+            GameplayCommand::UnlockMission { mission },
+            GameplayCommand::StartMission { mission },
+        ]);
+        assert!(setup.iter().all(|result| matches!(
+            result.status,
+            CommandStatus::Success { .. }
+        )));
+
+        first.request_mission_recovery(11).unwrap();
+        wait_for_update(&mut session);
+
+        assert_eq!(
+            first.receive().unwrap(),
+            ServerMessage::MissionRecoveryResult {
+                request_id: 11,
+                outcome: networking::MissionRecoveryOutcome::Succeeded,
+            }
+        );
+        let first_update = first.receive().unwrap();
+        let second_update = second.receive().unwrap();
+        assert_eq!(first_update, second_update);
+        let ServerMessage::MissionContentUpdated { content } = first_update else {
+            panic!("faltó la actualización compartida de Mission5");
+        };
+        assert_eq!(content.mission_id, 5);
+        assert_eq!(content.required_total, 3);
+        assert!(content.destination.is_some());
+        assert!(content.shooter.is_some());
+
+        first.request_mission_recovery(11).unwrap();
+        wait_for_update(&mut session);
+        assert_eq!(
+            first.receive().unwrap(),
+            ServerMessage::MissionRecoveryResult {
+                request_id: 11,
+                outcome: networking::MissionRecoveryOutcome::Succeeded,
+            }
+        );
+        assert!(first.try_receive().unwrap().is_none());
+        assert!(second.try_receive().unwrap().is_none());
+
+        first.disconnect().unwrap();
+        second.disconnect().unwrap();
     }
 
     #[test]

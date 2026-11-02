@@ -13252,6 +13252,7 @@ fn run_runtime_mission_scenario() -> Result<(), String> {
 
     execute_runtime_command(&mut runtime, &parse_runtime_command("unlock 5")?, &mut output)?;
     execute_runtime_command(&mut runtime, &parse_runtime_command("startmission 5")?, &mut output)?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("retrymission5")?, &mut output)?;
     execute_runtime_command(&mut runtime, &parse_runtime_command("mission 5")?, &mut output)?;
     if runtime.gameplay.world().mission(mission_id).is_none_or(|mission| mission.state() != MissionState::Active || mission.progress().required_completed != 0)
     {

@@ -537,6 +537,7 @@ impl VisualBridge {
         self.last_discrete_action = Some(key);
         match key {
             KeyCode::KeyM => self.start_awakening(),
+            KeyCode::KeyT => self.retry_cooperative_mission_content(),
             KeyCode::KeyI => self.guided_interaction(),
             KeyCode::KeyR => self.restore_energy(),
             KeyCode::KeyY => self.restore_life_support(),
@@ -602,6 +603,28 @@ impl VisualBridge {
             self.issue_into([GameplayCommand::StartMission { mission }], &mut aggregate);
         }
         self.finish_issue(aggregate);
+    }
+
+    fn retry_cooperative_mission_content(&mut self) {
+        let results = self
+            .session
+            .update([GameplayCommand::RetryCooperativeMissionContent]);
+        self.refresh_player_defeat_state();
+        let status = results.first().map(|result| &result.status);
+        self.feedback = match status {
+            Some(gameplay::CommandStatus::Success { .. }) => {
+                "MISSION 5 PREPARADA — PUEDES CONTINUAR".to_owned()
+            }
+            Some(gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::MissionContentUnavailable,
+            }) => "CONTENIDO DE MISSION 5 NO DISPONIBLE — PUEDES REINTENTAR".to_owned(),
+            Some(gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::InvalidMissionTransition,
+            }) => "RECUPERACION NO DISPONIBLE — MISSION 5 NO ESTA ACTIVA".to_owned(),
+            Some(other) => format!("RECUPERACION DE MISSION 5 RECHAZADA: {other:?}"),
+            None => "RECUPERACION DE MISSION 5 SIN RESULTADO".to_owned(),
+        };
+        println!("visual gameplay: {}", self.feedback);
     }
 
     fn guided_interaction(&mut self) {
@@ -1078,6 +1101,53 @@ mod tests {
         assert!(bridge.feedback.contains("comandos=3"));
         bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
         assert!(bridge.feedback.contains("comandos=2"));
+    }
+
+    #[test]
+    fn visual_retry_uses_authoritative_command_and_can_recover_after_failure() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let player = bridge.player;
+        bridge.session.update([GameplayCommand::UnlockMission {
+            mission: crate::cooperacion::PROGRESION_COOPERATIVA,
+        }]);
+        bridge.session.update([GameplayCommand::SetPlayerActive {
+            player,
+            active: false,
+        }]);
+        bridge.session.update([GameplayCommand::StartMission {
+            mission: crate::cooperacion::PROGRESION_COOPERATIVA,
+        }]);
+
+        bridge.handle_key(KeyCode::KeyT, ElementState::Pressed);
+        assert!(bridge.feedback.contains("NO DISPONIBLE"));
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+                .unwrap()
+                .required_completed,
+            0
+        );
+
+        bridge.session.update([GameplayCommand::SetPlayerActive {
+            player,
+            active: true,
+        }]);
+        bridge.handle_key(KeyCode::KeyT, ElementState::Pressed);
+        assert!(bridge.feedback.contains("PREPARADA"));
+        assert_eq!(bridge.session.world().combatants().filter(|value| {
+            !value.is_player
+                && value.active
+                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+        }).count(), 1);
+    }
+
+    #[test]
+    fn visual_retry_is_discrete_and_released_key_does_not_request_recovery() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let before = bridge.feedback.clone();
+        bridge.handle_key(KeyCode::KeyT, ElementState::Released);
+        assert_eq!(bridge.feedback, before);
     }
 
     #[test]

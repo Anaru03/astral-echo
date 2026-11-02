@@ -61,6 +61,10 @@ impl GameClient {
         self.player_id
     }
 
+    pub fn request_mission_recovery(&mut self, request_id: u64) -> io::Result<()> {
+        self.send(&ClientMessage::RequestMissionRecovery { request_id })
+    }
+
     pub fn send(&mut self, message: &ClientMessage) -> io::Result<()> {
         if self.disconnected {
             return Err(io::Error::new(
@@ -264,7 +268,8 @@ impl GameClient {
                 Some(
                     event @ (ServerMessage::PlayerJoined { .. }
                     | ServerMessage::PlayerLeft { .. }
-                    | ServerMessage::PlayerMoved { .. }),
+                    | ServerMessage::PlayerMoved { .. }
+                    | ServerMessage::MissionRecoveryResult { .. }),
                 ) => {
                     self.pending_events.push_back(event);
                 }
