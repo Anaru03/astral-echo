@@ -1,5 +1,7 @@
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
+use std::time::Instant;
 
 use engine::{Duration, EntityId, Vec3 as GameplayVec3};
 use game::ProjectEchoSession;
@@ -10,7 +12,7 @@ use gameplay::{
     EnemyArchetype, EnemyConfiguration, EncounterId, GameplayCommand, GameplayEvent,
     LifeSupportConfiguration, NavigationRoute, NavigationRouteState,
     OxygenCompartmentConfiguration, PlanetPhysics, SpatialEncounter, SpatialEncounterKind,
-    StationType, WeaponAmmunition, WeaponConfiguration,
+    InteractionBehavior, StationType, WeaponAmmunition, WeaponConfiguration,
 };
 use render_core::{LightingMode, MaterialInfo, VisualAssets};
 use render_present::{
@@ -205,10 +207,21 @@ struct VisualBridge {
     last_landed: bool,
     last_game_over: bool,
     player_defeated: bool,
+    interior_mode: bool,
+    look_left: bool,
+    look_right: bool,
+    look_up: bool,
+    look_down: bool,
+    last_interior_update: Instant,
 }
 
 impl VisualBridge {
+    #[cfg(test)]
     fn new() -> Result<Self, String> {
+        Self::new_with_mode(false)
+    }
+
+    fn new_with_mode(interior_mode: bool) -> Result<Self, String> {
         let mut session = ProjectEchoSession::new();
         let player = session.ids.first_player;
         let ship = session.ids.first_ship;
@@ -443,6 +456,12 @@ impl VisualBridge {
             last_landed: false,
             last_game_over: false,
             player_defeated: false,
+            interior_mode,
+            look_left: false,
+            look_right: false,
+            look_up: false,
+            look_down: false,
+            last_interior_update: Instant::now(),
         })
     }
 
@@ -528,7 +547,19 @@ impl VisualBridge {
             return;
         }
         if self.flight_keys.set(key, state == ElementState::Pressed) {
-            self.accelerate_ship(player, pilot_station, self.current_flight_input());
+            if !self.interior_mode {
+                self.accelerate_ship(player, pilot_station, self.current_flight_input());
+            }
+            return;
+        }
+        if self.interior_mode && state == ElementState::Released {
+            match key {
+                KeyCode::ArrowLeft => self.look_left = false,
+                KeyCode::ArrowRight => self.look_right = false,
+                KeyCode::ArrowUp => self.look_up = false,
+                KeyCode::ArrowDown => self.look_down = false,
+                _ => {}
+            }
             return;
         }
         if state != ElementState::Pressed {
@@ -576,8 +607,24 @@ impl VisualBridge {
                     }]);
                 }
             }
-            KeyCode::KeyP => self.toggle_flight(player, pilot_station),
+            KeyCode::KeyP if !self.interior_mode => self.toggle_flight(player, pilot_station),
             KeyCode::KeyO => self.toggle_observation(),
+            KeyCode::ArrowLeft if self.interior_mode => {
+                self.look_left = true;
+                self.rotate_player(-6.0, 0.0);
+            }
+            KeyCode::ArrowRight if self.interior_mode => {
+                self.look_right = true;
+                self.rotate_player(6.0, 0.0);
+            }
+            KeyCode::ArrowUp if self.interior_mode => {
+                self.look_up = true;
+                self.rotate_player(0.0, -4.0);
+            }
+            KeyCode::ArrowDown if self.interior_mode => {
+                self.look_down = true;
+                self.rotate_player(0.0, 4.0);
+            }
             KeyCode::ArrowLeft => self.observation.adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0),
             KeyCode::ArrowRight => self.observation.adjust_orbit(OBSERVATION_AZIMUTH_STEP, 0.0),
             KeyCode::ArrowUp => self.observation.adjust_orbit(0.0, OBSERVATION_ELEVATION_STEP),
@@ -678,11 +725,159 @@ impl VisualBridge {
                 player: self.player,
                 target,
             }], &mut aggregate);
-            self.finish_issue(aggregate);
+            let completed = self.finish_issue(aggregate);
+            if completed && target == self.bridge_door && self.interior_mode {
+                self.interior_mode = false;
+                self.feedback = "PUERTA ABIERTA — EXPLORACION EXTERIOR DISPONIBLE".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+            }
         } else {
-            self.feedback = "NO HAY INTERACCION DISPONIBLE".to_owned();
-            println!("visual gameplay: {}", self.feedback);
+            let player_position = self
+                .session
+                .world()
+                .player(self.player)
+                .map(|player| player.position);
+            let target = player_position.and_then(|position| {
+                self.session
+                    .world()
+                    .interactables()
+                    .filter(|value| value.enabled)
+                    .filter(|value| {
+                        let dx = position.x - value.position.x;
+                        let dy = position.y - value.position.y;
+                        let dz = position.z - value.position.z;
+                        dx * dx + dy * dy + dz * dz
+                            <= value.interaction_range * value.interaction_range
+                    })
+                    .min_by(|left, right| {
+                        let left_distance = (position.x - left.position.x).powi(2)
+                            + (position.y - left.position.y).powi(2)
+                            + (position.z - left.position.z).powi(2);
+                        let right_distance = (position.x - right.position.x).powi(2)
+                            + (position.y - right.position.y).powi(2)
+                            + (position.z - right.position.z).powi(2);
+                        left_distance
+                            .partial_cmp(&right_distance)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|value| value.entity_id)
+            });
+            if let Some(target) = target {
+                let completed = self.issue([GameplayCommand::Interact {
+                    player: self.player,
+                    target,
+                }]);
+                if completed && target == self.bridge_door && self.interior_mode {
+                    self.interior_mode = false;
+                    self.feedback = "PUERTA ABIERTA — EXPLORACION EXTERIOR DISPONIBLE".to_owned();
+                    println!("visual gameplay: {}", self.feedback);
+                }
+            } else {
+                self.feedback = "NO HAY INTERACCION DISPONIBLE — ACERCATE A UN OBJETO".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+            }
         }
+    }
+
+    fn rotate_player(&mut self, yaw_delta_degrees: f32, pitch_delta_degrees: f32) {
+        self.issue([GameplayCommand::RotatePlayer {
+            player: self.player,
+            yaw_delta_degrees,
+            pitch_delta_degrees,
+        }]);
+    }
+
+    fn update_interior_motion(&mut self) {
+        if !self.interior_mode || self.player_defeated {
+            return;
+        }
+        let Some(player) = self.session.world().player(self.player).copied() else {
+            return;
+        };
+        let now = Instant::now();
+        let delta_ms = now
+            .saturating_duration_since(self.last_interior_update)
+            .as_millis()
+            .clamp(1, 50) as u64;
+        self.last_interior_update = now;
+        let seconds = delta_ms as f32 / 1_000.0;
+        let local = self.current_flight_input();
+        let yaw = player.orientation.yaw_degrees.to_radians();
+        let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        let mut direction = GameplayVec3 {
+            x: local.x * cos_yaw - local.z * sin_yaw,
+            y: 0.0,
+            z: local.x * sin_yaw + local.z * cos_yaw,
+        };
+        let look_yaw = self.look_right as i8 - self.look_left as i8;
+        let look_pitch = self.look_down as i8 - self.look_up as i8;
+        if look_yaw != 0 || look_pitch != 0 {
+            self.rotate_player(
+                f32::from(look_yaw) * 6.0 * seconds / 0.016,
+                f32::from(look_pitch) * 4.0 * seconds / 0.016,
+            );
+        }
+        const PLAYER_RADIUS: f32 = 0.45;
+        const COLLISION_BUFFER: f32 = 0.75;
+        let min_x = -9.0 + PLAYER_RADIUS + COLLISION_BUFFER;
+        let max_x = 9.0 - PLAYER_RADIUS - COLLISION_BUFFER;
+        let min_z = -7.0 + PLAYER_RADIUS + COLLISION_BUFFER;
+        let max_z = 7.0 - PLAYER_RADIUS - COLLISION_BUFFER;
+        if (player.position.x <= min_x && direction.x < 0.0)
+            || (player.position.x >= max_x && direction.x > 0.0)
+        {
+            direction.x = 0.0;
+        }
+        if (player.position.z <= min_z && direction.z < 0.0)
+            || (player.position.z >= max_z && direction.z > 0.0)
+        {
+            direction.z = 0.0;
+        }
+        if direction != GameplayVec3::ZERO {
+            self.session.update([GameplayCommand::MovePlayer {
+                player: self.player,
+                direction,
+                delta: Duration(delta_ms),
+            }]);
+        } else if player.velocity != GameplayVec3::ZERO {
+            self.session.update([GameplayCommand::MovePlayer {
+                player: self.player,
+                direction: GameplayVec3::ZERO,
+                delta: Duration(delta_ms),
+            }]);
+        }
+    }
+
+    fn contextual_prompt(&self) -> Option<String> {
+        let player = self.session.world().player(self.player)?;
+        self.session
+            .world()
+            .interactables()
+            .filter(|value| value.enabled)
+            .filter_map(|value| {
+                let dx = player.position.x - value.position.x;
+                let dy = player.position.y - value.position.y;
+                let dz = player.position.z - value.position.z;
+                let distance_squared = dx * dx + dy * dy + dz * dz;
+                (distance_squared <= value.interaction_range * value.interaction_range)
+                    .then_some((distance_squared, value))
+            })
+            .min_by(|left, right| {
+                left.0
+                    .partial_cmp(&right.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.1.entity_id.cmp(&right.1.entity_id))
+            })
+            .map(|(_, interactable)| {
+                let label = match interactable.behavior {
+                    InteractionBehavior::Door { .. } => "PUERTA DEL PUENTE",
+                    InteractionBehavior::Station { .. } => "ESTACION DE PILOTAJE",
+                    InteractionBehavior::ElectricalPanel => "PANEL ELECTRICO",
+                    InteractionBehavior::LifeSupportPanel => "SOPORTE VITAL",
+                    InteractionBehavior::Console { .. } => "CONSOLA",
+                };
+                format!("I INTERACTUAR: {label}")
+            })
     }
 
     fn restore_energy(&mut self) {
@@ -754,6 +949,9 @@ impl VisualBridge {
             return;
         }
         self.gamepad_flight = input;
+        if self.interior_mode {
+            return;
+        }
         self.issue([GameplayCommand::AccelerateShip {
             player: self.player,
             pilot_station: self.pilot_station,
@@ -928,6 +1126,9 @@ impl VisualBridge {
 
     fn camera(&self, aspect: f32) -> Result<render_core::Camera, render_core::CameraError> {
         let world = self.session.world();
+        if self.interior_mode {
+            return game::render_bridge::interior_camera(world, aspect);
+        }
         game::render_bridge::observation_camera(
             world,
             aspect,
@@ -939,7 +1140,7 @@ impl VisualBridge {
 }
 
 pub fn run() -> Result<(), String> {
-    let runtime = Rc::new(RefCell::new(VisualBridge::new()?));
+    let runtime = Rc::new(RefCell::new(VisualBridge::new_with_mode(true)?));
     let snapshot_runtime = Rc::clone(&runtime);
     let input_runtime = Rc::clone(&runtime);
     let focus_runtime = Rc::clone(&runtime);
@@ -953,16 +1154,21 @@ pub fn run() -> Result<(), String> {
         config,
         Box::new(move |width, height| {
             let mut bridge = snapshot_runtime.borrow_mut();
+            bridge.update_interior_motion();
             bridge.poll_gamepad();
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
-            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera(
+            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
                 bridge.session.world(),
                 Default::default(),
                 &camera,
+                bridge.interior_mode,
             );
-            snapshot.overlay.hud.feedback = Some(bridge.feedback.clone());
+            snapshot.overlay.hud.feedback = Some(match bridge.contextual_prompt() {
+                Some(prompt) => format!("{} | {prompt}", bridge.feedback),
+                None => bridge.feedback.clone(),
+            });
             Ok(snapshot)
         }),
         true,
@@ -976,6 +1182,16 @@ pub fn run() -> Result<(), String> {
         },
         |scene| {
             scene.set_lighting_mode(LightingMode::Lambert);
+            let assets_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");
+            for (path, mesh, material) in [
+                (assets_root.join("station/station.obj"), render_core::MeshHandle::STATION, VisualAssets::STATION),
+                (assets_root.join("shooter/shooter.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY),
+            ] {
+                match render_core::load_obj(&path) {
+                    Ok(mesh_data) => scene.register_mesh(mesh, material, mesh_data),
+                    Err(error) => eprintln!("modelo no cargado {}: {error}", path.display()),
+                }
+            }
             scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
             scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
             scene.set_material(VisualAssets::STATION, MaterialInfo::station());
@@ -1008,6 +1224,84 @@ fn controller_key(button: ControllerButton) -> Option<KeyCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interior_mode_moves_the_player_without_using_ship_flight() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let before = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .expect("visual player should exist")
+            .position;
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        bridge.update_interior_motion();
+        let after = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .expect("visual player should still exist")
+            .position;
+        assert_ne!(before, after);
+        assert_eq!(bridge.session.world().ship_position(), Some(GameplayVec3::ZERO));
+    }
+
+    #[test]
+    fn interior_rotation_continues_until_key_release() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
+        let first = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .expect("visual player should exist")
+            .orientation
+            .yaw_degrees;
+        bridge.update_interior_motion();
+        let continued = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .expect("visual player should exist")
+            .orientation
+            .yaw_degrees;
+        assert!(continued > first);
+
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Released);
+        bridge.update_interior_motion();
+        let stopped = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .expect("visual player should exist")
+            .orientation
+            .yaw_degrees;
+        assert_eq!(stopped, continued);
+    }
+
+    #[test]
+    fn interior_prompt_identifies_the_nearest_real_interactable() {
+        let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        assert!(bridge
+            .contextual_prompt()
+            .is_some_and(|prompt| prompt.starts_with("I INTERACTUAR:")));
+    }
+
+    #[test]
+    fn interior_motion_stays_inside_the_player_clearance_boundary() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.handle_key(KeyCode::KeyD, ElementState::Pressed);
+        for _ in 0..240 {
+            bridge.update_interior_motion();
+        }
+        let position = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .expect("visual player should exist")
+            .position;
+        assert!(position.x < 8.4, "player crossed the interior clearance: {position:?}");
+    }
 
     #[test]
     fn controller_bindings_reuse_existing_keyboard_actions() {
