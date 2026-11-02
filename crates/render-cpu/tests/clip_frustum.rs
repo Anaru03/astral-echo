@@ -1,5 +1,5 @@
 use glam::Vec4;
-use render_cpu::clip::{clip_polygon, clip_triangle, ClipPlane, ClipVertex};
+use render_cpu::clip::{clip_polygon, clip_triangle, clip_triangle_fast, ClipPlane, ClipVertex};
 use render_cpu::RasterError;
 
 fn v(x: f32, y: f32, z: f32, w: f32) -> ClipVertex {
@@ -200,4 +200,18 @@ fn plane_distances_follow_wgpu_convention() {
 fn polygon_with_fewer_than_three_vertices_is_empty() {
     let poly = vec![v(0.0, 0.0, 0.5, 1.0)];
     assert!(clip_polygon(&poly).expect("clips").is_empty());
+}
+
+#[test]
+fn fast_path_matches_reference_for_inside_outside_boundary_and_crossing_cases() {
+    let cases = [
+        (v(0.0, 0.0, 0.5, 1.0), v(0.5, 0.0, 0.5, 1.0), v(0.0, 0.5, 0.5, 1.0)),
+        (v(0.0, 0.0, -1.0, 1.0), v(0.5, 0.0, -1.0, 1.0), v(0.0, 0.5, -1.0, 1.0)),
+        (v(-1.0, 0.0, 0.5, 1.0), v(0.5, 0.0, 0.5, 1.0), v(0.0, 0.5, 0.5, 1.0)),
+        (v(0.0, 0.0, -1.0, 1.0), v(0.5, 0.0, 0.5, 1.0), v(0.0, 0.5, 0.5, 1.0)),
+        (v(-2.0, -2.0, -1.0, 1.0), v(2.0, -2.0, 0.5, 1.0), v(-2.0, 2.0, 0.5, 1.0)),
+    ];
+    for (a, b, c) in cases {
+        assert_eq!(clip_triangle_fast(a, b, c), clip_triangle(a, b, c));
+    }
 }

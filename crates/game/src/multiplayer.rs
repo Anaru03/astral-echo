@@ -8,12 +8,16 @@ use engine::{Duration, EntityId, Vec3};
 use gameplay::{CommandStatus, GameplayCommand};
 use networking::{
     GameServer, GameServerHandle, NetworkOrientation, NetworkPlayerId, NetworkVec3,
-    PlayerTransform, ServerEvent, ServerEventQueue, ServerMessage,
+    Mission5ContentProjection, Mission5DestinationProjection, Mission5ObjectiveProjection,
+    Mission5DestinationTypeProjection, Mission5DiscoveryProjection, Mission5ShooterProjection,
+    MissionRecoveryOutcome, MissionStateProjection, ObjectiveStateProjection, PlayerTransform,
+    ServerEvent, ServerEventQueue, ServerMessage,
 };
 
 use crate::ProjectEchoSession;
 
 const NETWORK_TICK: Duration = Duration(100);
+const MAX_RECOVERY_REQUESTS_PER_PLAYER: usize = 32;
 
 #[derive(Debug)]
 pub enum MultiplayerError {
@@ -69,6 +73,7 @@ pub struct MultiplayerSession {
     address: std::net::SocketAddr,
     events: ServerEventQueue,
     players: BTreeMap<NetworkPlayerId, EntityId>,
+    recovery_results: BTreeMap<NetworkPlayerId, BTreeMap<u64, MissionRecoveryOutcome>>,
     shutdown: Arc<AtomicBool>,
     server_thread: Option<JoinHandle<io::Result<()>>>,
 }
@@ -91,6 +96,7 @@ impl MultiplayerSession {
             address: local_address,
             events,
             players: BTreeMap::new(),
+            recovery_results: BTreeMap::new(),
             shutdown,
             server_thread: Some(server_thread),
         })
@@ -125,6 +131,10 @@ impl MultiplayerSession {
                     sequence,
                     transform,
                 } => self.apply_movement(player_id, sequence, transform)?,
+                ServerEvent::MissionRecoveryRequested {
+                    player_id,
+                    request_id,
+                } => self.handle_mission_recovery(player_id, request_id),
                 ServerEvent::PlayerLeft { player_id } => self.unregister_player(player_id),
             }
         }
@@ -191,15 +201,182 @@ impl MultiplayerSession {
 
         self.players.insert(player_id, entity);
 
+        let _ = self.server.send_to(
+            player_id,
+            &ServerMessage::Mission5ContentState {
+                content: self.mission5_content_projection(),
+            },
+        );
+
         Ok(())
     }
 
     fn unregister_player(&mut self, player_id: NetworkPlayerId) {
+        self.recovery_results.remove(&player_id);
         if let Some(entity) = self.players.remove(&player_id) {
             let _ = self.gameplay.update([GameplayCommand::SetPlayerActive {
                 player: entity,
                 active: false,
             }]);
+        }
+    }
+
+    fn handle_mission_recovery(&mut self, player_id: NetworkPlayerId, request_id: u64) {
+        if let Some(outcome) = self
+            .recovery_results
+            .get(&player_id)
+            .and_then(|results| results.get(&request_id))
+            .cloned()
+        {
+            let _ = self.server.send_to(
+                player_id,
+                &ServerMessage::MissionRecoveryResult {
+                    request_id,
+                    outcome,
+                },
+            );
+            return;
+        }
+
+        let outcome = if request_id == 0 {
+            MissionRecoveryOutcome::InvalidRequest
+        } else if !self.players.contains_key(&player_id) {
+            MissionRecoveryOutcome::Unauthorized
+        } else {
+            let result = self
+                .gameplay
+                .update([GameplayCommand::RetryCooperativeMissionContent]);
+            match result.first().map(|value| value.status) {
+                Some(CommandStatus::Success { .. }) => MissionRecoveryOutcome::Succeeded,
+                Some(CommandStatus::Rejected {
+                    reason: gameplay::CommandRejection::MissionContentUnavailable,
+                }) => MissionRecoveryOutcome::ContentUnavailable,
+                Some(CommandStatus::Rejected {
+                    reason: gameplay::CommandRejection::InvalidMissionTransition,
+                }) => MissionRecoveryOutcome::InvalidMissionTransition,
+                _ => MissionRecoveryOutcome::SessionUnavailable,
+            }
+        };
+
+        if self.players.contains_key(&player_id) {
+            let results = self.recovery_results.entry(player_id).or_default();
+            if results.len() >= MAX_RECOVERY_REQUESTS_PER_PLAYER {
+                if let Some(first) = results.keys().next().copied() {
+                    results.remove(&first);
+                }
+            }
+            results.insert(request_id, outcome.clone());
+        }
+
+        let _ = self.server.send_to(
+            player_id,
+            &ServerMessage::MissionRecoveryResult {
+                request_id,
+                outcome: outcome.clone(),
+            },
+        );
+
+        if matches!(outcome, MissionRecoveryOutcome::Succeeded) {
+            self.server.broadcast(&ServerMessage::MissionContentUpdated {
+                content: self.mission5_content_projection(),
+            });
+        }
+    }
+
+    fn mission5_content_projection(&self) -> Mission5ContentProjection {
+        let mission_id = crate::cooperacion::PROGRESION_COOPERATIVA;
+        let mission = self
+            .gameplay
+            .world()
+            .mission(mission_id)
+            .expect("Mission5 debe estar registrada");
+        let progress = mission.progress();
+        let state = match progress.state {
+            gameplay::domains::mission::MissionState::Locked => MissionStateProjection::Locked,
+            gameplay::domains::mission::MissionState::Available => {
+                MissionStateProjection::Available
+            }
+            gameplay::domains::mission::MissionState::Active => MissionStateProjection::Active,
+            gameplay::domains::mission::MissionState::Failed => MissionStateProjection::Failed,
+            gameplay::domains::mission::MissionState::Completed => {
+                MissionStateProjection::Completed
+            }
+        };
+        let objectives = mission
+            .objectives()
+            .iter()
+            .map(|objective| Mission5ObjectiveProjection {
+                objective_id: objective.id.0,
+                required: objective.required,
+                state: match objective.state() {
+                    gameplay::domains::objective::ObjectiveState::Locked => {
+                        ObjectiveStateProjection::Locked
+                    }
+                    gameplay::domains::objective::ObjectiveState::Available => {
+                        ObjectiveStateProjection::Available
+                    }
+                    gameplay::domains::objective::ObjectiveState::Active => {
+                        ObjectiveStateProjection::Active
+                    }
+                    gameplay::domains::objective::ObjectiveState::Failed => {
+                        ObjectiveStateProjection::Failed
+                    }
+                    gameplay::domains::objective::ObjectiveState::Completed => {
+                        ObjectiveStateProjection::Completed
+                    }
+                },
+                progress: objective.progress(),
+            })
+            .collect();
+        let destination = self
+            .gameplay
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .map(|value| Mission5DestinationProjection {
+                destination_id: value.id.value(),
+                destination_type: match value.destination_type {
+                    gameplay::DestinationType::Planet => Mission5DestinationTypeProjection::Planet,
+                    gameplay::DestinationType::SpacePoint => {
+                        Mission5DestinationTypeProjection::SpacePoint
+                    }
+                },
+                position: [value.position.x, value.position.y, value.position.z],
+                travel_duration: value.travel_duration.0,
+                fuel_cost: value.fuel_cost,
+                discovery: match value.discovery {
+                    gameplay::DiscoveryState::Unknown => Mission5DiscoveryProjection::Unknown,
+                    gameplay::DiscoveryState::Known => Mission5DiscoveryProjection::Known,
+                    gameplay::DiscoveryState::Discovered => {
+                        Mission5DiscoveryProjection::Discovered
+                    }
+                },
+            });
+        let shooter = self
+            .gameplay
+            .world()
+            .combatants()
+            .find(|value| {
+                !value.is_player
+                    && value.active
+                    && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+            })
+            .map(|value| Mission5ShooterProjection {
+                entity_id: value.entity.value(),
+                active: value.active,
+                current_health: value.current_health,
+                maximum_health: value.maximum_health,
+            });
+
+        Mission5ContentProjection {
+            mission_id: mission_id.0,
+            state,
+            required_completed: progress.required_completed as u32,
+            required_total: progress.required_total as u32,
+            optional_completed: progress.optional_completed as u32,
+            optional_total: progress.optional_total as u32,
+            objectives,
+            destination,
+            shooter,
         }
     }
 
@@ -325,12 +502,26 @@ mod tests {
         panic!("no se registró el jugador de red");
     }
 
+    fn receive_initial_mission5_state(client: &mut GameClient) -> Mission5ContentProjection {
+        for _ in 0..8 {
+            match client.receive().unwrap() {
+                ServerMessage::Mission5ContentState { content } => return content,
+                _ => {}
+            }
+        }
+        panic!("no se recibió el estado inicial de Mission5");
+    }
+
     #[test]
     fn ingreso_crea_una_entidad_estable_y_movimiento_se_aplica() {
         let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
         let address = session.local_addr().unwrap();
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
+        assert!(matches!(
+            client.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
         let network_player = session.network_player(client.player_id()).unwrap();
         let initial = session
             .gameplay()
@@ -360,11 +551,357 @@ mod tests {
     }
 
     #[test]
+    fn nuevo_cliente_recibe_mission5_sin_contenido_sin_mutar_el_mundo() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut client = GameClient::connect(address, "Jugador").unwrap();
+        wait_for_update(&mut session);
+
+        let message = client.receive().unwrap();
+        let ServerMessage::Mission5ContentState { content } = message else {
+            panic!("faltó el estado inicial de Mission5");
+        };
+        assert_eq!(content, session.mission5_content_projection());
+        assert_eq!(content.mission_id, 5);
+        assert!(content.destination.is_none());
+        assert!(content.shooter.is_none());
+        assert_eq!(client.mission5_content(), Some(&content));
+        assert!(session
+            .gameplay()
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .is_none());
+        assert!(!session.gameplay().world().combatants().any(|value| {
+            !value.is_player
+                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+        }));
+
+        client.disconnect().unwrap();
+    }
+
+    #[test]
+    fn nuevo_cliente_recibe_estado_actual_de_mission5_sin_replay_historico() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut first = GameClient::connect(address, "Jugador 1").unwrap();
+        wait_for_update(&mut session);
+        let _ = first.receive().unwrap();
+
+        let mission = crate::cooperacion::PROGRESION_COOPERATIVA;
+        let setup = session.gameplay.update([
+            GameplayCommand::UnlockMission { mission },
+            GameplayCommand::StartMission { mission },
+        ]);
+        assert!(setup.iter().all(|result| matches!(
+            result.status,
+            CommandStatus::Success { .. }
+        )));
+
+        first.request_mission_recovery(21).unwrap();
+        wait_for_update(&mut session);
+        assert!(matches!(
+            first.receive().unwrap(),
+            ServerMessage::MissionRecoveryResult { .. }
+        ));
+        assert!(matches!(
+            first.receive().unwrap(),
+            ServerMessage::MissionContentUpdated { .. }
+        ));
+
+        let mut second = GameClient::connect(address, "Jugador 2").unwrap();
+        wait_for_player(&mut session, second.player_id());
+        assert!(matches!(
+            second.receive().unwrap(),
+            ServerMessage::PlayerJoined { .. }
+        ));
+        let message = second.receive().unwrap();
+        let ServerMessage::Mission5ContentState { content } = message else {
+            panic!("faltó el estado inicial para el segundo cliente");
+        };
+        assert_eq!(content, session.mission5_content_projection());
+        assert!(content.destination.is_some());
+        assert!(content.shooter.is_some());
+        assert_eq!(second.mission5_content(), Some(&content));
+        assert!(second.try_receive().unwrap().is_none());
+
+        first.disconnect().unwrap();
+        second.disconnect().unwrap();
+    }
+
+    #[test]
+    fn recuperacion_de_mission5_devuelve_resultado_autoritativo_correlacionado() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut client = GameClient::connect(address, "Jugador").unwrap();
+        wait_for_update(&mut session);
+        assert!(matches!(
+            client.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
+
+        client.request_mission_recovery(7).unwrap();
+        wait_for_update(&mut session);
+        assert_eq!(
+            client.receive().unwrap(),
+            ServerMessage::MissionRecoveryResult {
+                request_id: 7,
+                outcome: networking::MissionRecoveryOutcome::InvalidMissionTransition,
+            }
+        );
+        assert!(client.try_receive().unwrap().is_none());
+
+        client.request_mission_recovery(7).unwrap();
+        wait_for_update(&mut session);
+        assert_eq!(
+            client.receive().unwrap(),
+            ServerMessage::MissionRecoveryResult {
+                request_id: 7,
+                outcome: networking::MissionRecoveryOutcome::InvalidMissionTransition,
+            }
+        );
+        client.disconnect().unwrap();
+    }
+
+    #[test]
+    fn recuperacion_exitosa_replicada_a_todos_sin_repetir_broadcast() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut first = GameClient::connect(address, "Jugador 1").unwrap();
+        wait_for_update(&mut session);
+        assert!(matches!(
+            first.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
+        let mut second = GameClient::connect(address, "Jugador 2").unwrap();
+        wait_for_player(&mut session, second.player_id());
+
+        assert!(matches!(
+            first.receive().unwrap(),
+            ServerMessage::PlayerJoined { .. }
+        ));
+        assert!(matches!(
+            second.receive().unwrap(),
+            ServerMessage::PlayerJoined { .. }
+        ));
+        assert!(matches!(
+            second.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
+
+        let mission = crate::cooperacion::PROGRESION_COOPERATIVA;
+        let setup = session.gameplay.update([
+            GameplayCommand::UnlockMission { mission },
+            GameplayCommand::StartMission { mission },
+        ]);
+        assert!(setup.iter().all(|result| matches!(
+            result.status,
+            CommandStatus::Success { .. }
+        )));
+
+        first.request_mission_recovery(11).unwrap();
+        wait_for_update(&mut session);
+
+        assert_eq!(
+            first.receive().unwrap(),
+            ServerMessage::MissionRecoveryResult {
+                request_id: 11,
+                outcome: networking::MissionRecoveryOutcome::Succeeded,
+            }
+        );
+        let first_update = first.receive().unwrap();
+        let second_update = second.receive().unwrap();
+        assert_eq!(first_update, second_update);
+        let ServerMessage::MissionContentUpdated { content } = first_update else {
+            panic!("faltó la actualización compartida de Mission5");
+        };
+        assert_eq!(content.mission_id, 5);
+        assert_eq!(content.required_total, 3);
+        assert!(content.destination.is_some());
+        assert!(content.shooter.is_some());
+        assert!(content.shooter.as_ref().is_some_and(|shooter| shooter.active));
+        assert_eq!(first.mission5_content(), Some(&content));
+
+        first.request_mission_recovery(11).unwrap();
+        wait_for_update(&mut session);
+        assert_eq!(
+            first.receive().unwrap(),
+            ServerMessage::MissionRecoveryResult {
+                request_id: 11,
+                outcome: networking::MissionRecoveryOutcome::Succeeded,
+            }
+        );
+        assert!(first.try_receive().unwrap().is_none());
+        assert!(second.try_receive().unwrap().is_none());
+
+        first.disconnect().unwrap();
+        second.disconnect().unwrap();
+    }
+
+    #[test]
+    fn proyeccion_mission5_selecciona_el_shooter_activo_preparado() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut client = GameClient::connect(address, "Jugador").unwrap();
+        wait_for_update(&mut session);
+        assert!(matches!(
+            client.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
+
+        let create_result = session.gameplay.update([GameplayCommand::CreateEnemy {
+            configuration: gameplay::EnemyConfiguration::for_archetype(
+                gameplay::EnemyArchetype::Shooter,
+                Vec3::ZERO,
+            ),
+        }]);
+        assert!(matches!(
+            create_result.first().map(|result| result.status),
+            Some(CommandStatus::Success { changed: true })
+        ));
+        let inactive_id = session
+            .gameplay
+            .world()
+            .combatants()
+            .find(|combatant| {
+                !combatant.is_player
+                    && combatant.archetype == Some(gameplay::EnemyArchetype::Shooter)
+            })
+            .map(|combatant| combatant.entity)
+            .expect("debe existir el Shooter preexistente");
+        let deactivate_result = session.gameplay.update([GameplayCommand::SetEnemyActive {
+            enemy: inactive_id,
+            active: false,
+        }]);
+        assert!(matches!(
+            deactivate_result.first().map(|result| result.status),
+            Some(CommandStatus::Success { changed: true })
+        ));
+
+        let mission = crate::cooperacion::PROGRESION_COOPERATIVA;
+        let setup = session.gameplay.update([
+            GameplayCommand::UnlockMission { mission },
+            GameplayCommand::StartMission { mission },
+        ]);
+        assert!(setup.iter().all(|result| matches!(
+            result.status,
+            CommandStatus::Success { .. }
+        )));
+
+        let active_id = session
+            .gameplay
+            .world()
+            .combatants()
+            .find(|combatant| {
+                !combatant.is_player
+                    && combatant.active
+                    && combatant.archetype == Some(gameplay::EnemyArchetype::Shooter)
+            })
+            .map(|combatant| combatant.entity)
+            .expect("la preparación debe crear un Shooter activo");
+        assert_ne!(inactive_id, active_id);
+        assert!(!session.gameplay.world().combatant(inactive_id).unwrap().active);
+
+        let projection = session.mission5_content_projection();
+        let projected_id = projection
+            .shooter
+            .as_ref()
+            .expect("la proyección debe incluir un Shooter")
+            .entity_id;
+        assert_eq!(projected_id, active_id.value());
+        assert_ne!(projected_id, inactive_id.value());
+        assert_eq!(
+            session
+                .gameplay
+                .world()
+                .destination(crate::cooperacion::SIGNAL_DESTINATION)
+                .unwrap()
+                .id
+                .value(),
+            crate::cooperacion::SIGNAL_DESTINATION.value()
+        );
+
+        client.disconnect().unwrap();
+    }
+
+    #[test]
+    fn proyeccion_mission5_omite_shooters_inactivos() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut client = GameClient::connect(address, "Jugador").unwrap();
+        wait_for_update(&mut session);
+        assert!(matches!(
+            client.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
+
+        let mission = crate::cooperacion::PROGRESION_COOPERATIVA;
+        let setup = session.gameplay.update([
+            GameplayCommand::UnlockMission { mission },
+            GameplayCommand::StartMission { mission },
+        ]);
+        assert!(setup.iter().all(|result| matches!(
+            result.status,
+            CommandStatus::Success { .. }
+        )));
+
+        let active_id = session
+            .gameplay
+            .world()
+            .combatants()
+            .find(|combatant| {
+                !combatant.is_player
+                    && combatant.active
+                    && combatant.archetype == Some(gameplay::EnemyArchetype::Shooter)
+            })
+            .map(|combatant| combatant.entity)
+            .expect("la preparacion debe crear un Shooter activo");
+        let before = session.gameplay.mission_progress(mission).unwrap();
+        let destination_id = session
+            .gameplay
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .unwrap()
+            .id
+            .value();
+
+        let deactivate_result = session.gameplay.update([GameplayCommand::SetEnemyActive {
+            enemy: active_id,
+            active: false,
+        }]);
+        assert!(matches!(
+            deactivate_result.first().map(|result| result.status),
+            Some(CommandStatus::Success { changed: true })
+        ));
+
+        let projection = session.mission5_content_projection();
+        assert!(projection.shooter.is_none());
+        assert_eq!(
+            projection
+                .destination
+                .as_ref()
+                .expect("Destination104 debe conservarse")
+                .destination_id,
+            destination_id
+        );
+        let after = session.gameplay.mission_progress(mission).unwrap();
+        assert_eq!(projection.required_completed, before.required_completed as u32);
+        assert_eq!(projection.optional_completed, before.optional_completed as u32);
+        assert_eq!(after.required_completed, before.required_completed);
+        assert_eq!(after.optional_completed, before.optional_completed);
+
+        client.disconnect().unwrap();
+    }
+
+    #[test]
     fn movimiento_invalido_no_muta_y_dos_clientes_reciben_el_movimiento_autorizado() {
         let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
         let address = session.local_addr().unwrap();
         let mut first = GameClient::connect(address, "Jugador 1").unwrap();
         wait_for_update(&mut session);
+        assert!(matches!(
+            first.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
         let mut second = GameClient::connect(address, "Jugador 2").unwrap();
         wait_for_player(&mut session, second.player_id());
         let first_entity = session.network_player(first.player_id()).unwrap().entity;
@@ -420,6 +957,10 @@ mod tests {
             second.receive().unwrap(),
             ServerMessage::PlayerJoined { .. }
         ));
+        assert!(matches!(
+            second.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
         assert!(
             matches!(second.receive().unwrap(), ServerMessage::PlayerMoved { player_id, sequence: 2, .. } if player_id == first.player_id())
         );
@@ -474,10 +1015,17 @@ mod tests {
 
         let mut first = GameClient::connect(address, "Ruth").unwrap();
         wait_for_player(&mut session, first.player_id());
+        let first_content = receive_initial_mission5_state(&mut first);
         let mut second = GameClient::connect(address, "Tiffany").unwrap();
         wait_for_player(&mut session, second.player_id());
+        let second_content = receive_initial_mission5_state(&mut second);
         let mut third = GameClient::connect(address, "Sarita").unwrap();
         wait_for_player(&mut session, third.player_id());
+        let third_content = receive_initial_mission5_state(&mut third);
+
+        assert_eq!(first_content, session.mission5_content_projection());
+        assert_eq!(second_content, first_content);
+        assert_eq!(third_content, first_content);
 
         let entities = [first.player_id(), second.player_id(), third.player_id()]
             .map(|id| session.network_player(id).unwrap().entity);

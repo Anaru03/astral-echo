@@ -15,6 +15,6 @@ pub use image::{GpuImage, ReadbackLayout};
 pub use offscreen::OffscreenTarget;
 pub use postprocess::{aces_tonemap, PostProcessConfig, PostProcessPreset};
 pub use renderer::{
-    game_over_overlay_scene, GpuRenderer, GpuVertex, PackedScene, ResourceStats, CLEAR_RGBA,
+    game_over_overlay_scene, hud_overlay_scene, GpuRenderer, GpuVertex, PackedScene, ResourceStats, CLEAR_RGBA,
 };
 pub use window::{run_snapshot_window, run_window, SurfaceRenderer, WindowReport};

@@ -8,7 +8,10 @@ use glam::Mat4;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::clip::{clip_triangle, ClipVertex};
+use crate::clip::{
+    clip_triangle, clip_triangle_fast, clip_triangle_fast_profiled, clip_triangle_profiled,
+    ClipVertex,
+};
 use crate::error::RasterError;
 use crate::framebuffer::{Color, Framebuffer};
 use crate::geometry::RasterMesh;
@@ -217,9 +220,26 @@ impl<'a> CpuPipeline<'a> {
         self.stats.metrics.vertices_in += mesh.vertices.len() as u32;
         let t0 = self.timer();
         if let Some(lighting) = lighting {
-            stage.transform_lit_into(&mesh.vertices, lighting, &mut self.clip_vertices)?;
+            if self.config.timing {
+                stage.transform_lit_into_profiled(
+                    &mesh.vertices,
+                    lighting,
+                    &mut self.clip_vertices,
+                    Some(&mut self.stats.metrics.timings),
+                )?;
+            } else {
+                stage.transform_lit_into(&mesh.vertices, lighting, &mut self.clip_vertices)?;
+            }
         } else {
-            stage.transform_into(&mesh.vertices, &mut self.clip_vertices)?;
+            if self.config.timing {
+                stage.transform_into_profiled(
+                    &mesh.vertices,
+                    &mut self.clip_vertices,
+                    &mut self.stats.metrics.timings,
+                )?;
+            } else {
+                stage.transform_into(&mesh.vertices, &mut self.clip_vertices)?;
+            }
         }
         self.stats.metrics.vertices_out += self.clip_vertices.len() as u32;
         let vertex_ns = self.elapsed(t0);
@@ -274,7 +294,11 @@ impl<'a> CpuPipeline<'a> {
             };
 
             let t0 = self.timer();
-            let clipped = match clip_triangle(*a, *b, *c) {
+            let clipped = match if self.config.timing {
+                clip_triangle_fast_profiled(*a, *b, *c, &mut self.stats.metrics.clipping)
+            } else {
+                clip_triangle_fast(*a, *b, *c)
+            } {
                 Ok(polygon) => polygon,
                 Err(_) => {
                     self.stats.record_error();
@@ -372,7 +396,11 @@ impl<'a> CpuPipeline<'a> {
             }
         };
         let t0 = self.timer();
-        let clipped = match clip_triangle(*a, *b, *c) {
+        let clipped = match if self.config.timing {
+            clip_triangle_profiled(*a, *b, *c, &mut self.stats.metrics.clipping)
+        } else {
+            clip_triangle(*a, *b, *c)
+        } {
             Ok(polygon) => polygon,
             Err(_) => {
                 self.stats.record_error();

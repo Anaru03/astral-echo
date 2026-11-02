@@ -160,6 +160,19 @@ impl VisualAssets {
             .map(Arc::as_ref)
             .ok_or(VisualError::UnknownAsset(mesh, material))
     }
+
+    pub fn register_mesh(
+        &mut self,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+        raster_mesh: RasterMesh,
+    ) {
+        let raster_mesh = Arc::new(raster_mesh);
+        self.bounds
+            .insert((mesh, material), mesh_bounds(&raster_mesh));
+        self.meshes.insert((mesh, material), raster_mesh.clone());
+        self.low.insert((mesh, material), raster_mesh);
+    }
 }
 
 impl Default for VisualAssets {
@@ -212,11 +225,7 @@ impl Default for VisualAssets {
             ),
             (
                 (MeshHandle::SUN_SPHERE, Self::SUN),
-                RasterMesh::sphere(
-                    Vec3::ZERO,
-                    1.0,
-                    Vec4::new(1.0, 0.55, 0.08, 1.0),
-                ),
+                RasterMesh::sphere(Vec3::ZERO, 1.0, Vec4::new(1.0, 0.55, 0.08, 1.0)),
             ),
             (
                 (MeshHandle::PLANET_SPHERE, Self::PLANET),
@@ -243,11 +252,48 @@ impl Default for VisualAssets {
             .map(|(key, mesh)| (*key, mesh_bounds(mesh)))
             .collect();
         let meshes = low.clone();
-        Self {
+        let mut assets = Self {
             meshes,
             low,
             bounds,
-        }
+        };
+        assets.register_mesh(
+            MeshHandle::CUBE,
+            Self::DESTINATION,
+            cuboid(Vec3::new(1.2, 2.4, 1.2), Vec4::new(0.9, 0.9, 1.0, 1.0)),
+        );
+        assets
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_assets_register_cube_with_destination_material() {
+        let assets = VisualAssets::default();
+
+        assert!(assets
+            .mesh(MeshHandle::CUBE, VisualAssets::DESTINATION)
+            .is_ok());
+
+        let camera = Camera::demo();
+        let mut snapshot = RenderSnapshot::new(
+            engine::Tick(0),
+            camera.position(),
+            camera.view_matrix(),
+            camera.projection_matrix(),
+        );
+        snapshot.push_node(SnapshotNode::destination(
+            1,
+            Transform::default(),
+            MeshHandle::CUBE,
+            VisualAssets::DESTINATION,
+            true,
+        ));
+
+        assert!(SnapshotScene::default().update(&snapshot).is_ok());
     }
 }
 
@@ -309,6 +355,15 @@ impl Default for SnapshotScene {
 }
 
 impl SnapshotScene {
+    pub fn register_mesh(
+        &mut self,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+        raster_mesh: RasterMesh,
+    ) {
+        self.assets.register_mesh(mesh, material, raster_mesh);
+    }
+
     pub fn set_lighting_mode(&mut self, mode: crate::LightingMode) {
         self.lighting_mode = mode;
     }
@@ -377,7 +432,7 @@ impl SnapshotScene {
     }
 
     pub fn overlay(&self) -> crate::RenderOverlay {
-        self.snapshot.overlay
+        self.snapshot.overlay.clone()
     }
 
     pub fn view_projection(&self) -> Mat4 {

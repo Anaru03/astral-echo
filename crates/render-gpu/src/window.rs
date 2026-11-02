@@ -14,7 +14,7 @@ use winit::window::{Window, WindowId};
 use crate::postprocess::PostProcessPass;
 use crate::renderer::DepthTarget;
 use crate::{
-    block_on, game_over_overlay_scene, GpuContext, GpuError, GpuOptions, GpuRenderer, PostProcessConfig,
+    block_on, game_over_overlay_scene, hud_overlay_scene, GpuContext, GpuError, GpuOptions, GpuRenderer, PostProcessConfig,
     PostProcessPreset,
 };
 
@@ -32,6 +32,11 @@ pub struct SurfaceRenderer {
     hdr_view: Option<wgpu::TextureView>,
 }
 
+pub struct WindowSurface {
+    instance: wgpu::Instance,
+    surface: wgpu::Surface<'static>,
+}
+
 impl SurfaceRenderer {
     pub fn new(
         window: Arc<Window>,
@@ -46,7 +51,21 @@ impl SurfaceRenderer {
         scene: Vec<(RasterMesh, Transform)>,
         options: GpuOptions,
     ) -> Pin<Box<dyn Future<Output = Result<Self, GpuError>>>> {
-        Box::pin(async move { Self::new_async_ref(window, &scene, options).await })
+        Box::pin(async move {
+            let window_surface = Self::create_window_surface(window.clone(), options)?;
+            Self::new_async_with_surface(window, window_surface, &scene, options).await
+        })
+    }
+
+    pub fn create_window_surface(
+        window: Arc<Window>,
+        options: GpuOptions,
+    ) -> Result<WindowSurface, GpuError> {
+        let instance = GpuContext::create_instance(options)?;
+        let surface = instance
+            .create_surface(window)
+            .map_err(|e| GpuError::Backend(e.to_string()))?;
+        Ok(WindowSurface { instance, surface })
     }
 
     async fn new_async_ref(
@@ -54,12 +73,19 @@ impl SurfaceRenderer {
         scene: &[(RasterMesh, Transform)],
         options: GpuOptions,
     ) -> Result<Self, GpuError> {
+        let window_surface = Self::create_window_surface(window.clone(), options)?;
+        Self::new_async_with_surface(window, window_surface, scene, options).await
+    }
+
+    pub async fn new_async_with_surface(
+        window: Arc<Window>,
+        window_surface: WindowSurface,
+        scene: &[(RasterMesh, Transform)],
+        options: GpuOptions,
+    ) -> Result<Self, GpuError> {
         let started = Instant::now();
         println!("hot-swap gpu-surface-start");
-        let instance = GpuContext::create_instance(options)?;
-        let surface = instance
-            .create_surface(window.clone())
-            .map_err(|e| GpuError::Backend(e.to_string()))?;
+        let WindowSurface { instance, surface } = window_surface;
         let gpu = Arc::new(GpuContext::from_instance_async(
             instance,
             Some(&surface),
@@ -374,8 +400,14 @@ impl SurfaceRenderer {
                 &view,
                 &depth.view,
                 vp,
-                overlay_clear_color(overlay),
+                overlay_clear_color(&overlay),
             )?;
+        }
+        let hud_scene = hud_overlay_scene(&overlay.hud, self.config.width, self.config.height);
+        if !hud_scene.is_empty() {
+            let mut hud_renderer = GpuRenderer::new(self.gpu.clone(), self.config.format, &hud_scene)?;
+            let hud_depth = DepthTarget::new(&self.gpu, self.config.width, self.config.height)?;
+            hud_renderer.render_to_view_matrix_over(&view, &hud_depth.view, Mat4::IDENTITY)?;
         }
         self.window.pre_present_notify();
         texture.present();
@@ -387,7 +419,7 @@ impl SurfaceRenderer {
     }
 }
 
-fn overlay_clear_color(overlay: render_core::RenderOverlay) -> [u8; 4] {
+fn overlay_clear_color(overlay: &render_core::RenderOverlay) -> [u8; 4] {
     let scale = 1.0 - overlay.fade_to_black.clamp(0.0, 1.0);
     [(8.0 * scale) as u8, (10.0 * scale) as u8, (18.0 * scale) as u8, 255]
 }

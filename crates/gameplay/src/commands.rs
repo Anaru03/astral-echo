@@ -332,6 +332,7 @@ pub enum GameplayCommand {
     StartMission {
         mission: MissionId,
     },
+    RetryCooperativeMissionContent,
     FailMission {
         mission: MissionId,
     },
@@ -370,6 +371,7 @@ pub enum CommandRejection {
     StationOccupied,
     StationNotOccupiedByPlayer,
     MissionNotFound,
+    MissionContentUnavailable,
     ObjectiveNotFound,
     InvalidMissionTransition,
     InvalidObjectiveTransition,

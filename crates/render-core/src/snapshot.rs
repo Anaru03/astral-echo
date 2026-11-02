@@ -147,7 +147,7 @@ pub struct RenderVisualEvent {
     pub expires_at: engine::Duration,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RenderOverlay {
     pub fade_to_black: f32,
     pub game_over: bool,
@@ -176,12 +176,27 @@ pub enum HudAutopilotState {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HudMissionState {
+    #[default]
+    Locked,
+    Available,
+    Active,
+    Failed,
+    Completed,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HudState {
     pub flight: HudFlightState,
     pub autopilot: HudAutopilotState,
     pub target: Option<u32>,
     pub active_enemies: u32,
     pub landing_available: bool,
+    pub mission_name: Option<String>,
+    pub objective_name: Option<String>,
+    pub mission_progress: Option<(u8, u8)>,
+    pub mission_state: Option<HudMissionState>,
+    pub feedback: Option<String>,
 }
 
 pub const GAME_OVER_GLYPHS: [[u8; 7]; 8] = [

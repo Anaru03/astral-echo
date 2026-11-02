@@ -267,6 +267,13 @@ pub fn compare(cpu: &GpuImage, gpu: &GpuImage) -> (f64, usize, usize) {
         .map(|(a, b)| f64::from(a.abs_diff(*b)))
         .sum::<f64>()
         / cpu.rgba.len() as f64;
+    let max_channel_error = cpu
+        .rgba
+        .iter()
+        .zip(&gpu.rgba)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
     let colors = cpu
         .rgba
         .chunks_exact(4)
@@ -279,6 +286,30 @@ pub fn compare(cpu: &GpuImage, gpu: &GpuImage) -> (f64, usize, usize) {
         .zip(&gpu.depth)
         .filter(|(a, b)| !a.is_finite() || !b.is_finite() || (*a - *b).abs() > 1e-5)
         .count();
+    let mut min_x = cpu.width;
+    let mut min_y = cpu.height;
+    let mut max_x = 0;
+    let mut max_y = 0;
+    for (index, (a, b)) in cpu
+        .rgba
+        .chunks_exact(4)
+        .zip(gpu.rgba.chunks_exact(4))
+        .enumerate()
+    {
+        if a.iter().zip(b).any(|(a, b)| a.abs_diff(*b) > 2) {
+            let x = index as u32 % cpu.width;
+            let y = index as u32 / cpu.width;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+    println!(
+        "comparison-diagnostics mean={mean:.6} max_channel_error={max_channel_error} color_outliers={colors} ({:.4}%) bbox=({min_x},{min_y}..{max_x},{max_y}) depth_outliers={depths} ({:.4}%)",
+        colors as f64 * 100.0 / (cpu.width * cpu.height) as f64,
+        depths as f64 * 100.0 / (cpu.width * cpu.height) as f64,
+    );
     assert!(mean <= 0.25, "mean channel error {mean}");
     assert!(
         colors as f64 / cpu.depth.len() as f64 <= 0.005,

@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use render_core::{InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene};
 use render_cpu::{
-    render_snapshot_scene_with_shader, render_snapshot_scene_with_shader_with_stats, write_png,
-    Framebuffer, FragmentShader, RasterMode,
+    render_snapshot_scene_with_stats, render_snapshot_scene_with_shader, write_png, Framebuffer,
+    FragmentShader, RasterMode,
 };
 use render_gpu::{GpuError, GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
@@ -113,6 +113,13 @@ pub struct HotSwapReport {
     pub transitions: u64,
     pub last_transition_ms: Option<f64>,
     pub gpu_error: Option<String>,
+}
+
+impl HotSwapReport {
+    fn record_transition(&mut self, transitions: u64, duration_ms: Option<f64>) {
+        self.transitions = transitions;
+        self.last_transition_ms = duration_ms;
+    }
 }
 
 struct Host {
@@ -421,12 +428,16 @@ impl Host {
                 state.surface = None;
                 state.cpu_surface_size = None;
                 state.gpu = Some(gpu);
-                if state.backend.confirm_switch(BackendKind::Gpu).is_ok() {
+                let confirmed = state.backend.confirm_switch(BackendKind::Gpu).is_ok();
+                let transitions = state.backend.transitions();
+                if confirmed {
                     println!(
                         "hot-swap gpu-ready preparation_ms={:.3}",
                         preparation_ms.unwrap_or_default()
                     );
                     state.window.request_redraw();
+                    let _ = state;
+                    self.report.record_transition(transitions, preparation_ms);
                 }
             }
             Ok(Err(error)) => {
@@ -578,6 +589,7 @@ impl Host {
         if !state.backend.request_switch(target) {
             return;
         }
+        let transition_started = Instant::now();
         let previous_gpu = state.gpu.take();
         let gpu = if target == BackendKind::Gpu {
             let mut gpu = match previous_gpu {
@@ -588,6 +600,19 @@ impl Host {
                     let window = state.window.clone();
                     let scene = state.snapshot.owned_draws();
                     let high_preset = state.config_preset() != Preset::Low;
+                    let window_surface = match SurfaceRenderer::create_window_surface(
+                        window.clone(),
+                        GpuOptions::default(),
+                    ) {
+                        Ok(surface) => surface,
+                        Err(error) => {
+                            state.backend.cancel_switch(error.to_string());
+                            state.pending_gpu_started = None;
+                            self.report_gpu_error(error.to_string());
+                            println!("hot-swap gpu-surface error={error}");
+                            return;
+                        }
+                    };
                     let (sender, receiver) = mpsc::sync_channel(1);
                     let wake_proxy = self.wake_proxy.clone();
                     let worker = std::thread::Builder::new()
@@ -595,9 +620,10 @@ impl Host {
                         .spawn(move || {
                             println!("hot-swap gpu-worker start");
                             let result = render_gpu::block_on(async move {
-                                let mut gpu = SurfaceRenderer::new_async(
+                                let mut gpu = SurfaceRenderer::new_async_with_surface(
                                     window,
-                                    scene,
+                                    window_surface,
+                                    &scene,
                                     GpuOptions::default(),
                                 )
                                 .await?;
@@ -686,11 +712,9 @@ impl Host {
         if let Some(error) = &transition_error {
             println!("hot-swap error={error}");
         } else {
-            self.report.transitions = state.backend.transitions();
-            self.report.last_transition_ms = state
-                .backend
-                .last_transition()
-                .map(|d| d.as_secs_f64() * 1000.0);
+            let duration_ms = Some(transition_started.elapsed().as_secs_f64() * 1000.0);
+            self.report
+                .record_transition(state.backend.transitions(), duration_ms);
             println!(
                 "hot-swap backend={:?} nodes={} buffer={} transition_ms={:.3}",
                 target,
@@ -905,11 +929,10 @@ impl Host {
             }
             return;
         }
-        if let Ok((stats, _)) = render_snapshot_scene_with_shader_with_stats(
+        if let Ok((stats, _)) = render_snapshot_scene_with_stats(
             &mut state.framebuffer,
             &state.snapshot,
             self.config.raster_mode,
-            FragmentShader::SolarBands,
         ) {
             if trace_frame {
                 println!(
@@ -1023,8 +1046,40 @@ fn hud_title(base: &str, backend: BackendKind, snapshot: &RenderSnapshot) -> Str
     } else {
         ""
     };
+    let mission = snapshot
+        .overlay
+        .hud
+        .mission_name
+        .as_deref()
+        .unwrap_or("sin_mision");
+    let objective = snapshot
+        .overlay
+        .hud
+        .objective_name
+        .as_deref()
+        .unwrap_or("sin_objetivo");
+    let progress = snapshot
+        .overlay
+        .hud
+        .mission_progress
+        .map_or_else(|| "-".to_owned(), |(done, total)| format!("{done}/{total}"));
+    let mission_status = match snapshot.overlay.hud.mission_state {
+        Some(render_core::HudMissionState::Locked) => "bloqueada",
+        Some(render_core::HudMissionState::Available) => "disponible",
+        Some(render_core::HudMissionState::Active) => "activa",
+        Some(render_core::HudMissionState::Failed) => "fallida",
+        Some(render_core::HudMissionState::Completed) => "completada",
+        None => "sin_estado",
+    };
+    let feedback = snapshot
+        .overlay
+        .hud
+        .feedback
+        .as_deref()
+        .unwrap_or("sin_feedback");
+    let feedback = feedback.chars().take(180).collect::<String>();
     format!(
-        "{base} | {backend} | tick={} | vuelo={flight} | objetivo={target} | auto={autopilot} | enemigos={} | O observar | P vuelo | Flechas orbitar | Espacio tiempo | F aterrizar/atacar{landing}",
+        "{base} | {backend} | tick={} | mision={mission} ({mission_status} {progress}) | mision_objetivo={objective} | objetivo={target} | vuelo={flight} | auto={autopilot} | enemigos={} | feedback={feedback} | M iniciar | I interactuar | R energia | Y oxigeno | O observar | P vuelo | Flechas orbitar | Espacio tiempo | F aterrizar/atacar{landing}",
         snapshot.tick.0,
         snapshot.overlay.hud.active_enemies,
     )
@@ -1155,12 +1210,61 @@ mod tests {
         snapshot.overlay.hud.autopilot = render_core::HudAutopilotState::InTransit;
         snapshot.overlay.hud.target = Some(42);
         snapshot.overlay.hud.active_enemies = 2;
+        snapshot.overlay.hud.feedback = Some("OPERACION PARCIALMENTE COMPLETADA".into());
         let title = hud_title("Astral Echo", BackendKind::Gpu, &snapshot);
 
         assert!(title.contains("vuelo=atmosfera"));
         assert!(title.contains("objetivo=42"));
         assert!(title.contains("auto=en_transito"));
         assert!(title.contains("enemigos=2"));
+        assert!(title.contains("feedback=OPERACION PARCIALMENTE COMPLETADA"));
+    }
+
+    #[test]
+    fn hud_title_uses_current_feedback_and_does_not_keep_previous_text() {
+        let mut snapshot = RenderSnapshot::minimal_demo();
+        snapshot.overlay.hud.feedback = Some("OPERACION FALLIDA".into());
+        let failed = hud_title("Astral Echo", BackendKind::Cpu, &snapshot);
+        assert!(failed.contains("feedback=OPERACION FALLIDA"));
+
+        snapshot.overlay.hud.feedback = Some("OPERACION COMPLETADA".into());
+        let completed = hud_title("Astral Echo", BackendKind::Cpu, &snapshot);
+        assert!(completed.contains("feedback=OPERACION COMPLETADA"));
+        assert!(!completed.contains("OPERACION FALLIDA"));
+
+        snapshot.overlay.hud.feedback = None;
+        let empty = hud_title("Astral Echo", BackendKind::Cpu, &snapshot);
+        assert!(empty.contains("feedback=sin_feedback"));
+    }
+
+    #[test]
+    fn hud_title_reports_each_mission_state_without_changing_required_progress() {
+        let cases = [
+            (render_core::HudMissionState::Locked, "bloqueada", "0/5"),
+            (render_core::HudMissionState::Available, "disponible", "0/5"),
+            (render_core::HudMissionState::Active, "activa", "2/5"),
+            (render_core::HudMissionState::Failed, "fallida", "2/5"),
+            (render_core::HudMissionState::Completed, "completada", "5/5"),
+        ];
+
+        for (state, label, progress) in cases {
+            let mut snapshot = RenderSnapshot::minimal_demo();
+            snapshot.overlay.hud.mission_name = Some("El despertar".into());
+            snapshot.overlay.hud.mission_progress = Some(match state {
+                render_core::HudMissionState::Completed => (5, 5),
+                render_core::HudMissionState::Active | render_core::HudMissionState::Failed => {
+                    (2, 5)
+                }
+                render_core::HudMissionState::Locked
+                | render_core::HudMissionState::Available => (0, 5),
+            });
+            snapshot.overlay.hud.mission_state = Some(state);
+
+            let title = hud_title("Astral Echo", BackendKind::Cpu, &snapshot);
+
+            assert!(title.contains("mision=El despertar"));
+            assert!(title.contains(&format!("{label} {progress}")));
+        }
     }
 
     #[test]
@@ -1169,6 +1273,81 @@ mod tests {
         snapshot.overlay.game_over = true;
 
         assert_eq!(hud_title("Astral Echo", BackendKind::Gpu, &snapshot), "Astral Echo | GAME OVER");
+    }
+
+    fn report() -> HotSwapReport {
+        HotSwapReport {
+            transitions: 0,
+            last_transition_ms: None,
+            gpu_error: None,
+        }
+    }
+
+    fn backend_state() -> HotSwapState<()> {
+        HotSwapState::new(
+            BackendKind::Cpu,
+            BackendSnapshot {
+                value: (),
+                width: 640,
+                height: 360,
+            },
+        )
+    }
+
+    #[test]
+    fn report_records_each_confirmed_transition_once() {
+        let mut state = backend_state();
+        let mut report = report();
+
+        assert!(state.request_switch(BackendKind::Gpu));
+        assert!(state.confirm_switch(BackendKind::Gpu).unwrap());
+        report.record_transition(state.transitions(), Some(12.5));
+
+        assert_eq!(report.transitions, 1);
+        assert_eq!(report.last_transition_ms, Some(12.5));
+    }
+
+    #[test]
+    fn rejected_duplicate_does_not_change_report() {
+        let mut state = backend_state();
+        let report = report();
+
+        assert!(state.request_switch(BackendKind::Gpu));
+        assert!(!state.request_switch(BackendKind::Gpu));
+
+        assert_eq!(report.transitions, 0);
+        assert_eq!(report.last_transition_ms, None);
+    }
+
+    #[test]
+    fn cancelled_transition_does_not_change_report() {
+        let mut state = backend_state();
+        let report = report();
+
+        assert!(state.request_switch(BackendKind::Gpu));
+        state.cancel_switch("GPU unavailable");
+
+        assert_eq!(report.transitions, 0);
+        assert_eq!(report.last_transition_ms, None);
+        assert_eq!(state.backend(), BackendKind::Cpu);
+    }
+
+    #[test]
+    fn consecutive_cpu_gpu_transitions_are_counted_without_duplication() {
+        let mut state = backend_state();
+        let mut report = report();
+
+        assert!(state.request_switch(BackendKind::Gpu));
+        assert!(state.confirm_switch(BackendKind::Gpu).unwrap());
+        report.record_transition(state.transitions(), Some(10.0));
+
+        assert!(state.request_switch(BackendKind::Cpu));
+        assert!(state.confirm_switch(BackendKind::Cpu).unwrap());
+        report.record_transition(state.transitions(), Some(4.0));
+
+        assert_eq!(report.transitions, 2);
+        assert_eq!(report.last_transition_ms, Some(4.0));
+        assert_eq!(state.backend(), BackendKind::Cpu);
     }
 }
 

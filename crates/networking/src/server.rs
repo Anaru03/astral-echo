@@ -480,6 +480,36 @@ impl GameServerHandle {
     pub fn broadcast_except(&self, message: &ServerMessage, exclude: Option<NetworkPlayerId>) {
         broadcast_all(&self.state, self.events.as_ref(), message, exclude);
     }
+
+    pub fn send_to(
+        &self,
+        player_id: NetworkPlayerId,
+        message: &ServerMessage,
+    ) -> io::Result<()> {
+        let (mut stream, output, write_lock) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| io::Error::other("Estado del servidor no disponible"))?;
+            let connection = state.connections.get(&player_id).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotConnected, "Jugador no conectado")
+            })?;
+            (
+                connection.stream.try_clone()?,
+                connection.output.clone(),
+                Arc::clone(&connection.legacy_write_lock),
+            )
+        };
+
+        if let Some(output) = output {
+            output.enqueue(message)
+        } else {
+            let _guard = write_lock
+                .lock()
+                .map_err(|_| io::Error::other("Bloqueo de escritura no disponible"))?;
+            send_message(&mut stream, message)
+        }
+    }
 }
 
 impl GameServer {
@@ -1092,6 +1122,15 @@ fn handle_client(
                                 broadcast_all(&state, events.as_ref(), &message, Some(id));
                             }
                         }
+                    }
+                }
+
+                ClientMessage::RequestMissionRecovery { request_id } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::MissionRecoveryRequested {
+                            player_id: id,
+                            request_id,
+                        });
                     }
                 }
 

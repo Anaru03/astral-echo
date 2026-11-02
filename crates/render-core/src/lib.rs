@@ -2,11 +2,13 @@ pub mod bounds;
 pub mod camera;
 pub mod demo;
 pub mod geometry;
+pub mod hud;
 pub mod interpolation;
 pub mod lighting;
 pub mod material;
 pub mod math;
 pub mod mesh;
+pub mod model_loader;
 pub mod scene;
 pub mod shadows;
 pub mod snapshot;
@@ -24,15 +26,14 @@ pub use math::{
 pub use mesh::{MeshHandle, Vertex};
 pub use scene::{RenderCamera, RenderLight, RenderLightKind, RenderNode, RenderScene};
 pub use snapshot::{
-    game_over_layout, HudAutopilotState, HudFlightState, HudState, RenderOverlay, RenderSnapshot,
+    game_over_layout, HudAutopilotState, HudFlightState, HudMissionState, HudState, RenderOverlay, RenderSnapshot,
     RenderVisualEvent, RenderVisualEventKind, SnapshotId, SnapshotLight, SnapshotNode,
     GAME_OVER_GLYPHS,
 };
 pub use transform::Transform;
 pub use visual::{
     CullingConfig, LodLevel, PreparedDraw, PreparedScene, PreparedSceneStats, SceneUpdate,
-    SnapshotScene,
-    VisibilityClass, VisualAssets, VisualError,
+    SnapshotScene, VisibilityClass, VisualAssets, VisualError,
 };
 
 pub use demo::{
@@ -40,9 +41,14 @@ pub use demo::{
     TERRAIN_HEIGHT,
 };
 pub use geometry::{RasterMesh, RasterVertex};
+pub use hud::{hud_overlay, HudOverlay, HudOverlayRect};
+pub use model_loader::{load_obj, load_obj_reader, ObjLoadError};
 
 pub use lighting::{
-    material_fixture, shade_surface, LightingEnvironment, LightingMode, MAX_POINT_LIGHTS,
+    material_fixture, shade_surface, shade_surface_profiled, shade_surface_profiled_sanitized,
+    shade_surface_profiled_sanitized_normalized, shade_surface_sanitized,
+    shade_surface_sanitized_normalized, LightingEnvironment, LightingMode, ShadeTimings,
+    MAX_POINT_LIGHTS,
 };
 
 pub use shadows::{shadow_fixture, ShadowConfig, ShadowConfigError, ShadowResolution};

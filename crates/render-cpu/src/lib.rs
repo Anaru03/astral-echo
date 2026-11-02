@@ -10,7 +10,9 @@ pub mod scene;
 mod snapshot;
 pub mod viewport;
 pub use snapshot::{
+    compose_hud_overlay,
     render_prepared_scene, render_snapshot_scene, render_snapshot_scene_reference,
+    render_snapshot_scene_with_timing,
     render_snapshot_scene_with_shader, render_snapshot_scene_with_shader_at_time,
     render_snapshot_scene_with_shader_at_time_with_stats,
     render_snapshot_scene_with_shader_with_stats, render_snapshot_scene_with_stats,

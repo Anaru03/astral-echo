@@ -37,6 +37,7 @@ pub(crate) enum RuntimeCommand {
     InstallUpgrade { destination: u32, code: u8 },
     UnlockMission(u32),
     StartMission(u32),
+    RetryCooperativeMissionContent,
     Scan,
     Collectibles,
     Collect { collectible: u64, amount: u32, player: Option<u64> },
