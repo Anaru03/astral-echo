@@ -78,6 +78,30 @@ pub fn station_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
     nodes
 }
 
+fn mission_interaction_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    world
+        .interactables()
+        .filter(|interactable| {
+            matches!(
+                interactable.behavior,
+                gameplay::InteractionBehavior::Console { .. }
+                    | gameplay::InteractionBehavior::ElectricalPanel
+                    | gameplay::InteractionBehavior::LifeSupportPanel
+                    | gameplay::InteractionBehavior::Door { .. }
+            )
+        })
+        .map(|interactable| {
+            SnapshotNode::new(
+                interactable.entity_id,
+                Transform::from_translation(from_engine(interactable.position)),
+                PLACEHOLDER_MESH,
+                PLACEHOLDER_MATERIAL,
+                interactable.enabled,
+            )
+        })
+        .collect()
+}
+
 pub fn derelict_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
     world
         .derelicts()
@@ -296,6 +320,10 @@ pub fn snapshot_from_world_with_camera(
     }
 
     for node in station_nodes(world) {
+        snapshot.push_node(node);
+    }
+
+    for node in mission_interaction_nodes(world) {
         snapshot.push_node(node);
     }
 
@@ -539,6 +567,20 @@ fn hud_state(
         | gameplay::TravelState::Cancelled { destination } => Some(destination.value()),
         gameplay::TravelState::Idle => None,
     });
+    let mission = world.mission(crate::el_despertar::EL_DESPERTAR);
+    let guidance = world
+        .players()
+        .next()
+        .and_then(|player| world.guidance_for_player(player.entity_id).ok());
+    let current_objective = guidance
+        .as_ref()
+        .and_then(|state| state.current_objective)
+        .and_then(|objective| {
+            guidance
+                .as_ref()
+                .and_then(|state| state.objectives.iter().find(|value| value.id == objective))
+        });
+    let mission_progress = mission.map(|value| value.progress());
     HudState {
         flight,
         autopilot,
@@ -548,6 +590,18 @@ fn hud_state(
             .filter(|enemy| enemy.active && !enemy.is_defeated())
             .count() as u32,
         landing_available: academic_planet.is_some_and(|planet| world.landing_available(planet)),
+        mission_name: mission.map(|value| value.name.clone()),
+        objective_name: current_objective.map(|value| value.name.clone()),
+        mission_progress: mission_progress.map(|value| {
+            (
+                value.required_completed as u8,
+                value.required_total as u8,
+            )
+        }),
+        mission_completed: mission_progress
+            .is_some_and(|value| {
+                value.state == gameplay::domains::mission::MissionState::Completed
+            }),
     }
 }
 
@@ -566,6 +620,7 @@ fn expected_snapshot_node_count(
     count += world.players().count();
     count += world.companions().count();
     count += station_nodes(world).len();
+    count += mission_interaction_nodes(world).len();
     count += derelict_nodes(world).len();
     count += asteroid_field_nodes(world).len();
     count += world.enemies().filter(|enemy| !enemy.is_player).count();

@@ -395,7 +395,7 @@ impl SnapshotScene {
     }
 
     pub fn overlay(&self) -> crate::RenderOverlay {
-        self.snapshot.overlay
+        self.snapshot.overlay.clone()
     }
 
     pub fn view_projection(&self) -> Mat4 {

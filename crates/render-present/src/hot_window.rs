@@ -1046,8 +1046,30 @@ fn hud_title(base: &str, backend: BackendKind, snapshot: &RenderSnapshot) -> Str
     } else {
         ""
     };
+    let mission = snapshot
+        .overlay
+        .hud
+        .mission_name
+        .as_deref()
+        .unwrap_or("sin_mision");
+    let objective = snapshot
+        .overlay
+        .hud
+        .objective_name
+        .as_deref()
+        .unwrap_or("sin_objetivo");
+    let progress = snapshot
+        .overlay
+        .hud
+        .mission_progress
+        .map_or_else(|| "-".to_owned(), |(done, total)| format!("{done}/{total}"));
+    let mission_status = if snapshot.overlay.hud.mission_completed {
+        "completada"
+    } else {
+        "activa"
+    };
     format!(
-        "{base} | {backend} | tick={} | vuelo={flight} | objetivo={target} | auto={autopilot} | enemigos={} | O observar | P vuelo | Flechas orbitar | Espacio tiempo | F aterrizar/atacar{landing}",
+        "{base} | {backend} | tick={} | mision={mission} ({mission_status} {progress}) | mision_objetivo={objective} | objetivo={target} | vuelo={flight} | auto={autopilot} | enemigos={} | M iniciar | I interactuar | R energia | Y oxigeno | O observar | P vuelo | Flechas orbitar | Espacio tiempo | F aterrizar/atacar{landing}",
         snapshot.tick.0,
         snapshot.overlay.hud.active_enemies,
     )

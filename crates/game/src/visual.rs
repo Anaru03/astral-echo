@@ -5,10 +5,12 @@ use engine::{Duration, EntityId, Vec3 as GameplayVec3};
 use game::ProjectEchoSession;
 use gameplay::types::ItemId;
 use gameplay::{
-    AttackType, Destination, DestinationId, DestinationType, DiscoveryState, EnemyArchetype,
-    EnemyConfiguration, EncounterId, GameplayCommand, GameplayEvent, NavigationRoute,
-    NavigationRouteState, SpatialEncounter, SpatialEncounterKind, StationType, WeaponAmmunition,
-    WeaponConfiguration, PlanetPhysics,
+    AttackType, BreakerId, BreakerState, Destination, DestinationId, DestinationType,
+    DiscoveryState, ElectricalBreakerConfiguration, ElectricalPanelConfiguration,
+    EnemyArchetype, EnemyConfiguration, EncounterId, GameplayCommand, GameplayEvent,
+    LifeSupportConfiguration, NavigationRoute, NavigationRouteState,
+    OxygenCompartmentConfiguration, PlanetPhysics, SpatialEncounter, SpatialEncounterKind,
+    StationType, WeaponAmmunition, WeaponConfiguration,
 };
 use render_core::{LightingMode, MaterialInfo, VisualAssets};
 use render_present::{
@@ -108,6 +110,9 @@ struct VisualBridge {
     player: EntityId,
     ship: EntityId,
     pilot_station: EntityId,
+    electrical_panel: EntityId,
+    life_support_panel: EntityId,
+    bridge_door: EntityId,
     enemy: EntityId,
     feedback: String,
     observation: ObservationTransition,
@@ -206,6 +211,68 @@ impl VisualBridge {
         let pilot_station = session
             .create_station(GameplayVec3::ZERO, 3.0, StationType::Piloting)
             .map_err(|error| format!("crear estación visual: {error:?}"))?;
+        let _status_console = session
+            .create_ship_status_console(
+                GameplayVec3 {
+                    x: -2.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                3.0,
+            )
+            .map_err(|error| format!("crear consola de estado visual: {error:?}"))?;
+        let electrical_panel = session
+            .create_electrical_panel(
+                GameplayVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -2.0,
+                },
+                3.0,
+                ElectricalPanelConfiguration::new(vec![ElectricalBreakerConfiguration {
+                    id: BreakerId::new(1),
+                    initial_state: BreakerState::Off,
+                    target_state: BreakerState::On,
+                }]),
+            )
+            .map_err(|error| format!("crear panel electrico visual: {error:?}"))?;
+        let life_support_panel = session
+            .create_life_support_panel(
+                GameplayVec3 {
+                    x: 2.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                3.0,
+                LifeSupportConfiguration::new(
+                    5,
+                    vec![
+                        OxygenCompartmentConfiguration {
+                            id: gameplay::CompartmentId::new(1),
+                            initial_allocation: 0,
+                            minimum_allocation: 3,
+                            maximum_allocation: 5,
+                        },
+                        OxygenCompartmentConfiguration {
+                            id: gameplay::CompartmentId::new(2),
+                            initial_allocation: 0,
+                            minimum_allocation: 2,
+                            maximum_allocation: 5,
+                        },
+                    ],
+                ),
+            )
+            .map_err(|error| format!("crear panel de soporte visual: {error:?}"))?;
+        let bridge_door = session
+            .create_bridge_door(
+                GameplayVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 2.0,
+                },
+                3.0,
+            )
+            .map_err(|error| format!("crear puerta del puente visual: {error:?}"))?;
         session.update([
             GameplayCommand::ConfigureSignalScanner {
                 ship,
@@ -280,6 +347,9 @@ impl VisualBridge {
             player,
             ship,
             pilot_station,
+            electrical_panel,
+            life_support_panel,
+            bridge_door,
             enemy,
             feedback: "ESCENA INICIALIZADA".to_owned(),
             observation: ObservationTransition::default(),
@@ -332,6 +402,10 @@ impl VisualBridge {
         }
         self.last_discrete_action = Some(key);
         match key {
+            KeyCode::KeyM => self.start_awakening(),
+            KeyCode::KeyI => self.guided_interaction(),
+            KeyCode::KeyR => self.restore_energy(),
+            KeyCode::KeyY => self.restore_life_support(),
             KeyCode::Space => {
                 self.issue([GameplayCommand::AdvanceTime {
                     delta: Duration(100),
@@ -375,6 +449,88 @@ impl VisualBridge {
             KeyCode::ArrowDown => self.observation.adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP),
             _ => {}
         }
+    }
+
+    fn start_awakening(&mut self) {
+        let mission = crate::el_despertar::EL_DESPERTAR;
+        let Some(progress) = self.session.mission_progress(mission) else {
+            self.feedback = "MISION NO DISPONIBLE".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+            return;
+        };
+        if progress.state == gameplay::domains::mission::MissionState::Locked {
+            self.issue([GameplayCommand::UnlockMission { mission }]);
+        }
+        if self
+            .session
+            .mission_progress(mission)
+            .is_some_and(|value| {
+                value.state == gameplay::domains::mission::MissionState::Available
+            })
+        {
+            self.issue([GameplayCommand::StartMission { mission }]);
+        }
+    }
+
+    fn guided_interaction(&mut self) {
+        let action = self
+            .session
+            .world()
+            .guidance_for_player(self.player)
+            .ok()
+            .and_then(|guidance| guidance.recommended_action);
+        if let Some(gameplay::GuidanceAction::Interact(target)) = action {
+            if target == self.bridge_door {
+                self.issue([GameplayCommand::UnlockDoor {
+                    door: self.bridge_door,
+                }]);
+            }
+            if target == self.pilot_station {
+                self.issue([GameplayCommand::ReleaseStation {
+                    station: self.pilot_station,
+                    player: self.player,
+                }]);
+            }
+            self.issue([GameplayCommand::Interact {
+                player: self.player,
+                target,
+            }]);
+        } else {
+            self.feedback = "NO HAY INTERACCION DISPONIBLE".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+        }
+    }
+
+    fn restore_energy(&mut self) {
+        self.issue([GameplayCommand::Interact {
+            player: self.player,
+            target: self.electrical_panel,
+        }]);
+        self.issue([GameplayCommand::SetElectricalBreakerState {
+            player: self.player,
+            panel: self.electrical_panel,
+            breaker: BreakerId::new(1),
+            state: BreakerState::On,
+        }]);
+    }
+
+    fn restore_life_support(&mut self) {
+        self.issue([GameplayCommand::Interact {
+            player: self.player,
+            target: self.life_support_panel,
+        }]);
+        self.issue([GameplayCommand::SetOxygenAllocation {
+            player: self.player,
+            panel: self.life_support_panel,
+            compartment: gameplay::CompartmentId::new(1),
+            allocation: 3,
+        }]);
+        self.issue([GameplayCommand::SetOxygenAllocation {
+            player: self.player,
+            panel: self.life_support_panel,
+            compartment: gameplay::CompartmentId::new(2),
+            allocation: 2,
+        }]);
     }
 
     fn accelerate_ship(&mut self, player: EntityId, pilot_station: EntityId, input: GameplayVec3) {
@@ -912,5 +1068,62 @@ mod tests {
         assert!(cursor > 0);
         bridge.poll_haptics();
         assert_eq!(bridge.haptic_event_cursor, cursor);
+    }
+
+    #[test]
+    fn awakening_can_start_once_from_the_visual_input() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        let first = bridge
+            .session
+            .mission_progress(crate::el_despertar::EL_DESPERTAR)
+            .expect("awakening should be registered");
+        assert_eq!(
+            first.state,
+            gameplay::domains::mission::MissionState::Active
+        );
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        let started = bridge
+            .session
+            .world()
+            .events()
+            .iter()
+            .filter(|event| {
+                matches!(event, GameplayEvent::MissionStarted { mission, .. } if *mission == crate::el_despertar::EL_DESPERTAR)
+            })
+            .count();
+        assert_eq!(started, 1);
+    }
+
+    #[test]
+    fn awakening_visual_controls_follow_authoritative_gameplay_progress() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyR, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyY, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+
+        let progress = bridge
+            .session
+            .mission_progress(crate::el_despertar::EL_DESPERTAR)
+            .expect("awakening should remain available");
+        assert_eq!(progress.required_completed, progress.required_total);
+        assert_eq!(
+            progress.state,
+            gameplay::domains::mission::MissionState::Completed
+        );
+
+        let snapshot = game::render_bridge::snapshot_from_world(
+            bridge.session.world(),
+            Default::default(),
+        );
+        assert_eq!(
+            snapshot.overlay.hud.mission_name.as_deref(),
+            Some("El despertar")
+        );
+        assert!(snapshot.overlay.hud.mission_completed);
+        assert_eq!(snapshot.overlay.hud.mission_progress, Some((5, 5)));
     }
 }
