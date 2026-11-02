@@ -252,11 +252,48 @@ impl Default for VisualAssets {
             .map(|(key, mesh)| (*key, mesh_bounds(mesh)))
             .collect();
         let meshes = low.clone();
-        Self {
+        let mut assets = Self {
             meshes,
             low,
             bounds,
-        }
+        };
+        assets.register_mesh(
+            MeshHandle::CUBE,
+            Self::DESTINATION,
+            cuboid(Vec3::new(1.2, 2.4, 1.2), Vec4::new(0.9, 0.9, 1.0, 1.0)),
+        );
+        assets
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_assets_register_cube_with_destination_material() {
+        let assets = VisualAssets::default();
+
+        assert!(assets
+            .mesh(MeshHandle::CUBE, VisualAssets::DESTINATION)
+            .is_ok());
+
+        let camera = Camera::demo();
+        let mut snapshot = RenderSnapshot::new(
+            engine::Tick(0),
+            camera.position(),
+            camera.view_matrix(),
+            camera.projection_matrix(),
+        );
+        snapshot.push_node(SnapshotNode::destination(
+            1,
+            Transform::default(),
+            MeshHandle::CUBE,
+            VisualAssets::DESTINATION,
+            true,
+        ));
+
+        assert!(SnapshotScene::default().update(&snapshot).is_ok());
     }
 }
 

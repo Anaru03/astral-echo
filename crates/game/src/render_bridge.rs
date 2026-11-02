@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use gameplay::GameplayWorld;
 use render_core::{
     from_engine, Camera, CameraError, MaterialHandle, MeshHandle, Projection, Quat,
-    HudAutopilotState, HudFlightState, HudState, RenderSnapshot, RenderVisualEvent,
+    HudAutopilotState, HudFlightState, HudMissionState, HudState, RenderSnapshot, RenderVisualEvent,
     RenderVisualEventKind, SnapshotLight, SnapshotNode,
     Transform, Vec3, VisualAssets,
 };
@@ -581,6 +581,7 @@ fn hud_state(
                 .and_then(|state| state.objectives.iter().find(|value| value.id == objective))
         });
     let mission_progress = mission.map(|value| value.progress());
+    let mission_state = mission_progress.map(|value| hud_mission_state(value.state));
     HudState {
         flight,
         autopilot,
@@ -598,10 +599,17 @@ fn hud_state(
                 value.required_total as u8,
             )
         }),
-        mission_completed: mission_progress
-            .is_some_and(|value| {
-                value.state == gameplay::domains::mission::MissionState::Completed
-            }),
+        mission_state,
+    }
+}
+
+fn hud_mission_state(state: gameplay::domains::mission::MissionState) -> HudMissionState {
+    match state {
+        gameplay::domains::mission::MissionState::Locked => HudMissionState::Locked,
+        gameplay::domains::mission::MissionState::Available => HudMissionState::Available,
+        gameplay::domains::mission::MissionState::Active => HudMissionState::Active,
+        gameplay::domains::mission::MissionState::Failed => HudMissionState::Failed,
+        gameplay::domains::mission::MissionState::Completed => HudMissionState::Completed,
     }
 }
 
@@ -786,4 +794,26 @@ fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
         Quat::from_rotation_y(yaw.to_radians()) * Quat::from_rotation_x(pitch.to_radians()),
         Vec3::ONE,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hud_mission_state;
+    use gameplay::domains::mission::MissionState;
+    use render_core::HudMissionState;
+
+    #[test]
+    fn mission_state_conversion_preserves_all_domain_states() {
+        let states = [
+            (MissionState::Locked, HudMissionState::Locked),
+            (MissionState::Available, HudMissionState::Available),
+            (MissionState::Active, HudMissionState::Active),
+            (MissionState::Failed, HudMissionState::Failed),
+            (MissionState::Completed, HudMissionState::Completed),
+        ];
+
+        for (domain_state, hud_state) in states {
+            assert_eq!(hud_mission_state(domain_state), hud_state);
+        }
+    }
 }

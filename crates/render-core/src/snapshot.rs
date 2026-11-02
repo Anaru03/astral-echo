@@ -175,6 +175,16 @@ pub enum HudAutopilotState {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HudMissionState {
+    #[default]
+    Locked,
+    Available,
+    Active,
+    Failed,
+    Completed,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HudState {
     pub flight: HudFlightState,
@@ -185,7 +195,7 @@ pub struct HudState {
     pub mission_name: Option<String>,
     pub objective_name: Option<String>,
     pub mission_progress: Option<(u8, u8)>,
-    pub mission_completed: bool,
+    pub mission_state: Option<HudMissionState>,
 }
 
 pub const GAME_OVER_GLYPHS: [[u8; 7]; 8] = [

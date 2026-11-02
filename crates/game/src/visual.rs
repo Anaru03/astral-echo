@@ -1123,7 +1123,10 @@ mod tests {
             snapshot.overlay.hud.mission_name.as_deref(),
             Some("El despertar")
         );
-        assert!(snapshot.overlay.hud.mission_completed);
+        assert_eq!(
+            snapshot.overlay.hud.mission_state,
+            Some(render_core::HudMissionState::Completed)
+        );
         assert_eq!(snapshot.overlay.hud.mission_progress, Some((5, 5)));
     }
 }

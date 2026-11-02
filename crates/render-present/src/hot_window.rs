@@ -1063,10 +1063,13 @@ fn hud_title(base: &str, backend: BackendKind, snapshot: &RenderSnapshot) -> Str
         .hud
         .mission_progress
         .map_or_else(|| "-".to_owned(), |(done, total)| format!("{done}/{total}"));
-    let mission_status = if snapshot.overlay.hud.mission_completed {
-        "completada"
-    } else {
-        "activa"
+    let mission_status = match snapshot.overlay.hud.mission_state {
+        Some(render_core::HudMissionState::Locked) => "bloqueada",
+        Some(render_core::HudMissionState::Available) => "disponible",
+        Some(render_core::HudMissionState::Active) => "activa",
+        Some(render_core::HudMissionState::Failed) => "fallida",
+        Some(render_core::HudMissionState::Completed) => "completada",
+        None => "sin_estado",
     };
     format!(
         "{base} | {backend} | tick={} | mision={mission} ({mission_status} {progress}) | mision_objetivo={objective} | objetivo={target} | vuelo={flight} | auto={autopilot} | enemigos={} | M iniciar | I interactuar | R energia | Y oxigeno | O observar | P vuelo | Flechas orbitar | Espacio tiempo | F aterrizar/atacar{landing}",
@@ -1206,6 +1209,36 @@ mod tests {
         assert!(title.contains("objetivo=42"));
         assert!(title.contains("auto=en_transito"));
         assert!(title.contains("enemigos=2"));
+    }
+
+    #[test]
+    fn hud_title_reports_each_mission_state_without_changing_required_progress() {
+        let cases = [
+            (render_core::HudMissionState::Locked, "bloqueada", "0/5"),
+            (render_core::HudMissionState::Available, "disponible", "0/5"),
+            (render_core::HudMissionState::Active, "activa", "2/5"),
+            (render_core::HudMissionState::Failed, "fallida", "2/5"),
+            (render_core::HudMissionState::Completed, "completada", "5/5"),
+        ];
+
+        for (state, label, progress) in cases {
+            let mut snapshot = RenderSnapshot::minimal_demo();
+            snapshot.overlay.hud.mission_name = Some("El despertar".into());
+            snapshot.overlay.hud.mission_progress = Some(match state {
+                render_core::HudMissionState::Completed => (5, 5),
+                render_core::HudMissionState::Active | render_core::HudMissionState::Failed => {
+                    (2, 5)
+                }
+                render_core::HudMissionState::Locked
+                | render_core::HudMissionState::Available => (0, 5),
+            });
+            snapshot.overlay.hud.mission_state = Some(state);
+
+            let title = hud_title("Astral Echo", BackendKind::Cpu, &snapshot);
+
+            assert!(title.contains("mision=El despertar"));
+            assert!(title.contains(&format!("{label} {progress}")));
+        }
     }
 
     #[test]
