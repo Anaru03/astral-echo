@@ -1071,8 +1071,15 @@ fn hud_title(base: &str, backend: BackendKind, snapshot: &RenderSnapshot) -> Str
         Some(render_core::HudMissionState::Completed) => "completada",
         None => "sin_estado",
     };
+    let feedback = snapshot
+        .overlay
+        .hud
+        .feedback
+        .as_deref()
+        .unwrap_or("sin_feedback");
+    let feedback = feedback.chars().take(180).collect::<String>();
     format!(
-        "{base} | {backend} | tick={} | mision={mission} ({mission_status} {progress}) | mision_objetivo={objective} | objetivo={target} | vuelo={flight} | auto={autopilot} | enemigos={} | M iniciar | I interactuar | R energia | Y oxigeno | O observar | P vuelo | Flechas orbitar | Espacio tiempo | F aterrizar/atacar{landing}",
+        "{base} | {backend} | tick={} | mision={mission} ({mission_status} {progress}) | mision_objetivo={objective} | objetivo={target} | vuelo={flight} | auto={autopilot} | enemigos={} | feedback={feedback} | M iniciar | I interactuar | R energia | Y oxigeno | O observar | P vuelo | Flechas orbitar | Espacio tiempo | F aterrizar/atacar{landing}",
         snapshot.tick.0,
         snapshot.overlay.hud.active_enemies,
     )
@@ -1203,12 +1210,31 @@ mod tests {
         snapshot.overlay.hud.autopilot = render_core::HudAutopilotState::InTransit;
         snapshot.overlay.hud.target = Some(42);
         snapshot.overlay.hud.active_enemies = 2;
+        snapshot.overlay.hud.feedback = Some("OPERACION PARCIALMENTE COMPLETADA".into());
         let title = hud_title("Astral Echo", BackendKind::Gpu, &snapshot);
 
         assert!(title.contains("vuelo=atmosfera"));
         assert!(title.contains("objetivo=42"));
         assert!(title.contains("auto=en_transito"));
         assert!(title.contains("enemigos=2"));
+        assert!(title.contains("feedback=OPERACION PARCIALMENTE COMPLETADA"));
+    }
+
+    #[test]
+    fn hud_title_uses_current_feedback_and_does_not_keep_previous_text() {
+        let mut snapshot = RenderSnapshot::minimal_demo();
+        snapshot.overlay.hud.feedback = Some("OPERACION FALLIDA".into());
+        let failed = hud_title("Astral Echo", BackendKind::Cpu, &snapshot);
+        assert!(failed.contains("feedback=OPERACION FALLIDA"));
+
+        snapshot.overlay.hud.feedback = Some("OPERACION COMPLETADA".into());
+        let completed = hud_title("Astral Echo", BackendKind::Cpu, &snapshot);
+        assert!(completed.contains("feedback=OPERACION COMPLETADA"));
+        assert!(!completed.contains("OPERACION FALLIDA"));
+
+        snapshot.overlay.hud.feedback = None;
+        let empty = hud_title("Astral Echo", BackendKind::Cpu, &snapshot);
+        assert!(empty.contains("feedback=sin_feedback"));
     }
 
     #[test]

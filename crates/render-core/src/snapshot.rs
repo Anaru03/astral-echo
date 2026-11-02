@@ -196,6 +196,7 @@ pub struct HudState {
     pub objective_name: Option<String>,
     pub mission_progress: Option<(u8, u8)>,
     pub mission_state: Option<HudMissionState>,
+    pub feedback: Option<String>,
 }
 
 pub const GAME_OVER_GLYPHS: [[u8; 7]; 8] = [

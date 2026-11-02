@@ -71,6 +71,84 @@ struct ObservationTransition {
     elevation: f32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FeedbackOutcome {
+    Complete,
+    Partial,
+    Failed,
+    Empty,
+}
+
+#[derive(Debug, Default)]
+struct FeedbackAggregate {
+    evaluated: usize,
+    succeeded: usize,
+    failed: usize,
+    steps: Vec<String>,
+    events: Vec<String>,
+}
+
+impl FeedbackAggregate {
+    fn record(
+        &mut self,
+        commands: &[GameplayCommand],
+        results: &[gameplay::CommandResult],
+        events: impl IntoIterator<Item = String>,
+    ) {
+        self.evaluated += results.len();
+        for (index, result) in results.iter().enumerate() {
+            if matches!(result.status, gameplay::CommandStatus::Success { .. }) {
+                self.succeeded += 1;
+            } else {
+                self.failed += 1;
+            }
+            let command = commands
+                .get(index)
+                .map(|value| format!("{value:?}"))
+                .unwrap_or_else(|| "comando_desconocido".to_owned());
+            self.steps
+                .push(format!("paso{}={command}:{:?}", self.evaluated - results.len() + index + 1, result.status));
+        }
+        self.events.extend(events);
+    }
+
+    fn outcome(&self) -> FeedbackOutcome {
+        match (self.succeeded, self.failed) {
+            (0, 0) => FeedbackOutcome::Empty,
+            (_, 0) => FeedbackOutcome::Complete,
+            (0, _) => FeedbackOutcome::Failed,
+            _ => FeedbackOutcome::Partial,
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.outcome() == FeedbackOutcome::Complete
+    }
+
+    fn message(&self) -> String {
+        let label = match self.outcome() {
+            FeedbackOutcome::Complete => "OPERACION COMPLETADA",
+            FeedbackOutcome::Partial => "OPERACION PARCIALMENTE COMPLETADA",
+            FeedbackOutcome::Failed => "OPERACION FALLIDA",
+            FeedbackOutcome::Empty => "OPERACION SIN RESULTADO EVALUABLE",
+        };
+        let events = if self.events.is_empty() {
+            "sin eventos".to_owned()
+        } else {
+            self.events.join(" | ")
+        };
+        let steps = if self.steps.is_empty() {
+            "sin pasos".to_owned()
+        } else {
+            self.steps.join(" | ")
+        };
+        format!(
+            "{label}: comandos={} exitosos={} fallidos={} pasos={steps} eventos={events}",
+            self.evaluated, self.succeeded, self.failed,
+        )
+    }
+}
+
 impl Default for ObservationTransition {
     fn default() -> Self {
         Self {
@@ -367,23 +445,30 @@ impl VisualBridge {
     }
 
     fn issue(&mut self, commands: impl IntoIterator<Item = GameplayCommand>) -> bool {
-        let results = self.session.update(commands);
-        let succeeded = results.last().is_some_and(|result| {
-            matches!(result.status, gameplay::CommandStatus::Success { .. })
-        });
-        let status = results
-            .last()
-            .map(|result| format!("{:?}", result.status))
-            .unwrap_or_else(|| "sin resultado".to_owned());
-        let event = self
+        let mut aggregate = FeedbackAggregate::default();
+        self.issue_into(commands, &mut aggregate);
+        self.finish_issue(aggregate)
+    }
+
+    fn issue_into(
+        &mut self,
+        commands: impl IntoIterator<Item = GameplayCommand>,
+        aggregate: &mut FeedbackAggregate,
+    ) {
+        let commands: Vec<_> = commands.into_iter().collect();
+        let results = self.session.update(commands.clone());
+        let events = self
             .session
             .world()
             .events()
             .iter()
-            .last()
-            .map(|value| format!("{:?}", value))
-            .unwrap_or_else(|| "sin evento".to_owned());
-        self.feedback = format!("{status}; {event}");
+            .map(|value| format!("{:?}", value));
+        aggregate.record(&commands, &results, events);
+    }
+
+    fn finish_issue(&mut self, aggregate: FeedbackAggregate) -> bool {
+        let succeeded = aggregate.is_complete();
+        self.feedback = aggregate.message();
         println!("visual gameplay: {}", self.feedback);
         succeeded
     }
@@ -458,18 +543,16 @@ impl VisualBridge {
             println!("visual gameplay: {}", self.feedback);
             return;
         };
+        let mut aggregate = FeedbackAggregate::default();
         if progress.state == gameplay::domains::mission::MissionState::Locked {
-            self.issue([GameplayCommand::UnlockMission { mission }]);
+            self.issue_into([GameplayCommand::UnlockMission { mission }], &mut aggregate);
         }
-        if self
-            .session
-            .mission_progress(mission)
-            .is_some_and(|value| {
-                value.state == gameplay::domains::mission::MissionState::Available
-            })
-        {
-            self.issue([GameplayCommand::StartMission { mission }]);
+        if self.session.mission_progress(mission).is_some_and(|value| {
+            value.state == gameplay::domains::mission::MissionState::Available
+        }) {
+            self.issue_into([GameplayCommand::StartMission { mission }], &mut aggregate);
         }
+        self.finish_issue(aggregate);
     }
 
     fn guided_interaction(&mut self) {
@@ -480,21 +563,23 @@ impl VisualBridge {
             .ok()
             .and_then(|guidance| guidance.recommended_action);
         if let Some(gameplay::GuidanceAction::Interact(target)) = action {
+            let mut aggregate = FeedbackAggregate::default();
             if target == self.bridge_door {
-                self.issue([GameplayCommand::UnlockDoor {
+                self.issue_into([GameplayCommand::UnlockDoor {
                     door: self.bridge_door,
-                }]);
+                }], &mut aggregate);
             }
             if target == self.pilot_station {
-                self.issue([GameplayCommand::ReleaseStation {
+                self.issue_into([GameplayCommand::ReleaseStation {
                     station: self.pilot_station,
                     player: self.player,
-                }]);
+                }], &mut aggregate);
             }
-            self.issue([GameplayCommand::Interact {
+            self.issue_into([GameplayCommand::Interact {
                 player: self.player,
                 target,
-            }]);
+            }], &mut aggregate);
+            self.finish_issue(aggregate);
         } else {
             self.feedback = "NO HAY INTERACCION DISPONIBLE".to_owned();
             println!("visual gameplay: {}", self.feedback);
@@ -502,39 +587,44 @@ impl VisualBridge {
     }
 
     fn restore_energy(&mut self) {
-        self.issue([GameplayCommand::Interact {
+        let mut aggregate = FeedbackAggregate::default();
+        self.issue_into([GameplayCommand::Interact {
             player: self.player,
             target: self.electrical_panel,
-        }]);
-        self.issue([GameplayCommand::SetElectricalBreakerState {
+        }], &mut aggregate);
+        self.issue_into([GameplayCommand::SetElectricalBreakerState {
             player: self.player,
             panel: self.electrical_panel,
             breaker: BreakerId::new(1),
             state: BreakerState::On,
-        }]);
+        }], &mut aggregate);
+        self.finish_issue(aggregate);
     }
 
     fn restore_life_support(&mut self) {
-        self.issue([GameplayCommand::Interact {
+        let mut aggregate = FeedbackAggregate::default();
+        self.issue_into([GameplayCommand::Interact {
             player: self.player,
             target: self.life_support_panel,
-        }]);
-        self.issue([GameplayCommand::SetOxygenAllocation {
+        }], &mut aggregate);
+        self.issue_into([GameplayCommand::SetOxygenAllocation {
             player: self.player,
             panel: self.life_support_panel,
             compartment: gameplay::CompartmentId::new(1),
             allocation: 3,
-        }]);
-        self.issue([GameplayCommand::SetOxygenAllocation {
+        }], &mut aggregate);
+        self.issue_into([GameplayCommand::SetOxygenAllocation {
             player: self.player,
             panel: self.life_support_panel,
             compartment: gameplay::CompartmentId::new(2),
             allocation: 2,
-        }]);
+        }], &mut aggregate);
+        self.finish_issue(aggregate);
     }
 
     fn accelerate_ship(&mut self, player: EntityId, pilot_station: EntityId, input: GameplayVec3) {
-        self.issue([
+        let mut aggregate = FeedbackAggregate::default();
+        self.issue_into([
             GameplayCommand::AccelerateShip {
                 player,
                 pilot_station,
@@ -543,7 +633,8 @@ impl VisualBridge {
             GameplayCommand::AdvanceTime {
                 delta: Duration(100),
             },
-        ]);
+        ], &mut aggregate);
+        self.finish_issue(aggregate);
     }
 
     fn current_flight_input(&self) -> GameplayVec3 {
@@ -703,7 +794,8 @@ impl VisualBridge {
             }
             _ => (ORIGIN, DESTINATION),
         };
-        self.issue([
+        let mut aggregate = FeedbackAggregate::default();
+        self.issue_into([
             GameplayCommand::Interact {
                 player,
                 target: pilot_station,
@@ -718,7 +810,8 @@ impl VisualBridge {
                 player,
                 pilot_station,
             },
-        ]);
+        ], &mut aggregate);
+        self.finish_issue(aggregate);
     }
 
     fn camera(&self, aspect: f32) -> Result<render_core::Camera, render_core::CameraError> {
@@ -752,11 +845,13 @@ pub fn run() -> Result<(), String> {
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
-            Ok(game::render_bridge::snapshot_from_world_with_camera(
+            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera(
                 bridge.session.world(),
                 Default::default(),
                 &camera,
-            ))
+            );
+            snapshot.overlay.hud.feedback = Some(bridge.feedback.clone());
+            Ok(snapshot)
         }),
         true,
         move |key, state| input_runtime.borrow_mut().handle_key(key, state),
@@ -809,6 +904,73 @@ mod tests {
         assert_eq!(controller_key(ControllerButton::West), Some(KeyCode::KeyQ));
         assert_eq!(controller_key(ControllerButton::North), Some(KeyCode::KeyO));
         assert_eq!(controller_key(ControllerButton::DPadLeft), Some(KeyCode::ArrowLeft));
+    }
+
+    #[test]
+    fn feedback_aggregate_classifies_all_result_combinations() {
+        let success = gameplay::CommandResult::success(true);
+        let failure = gameplay::CommandResult::rejected(gameplay::CommandRejection::InvalidDuration);
+
+        let cases = [
+            (&[success, success][..], FeedbackOutcome::Complete, true, "OPERACION COMPLETADA"),
+            (&[failure, failure][..], FeedbackOutcome::Failed, false, "OPERACION FALLIDA"),
+            (&[success, failure][..], FeedbackOutcome::Partial, false, "PARCIALMENTE COMPLETADA"),
+            (&[][..], FeedbackOutcome::Empty, false, "SIN RESULTADO EVALUABLE"),
+        ];
+        for (results, outcome, complete, label) in cases {
+            let mut aggregate = FeedbackAggregate::default();
+            let commands = vec![GameplayCommand::AdvanceTime {
+                delta: Duration(100),
+            }; results.len()];
+            aggregate.record(&commands, results, ["evento".to_owned()]);
+            assert_eq!(aggregate.outcome(), outcome);
+            assert_eq!(aggregate.is_complete(), complete);
+            assert!(aggregate.message().contains(label));
+            if !results.is_empty() {
+                assert!(aggregate.message().contains("AdvanceTime"));
+            }
+            assert!(aggregate.message().contains("eventos=evento"));
+        }
+    }
+
+    #[test]
+    fn issue_aggregates_results_and_starts_each_operation_clean() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let first = bridge.issue([
+            GameplayCommand::AdvanceTime {
+                delta: Duration(100),
+            },
+            GameplayCommand::AdvanceTime { delta: Duration(0) },
+        ]);
+        assert!(!first);
+        assert!(bridge.feedback.contains("PARCIALMENTE COMPLETADA"));
+        assert!(bridge.feedback.contains("comandos=2 exitosos=1 fallidos=1"));
+
+        let empty = bridge.issue(std::iter::empty::<GameplayCommand>());
+        assert!(!empty);
+        assert!(bridge.feedback.contains("SIN RESULTADO EVALUABLE"));
+
+        let next = bridge.issue([GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        }]);
+        assert!(next);
+        assert!(bridge.feedback.contains("OPERACION COMPLETADA"));
+        assert!(bridge.feedback.contains("comandos=1 exitosos=1 fallidos=0"));
+    }
+
+    #[test]
+    fn composite_controls_report_all_commands_without_rollback() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+
+        bridge.restore_energy();
+        assert!(bridge.feedback.contains("comandos=2"));
+        bridge.restore_life_support();
+        assert!(bridge.feedback.contains("comandos=3"));
+
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        assert!(bridge.feedback.contains("comandos=3"));
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        assert!(bridge.feedback.contains("comandos=2"));
     }
 
     #[test]
@@ -1103,7 +1265,9 @@ mod tests {
         bridge.handle_key(KeyCode::KeyR, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyY, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        assert!(bridge.feedback.contains("comandos=2"));
         bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        assert!(bridge.feedback.contains("comandos=2"));
 
         let progress = bridge
             .session

@@ -109,11 +109,15 @@ impl GuidanceSystem {
 
         let current_objective = objectives
             .iter()
-            .find(|objective| objective.status == GuidanceStatus::Active)
+            .find(|objective| {
+                Self::mission_allows_guidance(world, objective.mission)
+                    && objective.status == GuidanceStatus::Active
+            })
             .or_else(|| {
-                objectives
-                    .iter()
-                    .find(|objective| objective.status == GuidanceStatus::Available)
+                objectives.iter().find(|objective| {
+                    Self::mission_allows_guidance(world, objective.mission)
+                        && objective.status == GuidanceStatus::Available
+                })
             })
             .map(|objective| objective.id);
         let recommended_action = current_objective.and_then(|id| {
@@ -176,9 +180,12 @@ impl GuidanceSystem {
             }
         }
 
-        let recommended_action = (status == GuidanceStatus::Available
-            || status == GuidanceStatus::Active)
-            .then(|| Self::action_for(world, mission, objective));
+        let recommended_action = matches!(mission.state(), MissionState::Available | MissionState::Active)
+            .then(|| {
+                (status == GuidanceStatus::Available || status == GuidanceStatus::Active)
+                    .then(|| Self::action_for(world, mission, objective))
+            })
+            .flatten();
         GuidanceObjective {
             id: objective.id,
             mission: mission.id,
@@ -191,6 +198,12 @@ impl GuidanceSystem {
             missing_requirements,
             recommended_action,
         }
+    }
+
+    fn mission_allows_guidance(world: &GameplayWorld, mission: MissionId) -> bool {
+        world
+            .mission(mission)
+            .is_some_and(|mission| matches!(mission.state(), MissionState::Available | MissionState::Active))
     }
 
     fn trigger_requirement(
@@ -397,5 +410,121 @@ impl GuidanceSystem {
                 .derelict(id)
                 .is_some_and(|derelict| derelict.state == crate::derelict::DerelictState::Resolved),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        commands::{CommandStatus, GameplayCommand},
+        mission_system::MissionSystem,
+        systems::GameplaySystem,
+    };
+
+    const MISSION: MissionId = MissionId(900);
+    const REQUIRED: ObjectiveId = ObjectiveId(901);
+    const OPTIONAL: ObjectiveId = ObjectiveId(902);
+
+    fn fixture() -> (GameplayWorld, EntityId) {
+        let mut world = GameplayWorld::new();
+        let player = world.create_player().expect("player should be created");
+        let mission = Mission::new(
+            MISSION,
+            "Guidance test",
+            vec![
+                Objective::new(REQUIRED, MISSION, "Required", true, ObjectiveTrigger::Manual),
+                Objective::new(OPTIONAL, MISSION, "Optional", false, ObjectiveTrigger::Manual),
+            ],
+        )
+        .expect("mission definition should be valid");
+        world
+            .register_mission(mission)
+            .expect("mission should be registered");
+        (world, player)
+    }
+
+    fn apply(system: &mut MissionSystem, world: &mut GameplayWorld, command: GameplayCommand) {
+        let result = system.process(world, command).expect("mission command should be handled");
+        assert!(matches!(result.status, CommandStatus::Success { .. }));
+    }
+
+    fn active_world() -> (GameplayWorld, EntityId, MissionSystem) {
+        let (mut world, player) = fixture();
+        let mut system = MissionSystem::new();
+        apply(&mut system, &mut world, GameplayCommand::UnlockMission { mission: MISSION });
+        apply(&mut system, &mut world, GameplayCommand::StartMission { mission: MISSION });
+        (world, player, system)
+    }
+
+    #[test]
+    fn completed_mission_does_not_recommend_pending_optional_objective() {
+        let (mut world, player, mut system) = active_world();
+        apply(&mut system, &mut world, GameplayCommand::StartObjective { objective: REQUIRED });
+        apply(&mut system, &mut world, GameplayCommand::CompleteObjective { objective: REQUIRED });
+
+        assert_eq!(world.mission(MISSION).unwrap().state(), MissionState::Completed);
+        let optional = world
+            .objective(OPTIONAL)
+            .expect("optional objective should remain in the mission");
+        assert_eq!(optional.state(), ObjectiveState::Available);
+
+        for _ in 0..3 {
+            let guidance = GuidanceSystem::query(&world, player).unwrap();
+            assert_eq!(guidance.current_objective, None);
+            assert_eq!(guidance.recommended_action, None);
+            assert_eq!(
+                guidance
+                    .objectives
+                    .iter()
+                    .find(|objective| objective.id == OPTIONAL)
+                    .unwrap()
+                    .recommended_action,
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn failed_mission_does_not_recommend_pending_optional_objective() {
+        let (mut world, player, mut system) = active_world();
+        apply(&mut system, &mut world, GameplayCommand::FailMission { mission: MISSION });
+
+        assert_eq!(world.mission(MISSION).unwrap().state(), MissionState::Failed);
+        assert_eq!(world.objective(OPTIONAL).unwrap().state(), ObjectiveState::Available);
+        let guidance = GuidanceSystem::query(&world, player).unwrap();
+        assert_eq!(guidance.current_objective, None);
+        assert_eq!(guidance.recommended_action, None);
+    }
+
+    #[test]
+    fn non_terminal_states_keep_their_existing_guidance_contract() {
+        let (mut world, player) = fixture();
+        let mut system = MissionSystem::new();
+
+        let locked = GuidanceSystem::query(&world, player).unwrap();
+        assert_eq!(locked.current_objective, None);
+        assert_eq!(locked.recommended_action, None);
+
+        apply(&mut system, &mut world, GameplayCommand::UnlockMission { mission: MISSION });
+        let available = GuidanceSystem::query(&world, player).unwrap();
+        assert_eq!(available.recommended_action, Some(GuidanceAction::StartMission(MISSION)));
+
+        apply(&mut system, &mut world, GameplayCommand::StartMission { mission: MISSION });
+        let active = GuidanceSystem::query(&world, player).unwrap();
+        assert_eq!(active.current_objective, Some(REQUIRED));
+        assert_eq!(
+            active.recommended_action,
+            Some(GuidanceAction::CompleteObjective(REQUIRED))
+        );
+        assert_eq!(
+            active
+                .objectives
+                .iter()
+                .find(|objective| objective.id == OPTIONAL)
+                .unwrap()
+                .recommended_action,
+            Some(GuidanceAction::CompleteObjective(OPTIONAL))
+        );
     }
 }
