@@ -53,8 +53,9 @@ pub use client::GameClient;
 pub use protocol::{
     decode_client, decode_server, encode, ClientMessage, NetworkPlayerId, ProtocolError,
     Mission5ContentProjection, Mission5DestinationProjection, Mission5ObjectiveProjection,
-    Mission5ShooterProjection, MissionRecoveryOutcome, MissionStateProjection,
-    ObjectiveStateProjection, ServerMessage, MAX_PLAYERS, PROTOCOL_VERSION,
+    Mission5DiscoveryProjection, Mission5ShooterProjection, Mission5DestinationTypeProjection,
+    MissionRecoveryOutcome, MissionStateProjection, ObjectiveStateProjection, ServerMessage,
+    MAX_PLAYERS, PROTOCOL_VERSION,
 };
 
 pub use remote_players::{RemotePlayer, RemotePlayers};

@@ -62,11 +62,26 @@ pub struct Mission5ObjectiveProjection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum Mission5DestinationTypeProjection {
+    Planet,
+    SpacePoint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum Mission5DiscoveryProjection {
+    Unknown,
+    Known,
+    Discovered,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Mission5DestinationProjection {
     pub destination_id: u32,
+    pub destination_type: Mission5DestinationTypeProjection,
     pub position: [f32; 3],
     pub travel_duration: u64,
     pub fuel_cost: u32,
+    pub discovery: Mission5DiscoveryProjection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -313,9 +328,11 @@ mod tests {
                 }],
                 destination: Some(Mission5DestinationProjection {
                     destination_id: 104,
+                    destination_type: Mission5DestinationTypeProjection::SpacePoint,
                     position: [0.0, 0.0, 0.0],
                     travel_duration: 100,
                     fuel_cost: 1,
+                    discovery: Mission5DiscoveryProjection::Unknown,
                 }),
                 shooter: Some(Mission5ShooterProjection {
                     entity_id: 9,

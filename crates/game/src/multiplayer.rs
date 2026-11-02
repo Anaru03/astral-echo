@@ -9,8 +9,9 @@ use gameplay::{CommandStatus, GameplayCommand};
 use networking::{
     GameServer, GameServerHandle, NetworkOrientation, NetworkPlayerId, NetworkVec3,
     Mission5ContentProjection, Mission5DestinationProjection, Mission5ObjectiveProjection,
-    Mission5ShooterProjection, MissionRecoveryOutcome, MissionStateProjection,
-    ObjectiveStateProjection, PlayerTransform, ServerEvent, ServerEventQueue, ServerMessage,
+    Mission5DestinationTypeProjection, Mission5DiscoveryProjection, Mission5ShooterProjection,
+    MissionRecoveryOutcome, MissionStateProjection, ObjectiveStateProjection, PlayerTransform,
+    ServerEvent, ServerEventQueue, ServerMessage,
 };
 
 use crate::ProjectEchoSession;
@@ -326,9 +327,22 @@ impl MultiplayerSession {
             .destination(crate::cooperacion::SIGNAL_DESTINATION)
             .map(|value| Mission5DestinationProjection {
                 destination_id: value.id.value(),
+                destination_type: match value.destination_type {
+                    gameplay::DestinationType::Planet => Mission5DestinationTypeProjection::Planet,
+                    gameplay::DestinationType::SpacePoint => {
+                        Mission5DestinationTypeProjection::SpacePoint
+                    }
+                },
                 position: [value.position.x, value.position.y, value.position.z],
                 travel_duration: value.travel_duration.0,
                 fuel_cost: value.fuel_cost,
+                discovery: match value.discovery {
+                    gameplay::DiscoveryState::Unknown => Mission5DiscoveryProjection::Unknown,
+                    gameplay::DiscoveryState::Known => Mission5DiscoveryProjection::Known,
+                    gameplay::DiscoveryState::Discovered => {
+                        Mission5DiscoveryProjection::Discovered
+                    }
+                },
             });
         let shooter = self
             .gameplay
@@ -530,6 +544,7 @@ mod tests {
                 outcome: networking::MissionRecoveryOutcome::InvalidMissionTransition,
             }
         );
+        assert!(client.try_receive().unwrap().is_none());
 
         client.request_mission_recovery(7).unwrap();
         wait_for_update(&mut session);
