@@ -135,6 +135,9 @@ pub enum ServerMessage {
     MissionContentUpdated {
         content: Mission5ContentProjection,
     },
+    Mission5ContentState {
+        content: Mission5ContentProjection,
+    },
 }
 
 #[derive(Debug)]
@@ -340,6 +343,25 @@ mod tests {
                     current_health: 20,
                     maximum_health: 20,
                 }),
+            },
+        };
+
+        assert_eq!(decode_server(&encode(&message).unwrap()).unwrap(), message);
+    }
+
+    #[test]
+    fn test_initial_mission_content_state_round_trips() {
+        let message = ServerMessage::Mission5ContentState {
+            content: Mission5ContentProjection {
+                mission_id: 5,
+                state: MissionStateProjection::Locked,
+                required_completed: 0,
+                required_total: 3,
+                optional_completed: 0,
+                optional_total: 0,
+                objectives: Vec::new(),
+                destination: None,
+                shooter: None,
             },
         };
 

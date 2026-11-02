@@ -201,6 +201,13 @@ impl MultiplayerSession {
 
         self.players.insert(player_id, entity);
 
+        let _ = self.server.send_to(
+            player_id,
+            &ServerMessage::Mission5ContentState {
+                content: self.mission5_content_projection(),
+            },
+        );
+
         Ok(())
     }
 
@@ -494,12 +501,26 @@ mod tests {
         panic!("no se registró el jugador de red");
     }
 
+    fn receive_initial_mission5_state(client: &mut GameClient) -> Mission5ContentProjection {
+        for _ in 0..8 {
+            match client.receive().unwrap() {
+                ServerMessage::Mission5ContentState { content } => return content,
+                _ => {}
+            }
+        }
+        panic!("no se recibió el estado inicial de Mission5");
+    }
+
     #[test]
     fn ingreso_crea_una_entidad_estable_y_movimiento_se_aplica() {
         let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
         let address = session.local_addr().unwrap();
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
+        assert!(matches!(
+            client.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
         let network_player = session.network_player(client.player_id()).unwrap();
         let initial = session
             .gameplay()
@@ -529,11 +550,93 @@ mod tests {
     }
 
     #[test]
+    fn nuevo_cliente_recibe_mission5_sin_contenido_sin_mutar_el_mundo() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut client = GameClient::connect(address, "Jugador").unwrap();
+        wait_for_update(&mut session);
+
+        let message = client.receive().unwrap();
+        let ServerMessage::Mission5ContentState { content } = message else {
+            panic!("faltó el estado inicial de Mission5");
+        };
+        assert_eq!(content, session.mission5_content_projection());
+        assert_eq!(content.mission_id, 5);
+        assert!(content.destination.is_none());
+        assert!(content.shooter.is_none());
+        assert_eq!(client.mission5_content(), Some(&content));
+        assert!(session
+            .gameplay()
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .is_none());
+        assert!(!session.gameplay().world().combatants().any(|value| {
+            !value.is_player
+                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+        }));
+
+        client.disconnect().unwrap();
+    }
+
+    #[test]
+    fn nuevo_cliente_recibe_estado_actual_de_mission5_sin_replay_historico() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut first = GameClient::connect(address, "Jugador 1").unwrap();
+        wait_for_update(&mut session);
+        let _ = first.receive().unwrap();
+
+        let mission = crate::cooperacion::PROGRESION_COOPERATIVA;
+        let setup = session.gameplay.update([
+            GameplayCommand::UnlockMission { mission },
+            GameplayCommand::StartMission { mission },
+        ]);
+        assert!(setup.iter().all(|result| matches!(
+            result.status,
+            CommandStatus::Success { .. }
+        )));
+
+        first.request_mission_recovery(21).unwrap();
+        wait_for_update(&mut session);
+        assert!(matches!(
+            first.receive().unwrap(),
+            ServerMessage::MissionRecoveryResult { .. }
+        ));
+        assert!(matches!(
+            first.receive().unwrap(),
+            ServerMessage::MissionContentUpdated { .. }
+        ));
+
+        let mut second = GameClient::connect(address, "Jugador 2").unwrap();
+        wait_for_player(&mut session, second.player_id());
+        assert!(matches!(
+            second.receive().unwrap(),
+            ServerMessage::PlayerJoined { .. }
+        ));
+        let message = second.receive().unwrap();
+        let ServerMessage::Mission5ContentState { content } = message else {
+            panic!("faltó el estado inicial para el segundo cliente");
+        };
+        assert_eq!(content, session.mission5_content_projection());
+        assert!(content.destination.is_some());
+        assert!(content.shooter.is_some());
+        assert_eq!(second.mission5_content(), Some(&content));
+        assert!(second.try_receive().unwrap().is_none());
+
+        first.disconnect().unwrap();
+        second.disconnect().unwrap();
+    }
+
+    #[test]
     fn recuperacion_de_mission5_devuelve_resultado_autoritativo_correlacionado() {
         let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
         let address = session.local_addr().unwrap();
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
+        assert!(matches!(
+            client.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
 
         client.request_mission_recovery(7).unwrap();
         wait_for_update(&mut session);
@@ -564,6 +667,10 @@ mod tests {
         let address = session.local_addr().unwrap();
         let mut first = GameClient::connect(address, "Jugador 1").unwrap();
         wait_for_update(&mut session);
+        assert!(matches!(
+            first.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
         let mut second = GameClient::connect(address, "Jugador 2").unwrap();
         wait_for_player(&mut session, second.player_id());
 
@@ -574,6 +681,10 @@ mod tests {
         assert!(matches!(
             second.receive().unwrap(),
             ServerMessage::PlayerJoined { .. }
+        ));
+        assert!(matches!(
+            second.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
         ));
 
         let mission = crate::cooperacion::PROGRESION_COOPERATIVA;
@@ -606,6 +717,7 @@ mod tests {
         assert_eq!(content.required_total, 3);
         assert!(content.destination.is_some());
         assert!(content.shooter.is_some());
+        assert_eq!(first.mission5_content(), Some(&content));
 
         first.request_mission_recovery(11).unwrap();
         wait_for_update(&mut session);
@@ -629,6 +741,10 @@ mod tests {
         let address = session.local_addr().unwrap();
         let mut first = GameClient::connect(address, "Jugador 1").unwrap();
         wait_for_update(&mut session);
+        assert!(matches!(
+            first.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
         let mut second = GameClient::connect(address, "Jugador 2").unwrap();
         wait_for_player(&mut session, second.player_id());
         let first_entity = session.network_player(first.player_id()).unwrap().entity;
@@ -684,6 +800,10 @@ mod tests {
             second.receive().unwrap(),
             ServerMessage::PlayerJoined { .. }
         ));
+        assert!(matches!(
+            second.receive().unwrap(),
+            ServerMessage::Mission5ContentState { .. }
+        ));
         assert!(
             matches!(second.receive().unwrap(), ServerMessage::PlayerMoved { player_id, sequence: 2, .. } if player_id == first.player_id())
         );
@@ -738,10 +858,17 @@ mod tests {
 
         let mut first = GameClient::connect(address, "Ruth").unwrap();
         wait_for_player(&mut session, first.player_id());
+        let first_content = receive_initial_mission5_state(&mut first);
         let mut second = GameClient::connect(address, "Tiffany").unwrap();
         wait_for_player(&mut session, second.player_id());
+        let second_content = receive_initial_mission5_state(&mut second);
         let mut third = GameClient::connect(address, "Sarita").unwrap();
         wait_for_player(&mut session, third.player_id());
+        let third_content = receive_initial_mission5_state(&mut third);
+
+        assert_eq!(first_content, session.mission5_content_projection());
+        assert_eq!(second_content, first_content);
+        assert_eq!(third_content, first_content);
 
         let entities = [first.player_id(), second.player_id(), third.player_id()]
             .map(|id| session.network_player(id).unwrap().entity);

@@ -156,6 +156,13 @@ fn process_event(
                 content.state, content.required_completed, content.required_total
             );
         }
+
+        ServerMessage::Mission5ContentState { content } => {
+            println!(
+                "[Mission5] estado inicial {:?}, progreso {}/{}",
+                content.state, content.required_completed, content.required_total
+            );
+        }
     }
 
     players.apply(message);

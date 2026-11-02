@@ -1,5 +1,6 @@
 use crate::protocol::{
-    decode_server, encode, ClientMessage, NetworkPlayerId, ServerMessage, PROTOCOL_VERSION,
+    decode_server, encode, ClientMessage, Mission5ContentProjection, NetworkPlayerId,
+    ServerMessage, PROTOCOL_VERSION,
 };
 
 use std::collections::VecDeque;
@@ -15,6 +16,7 @@ pub struct GameClient {
     stream: TcpStream,
     player_id: NetworkPlayerId,
     pending_events: VecDeque<ServerMessage>,
+    mission5_content: Option<Mission5ContentProjection>,
     read_buffer: Vec<u8>,
     disconnected: bool,
 }
@@ -31,6 +33,7 @@ impl GameClient {
             stream,
             player_id: 0,
             pending_events: VecDeque::new(),
+            mission5_content: None,
             read_buffer: Vec::new(),
             disconnected: false,
         };
@@ -63,6 +66,20 @@ impl GameClient {
 
     pub fn request_mission_recovery(&mut self, request_id: u64) -> io::Result<()> {
         self.send(&ClientMessage::RequestMissionRecovery { request_id })
+    }
+
+    pub fn mission5_content(&self) -> Option<&Mission5ContentProjection> {
+        self.mission5_content.as_ref()
+    }
+
+    fn record_mission5_content(&mut self, message: &ServerMessage) {
+        match message {
+            ServerMessage::Mission5ContentState { content }
+            | ServerMessage::MissionContentUpdated { content } => {
+                self.mission5_content = Some(content.clone());
+            }
+            _ => {}
+        }
     }
 
     pub fn send(&mut self, message: &ClientMessage) -> io::Result<()> {
@@ -217,6 +234,7 @@ impl GameClient {
 
     pub fn receive(&mut self) -> io::Result<ServerMessage> {
         if let Some(event) = self.pending_events.pop_front() {
+            self.record_mission5_content(&event);
             return Ok(event);
         }
 
@@ -233,7 +251,10 @@ impl GameClient {
             }
 
             match self.receive_from_network(Some(deadline - now))? {
-                Some(message) => return Ok(message),
+                Some(message) => {
+                    self.record_mission5_content(&message);
+                    return Ok(message);
+                }
                 None => std::thread::sleep(Duration::from_millis(1)),
             }
         }
@@ -241,10 +262,15 @@ impl GameClient {
 
     pub fn try_receive(&mut self) -> io::Result<Option<ServerMessage>> {
         if let Some(event) = self.pending_events.pop_front() {
+            self.record_mission5_content(&event);
             return Ok(Some(event));
         }
 
-        self.receive_from_network(Some(Duration::ZERO))
+        let message = self.receive_from_network(Some(Duration::ZERO))?;
+        if let Some(message) = &message {
+            self.record_mission5_content(message);
+        }
+        Ok(message)
     }
 
     pub fn ping(&mut self) -> io::Result<()> {
@@ -269,7 +295,9 @@ impl GameClient {
                     event @ (ServerMessage::PlayerJoined { .. }
                     | ServerMessage::PlayerLeft { .. }
                     | ServerMessage::PlayerMoved { .. }
-                    | ServerMessage::MissionRecoveryResult { .. }),
+                    | ServerMessage::MissionRecoveryResult { .. }
+                    | ServerMessage::Mission5ContentState { .. }
+                    | ServerMessage::MissionContentUpdated { .. }),
                 ) => {
                     self.pending_events.push_back(event);
                 }
@@ -313,6 +341,7 @@ mod tests {
             stream,
             player_id: 1,
             pending_events: VecDeque::new(),
+            mission5_content: None,
             read_buffer: Vec::new(),
             disconnected: false,
         }
