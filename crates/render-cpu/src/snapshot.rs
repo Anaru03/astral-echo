@@ -36,7 +36,30 @@ pub fn render_snapshot_scene_with_stats(
         overlay_clear_color(scene.overlay()),
         scene.overlay().game_over,
     )?;
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats))
+}
+
+pub fn compose_hud_overlay(framebuffer: &mut Framebuffer, hud: &render_core::HudState) {
+    let overlay = render_core::hud_overlay(hud, framebuffer.width(), framebuffer.height());
+    for rect in std::iter::once(overlay.background).chain(overlay.glyphs) {
+        for y in rect.y..rect.y.saturating_add(rect.height) {
+            for x in rect.x..rect.x.saturating_add(rect.width) {
+                let Some(destination) = framebuffer.pixel(x, y) else { continue };
+                let alpha = f32::from(rect.color[3]) / 255.0;
+                let blend = |source: u8, target: u8| {
+                    (f32::from(source) * alpha + f32::from(target) * (1.0 - alpha)) as u8
+                };
+                framebuffer.set_pixel(x, y, Color::new(
+                    blend(rect.color[0], destination.r),
+                    blend(rect.color[1], destination.g),
+                    blend(rect.color[2], destination.b), 255,
+                ));
+            }
+        }
+    }
 }
 
 pub fn render_snapshot_scene_with_timing(
@@ -64,6 +87,9 @@ pub fn render_snapshot_scene_with_timing(
             ..Default::default()
         },
     )?;
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats, preparation_ns))
 }
 
@@ -107,6 +133,9 @@ pub fn render_snapshot_scene_with_shader_at_time_with_stats(
         time,
         PipelineConfig::default(),
     )?;
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats))
 }
 
@@ -158,7 +187,12 @@ pub fn render_snapshot_scene_reference(
     for (node, mesh) in scene.draws() {
         pipeline.draw_mesh(mesh, vp * node.transform.matrix(), Topology::TriangleList)?;
     }
-    Ok(pipeline.stats)
+    let stats = pipeline.stats;
+    drop(pipeline);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    }
+    Ok(stats)
 }
 
 pub fn render_prepared_scene(

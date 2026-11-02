@@ -2,6 +2,7 @@ pub mod bounds;
 pub mod camera;
 pub mod demo;
 pub mod geometry;
+pub mod hud;
 pub mod interpolation;
 pub mod lighting;
 pub mod material;
@@ -40,6 +41,7 @@ pub use demo::{
     TERRAIN_HEIGHT,
 };
 pub use geometry::{RasterMesh, RasterVertex};
+pub use hud::{hud_overlay, HudOverlay, HudOverlayRect};
 pub use model_loader::{load_obj, load_obj_reader, ObjLoadError};
 
 pub use lighting::{

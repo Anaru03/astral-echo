@@ -93,6 +93,25 @@ fn game_over_overlay_reaches_a_black_frame_with_a_visible_indicator() {
 }
 
 #[test]
+fn hud_overlay_changes_expected_framebuffer_region_without_changing_snapshot() {
+    let mut snapshot = RenderSnapshot::minimal_demo();
+    snapshot.overlay.hud.mission_name = Some("El despertar".into());
+    snapshot.overlay.hud.mission_progress = Some((2, 5));
+    snapshot.overlay.hud.objective_name = Some("Evaluar estado".into());
+    let mut scene = SnapshotScene::default();
+    scene.update(&snapshot).unwrap();
+    let before = scene.snapshot().clone();
+    let mut framebuffer = Framebuffer::new(320, 180).unwrap();
+    render_snapshot_scene_with_stats(&mut framebuffer, &scene, RasterMode::Secuencial).unwrap();
+    assert_ne!(framebuffer.pixel(12, 12).unwrap(), render_cpu::Color::new(8, 10, 18, 255));
+    assert!(framebuffer
+        .color_bytes()
+        .chunks_exact(4)
+        .any(|pixel| pixel[0] > 150 && pixel[1] > 150));
+    assert_eq!(scene.snapshot(), &before);
+}
+
+#[test]
 fn optimized_color_and_depth_match_reference_with_low_and_partial_objects() {
     let mut scene = SnapshotScene::procedural_lod_fixture();
     let mut snapshot = RenderSnapshot::minimal_demo();
