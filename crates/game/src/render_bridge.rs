@@ -44,6 +44,19 @@ pub const COLLECTIBLE_MESH: MeshHandle = MeshHandle::COLLECTIBLE_PLACEHOLDER;
 pub const STATION_MESH: MeshHandle = MeshHandle::STATION;
 pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
 pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
+pub const ECHO7_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
+pub const ECHO7_MATERIAL: MaterialHandle = VisualAssets::SHIP;
+pub const ECHO7_INTERIOR_HALF_WIDTH: f32 = 9.0;
+pub const ECHO7_INTERIOR_HALF_DEPTH: f32 = 7.0;
+pub const ECHO7_INTERIOR_FLOOR_Y: f32 = -1.2;
+pub const ECHO7_INTERIOR_CEILING_Y: f32 = 6.4;
+pub const ECHO7_PLAYER_RADIUS: f32 = 0.45;
+pub const INTERIOR_FLOOR_ENTITY: engine::EntityId = engine::EntityId::new(9_401);
+pub const INTERIOR_BACK_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_402);
+pub const INTERIOR_LEFT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_403);
+pub const INTERIOR_RIGHT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_404);
+pub const INTERIOR_CEILING_ENTITY: engine::EntityId = engine::EntityId::new(9_405);
+pub const INTERIOR_LIGHT_ENTITY: engine::EntityId = engine::EntityId::new(9_406);
 
 pub const SHIP_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const ENEMY_MATERIAL: MaterialHandle = VisualAssets::ENEMY;
@@ -281,6 +294,15 @@ pub fn snapshot_from_world_with_camera(
     params: BridgeParams<'_>,
     camera: &Camera,
 ) -> RenderSnapshot {
+    snapshot_from_world_with_camera_and_view(world, params, camera, false)
+}
+
+pub fn snapshot_from_world_with_camera_and_view(
+    world: &GameplayWorld,
+    params: BridgeParams<'_>,
+    camera: &Camera,
+    interior: bool,
+) -> RenderSnapshot {
     let tick = world.time().tick;
     let academic_planet = academic_planet_id(world);
     let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
@@ -324,6 +346,12 @@ pub fn snapshot_from_world_with_camera(
         snapshot.push_node(node);
     }
 
+    if interior {
+        for node in interior_nodes() {
+            snapshot.push_node(node);
+        }
+    }
+
     if world.navigation().ship_id().is_some() {
         snapshot.push_node(SnapshotNode::new(
             SUN_ENTITY,
@@ -348,8 +376,8 @@ pub fn snapshot_from_world_with_camera(
                     * Quat::from_rotation_x(orientation.pitch_degrees.to_radians()),
                 Vec3::ONE,
             ),
-            SHIP_MESH,
-            SHIP_MATERIAL,
+            ECHO7_MESH,
+            ECHO7_MATERIAL,
             world.entities().contains(ship),
         ));
     }
@@ -521,6 +549,77 @@ pub fn snapshot_from_world_with_camera(
     snapshot
 }
 
+fn interior_nodes() -> [SnapshotNode; 6] {
+    [
+        SnapshotNode::new(
+            INTERIOR_FLOOR_ENTITY,
+            Transform::new(
+                Vec3::new(0.0, ECHO7_INTERIOR_FLOOR_Y, 0.0),
+                Quat::IDENTITY,
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 0.15, ECHO7_INTERIOR_HALF_DEPTH),
+            ),
+            MeshHandle::CUBE,
+            DESTINATION_MATERIAL,
+            true,
+        ),
+        SnapshotNode::new(
+            INTERIOR_BACK_WALL_ENTITY,
+            Transform::new(
+                Vec3::new(0.0, 2.6, -ECHO7_INTERIOR_HALF_DEPTH),
+                Quat::IDENTITY,
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 3.8, 0.15),
+            ),
+            MeshHandle::CUBE,
+            DESTINATION_MATERIAL,
+            true,
+        ),
+        SnapshotNode::new(
+            INTERIOR_LEFT_WALL_ENTITY,
+            Transform::new(
+                Vec3::new(-ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0),
+                Quat::IDENTITY,
+                Vec3::new(0.15, 3.8, ECHO7_INTERIOR_HALF_DEPTH),
+            ),
+            MeshHandle::CUBE,
+            DESTINATION_MATERIAL,
+            true,
+        ),
+        SnapshotNode::new(
+            INTERIOR_RIGHT_WALL_ENTITY,
+            Transform::new(
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0),
+                Quat::IDENTITY,
+                Vec3::new(0.15, 3.8, ECHO7_INTERIOR_HALF_DEPTH),
+            ),
+            MeshHandle::CUBE,
+            DESTINATION_MATERIAL,
+            true,
+        ),
+        SnapshotNode::new(
+            INTERIOR_CEILING_ENTITY,
+            Transform::new(
+                Vec3::new(0.0, ECHO7_INTERIOR_CEILING_Y, 0.0),
+                Quat::IDENTITY,
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 0.15, ECHO7_INTERIOR_HALF_DEPTH),
+            ),
+            MeshHandle::CUBE,
+            DESTINATION_MATERIAL,
+            true,
+        ),
+        SnapshotNode::new(
+            INTERIOR_LIGHT_ENTITY,
+            Transform::new(
+                Vec3::new(0.0, 5.8, 0.0),
+                Quat::IDENTITY,
+                Vec3::new(0.8, 0.15, 0.8),
+            ),
+            MeshHandle::SUN_SPHERE,
+            SUN_MATERIAL,
+            true,
+        ),
+    ]
+}
+
 fn visual_event_nodes(snapshot: &RenderSnapshot) -> Vec<SnapshotNode> {
     snapshot
         .visual_events
@@ -644,6 +743,9 @@ fn hud_state(
             )
         }),
         mission_state,
+        interaction_prompt: None,
+        guidance: None,
+        controls: None,
         feedback: None,
     }
 }
@@ -799,6 +901,39 @@ pub fn observation_camera(
     )
 }
 
+pub fn interior_camera(
+    world: &GameplayWorld,
+    aspect: f32,
+) -> Result<Camera, CameraError> {
+    let player = world.players().next().ok_or(CameraError::InvalidAspect)?;
+    interior_camera_for_player(world, player.entity_id, aspect)
+}
+
+pub fn interior_camera_for_player(
+    world: &GameplayWorld,
+    player_id: engine::EntityId,
+    aspect: f32,
+) -> Result<Camera, CameraError> {
+    let player = world.player(player_id).ok_or(CameraError::InvalidAspect)?;
+    let position = from_engine(player.position) + Vec3::new(0.0, 1.45, 0.0);
+    let yaw = player.orientation.yaw_degrees.to_radians();
+    let pitch = player.orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);
+    let horizontal = pitch.cos();
+    let direction = Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal)
+        .normalize_or_zero();
+    Camera::new(
+        position,
+        position + direction,
+        Vec3::Y,
+        Projection::Perspective {
+            fov_y_rad: 72.0_f32.to_radians(),
+            aspect,
+            near: 0.05,
+            far: 120.0,
+        },
+    )
+}
+
 fn academic_planet_id(world: &GameplayWorld) -> Option<gameplay::DestinationId> {
     let planets: Vec<_> = world
         .destinations()
@@ -895,6 +1030,30 @@ mod tests {
         for (domain_state, hud_state) in states {
             assert_eq!(hud_mission_state(domain_state), hud_state);
         }
+    }
+
+    #[test]
+    fn interior_view_has_a_player_camera_and_spatial_shell() {
+        let mut world = GameplayWorld::new();
+        let player = world.create_player().expect("player should exist");
+        let camera = super::interior_camera(&world, 16.0 / 9.0).expect("camera should be valid");
+        assert_eq!(camera.position(), render_core::Vec3::new(0.0, 1.45, 0.0));
+
+        let snapshot = super::snapshot_from_world_with_camera_and_view(
+            &world,
+            Default::default(),
+            &camera,
+            true,
+        );
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.entity == render_core::SnapshotId::Entity(super::INTERIOR_FLOOR_ENTITY)
+        }));
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.entity == render_core::SnapshotId::Entity(player)
+        }));
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.entity == render_core::SnapshotId::Entity(super::INTERIOR_BACK_WALL_ENTITY)
+        }));
     }
 
     #[test]
