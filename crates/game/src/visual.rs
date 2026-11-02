@@ -1333,21 +1333,53 @@ impl VisualBridge {
                 f32::from(look_pitch) * 4.0 * seconds / 0.016,
             );
         }
-        const PLAYER_RADIUS: f32 = 0.45;
-        const COLLISION_BUFFER: f32 = 0.75;
-        let min_x = -9.0 + PLAYER_RADIUS + COLLISION_BUFFER;
-        let max_x = 9.0 - PLAYER_RADIUS - COLLISION_BUFFER;
-        let min_z = -7.0 + PLAYER_RADIUS + COLLISION_BUFFER;
-        let max_z = 7.0 - PLAYER_RADIUS - COLLISION_BUFFER;
-        if (player.position.x <= min_x && direction.x < 0.0)
+        let collision_buffer = 0.75;
+        let min_x = -game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+            + game::render_bridge::ECHO7_PLAYER_RADIUS
+            + collision_buffer;
+        let max_x = game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+            - game::render_bridge::ECHO7_PLAYER_RADIUS
+            - collision_buffer;
+        let min_z = -game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
+            + game::render_bridge::ECHO7_PLAYER_RADIUS
+            + collision_buffer;
+        let max_z = game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
+            - game::render_bridge::ECHO7_PLAYER_RADIUS
+            - collision_buffer;
+        let braking_distance_x = player.velocity.x.abs().powi(2)
+            / (2.0 * player.movement.deceleration.max(1.0));
+        let braking_distance_z = player.velocity.z.abs().powi(2)
+            / (2.0 * player.movement.deceleration.max(1.0));
+        if player.velocity.x > 0.0
+            && max_x - player.position.x <= braking_distance_x + player.movement.max_speed * seconds
+        {
+            direction.x = -1.0;
+        } else if player.velocity.x < 0.0
+            && player.position.x - min_x <= braking_distance_x + player.movement.max_speed * seconds
+        {
+            direction.x = 1.0;
+        } else if (player.position.x <= min_x && direction.x < 0.0)
             || (player.position.x >= max_x && direction.x > 0.0)
         {
             direction.x = 0.0;
         }
-        if (player.position.z <= min_z && direction.z < 0.0)
+        if player.velocity.z > 0.0
+            && max_z - player.position.z <= braking_distance_z + player.movement.max_speed * seconds
+        {
+            direction.z = -1.0;
+        } else if player.velocity.z < 0.0
+            && player.position.z - min_z <= braking_distance_z + player.movement.max_speed * seconds
+        {
+            direction.z = 1.0;
+        } else if (player.position.z <= min_z && direction.z < 0.0)
             || (player.position.z >= max_z && direction.z > 0.0)
         {
             direction.z = 0.0;
+        }
+        let magnitude = (direction.x * direction.x + direction.z * direction.z).sqrt();
+        if magnitude > 1.0 {
+            direction.x /= magnitude;
+            direction.z /= magnitude;
         }
         if direction != GameplayVec3::ZERO {
             self.session.update([GameplayCommand::MovePlayer {
@@ -1369,7 +1401,15 @@ impl VisualBridge {
         self.session
             .world()
             .interactables()
-            .filter(|value| value.enabled)
+            .filter(|value| {
+                value.enabled
+                    && match value.behavior {
+                        InteractionBehavior::Station { station } => {
+                            station.occupant.is_none() || station.occupant == Some(self.player)
+                        }
+                        _ => true,
+                    }
+            })
             .filter_map(|value| {
                 let dx = player.position.x - value.position.x;
                 let dy = player.position.y - value.position.y;
@@ -1386,14 +1426,69 @@ impl VisualBridge {
             })
             .map(|(_, interactable)| {
                 let label = match interactable.behavior {
-                    InteractionBehavior::Door { .. } => "PUERTA DEL PUENTE",
-                    InteractionBehavior::Station { .. } => "ESTACION DE PILOTAJE",
-                    InteractionBehavior::ElectricalPanel => "PANEL ELECTRICO",
-                    InteractionBehavior::LifeSupportPanel => "SOPORTE VITAL",
-                    InteractionBehavior::Console { .. } => "CONSOLA",
+                    InteractionBehavior::Door { .. } => "PUERTA DEL PUENTE [I] ABRIR",
+                    InteractionBehavior::Station { station } => match station.station_type {
+                        StationType::Piloting => "CONSOLA DE PILOTAJE [I] ACCEDER",
+                        StationType::Navigation => "ESTACION DE NAVEGACION [I] ACCEDER",
+                        StationType::Engineering => "ESTACION DE INGENIERIA [I] ACCEDER",
+                        StationType::LifeSupport => "ESTACION DE SOPORTE VITAL [I] ACCEDER",
+                        StationType::Weapons => "ESTACION DE ARMAS [I] ACCEDER",
+                    },
+                    InteractionBehavior::ElectricalPanel => "PANEL ELECTRICO [I] REPARAR",
+                    InteractionBehavior::LifeSupportPanel => "SOPORTE VITAL [I] REPARAR",
+                    InteractionBehavior::Console { role, .. } => match role {
+                        gameplay::ConsoleRole::ShipStatus => "CONSOLA DE ESTADO [I] CONSULTAR",
+                        gameplay::ConsoleRole::Generic => "CONSOLA [I] INTERACTUAR",
+                    },
                 };
-                format!("I INTERACTUAR: {label}")
+                label.to_owned()
             })
+    }
+
+    fn guidance_prompt(&self) -> Option<String> {
+        let guidance = self.session.world().guidance_for_player(self.player).ok()?;
+        let objective = guidance.current_objective.and_then(|id| {
+            guidance.objectives.iter().find(|value| value.id == id)
+        });
+        let Some(objective) = objective else {
+            return self
+                .session
+                .world()
+                .missions()
+                .find(|mission| mission.state() == gameplay::domains::mission::MissionState::Available)
+                .map(|_| "M INICIAR MISION DISPONIBLE".to_owned())
+                .or_else(|| {
+                    self.session
+                        .mission_progress(game::campaign::CAMPAIGN_ORDER[0])
+                        .is_some_and(|mission| {
+                            mission.state == gameplay::domains::mission::MissionState::Locked
+                        })
+                        .then_some("M DESPERTAR Y COMENZAR MISION 1".to_owned())
+                })
+                .or_else(|| Some("SIN OBJETIVO ACTIVO".to_owned()));
+        };
+        if let Some(requirement) = objective.missing_requirements.first() {
+            return Some(format!(
+                "{} | PENDIENTE: {}",
+                guidance_action_label(objective.recommended_action),
+                guidance_requirement_label(*requirement),
+            ));
+        }
+        Some(guidance_action_label(objective.recommended_action))
+    }
+
+    fn controls_hint(&self) -> String {
+        if self.interior_mode {
+            "WASD MOVER | FLECHAS MIRAR | I USAR | M INICIAR".to_owned()
+        } else if self
+            .session
+            .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+            .is_some_and(|mission| mission.state == gameplay::domains::mission::MissionState::Active)
+        {
+            "WASD VOLAR | Q ESCANEAR | P VIAJAR | F ATACAR | E RECOGER | T RECUPERAR".to_owned()
+        } else {
+            "WASD VOLAR | Q ESCANEAR | P VIAJAR | F ATACAR | E RECOGER".to_owned()
+        }
     }
 
     fn restore_energy(&mut self) {
@@ -1668,7 +1763,7 @@ impl VisualBridge {
     fn camera(&self, aspect: f32) -> Result<render_core::Camera, render_core::CameraError> {
         let world = self.session.world();
         if self.interior_mode {
-            return game::render_bridge::interior_camera(world, aspect);
+            return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
         }
         game::render_bridge::observation_camera(
             world,
@@ -1707,10 +1802,10 @@ pub fn run() -> Result<(), String> {
                 &camera,
                 bridge.interior_mode,
             );
-            snapshot.overlay.hud.feedback = Some(match bridge.contextual_prompt() {
-                Some(prompt) => format!("{} | {prompt}", bridge.feedback),
-                None => bridge.feedback.clone(),
-            });
+            snapshot.overlay.hud.interaction_prompt = bridge.contextual_prompt();
+            snapshot.overlay.hud.guidance = bridge.guidance_prompt();
+            snapshot.overlay.hud.controls = Some(bridge.controls_hint());
+            snapshot.overlay.hud.feedback = Some(bridge.feedback.clone());
             Ok(snapshot)
         }),
         true,
@@ -1760,6 +1855,38 @@ fn controller_key(button: ControllerButton) -> Option<KeyCode> {
         ControllerButton::DPadDown => Some(KeyCode::ArrowDown),
         ControllerButton::DPadLeft => Some(KeyCode::ArrowLeft),
         ControllerButton::DPadRight => Some(KeyCode::ArrowRight),
+    }
+}
+
+fn guidance_action_label(action: Option<gameplay::GuidanceAction>) -> String {
+    match action {
+        Some(gameplay::GuidanceAction::UnlockMission(_)) => "M DESBLOQUEAR MISION".to_owned(),
+        Some(gameplay::GuidanceAction::StartMission(_)) => "M INICIAR MISION".to_owned(),
+        Some(gameplay::GuidanceAction::TravelTo(_)) => "P VIAJAR AL DESTINO".to_owned(),
+        Some(gameplay::GuidanceAction::IdentifySignal(_)) => "Q ESCANEAR E IDENTIFICAR".to_owned(),
+        Some(gameplay::GuidanceAction::DiscoverDestination(_)) => "P VIAJAR Y DESCUBRIR".to_owned(),
+        Some(gameplay::GuidanceAction::DefeatEnemy(_)) => "F ATACAR LA AMENAZA".to_owned(),
+        Some(gameplay::GuidanceAction::CollectItem { .. }) => "E RECOGER LA RECOMPENSA".to_owned(),
+        Some(gameplay::GuidanceAction::StudyKnowledge(_)) => "Q ESCANEAR Y ESTUDIAR".to_owned(),
+        Some(gameplay::GuidanceAction::RepairShip) => "I REPARAR EN LA ESTACION".to_owned(),
+        Some(gameplay::GuidanceAction::Interact(_)) => "I INTERACTUAR CON EL OBJETO".to_owned(),
+        Some(gameplay::GuidanceAction::CompleteObjective(_)) => "SIGUE LOS REQUISITOS DEL OBJETIVO".to_owned(),
+        None => "SIN ACCION RECOMENDADA".to_owned(),
+    }
+}
+
+fn guidance_requirement_label(requirement: gameplay::GuidanceRequirement) -> String {
+    match requirement {
+        gameplay::GuidanceRequirement::MissionActive(_) => "INICIA LA MISION CON M".to_owned(),
+        gameplay::GuidanceRequirement::MissionCompleted(_) => "COMPLETA LA MISION PREVIA".to_owned(),
+        gameplay::GuidanceRequirement::ObjectiveCompleted(_) => "COMPLETA EL OBJETIVO PREVIO".to_owned(),
+        gameplay::GuidanceRequirement::KnowledgeAtLeast { .. } => "USA Q PARA ESCANEAR".to_owned(),
+        gameplay::GuidanceRequirement::DestinationDiscovered(_) => "DESCUBRE EL DESTINO CON P".to_owned(),
+        gameplay::GuidanceRequirement::DestinationArrived(_) => "LLEGA AL DESTINO CON P".to_owned(),
+        gameplay::GuidanceRequirement::EnemyDefeated(_) => "DERROTA LA AMENAZA CON F".to_owned(),
+        gameplay::GuidanceRequirement::ResourceObtained { .. } => "RECOGE EL RECURSO CON E".to_owned(),
+        gameplay::GuidanceRequirement::WorldActivityCompleted(_) => "COMPLETA LA ACTIVIDAD DEL MUNDO".to_owned(),
+        gameplay::GuidanceRequirement::DerelictResolved(_) => "RESUELVE LA ESTACION ABANDONADA".to_owned(),
     }
 }
 
@@ -1864,7 +1991,28 @@ mod tests {
         let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         assert!(bridge
             .contextual_prompt()
-            .is_some_and(|prompt| prompt.starts_with("I INTERACTUAR:")));
+            .is_some_and(|prompt| prompt.contains("[I]") && prompt.contains("PILOTAJE")));
+    }
+
+    #[test]
+    fn contextual_prompt_disappears_when_player_leaves_interaction_range() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        for _ in 0..2_000 {
+            bridge.update_interior_motion();
+        }
+        assert!(bridge.contextual_prompt().is_none());
+    }
+
+    #[test]
+    fn guidance_prompt_uses_guidance_and_real_controls() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        assert!(bridge.guidance_prompt().is_some_and(|value| value.contains("M")));
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        assert!(bridge
+            .guidance_prompt()
+            .is_some_and(|value| value.contains("I") || value.contains("Q")));
+        assert!(bridge.controls_hint().contains("I USAR"));
     }
 
     #[test]
@@ -1881,6 +2029,51 @@ mod tests {
             .expect("visual player should exist")
             .position;
         assert!(position.x < 8.4, "player crossed the interior clearance: {position:?}");
+    }
+
+    #[test]
+    fn interior_diagonal_motion_stays_inside_both_clearance_boundaries() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyD, ElementState::Pressed);
+        for _ in 0..480 {
+            bridge.update_interior_motion();
+        }
+        let position = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .expect("visual player should still exist")
+            .position;
+        assert!(position.x.abs() <= 7.8, "player escaped ECHO-7 width: {position:?}");
+        assert!(position.z.abs() <= 5.8, "player escaped ECHO-7 depth: {position:?}");
+    }
+
+    #[test]
+    fn character_camera_follows_the_validated_player_position() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let before = bridge.camera(16.0 / 9.0).expect("character camera should be valid").position();
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        bridge.update_interior_motion();
+        let after = bridge.camera(16.0 / 9.0).expect("character camera should remain valid").position();
+        assert_ne!(before, after);
+        assert!(after.y > -1.2 && after.y < 6.4);
+    }
+
+    #[test]
+    fn echo7_uses_ship_representation_and_not_station_model() {
+        let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let camera = bridge.camera(16.0 / 9.0).expect("character camera should be valid");
+        let snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
+            bridge.session.world(),
+            Default::default(),
+            &camera,
+            true,
+        );
+        let echo7 = snapshot.nodes.iter().find(|node| node.entity == render_core::SnapshotId::Entity(bridge.ship));
+        assert_eq!(echo7.map(|node| node.mesh), Some(game::render_bridge::ECHO7_MESH));
+        assert_ne!(game::render_bridge::ECHO7_MESH, game::render_bridge::STATION_MESH);
+        assert!(snapshot.nodes.iter().filter(|node| node.mesh == game::render_bridge::STATION_MESH).count() >= 2);
     }
 
     #[test]

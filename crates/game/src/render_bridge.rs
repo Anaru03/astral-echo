@@ -44,6 +44,13 @@ pub const COLLECTIBLE_MESH: MeshHandle = MeshHandle::COLLECTIBLE_PLACEHOLDER;
 pub const STATION_MESH: MeshHandle = MeshHandle::STATION;
 pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
 pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
+pub const ECHO7_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
+pub const ECHO7_MATERIAL: MaterialHandle = VisualAssets::SHIP;
+pub const ECHO7_INTERIOR_HALF_WIDTH: f32 = 9.0;
+pub const ECHO7_INTERIOR_HALF_DEPTH: f32 = 7.0;
+pub const ECHO7_INTERIOR_FLOOR_Y: f32 = -1.2;
+pub const ECHO7_INTERIOR_CEILING_Y: f32 = 6.4;
+pub const ECHO7_PLAYER_RADIUS: f32 = 0.45;
 pub const INTERIOR_FLOOR_ENTITY: engine::EntityId = engine::EntityId::new(9_401);
 pub const INTERIOR_BACK_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_402);
 pub const INTERIOR_LEFT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_403);
@@ -369,8 +376,8 @@ pub fn snapshot_from_world_with_camera_and_view(
                     * Quat::from_rotation_x(orientation.pitch_degrees.to_radians()),
                 Vec3::ONE,
             ),
-            SHIP_MESH,
-            SHIP_MATERIAL,
+            ECHO7_MESH,
+            ECHO7_MATERIAL,
             world.entities().contains(ship),
         ));
     }
@@ -547,9 +554,9 @@ fn interior_nodes() -> [SnapshotNode; 6] {
         SnapshotNode::new(
             INTERIOR_FLOOR_ENTITY,
             Transform::new(
-                Vec3::new(0.0, -1.2, 0.0),
+                Vec3::new(0.0, ECHO7_INTERIOR_FLOOR_Y, 0.0),
                 Quat::IDENTITY,
-                Vec3::new(9.0, 0.15, 7.0),
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 0.15, ECHO7_INTERIOR_HALF_DEPTH),
             ),
             MeshHandle::CUBE,
             DESTINATION_MATERIAL,
@@ -558,9 +565,9 @@ fn interior_nodes() -> [SnapshotNode; 6] {
         SnapshotNode::new(
             INTERIOR_BACK_WALL_ENTITY,
             Transform::new(
-                Vec3::new(0.0, 2.6, -7.0),
+                Vec3::new(0.0, 2.6, -ECHO7_INTERIOR_HALF_DEPTH),
                 Quat::IDENTITY,
-                Vec3::new(9.0, 3.8, 0.15),
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 3.8, 0.15),
             ),
             MeshHandle::CUBE,
             DESTINATION_MATERIAL,
@@ -569,9 +576,9 @@ fn interior_nodes() -> [SnapshotNode; 6] {
         SnapshotNode::new(
             INTERIOR_LEFT_WALL_ENTITY,
             Transform::new(
-                Vec3::new(-9.0, 2.6, 0.0),
+                Vec3::new(-ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0),
                 Quat::IDENTITY,
-                Vec3::new(0.15, 3.8, 7.0),
+                Vec3::new(0.15, 3.8, ECHO7_INTERIOR_HALF_DEPTH),
             ),
             MeshHandle::CUBE,
             DESTINATION_MATERIAL,
@@ -580,9 +587,9 @@ fn interior_nodes() -> [SnapshotNode; 6] {
         SnapshotNode::new(
             INTERIOR_RIGHT_WALL_ENTITY,
             Transform::new(
-                Vec3::new(9.0, 2.6, 0.0),
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0),
                 Quat::IDENTITY,
-                Vec3::new(0.15, 3.8, 7.0),
+                Vec3::new(0.15, 3.8, ECHO7_INTERIOR_HALF_DEPTH),
             ),
             MeshHandle::CUBE,
             DESTINATION_MATERIAL,
@@ -591,9 +598,9 @@ fn interior_nodes() -> [SnapshotNode; 6] {
         SnapshotNode::new(
             INTERIOR_CEILING_ENTITY,
             Transform::new(
-                Vec3::new(0.0, 6.4, 0.0),
+                Vec3::new(0.0, ECHO7_INTERIOR_CEILING_Y, 0.0),
                 Quat::IDENTITY,
-                Vec3::new(9.0, 0.15, 7.0),
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 0.15, ECHO7_INTERIOR_HALF_DEPTH),
             ),
             MeshHandle::CUBE,
             DESTINATION_MATERIAL,
@@ -736,6 +743,9 @@ fn hud_state(
             )
         }),
         mission_state,
+        interaction_prompt: None,
+        guidance: None,
+        controls: None,
         feedback: None,
     }
 }
@@ -896,6 +906,15 @@ pub fn interior_camera(
     aspect: f32,
 ) -> Result<Camera, CameraError> {
     let player = world.players().next().ok_or(CameraError::InvalidAspect)?;
+    interior_camera_for_player(world, player.entity_id, aspect)
+}
+
+pub fn interior_camera_for_player(
+    world: &GameplayWorld,
+    player_id: engine::EntityId,
+    aspect: f32,
+) -> Result<Camera, CameraError> {
+    let player = world.player(player_id).ok_or(CameraError::InvalidAspect)?;
     let position = from_engine(player.position) + Vec3::new(0.0, 1.45, 0.0);
     let yaw = player.orientation.yaw_degrees.to_radians();
     let pitch = player.orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);

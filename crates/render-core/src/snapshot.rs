@@ -196,6 +196,9 @@ pub struct HudState {
     pub objective_name: Option<String>,
     pub mission_progress: Option<(u8, u8)>,
     pub mission_state: Option<HudMissionState>,
+    pub interaction_prompt: Option<String>,
+    pub guidance: Option<String>,
+    pub controls: Option<String>,
     pub feedback: Option<String>,
 }
 
