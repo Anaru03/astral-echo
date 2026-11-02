@@ -10,6 +10,7 @@ pub mod tormenta_gravitacional;
 
 use engine::EntityId;
 use gameplay::types::MissionId;
+use gameplay::{CommandStatus, Destination, DestinationType, EnemyArchetype, EnemyConfiguration};
 use gameplay::{
     systems::{
         CombatSystem, CompanionSystem, DoorSystem, ElectricalSystem, EnemyAiSystem,
@@ -43,6 +44,21 @@ const INITIAL_FUEL: u32 = 60;
 const INITIAL_HULL_MAXIMUM: u32 = 100;
 const INITIAL_HULL: u32 = 100;
 const CRITICAL_HULL_THRESHOLD: u32 = 25;
+
+fn register_campaign_missions(world: &mut GameplayWorld) -> Result<(), MissionRegistrationError> {
+    let missions = [
+        el_despertar::definition().expect("El despertar debe tener una definicion valida"),
+        ecos_anomalia::definition().expect("Ecos de la anomalia debe tener una definicion valida"),
+        tormenta_gravitacional::definition().expect("Tormenta gravitacional debe tener una definicion valida"),
+        la_defensa_imposible::definition().expect("La defensa imposible debe tener una definicion valida"),
+        cooperacion::definition().expect("Progresion cooperativa debe tener una definicion valida"),
+    ];
+
+    for mission in missions {
+        world.register_mission(mission)?;
+    }
+    Ok(())
+}
 
 impl ProjectEchoSession {
     pub fn new() -> Self {
@@ -143,26 +159,8 @@ impl ProjectEchoSession {
         world
             .initialize_ship_resources(first_ship, INITIAL_FUEL_CAPACITY, INITIAL_FUEL)
             .expect("los recursos iniciales de la nave deben ser válidos");
-        let awakening =
-            el_despertar::definition().expect("El despertar debe tener una definición válida");
-        world
-            .register_mission(awakening)
-            .expect("La misión El despertar debe registrarse una sola vez");
-        let anomaly = ecos_anomalia::definition()
-            .expect("La misión Ecos de la anomalía debe tener una definición válida");
-        world
-            .register_mission(anomaly)
-            .expect("La misión Ecos de la anomalía debe registrarse una sola vez");
-        let storm = tormenta_gravitacional::definition()
-            .expect("La misión Tormenta gravitacional debe tener una definición válida");
-        world
-            .register_mission(storm)
-            .expect("La misión Tormenta gravitacional debe registrarse una sola vez");
-        let defense = la_defensa_imposible::definition()
-            .expect("La misión La defensa imposible debe tener una definición válida");
-        world
-            .register_mission(defense)
-            .expect("La misión La defensa imposible debe registrarse una sola vez");
+        register_campaign_missions(&mut world)
+            .expect("Las misiones de campaña deben registrarse una sola vez");
         let mut processor = GameplayProcessor::new();
         processor.add_system(PlayerSystem);
         processor.add_system(CompanionSystem::new());
@@ -311,9 +309,78 @@ impl ProjectEchoSession {
     where
         I: IntoIterator<Item = GameplayCommand>,
     {
-        let results = self.processor.update(&mut self.world, commands);
+        let commands: Vec<_> = commands.into_iter().collect();
+        let mut results = self.processor.update(&mut self.world, commands.clone());
+        let should_prepare_cooperative_mission = commands.iter().zip(results.iter()).any(
+            |(command, result)| {
+                matches!(
+                    command,
+                    GameplayCommand::StartMission { mission }
+                        if *mission == cooperacion::PROGRESION_COOPERATIVA
+                ) && matches!(result.status, CommandStatus::Success { changed: true })
+            },
+        );
+        if should_prepare_cooperative_mission {
+            if let Err(error) = self.ensure_cooperative_mission_content() {
+                results.push(CommandResult::rejected(
+                    gameplay::CommandRejection::MissionContentUnavailable,
+                ));
+                eprintln!("Preparación cooperativa fallida: {error}");
+            }
+        }
         campaign::unlock_following_missions(self);
         results
+    }
+
+    fn ensure_cooperative_mission_content(&mut self) -> Result<(), String> {
+        let destination = cooperacion::SIGNAL_DESTINATION;
+        if let Some(existing) = self.world.destination(destination) {
+            if existing.destination_type != DestinationType::SpacePoint {
+                return Err(format!("el destino {destination:?} no es una señal espacial compatible"));
+            }
+        } else {
+            self.world
+                .register_destination(Destination {
+                    id: destination,
+                    destination_type: DestinationType::SpacePoint,
+                    position: engine::Vec3::ZERO,
+                    travel_duration: engine::Duration(100),
+                    fuel_cost: 1,
+                    discovery: gameplay::DiscoveryState::Unknown,
+                })
+                .map_err(|error| format!("registrar destino cooperativo: {error:?}"))?;
+        }
+
+        if !self.world.players().any(|player| {
+            player.is_active
+                && self.world.entities().contains(player.entity_id)
+                && self.world.inventory(player.entity_id).is_some()
+        }) {
+            return Err("no existe un jugador activo con inventario".to_owned());
+        }
+
+        if self.world.combatants().any(|combatant| {
+            !combatant.is_player
+                && combatant.active
+                && combatant.archetype == Some(EnemyArchetype::Shooter)
+        }) {
+            return Ok(());
+        }
+
+        let result = self.processor.process_followup(
+            &mut self.world,
+            GameplayCommand::CreateEnemy {
+                configuration: EnemyConfiguration::for_archetype(
+                    EnemyArchetype::Shooter,
+                    engine::Vec3::ZERO,
+                ),
+            },
+        );
+        if matches!(result.status, CommandStatus::Success { changed: true }) {
+            Ok(())
+        } else {
+            Err(format!("crear amenaza cooperativa rechazado: {:?}", result.status))
+        }
     }
 }
 

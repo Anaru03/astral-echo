@@ -370,6 +370,7 @@ pub enum CommandRejection {
     StationOccupied,
     StationNotOccupiedByPlayer,
     MissionNotFound,
+    MissionContentUnavailable,
     ObjectiveNotFound,
     InvalidMissionTransition,
     InvalidObjectiveTransition,

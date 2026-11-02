@@ -48,12 +48,13 @@ pub(crate) fn unlock_following_missions(session: &mut ProjectEchoSession) {
 
 #[cfg(test)]
 mod tests {
-    use engine::{Duration, Vec3};
+    use engine::Vec3;
     use gameplay::{
         BreakerId, BreakerState, ElectricalBreakerConfiguration, ElectricalPanelConfiguration,
-        GameplayCommand, LifeSupportConfiguration, MissionState, OxygenCompartmentConfiguration,
+        GameplayCommand, LifeSupportConfiguration, OxygenCompartmentConfiguration,
         StationType,
     };
+    use gameplay::domains::mission::MissionState;
 
     use super::*;
 
@@ -65,6 +66,23 @@ mod tests {
         assert_eq!(next_mission(CAMPAIGN_ORDER[2]), Some(CAMPAIGN_ORDER[3]));
         assert_eq!(next_mission(CAMPAIGN_ORDER[3]), Some(CAMPAIGN_ORDER[4]));
         assert_eq!(next_mission(CAMPAIGN_ORDER[4]), None);
+    }
+
+    #[test]
+    fn normal_session_registers_all_campaign_missions_once_with_initial_states() {
+        let session = ProjectEchoSession::new();
+
+        for (index, mission) in CAMPAIGN_ORDER.iter().enumerate() {
+            let progress = session
+                .mission_progress(*mission)
+                .expect("cada misión de campaña debe estar registrada");
+            assert_eq!(progress.state, MissionState::Locked);
+            assert_eq!(progress.required_completed, 0);
+            assert!(progress.required_total > 0);
+            if index > 0 {
+                assert_eq!(progress.state, MissionState::Locked);
+            }
+        }
     }
 
     #[test]
@@ -148,14 +166,28 @@ mod tests {
 
         assert_eq!(session.mission_progress(el_despertar::EL_DESPERTAR).unwrap().state, MissionState::Completed);
         assert_eq!(session.mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state, MissionState::Available);
+        let guidance = session
+            .world()
+            .guidance_for_player(player)
+            .expect("guidance should be available");
+        assert!(guidance.objectives.iter().any(|objective| {
+            objective.mission == ecos_anomalia::ECOS_DE_LA_ANOMALIA
+                && objective.recommended_action
+                    == Some(gameplay::GuidanceAction::StartMission(
+                        ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+                    ))
+        }));
         for mission in CAMPAIGN_ORDER.iter().skip(2) {
             assert_eq!(session.mission_progress(*mission).unwrap().state, MissionState::Locked);
         }
 
+        let before_repeat = session.save_state().serialize();
+        unlock_following_missions(&mut session);
+        assert_eq!(session.save_state().serialize(), before_repeat);
         let save = session.save_state();
         let mut restored = ProjectEchoSession::new();
         restored.restore_state(save).expect("campaign state should restore");
         assert_eq!(restored.mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state, MissionState::Available);
-        assert_eq!(restored.mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state, MissionState::Available);
+        assert_ne!(restored.mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state, MissionState::Active);
     }
 }
