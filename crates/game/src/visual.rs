@@ -204,6 +204,7 @@ struct VisualBridge {
     last_audio_impacted: bool,
     last_landed: bool,
     last_game_over: bool,
+    player_defeated: bool,
 }
 
 impl VisualBridge {
@@ -441,10 +442,14 @@ impl VisualBridge {
             last_audio_impacted: false,
             last_landed: false,
             last_game_over: false,
+            player_defeated: false,
         })
     }
 
     fn issue(&mut self, commands: impl IntoIterator<Item = GameplayCommand>) -> bool {
+        if self.player_defeated {
+            return false;
+        }
         let mut aggregate = FeedbackAggregate::default();
         self.issue_into(commands, &mut aggregate);
         self.finish_issue(aggregate)
@@ -455,8 +460,12 @@ impl VisualBridge {
         commands: impl IntoIterator<Item = GameplayCommand>,
         aggregate: &mut FeedbackAggregate,
     ) {
+        if self.player_defeated {
+            return;
+        }
         let commands: Vec<_> = commands.into_iter().collect();
         let results = self.session.update(commands.clone());
+        self.refresh_player_defeat_state();
         let events = self
             .session
             .world()
@@ -467,10 +476,29 @@ impl VisualBridge {
     }
 
     fn finish_issue(&mut self, aggregate: FeedbackAggregate) -> bool {
+        if self.player_defeated {
+            self.feedback = "JUGADOR DERROTADO — SESION VISUAL DETENIDA".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+            return false;
+        }
         let succeeded = aggregate.is_complete();
         self.feedback = aggregate.message();
         println!("visual gameplay: {}", self.feedback);
         succeeded
+    }
+
+    fn refresh_player_defeat_state(&mut self) {
+        if self.player_defeated {
+            return;
+        }
+        let defeated = self.session.world().events().iter().any(|event| {
+            matches!(event, GameplayEvent::PlayerDefeated { player } if *player == self.player)
+        });
+        if defeated {
+            self.player_defeated = true;
+            self.feedback = "JUGADOR DERROTADO — SESION VISUAL DETENIDA".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+        }
     }
 
     fn handle_key(&mut self, key: KeyCode, state: ElementState) {
@@ -478,6 +506,27 @@ impl VisualBridge {
         let ship = self.ship;
         let enemy = self.enemy;
         let pilot_station = self.pilot_station;
+        if self.player_defeated {
+            if state == ElementState::Pressed {
+                match key {
+                    KeyCode::KeyO => self.toggle_observation(),
+                    KeyCode::ArrowLeft => {
+                        self.observation.adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0)
+                    }
+                    KeyCode::ArrowRight => {
+                        self.observation.adjust_orbit(OBSERVATION_AZIMUTH_STEP, 0.0)
+                    }
+                    KeyCode::ArrowUp => {
+                        self.observation.adjust_orbit(0.0, OBSERVATION_ELEVATION_STEP)
+                    }
+                    KeyCode::ArrowDown => {
+                        self.observation.adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP)
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
         if self.flight_keys.set(key, state == ElementState::Pressed) {
             self.accelerate_ship(player, pilot_station, self.current_flight_input());
             return;
@@ -647,6 +696,10 @@ impl VisualBridge {
     }
 
     fn set_gamepad_flight(&mut self, input: GameplayVec3) {
+        if self.player_defeated {
+            self.gamepad_flight = GameplayVec3::ZERO;
+            return;
+        }
         if input == self.gamepad_flight {
             return;
         }
@@ -664,6 +717,11 @@ impl VisualBridge {
         let frame = self.gamepad.poll();
         self.poll_audio_events();
         self.poll_haptics();
+        if self.player_defeated {
+            self.gamepad.neutralize();
+            self.gamepad_flight = GameplayVec3::ZERO;
+            return;
+        }
         if !frame.connected {
             self.set_gamepad_flight(GameplayVec3::ZERO);
             return;
@@ -696,6 +754,10 @@ impl VisualBridge {
     fn neutralize_gamepad(&mut self) {
         self.discard_pending_haptics();
         self.gamepad.neutralize();
+        if self.player_defeated {
+            self.gamepad_flight = GameplayVec3::ZERO;
+            return;
+        }
         self.set_gamepad_flight(GameplayVec3::ZERO);
     }
 
@@ -956,6 +1018,51 @@ mod tests {
         assert!(next);
         assert!(bridge.feedback.contains("OPERACION COMPLETADA"));
         assert!(bridge.feedback.contains("comandos=1 exitosos=1 fallidos=0"));
+    }
+
+    #[test]
+    fn player_defeat_enters_terminal_visual_state_and_blocks_world_commands() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+
+        for _ in 0..20 {
+            bridge.issue([GameplayCommand::AdvanceTime {
+                delta: Duration(1_000),
+            }]);
+            if bridge.player_defeated {
+                break;
+            }
+        }
+
+        assert!(bridge.player_defeated);
+        assert!(bridge
+            .session
+            .world()
+            .events()
+            .iter()
+            .any(|event| matches!(event, GameplayEvent::PlayerDefeated { player } if *player == bridge.player)));
+        assert!(bridge.feedback.contains("JUGADOR DERROTADO"));
+
+        let defeated_time = bridge.session.world().time();
+        let defeated_feedback = bridge.feedback.clone();
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Space, ElementState::Pressed);
+        bridge.set_gamepad_flight(GameplayVec3 { x: 1.0, y: 0.0, z: -1.0 });
+        bridge.poll_gamepad();
+
+        assert_eq!(bridge.session.world().time(), defeated_time);
+        assert_eq!(bridge.gamepad_flight, GameplayVec3::ZERO);
+        assert_eq!(bridge.feedback, defeated_feedback);
+        let snapshot = game::render_bridge::snapshot_from_world(
+            bridge.session.world(),
+            Default::default(),
+        );
+        assert!(snapshot.nodes.iter().all(|node| {
+            node.transform.translation.is_finite()
+                && node.transform.rotation.is_finite()
+                && node.transform.scale.is_finite()
+        }));
     }
 
     #[test]

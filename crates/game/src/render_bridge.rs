@@ -578,7 +578,12 @@ fn hud_state(
         .and_then(|objective| {
             guidance
                 .as_ref()
-                .and_then(|state| state.objectives.iter().find(|value| value.id == objective))
+                .and_then(|state| {
+                    state
+                        .objectives
+                        .iter()
+                        .find(|value| value.id == objective && value.mission == crate::el_despertar::EL_DESPERTAR)
+                })
         });
     let mission_progress = mission.map(|value| value.progress());
     let mission_state = mission_progress.map(|value| hud_mission_state(value.state));
@@ -600,6 +605,7 @@ fn hud_state(
             )
         }),
         mission_state,
+        feedback: None,
     }
 }
 
@@ -799,8 +805,43 @@ fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
 #[cfg(test)]
 mod tests {
     use super::hud_mission_state;
-    use gameplay::domains::mission::MissionState;
+    use gameplay::{
+        commands::GameplayCommand,
+        domains::mission::MissionState,
+        mission_system::MissionSystem,
+        systems::GameplaySystem,
+        types::MissionId,
+        GameplayWorld,
+    };
     use render_core::HudMissionState;
+
+    fn world_with_missions() -> (GameplayWorld, engine::EntityId) {
+        let mut world = GameplayWorld::new();
+        let player = world.create_player().expect("player should be created");
+        world
+            .register_mission(crate::el_despertar::definition().expect("awakening is valid"))
+            .expect("awakening should register");
+        world
+            .register_mission(crate::ecos_anomalia::definition().expect("anomaly is valid"))
+            .expect("anomaly should register");
+        (world, player)
+    }
+
+    fn apply(system: &mut MissionSystem, world: &mut GameplayWorld, command: GameplayCommand) {
+        let result = system
+            .process(world, command)
+            .expect("mission command should be handled");
+        assert!(matches!(result.status, gameplay::CommandStatus::Success { .. }));
+    }
+
+    fn unlock_and_start(
+        system: &mut MissionSystem,
+        world: &mut GameplayWorld,
+        mission: MissionId,
+    ) {
+        apply(system, world, GameplayCommand::UnlockMission { mission });
+        apply(system, world, GameplayCommand::StartMission { mission });
+    }
 
     #[test]
     fn mission_state_conversion_preserves_all_domain_states() {
@@ -815,5 +856,99 @@ mod tests {
         for (domain_state, hud_state) in states {
             assert_eq!(hud_mission_state(domain_state), hud_state);
         }
+    }
+
+    #[test]
+    fn hud_objective_belongs_to_presented_active_mission() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+
+        let hud = super::hud_state(&world, None);
+
+        assert_eq!(hud.mission_name.as_deref(), Some("El despertar"));
+        assert_eq!(hud.objective_name.as_deref(), Some("Evaluar el estado de la nave"));
+    }
+
+    #[test]
+    fn hud_does_not_import_objective_from_another_available_mission() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::UnlockMission {
+                mission: crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+            },
+        );
+
+        let hud = super::hud_state(&world, None);
+
+        assert_eq!(hud.mission_name.as_deref(), Some("El despertar"));
+        assert_eq!(hud.mission_state, Some(HudMissionState::Locked));
+        assert_eq!(hud.objective_name, None);
+    }
+
+    #[test]
+    fn hud_does_not_import_objective_from_another_active_mission_after_terminal_state() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+        for objective in [
+            crate::el_despertar::EVALUAR_ESTADO_NAVE,
+            crate::el_despertar::RESTAURAR_ENERGIA,
+            crate::el_despertar::RESTABLECER_SOPORTE_VITAL,
+            crate::el_despertar::ACCEDER_PUENTE_MANDO,
+            crate::el_despertar::TOMAR_CONTROL_NAVE,
+        ] {
+            apply(&mut system, &mut world, GameplayCommand::StartObjective { objective });
+            apply(&mut system, &mut world, GameplayCommand::CompleteObjective { objective });
+        }
+        unlock_and_start(&mut system, &mut world, crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA);
+
+        let hud = super::hud_state(&world, None);
+
+        assert_eq!(hud.mission_state, Some(HudMissionState::Completed));
+        assert_eq!(hud.objective_name, None);
+    }
+
+    #[test]
+    fn hud_does_not_import_objective_from_another_active_mission_after_failure() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::FailMission {
+                mission: crate::el_despertar::EL_DESPERTAR,
+            },
+        );
+        unlock_and_start(&mut system, &mut world, crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA);
+
+        let hud = super::hud_state(&world, None);
+
+        assert_eq!(hud.mission_state, Some(HudMissionState::Failed));
+        assert_eq!(hud.objective_name, None);
+    }
+
+    #[test]
+    fn hud_keeps_optional_awakening_objective_within_same_mission() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+
+        let hud = super::hud_state(&world, None);
+        let guidance = world
+            .guidance_for_player(_player)
+            .expect("guidance should be available");
+
+        assert_eq!(hud.mission_name.as_deref(), Some("El despertar"));
+        assert!(guidance.objectives.iter().any(|objective| {
+            objective.mission == crate::el_despertar::EL_DESPERTAR
+                && !objective.required
+                && objective.recommended_action.is_some()
+        }));
+        assert_eq!(hud.objective_name.as_deref(), Some("Evaluar el estado de la nave"));
     }
 }

@@ -1,4 +1,5 @@
 pub mod cooperacion;
+pub mod campaign;
 pub mod ecos_anomalia;
 pub mod el_despertar;
 pub mod la_defensa_imposible;
@@ -310,7 +311,9 @@ impl ProjectEchoSession {
     where
         I: IntoIterator<Item = GameplayCommand>,
     {
-        self.processor.update(&mut self.world, commands)
+        let results = self.processor.update(&mut self.world, commands);
+        campaign::unlock_following_missions(self);
+        results
     }
 }
 

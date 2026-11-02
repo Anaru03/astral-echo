@@ -45,6 +45,14 @@ impl GameplayProcessor {
             .collect()
     }
 
+    pub fn process_followup(
+        &mut self,
+        world: &mut GameplayWorld,
+        command: GameplayCommand,
+    ) -> CommandResult {
+        self.process(world, command)
+    }
+
     fn process(&mut self, world: &mut GameplayWorld, command: GameplayCommand) -> CommandResult {
         let mut result = None;
         for system in &mut self.systems {
