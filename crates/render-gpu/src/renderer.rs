@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use render_core::{
-    game_over_layout, Camera, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh,
+    game_over_layout, hud_overlay, Camera, HudState, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh,
     RasterVertex, SnapshotId, SnapshotScene, Transform, Vec3, Vec4, GAME_OVER_GLYPHS,
 };
 use wgpu::util::DeviceExt;
@@ -68,6 +68,41 @@ pub fn game_over_overlay_scene(width: u32, height: u32) -> Vec<(RasterMesh, Tran
                 ));
             }
         }
+    }
+    result
+}
+
+pub fn hud_overlay_scene(hud: &HudState, width: u32, height: u32) -> Vec<(RasterMesh, Transform)> {
+    let overlay = hud_overlay(hud, width, height);
+    let to_ndc = |x: u32, y: u32| {
+        Vec3::new(
+            (x as f32 / width.max(1) as f32) * 2.0 - 1.0,
+            1.0 - (y as f32 / height.max(1) as f32) * 2.0,
+            0.0,
+        )
+    };
+    let mut result = Vec::with_capacity(1 + overlay.glyphs.len());
+    for rect in std::iter::once(overlay.background).chain(overlay.glyphs) {
+        let color = Vec4::new(
+            f32::from(rect.color[0]) / 255.0,
+            f32::from(rect.color[1]) / 255.0,
+            f32::from(rect.color[2]) / 255.0,
+            1.0,
+        );
+        let x1 = rect.x.saturating_add(rect.width);
+        let y1 = rect.y.saturating_add(rect.height);
+        result.push((
+            RasterMesh::new(
+                vec![
+                    RasterVertex::new(to_ndc(rect.x, y1), color),
+                    RasterVertex::new(to_ndc(x1, y1), color),
+                    RasterVertex::new(to_ndc(x1, rect.y), color),
+                    RasterVertex::new(to_ndc(rect.x, rect.y), color),
+                ],
+                vec![0, 1, 2, 0, 2, 3],
+            ),
+            Transform::IDENTITY,
+        ));
     }
     result
 }
@@ -475,7 +510,7 @@ impl GpuRenderer {
         depth: &wgpu::TextureView,
         vp: Mat4,
     ) -> Result<wgpu::SubmissionIndex, GpuError> {
-        self.render_to_view_matrix_with_clear(color, depth, vp, CLEAR_RGBA)
+        self.render_to_view_matrix_with_load(color, depth, vp, Some(CLEAR_RGBA))
     }
 
     pub fn render_to_view_matrix_with_clear(
@@ -484,6 +519,25 @@ impl GpuRenderer {
         depth: &wgpu::TextureView,
         vp: Mat4,
         clear: [u8; 4],
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
+        self.render_to_view_matrix_with_load(color, depth, vp, Some(clear))
+    }
+
+    pub fn render_to_view_matrix_over(
+        &mut self,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        vp: Mat4,
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
+        self.render_to_view_matrix_with_load(color, depth, vp, None)
+    }
+
+    fn render_to_view_matrix_with_load(
+        &mut self,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        vp: Mat4,
+        clear: Option<[u8; 4]>,
     ) -> Result<wgpu::SubmissionIndex, GpuError> {
         self.gpu.check()?;
         if !vp.is_finite() {
@@ -539,12 +593,12 @@ impl GpuRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: channel(clear[0]),
-                            g: channel(clear[1]),
-                            b: channel(clear[2]),
-                            a: 1.0,
-                        }),
+                        load: match clear {
+                            Some(clear) => wgpu::LoadOp::Clear(wgpu::Color {
+                                r: channel(clear[0]), g: channel(clear[1]), b: channel(clear[2]), a: 1.0,
+                            }),
+                            None => wgpu::LoadOp::Load,
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
