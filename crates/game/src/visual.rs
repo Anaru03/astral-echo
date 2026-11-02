@@ -9,7 +9,7 @@ use gameplay::types::ItemId;
 use gameplay::{
     AttackType, BreakerId, BreakerState, Destination, DestinationId, DestinationType,
     DiscoveryState, ElectricalBreakerConfiguration, ElectricalPanelConfiguration,
-    EnemyArchetype, EnemyConfiguration, EncounterId, GameplayCommand, GameplayEvent,
+    EnemyArchetype, EnemyConfiguration, EncounterId, EnvironmentalHazard, GameplayCommand, GameplayEvent,
     LifeSupportConfiguration, NavigationRoute, NavigationRouteState,
     OxygenCompartmentConfiguration, PlanetPhysics, SpatialEncounter, SpatialEncounterKind,
     InteractionBehavior, StationType, WeaponAmmunition, WeaponConfiguration,
@@ -190,6 +190,7 @@ struct VisualBridge {
     player: EntityId,
     ship: EntityId,
     pilot_station: EntityId,
+    engineering_station: EntityId,
     electrical_panel: EntityId,
     life_support_panel: EntityId,
     bridge_door: EntityId,
@@ -207,12 +208,14 @@ struct VisualBridge {
     last_landed: bool,
     last_game_over: bool,
     player_defeated: bool,
+    started: bool,
     interior_mode: bool,
     look_left: bool,
     look_right: bool,
     look_up: bool,
     look_down: bool,
     last_interior_update: Instant,
+    last_world_update: Instant,
 }
 
 impl VisualBridge {
@@ -303,6 +306,9 @@ impl VisualBridge {
         let pilot_station = session
             .create_station(GameplayVec3::ZERO, 3.0, StationType::Piloting)
             .map_err(|error| format!("crear estación visual: {error:?}"))?;
+        let engineering_station = session
+            .create_station(GameplayVec3::ZERO, 3.0, StationType::Engineering)
+            .map_err(|error| format!("engineering station: {error:?}"))?;
         let _status_console = session
             .create_ship_status_console(
                 GameplayVec3 {
@@ -365,6 +371,14 @@ impl VisualBridge {
                 3.0,
             )
             .map_err(|error| format!("crear puerta del puente visual: {error:?}"))?;
+        let enemy_configuration = EnemyConfiguration::for_archetype(
+            EnemyArchetype::Shooter,
+            GameplayVec3 {
+                x: 18.0,
+                y: 0.0,
+                z: -18.0,
+            },
+        );
         session.update([
             GameplayCommand::ConfigureSignalScanner {
                 ship,
@@ -397,23 +411,22 @@ impl VisualBridge {
                 encounter: SpatialEncounter::new(
                     ENCOUNTER,
                     SpatialEncounterKind::Hostile {
-                        configuration: EnemyConfiguration::for_archetype(
-                            EnemyArchetype::Shooter,
-                            GameplayVec3 {
-                                x: 18.0,
-                                y: 0.0,
-                                z: -18.0,
-                            },
-                        ),
+                        configuration: enemy_configuration,
                     },
                     GameplayVec3::ZERO,
                     4.0,
                 ),
             },
-            GameplayCommand::ActivateSpatialEncounter {
-                encounter: ENCOUNTER,
-            },
         ]);
+        if interior_mode {
+            session.update([GameplayCommand::CreateEnemy {
+                configuration: enemy_configuration,
+            }]);
+        } else {
+            session.update([GameplayCommand::ActivateSpatialEncounter {
+                encounter: ENCOUNTER,
+            }]);
+        }
         let enemy = session
             .world()
             .events()
@@ -439,6 +452,7 @@ impl VisualBridge {
             player,
             ship,
             pilot_station,
+            engineering_station,
             electrical_panel,
             life_support_panel,
             bridge_door,
@@ -456,13 +470,53 @@ impl VisualBridge {
             last_landed: false,
             last_game_over: false,
             player_defeated: false,
+            started: true,
             interior_mode,
             look_left: false,
             look_right: false,
             look_up: false,
             look_down: false,
             last_interior_update: Instant::now(),
+            last_world_update: Instant::now(),
         })
+    }
+
+    fn new_visual_runtime() -> Result<Self, String> {
+        let mut bridge = Self::new_with_mode(true)?;
+        bridge.started = false;
+        bridge.feedback = "ASTRAL ECHO - PULSA ENTER PARA COMENZAR".to_owned();
+        Ok(bridge)
+    }
+
+    fn start_game(&mut self) {
+        if self.started || self.player_defeated {
+            return;
+        }
+        self.started = true;
+        self.last_world_update = Instant::now();
+        self.last_interior_update = Instant::now();
+        self.feedback = "DESPERTAR EN ECHO-7 - PRESIONA M PARA INICIAR EL DESPERTAR".to_owned();
+        println!("visual gameplay: {}", self.feedback);
+    }
+
+    fn advance_visual_time(&mut self) {
+        let now = Instant::now();
+        let delta_ms = now
+            .saturating_duration_since(self.last_world_update)
+            .as_millis()
+            .max(1) as u64;
+        self.last_world_update = now;
+        if self.started && !self.player_defeated {
+            self.advance_visual_time_by(Duration(delta_ms));
+        }
+    }
+
+    fn advance_visual_time_by(&mut self, delta: Duration) {
+        if !self.started || self.player_defeated {
+            return;
+        }
+        self.session.update([GameplayCommand::AdvanceTime { delta }]);
+        self.refresh_player_defeat_state();
     }
 
     fn issue(&mut self, commands: impl IntoIterator<Item = GameplayCommand>) -> bool {
@@ -478,13 +532,16 @@ impl VisualBridge {
         &mut self,
         commands: impl IntoIterator<Item = GameplayCommand>,
         aggregate: &mut FeedbackAggregate,
-    ) {
+    ) -> bool {
         if self.player_defeated {
-            return;
+            return false;
         }
         let commands: Vec<_> = commands.into_iter().collect();
         let results = self.session.update(commands.clone());
         self.refresh_player_defeat_state();
+        let accepted = results.iter().all(|result| {
+            matches!(result.status, gameplay::CommandStatus::Success { .. })
+        });
         let events = self
             .session
             .world()
@@ -492,6 +549,7 @@ impl VisualBridge {
             .iter()
             .map(|value| format!("{:?}", value));
         aggregate.record(&commands, &results, events);
+        accepted
     }
 
     fn finish_issue(&mut self, aggregate: FeedbackAggregate) -> bool {
@@ -521,6 +579,12 @@ impl VisualBridge {
     }
 
     fn handle_key(&mut self, key: KeyCode, state: ElementState) {
+        if !self.started {
+            if state == ElementState::Pressed && key == KeyCode::Enter {
+                self.start_game();
+            }
+            return;
+        }
         let player = self.player;
         let ship = self.ship;
         let enemy = self.enemy;
@@ -576,14 +640,23 @@ impl VisualBridge {
                 self.issue([GameplayCommand::AdvanceTime {
                     delta: Duration(100),
                 }]);
+                self.last_world_update = Instant::now();
             }
             KeyCode::KeyQ => {
                 if self.issue([GameplayCommand::ScanSignals { player, ship }]) {
                     self.audio.request_effect(SoundEffect::Scan);
                 }
             }
+            KeyCode::KeyV => self.equip_energy_weapon(),
+            KeyCode::KeyC => self.equip_kinetic_weapon(),
             KeyCode::KeyF => {
-                if self.session.world().landing_available(DESTINATION) {
+                let mission_five_active = self
+                    .session
+                    .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+                    .is_some_and(|mission| {
+                        mission.state == gameplay::domains::mission::MissionState::Active
+                    });
+                if !mission_five_active && self.session.world().landing_available(DESTINATION) {
                     if self.session.world_mut().request_planet_landing(DESTINATION) {
                         self.feedback = "ATERRIZAJE CONFIRMADO".to_owned();
                         println!("visual gameplay: {}", self.feedback);
@@ -658,7 +731,49 @@ impl VisualBridge {
         if self.session.mission_progress(mission).is_some_and(|value| {
             value.state == gameplay::domains::mission::MissionState::Available
         }) {
-            self.issue_into([GameplayCommand::StartMission { mission }], &mut aggregate);
+            if mission == crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA
+                && !self.mission_two_destinations_compatible()
+            {
+                self.feedback = "MISSION 2 NO DISPONIBLE: DESTINO INCOMPATIBLE".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+                return;
+            }
+            if mission == crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL
+                && !self.mission_three_content_compatible()
+            {
+                self.feedback = "MISSION 3 NO DISPONIBLE: CONTENIDO INCOMPATIBLE".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+                return;
+            }
+            let started = self.issue_into([GameplayCommand::StartMission { mission }], &mut aggregate);
+            if started && mission == crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA {
+                if !self.prepare_mission_two(&mut aggregate) {
+                    self.feedback = "MISSION 2 PREPARACION FALLIDA".to_owned();
+                    println!("visual gameplay: {}", self.feedback);
+                    return;
+                }
+            }
+            if started && mission == crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL {
+                if !self.prepare_mission_three(&mut aggregate) {
+                    self.feedback = "MISSION 3 PREPARACION FALLIDA".to_owned();
+                    println!("visual gameplay: {}", self.feedback);
+                    return;
+                }
+            }
+            if started && mission == crate::la_defensa_imposible::LA_DEFENSA_IMPOSIBLE {
+                if !self.prepare_mission_four(&mut aggregate) {
+                    self.feedback = "MISSION 4 PREPARACION FALLIDA".to_owned();
+                    println!("visual gameplay: {}", self.feedback);
+                    return;
+                }
+            }
+            if started && mission == crate::cooperacion::PROGRESION_COOPERATIVA {
+                if !self.prepare_mission_five_visual() {
+                    self.feedback = "MISSION 5 PREPARACION FALLIDA".to_owned();
+                    println!("visual gameplay: {}", self.feedback);
+                    return;
+                }
+            }
         } else if self.session.mission_progress(mission).is_some_and(|value| {
             value.state == gameplay::domains::mission::MissionState::Active
         }) {
@@ -677,6 +792,349 @@ impl VisualBridge {
             return;
         }
         self.finish_issue(aggregate);
+    }
+
+    fn mission_two_destinations() -> [Destination; 2] {
+        [
+            Destination {
+                id: crate::ecos_anomalia::PLANET_DESTINATION,
+                destination_type: DestinationType::Planet,
+                position: GameplayVec3 {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                travel_duration: Duration(1_000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Known,
+            },
+            Destination {
+                id: crate::ecos_anomalia::SIGNAL_DESTINATION,
+                destination_type: DestinationType::SpacePoint,
+                position: GameplayVec3 {
+                    x: -35.0,
+                    y: 8.0,
+                    z: -20.0,
+                },
+                travel_duration: Duration(1_000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Unknown,
+            },
+        ]
+    }
+
+    fn destination_is_compatible(existing: &Destination, expected: &Destination) -> bool {
+        let discovery_compatible = match expected.discovery {
+            DiscoveryState::Unknown => true,
+            DiscoveryState::Known => {
+                !matches!(existing.discovery, DiscoveryState::Unknown)
+            }
+            DiscoveryState::Discovered => existing.discovery == DiscoveryState::Discovered,
+        };
+        existing.id == expected.id
+            && existing.destination_type == expected.destination_type
+            && existing.position == expected.position
+            && existing.travel_duration == expected.travel_duration
+            && existing.fuel_cost == expected.fuel_cost
+            && discovery_compatible
+    }
+
+    fn mission_two_destinations_compatible(&self) -> bool {
+        Self::mission_two_destinations().iter().all(|expected| {
+            self.session
+                .world()
+                .destination(expected.id)
+                .is_none_or(|existing| Self::destination_is_compatible(existing, expected))
+        })
+    }
+
+    fn prepare_mission_two(&mut self, aggregate: &mut FeedbackAggregate) -> bool {
+        let mut prepared = true;
+        for destination in Self::mission_two_destinations() {
+            if let Some(existing) = self.session.world().destination(destination.id) {
+                if !Self::destination_is_compatible(existing, &destination) {
+                    prepared = false;
+                }
+                continue;
+            }
+            if !self.issue_into(
+                [GameplayCommand::RegisterDestination { destination }],
+                aggregate,
+            ) {
+                prepared = false;
+            }
+        }
+        if !prepared {
+            return false;
+        }
+        if let Some(enemy) = self
+            .session
+            .world()
+            .enemies()
+            .find(|value| {
+                value.active
+                    && value.archetype == Some(EnemyArchetype::Shooter)
+                    && !value.is_defeated()
+            })
+            .map(|value| value.entity)
+        {
+            self.enemy = enemy;
+            return true;
+        }
+
+        if !self.issue_into(
+            [GameplayCommand::CreateEnemy {
+                configuration: EnemyConfiguration::for_archetype(
+                    EnemyArchetype::Shooter,
+                    GameplayVec3 {
+                        x: 10.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                ),
+            }],
+            aggregate,
+        ) {
+            return false;
+        }
+        if let Some(enemy) = self
+            .session
+            .world()
+            .enemies()
+            .find(|value| {
+                value.active
+                    && value.archetype == Some(EnemyArchetype::Shooter)
+                    && !value.is_defeated()
+            })
+            .map(|value| value.entity)
+        {
+            self.enemy = enemy;
+        }
+        self.session
+            .world()
+            .enemies()
+            .any(|value| {
+                value.active
+                    && value.archetype == Some(EnemyArchetype::Shooter)
+                    && !value.is_defeated()
+            })
+    }
+
+    fn mission_three_destination() -> Destination {
+        Destination {
+            id: crate::tormenta_gravitacional::ESCAPE_DESTINATION,
+            destination_type: DestinationType::Planet,
+            position: GameplayVec3 {
+                x: 20.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            travel_duration: Duration(100),
+            fuel_cost: 1,
+            discovery: DiscoveryState::Known,
+        }
+    }
+
+    fn mission_three_hazard(&self) -> EnvironmentalHazard {
+        EnvironmentalHazard::new(
+            crate::tormenta_gravitacional::HAZARD,
+            gameplay::EnvironmentalHazardType::GravitationalAnomaly,
+            self.session.world().ship_position().unwrap_or(GameplayVec3::ZERO),
+            5.0,
+            80,
+            Duration(1_000),
+            true,
+        )
+    }
+
+    fn prepare_mission_three(&mut self, aggregate: &mut FeedbackAggregate) -> bool {
+        let destination = Self::mission_three_destination();
+        if let Some(existing) = self.session.world().destination(destination.id) {
+            if !Self::destination_is_compatible(existing, &destination) {
+                return false;
+            }
+        } else if !self.issue_into(
+            [GameplayCommand::RegisterDestination { destination }],
+            aggregate,
+        ) {
+            return false;
+        }
+
+        let hazard = self.mission_three_hazard();
+        if let Some(existing) = self.session.world().environmental_hazard(hazard.id) {
+            if existing != hazard {
+                return false;
+            }
+        } else if !self.issue_into(
+            [GameplayCommand::RegisterEnvironmentalHazard { hazard }],
+            aggregate,
+        ) {
+            return false;
+        }
+
+        let has_material = self
+            .session
+            .world()
+            .inventory(self.player)
+            .is_some_and(|inventory| inventory.quantity(ItemId(1)) > 0)
+            || self
+                .session
+                .world()
+                .collectibles()
+                .any(|value| value.active && value.item == ItemId(1));
+        if !has_material {
+            let position = self
+                .session
+                .world()
+                .player(self.player)
+                .map(|player| player.position)
+                .unwrap_or(GameplayVec3::ZERO);
+            if !self.issue_into(
+                [GameplayCommand::CreateCollectible {
+                    item: ItemId(1),
+                    amount: 1,
+                    position,
+                    interaction_range: 3.0,
+                }],
+                aggregate,
+            ) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn prepare_mission_four(&mut self, aggregate: &mut FeedbackAggregate) -> bool {
+        if let Some(enemy) = self
+            .session
+            .world()
+            .enemies()
+            .find(|value| {
+                value.active
+                    && value.archetype == Some(EnemyArchetype::Shielded)
+                    && !value.is_defeated()
+            })
+            .map(|value| value.entity)
+        {
+            self.enemy = enemy;
+            return true;
+        }
+        let position = self
+            .session
+            .world()
+            .player(self.player)
+            .map(|player| player.position)
+            .unwrap_or(GameplayVec3::ZERO);
+        if !self.issue_into(
+            [GameplayCommand::CreateEnemy {
+                configuration: EnemyConfiguration::for_archetype(
+                    EnemyArchetype::Shielded,
+                    position,
+                ),
+            }],
+            aggregate,
+        ) {
+            return false;
+        }
+        if let Some(enemy) = self
+            .session
+            .world()
+            .enemies()
+            .find(|value| {
+                value.active
+                    && value.archetype == Some(EnemyArchetype::Shielded)
+                    && !value.is_defeated()
+            })
+            .map(|value| value.entity)
+        {
+            self.enemy = enemy;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn prepare_mission_five_visual(&mut self) -> bool {
+        if self
+            .session
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .is_none()
+        {
+            return false;
+        }
+        if let Some(enemy) = self
+            .session
+            .world()
+            .enemies()
+            .find(|value| {
+                value.active
+                    && value.archetype == Some(EnemyArchetype::Shooter)
+                    && !value.is_defeated()
+            })
+            .map(|value| value.entity)
+        {
+            self.enemy = enemy;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn equip_energy_weapon(&mut self) {
+        let completed = self.issue([GameplayCommand::EquipPlayerWeapon {
+            player: self.player,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Energy,
+                100,
+                20,
+                Duration(1_000),
+                WeaponAmmunition {
+                    item: ItemId(3),
+                    amount_per_attack: 1,
+                },
+            ),
+        }]);
+        if completed {
+            self.feedback = "ARMA DE ENERGIA EQUIPADA".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+        }
+    }
+
+    fn equip_kinetic_weapon(&mut self) {
+        let completed = self.issue([GameplayCommand::EquipPlayerWeapon {
+            player: self.player,
+            weapon: WeaponConfiguration::with_ammunition(
+                AttackType::Kinetic,
+                20,
+                20,
+                Duration(1_000),
+                WeaponAmmunition {
+                    item: ItemId(2),
+                    amount_per_attack: 1,
+                },
+            ),
+        }]);
+        if completed {
+            self.feedback = "ARMA CINETICA EQUIPADA".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+        }
+    }
+
+    fn mission_three_content_compatible(&self) -> bool {
+        let destination = Self::mission_three_destination();
+        let destination_compatible = self
+            .session
+            .world()
+            .destination(destination.id)
+            .is_none_or(|existing| Self::destination_is_compatible(existing, &destination));
+        let hazard = self.mission_three_hazard();
+        let hazard_compatible = self
+            .session
+            .world()
+            .environmental_hazard(hazard.id)
+            .is_none_or(|existing| existing == hazard);
+        destination_compatible && hazard_compatible
     }
 
     fn retry_cooperative_mission_content(&mut self) {
@@ -708,8 +1166,35 @@ impl VisualBridge {
             .guidance_for_player(self.player)
             .ok()
             .and_then(|guidance| guidance.recommended_action);
+        if matches!(action, Some(gameplay::GuidanceAction::RepairShip)) {
+            let mut aggregate = FeedbackAggregate::default();
+            let occupied = self.issue_into(
+                [GameplayCommand::Interact {
+                    player: self.player,
+                    target: self.engineering_station,
+                }],
+                &mut aggregate,
+            );
+            if occupied {
+                self.issue_into(
+                    [GameplayCommand::RepairShipAtStation {
+                        player: self.player,
+                        ship: self.ship,
+                        station: self.engineering_station,
+                    }],
+                    &mut aggregate,
+                );
+            }
+            self.finish_issue(aggregate);
+            return;
+        }
         if let Some(gameplay::GuidanceAction::Interact(target)) = action {
             let mut aggregate = FeedbackAggregate::default();
+            let behavior = self
+                .session
+                .world()
+                .interactable(target)
+                .map(|value| value.behavior);
             if target == self.bridge_door {
                 self.issue_into([GameplayCommand::UnlockDoor {
                     door: self.bridge_door,
@@ -721,10 +1206,41 @@ impl VisualBridge {
                     player: self.player,
                 }], &mut aggregate);
             }
-            self.issue_into([GameplayCommand::Interact {
+            let interaction_accepted = self.issue_into([GameplayCommand::Interact {
                 player: self.player,
                 target,
             }], &mut aggregate);
+
+            // Panel interactions authorize the corresponding gameplay systems;
+            // the follow-up commands still perform all normal range,
+            // configuration and dependency validation in gameplay.
+            if interaction_accepted {
+                match behavior {
+                    Some(InteractionBehavior::ElectricalPanel) => {
+                        self.issue_into([GameplayCommand::SetElectricalBreakerState {
+                            player: self.player,
+                            panel: target,
+                            breaker: BreakerId::new(1),
+                            state: BreakerState::On,
+                        }], &mut aggregate);
+                    }
+                    Some(InteractionBehavior::LifeSupportPanel) => {
+                        self.issue_into([GameplayCommand::SetOxygenAllocation {
+                            player: self.player,
+                            panel: target,
+                            compartment: gameplay::CompartmentId::new(1),
+                            allocation: 3,
+                        }], &mut aggregate);
+                        self.issue_into([GameplayCommand::SetOxygenAllocation {
+                            player: self.player,
+                            panel: target,
+                            compartment: gameplay::CompartmentId::new(2),
+                            allocation: 2,
+                        }], &mut aggregate);
+                    }
+                    _ => {}
+                }
+            }
             let completed = self.finish_issue(aggregate);
             if completed && target == self.bridge_door && self.interior_mode {
                 self.interior_mode = false;
@@ -1098,6 +1614,31 @@ impl VisualBridge {
     }
 
     fn toggle_flight(&mut self, player: EntityId, pilot_station: EntityId) {
+        if let Ok(guidance) = self.session.world().guidance_for_player(player) {
+            if let Some(
+                gameplay::GuidanceAction::TravelTo(destination)
+                | gameplay::GuidanceAction::DiscoverDestination(destination),
+            ) = guidance.recommended_action
+            {
+                let mut aggregate = FeedbackAggregate::default();
+                self.issue_into(
+                    [
+                        GameplayCommand::SelectDestination {
+                            player,
+                            pilot_station,
+                            destination,
+                        },
+                        GameplayCommand::StartTravel {
+                            player,
+                            pilot_station,
+                        },
+                    ],
+                    &mut aggregate,
+                );
+                self.finish_issue(aggregate);
+                return;
+            }
+        }
         let (origin, destination) = match self.session.world().travel_state() {
             gameplay::TravelState::Completed { destination } if destination == DESTINATION => {
                 (DESTINATION, ORIGIN)
@@ -1140,7 +1681,7 @@ impl VisualBridge {
 }
 
 pub fn run() -> Result<(), String> {
-    let runtime = Rc::new(RefCell::new(VisualBridge::new_with_mode(true)?));
+    let runtime = Rc::new(RefCell::new(VisualBridge::new_visual_runtime()?));
     let snapshot_runtime = Rc::clone(&runtime);
     let input_runtime = Rc::clone(&runtime);
     let focus_runtime = Rc::clone(&runtime);
@@ -1154,6 +1695,7 @@ pub fn run() -> Result<(), String> {
         config,
         Box::new(move |width, height| {
             let mut bridge = snapshot_runtime.borrow_mut();
+            bridge.advance_visual_time();
             bridge.update_interior_motion();
             bridge.poll_gamepad();
             let camera = bridge
@@ -1224,6 +1766,44 @@ fn controller_key(button: ControllerButton) -> Option<KeyCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visual_runtime_requires_explicit_start_and_preserves_initial_campaign_state() {
+        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        assert!(!bridge.started);
+        assert!(bridge.feedback.contains("ASTRAL ECHO"));
+        assert_eq!(bridge.session.world().time().elapsed.0, 0);
+
+        bridge.advance_visual_time_by(Duration(100));
+        assert_eq!(bridge.session.world().time().elapsed.0, 0);
+
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        assert!(bridge.started);
+        assert!(bridge.feedback.contains("ECHO-7"));
+        assert_eq!(bridge.session.world().time().elapsed.0, 0);
+        assert_eq!(bridge.session.mission_progress(game::campaign::CAMPAIGN_ORDER[0]).unwrap().state,
+            gameplay::domains::mission::MissionState::Locked);
+    }
+
+    #[test]
+    fn visual_runtime_advances_gameplay_time_while_active() {
+        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        bridge.advance_visual_time_by(Duration(100));
+        assert_eq!(bridge.session.world().time().elapsed.0, 100);
+        assert_eq!(bridge.session.world().time().tick.0, 1);
+    }
+
+    #[test]
+    fn visual_runtime_pauses_time_after_player_defeat() {
+        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        bridge.advance_visual_time_by(Duration(100));
+        bridge.player_defeated = true;
+        bridge.advance_visual_time_by(Duration(100));
+        assert_eq!(bridge.session.world().time().elapsed.0, 100);
+        assert_eq!(bridge.session.world().time().tick.0, 1);
+    }
 
     #[test]
     fn interior_mode_moves_the_player_without_using_ship_flight() {
@@ -1790,6 +2370,837 @@ mod tests {
             Some(render_core::HudMissionState::Available)
         );
         assert_eq!(snapshot.overlay.hud.mission_progress, Some((0, 4)));
+    }
+
+    #[test]
+    fn mission_one_progresses_through_real_station_interactions() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+
+        // Guidance selects the next authoritative interaction. Each I press
+        // uses the same gameplay commands a player would use at the station.
+        for _ in 0..5 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+
+        let progress = bridge
+            .session
+            .mission_progress(crate::el_despertar::EL_DESPERTAR)
+            .expect("awakening should be registered");
+        assert_eq!(progress.required_completed, progress.required_total);
+        assert_eq!(
+            progress.state,
+            gameplay::domains::mission::MissionState::Completed
+        );
+        assert!(!bridge.interior_mode);
+        assert!(bridge
+            .session
+            .world()
+            .electrical_panels()
+            .all(|panel| panel.is_repaired()));
+        assert!(bridge
+            .session
+            .world()
+            .life_support_panels()
+            .all(|panel| panel.is_repaired()));
+    }
+
+    #[test]
+    fn mission_two_starts_with_real_visual_content_and_guided_travel() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..5 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+                .expect("anomaly mission should be registered")
+                .state,
+            gameplay::domains::mission::MissionState::Active
+        );
+        assert!(bridge
+            .session
+            .world()
+            .destination(crate::ecos_anomalia::SIGNAL_DESTINATION)
+            .is_some());
+        assert!(bridge
+            .session
+            .world()
+            .destination(crate::ecos_anomalia::PLANET_DESTINATION)
+            .is_some());
+
+        bridge.handle_key(KeyCode::KeyQ, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Space, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyQ, ElementState::Pressed);
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+                .expect("anomaly progress should exist")
+                .required_completed,
+            1
+        );
+
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        assert!(matches!(
+            bridge.session.world().travel_state(),
+            gameplay::TravelState::InProgress { destination, .. }
+                if destination == crate::ecos_anomalia::PLANET_DESTINATION
+        ));
+    }
+
+    #[test]
+    fn mission_two_rejects_incompatible_existing_destination_without_mutating_it() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..5 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        bridge
+            .session
+            .register_destination(Destination {
+                id: crate::ecos_anomalia::PLANET_DESTINATION,
+                destination_type: DestinationType::SpacePoint,
+                position: GameplayVec3 { x: 99.0, y: 0.0, z: 99.0 },
+                travel_duration: Duration(1000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Known,
+            })
+            .expect("incompatible destination fixture should register");
+
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+                .expect("anomaly mission should be registered")
+                .state,
+            gameplay::domains::mission::MissionState::Available
+        );
+        assert_eq!(
+            bridge.session.world().destination(crate::ecos_anomalia::PLANET_DESTINATION),
+            Some(&Destination {
+                id: crate::ecos_anomalia::PLANET_DESTINATION,
+                destination_type: DestinationType::SpacePoint,
+                position: GameplayVec3 { x: 99.0, y: 0.0, z: 99.0 },
+                travel_duration: Duration(1000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Known,
+            })
+        );
+        assert!(bridge.feedback.contains("DESTINO INCOMPATIBLE"));
+    }
+
+    #[test]
+    fn mission_two_completes_all_objectives_through_real_gameplay_systems() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..5 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+
+        bridge.handle_key(KeyCode::KeyQ, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Space, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyQ, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        }]);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        }]);
+
+        let progress = bridge
+            .session
+            .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+            .expect("anomaly mission should be registered");
+        assert_eq!(progress.required_completed, 2);
+
+        for _ in 0..20 {
+            let Some(enemy_position) = bridge
+                .session
+                .world()
+                .enemies()
+                .find(|enemy| enemy.entity == bridge.enemy)
+                .map(|enemy| enemy.position)
+            else {
+                break;
+            };
+            let Some(player_position) = bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .map(|player| player.position)
+            else {
+                break;
+            };
+            let direction = GameplayVec3 {
+                x: enemy_position.x - player_position.x,
+                y: 0.0,
+                z: enemy_position.z - player_position.z,
+            };
+            let length = (direction.x * direction.x + direction.z * direction.z).sqrt();
+            let direction = GameplayVec3 {
+                x: direction.x / length,
+                y: 0.0,
+                z: direction.z / length,
+            };
+            bridge.session.update([GameplayCommand::MovePlayer {
+                player: bridge.player,
+                direction,
+                delta: Duration(1_000),
+            }]);
+            bridge.session.update([GameplayCommand::AttackEnemy {
+                player: bridge.player,
+                enemy: bridge.enemy,
+            }]);
+            if bridge
+                .session
+                .world()
+                .enemies()
+                .find(|enemy| enemy.entity == bridge.enemy)
+                .is_none_or(|enemy| enemy.is_defeated())
+            {
+                break;
+            }
+            bridge.session.update([GameplayCommand::AdvanceTime {
+                delta: Duration(1_000),
+            }]);
+        }
+
+        let reward = bridge
+            .session
+            .world()
+            .collectibles()
+            .find(|value| value.active && value.item == ItemId(3))
+            .copied()
+            .expect("Shooter defeat should generate ItemId(3) through RewardSystem");
+        for _ in 0..20 {
+            let Some(player_position) = bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .map(|player| player.position)
+            else {
+                break;
+            };
+            let direction = GameplayVec3 {
+                x: reward.position.x - player_position.x,
+                y: 0.0,
+                z: reward.position.z - player_position.z,
+            };
+            let length = (direction.x * direction.x + direction.z * direction.z).sqrt();
+            let direction = GameplayVec3 {
+                x: direction.x / length,
+                y: 0.0,
+                z: direction.z / length,
+            };
+            bridge.session.update([GameplayCommand::MovePlayer {
+                player: bridge.player,
+                direction,
+                delta: Duration(1_000),
+            }]);
+            let Some(updated_player) = bridge.session.world().player(bridge.player) else {
+                break;
+            };
+            let dx = updated_player.position.x - reward.position.x;
+            let dz = updated_player.position.z - reward.position.z;
+            if dx * dx + dz * dz <= reward.interaction_range * reward.interaction_range {
+                break;
+            }
+        }
+        let collected = bridge.session.update([GameplayCommand::CollectItem {
+            player: bridge.player,
+            collectible: reward.entity,
+            amount: 1,
+        }]);
+        assert!(matches!(
+            collected.first().map(|value| &value.status),
+            Some(gameplay::CommandStatus::Success { changed: true })
+        ), "collect result: {:?}, player: {:?}, reward: {:?}", collected, bridge.session.world().player(bridge.player), bridge.session.world().collectible(reward.entity));
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+                .expect("anomaly progress should exist")
+                .state,
+            gameplay::domains::mission::MissionState::Completed
+        );
+    }
+
+    #[test]
+    fn mission_three_completes_all_objectives_through_real_gameplay_systems() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..5 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyQ, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Space, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyQ, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        }]);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        }]);
+
+        let enemy = bridge.enemy;
+        for _ in 0..20 {
+            let Some(enemy_position) = bridge
+                .session
+                .world()
+                .enemies()
+                .find(|value| value.entity == enemy)
+                .map(|value| value.position)
+            else {
+                break;
+            };
+            let Some(player_position) = bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .map(|value| value.position)
+            else {
+                break;
+            };
+            let direction = GameplayVec3 {
+                x: enemy_position.x - player_position.x,
+                y: 0.0,
+                z: enemy_position.z - player_position.z,
+            };
+            let length = (direction.x * direction.x + direction.z * direction.z).sqrt();
+            bridge.session.update([GameplayCommand::MovePlayer {
+                player: bridge.player,
+                direction: GameplayVec3 {
+                    x: direction.x / length,
+                    y: 0.0,
+                    z: direction.z / length,
+                },
+                delta: Duration(1_000),
+            }]);
+            bridge.session.update([GameplayCommand::AttackEnemy {
+                player: bridge.player,
+                enemy,
+            }]);
+            if bridge
+                .session
+                .world()
+                .enemies()
+                .find(|value| value.entity == enemy)
+                .is_none_or(|value| value.is_defeated())
+            {
+                break;
+            }
+            bridge.session.update([GameplayCommand::AdvanceTime {
+                delta: Duration(1_000),
+            }]);
+        }
+        let reward = bridge
+            .session
+            .world()
+            .collectibles()
+            .find(|value| value.active && value.item == ItemId(3))
+            .copied()
+            .expect("Mission2 reward should exist");
+        for _ in 0..20 {
+            let player_position = bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .expect("player should exist")
+                .position;
+            let direction = GameplayVec3 {
+                x: reward.position.x - player_position.x,
+                y: 0.0,
+                z: reward.position.z - player_position.z,
+            };
+            let length = (direction.x * direction.x + direction.z * direction.z).sqrt();
+            bridge.session.update([GameplayCommand::MovePlayer {
+                player: bridge.player,
+                direction: GameplayVec3 {
+                    x: direction.x / length,
+                    y: 0.0,
+                    z: direction.z / length,
+                },
+                delta: Duration(1_000),
+            }]);
+        }
+        bridge.session.update([GameplayCommand::CollectItem {
+            player: bridge.player,
+            collectible: reward.entity,
+            amount: 1,
+        }]);
+
+        let mission_two = bridge
+            .session
+            .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+            .expect("Mission2 should exist");
+        assert_eq!(mission_two.state, gameplay::domains::mission::MissionState::Completed);
+        let mission_three = bridge
+            .session
+            .mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL)
+            .expect("Mission3 should exist");
+        assert_eq!(mission_three.state, gameplay::domains::mission::MissionState::Available);
+
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        let mission_three = bridge
+            .session
+            .mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL)
+            .expect("Mission3 should exist after start");
+        assert_eq!(mission_three.state, gameplay::domains::mission::MissionState::Active);
+        let destination_count = bridge.session.world().destinations().count();
+        let hazard_count = bridge.session.world().environmental_hazards().count();
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        assert_eq!(bridge.session.world().destinations().count(), destination_count);
+        assert_eq!(bridge.session.world().environmental_hazards().count(), hazard_count);
+        assert!(bridge
+            .session
+            .world()
+            .destination(crate::tormenta_gravitacional::ESCAPE_DESTINATION)
+            .is_some());
+        assert!(bridge
+            .session
+            .world()
+            .environmental_hazard(crate::tormenta_gravitacional::HAZARD)
+            .is_some());
+
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        }]);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        }]);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        }]);
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL)
+                .expect("Mission3 progress should exist")
+                .required_completed,
+            1
+        );
+
+        bridge.handle_key(KeyCode::KeyE, ElementState::Pressed);
+        let engineering_position = bridge
+            .session
+            .world()
+            .interactable(bridge.engineering_station)
+            .expect("engineering station should exist")
+            .position;
+        for _ in 0..20 {
+            let player_position = bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .expect("player should exist")
+                .position;
+            let direction = GameplayVec3 {
+                x: engineering_position.x - player_position.x,
+                y: 0.0,
+                z: engineering_position.z - player_position.z,
+            };
+            let length = (direction.x * direction.x + direction.z * direction.z).sqrt();
+            if length <= 3.0 {
+                break;
+            }
+            bridge.session.update([GameplayCommand::MovePlayer {
+                player: bridge.player,
+                direction: GameplayVec3 {
+                    x: direction.x / length,
+                    y: 0.0,
+                    z: direction.z / length,
+                },
+                delta: Duration(1_000),
+            }]);
+        }
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL)
+                .expect("Mission3 progress should exist")
+                .required_completed,
+            2
+        );
+
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        }]);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        }]);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        }]);
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL)
+                .expect("Mission3 progress should exist")
+                .state,
+            gameplay::domains::mission::MissionState::Completed,
+            "progress={:?}, travel={:?}, position={:?}, events={:?}",
+            bridge.session.mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL),
+            bridge.session.world().travel_state(),
+            bridge.session.world().ship_position(),
+            bridge.session.world().events()
+        );
+    }
+
+    #[test]
+    fn campaign_missions_one_through_five_complete_end_to_end() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..5 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyQ, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Space, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyQ, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        }]);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        }]);
+        for _ in 0..20 {
+            let enemy_position = bridge
+                .session
+                .world()
+                .enemies()
+                .find(|value| value.entity == bridge.enemy)
+                .map(|value| value.position)
+                .expect("Mission2 shooter should exist");
+            let player_position = bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .expect("player should exist")
+                .position;
+            let direction = GameplayVec3 {
+                x: enemy_position.x - player_position.x,
+                y: 0.0,
+                z: enemy_position.z - player_position.z,
+            };
+            let length = (direction.x * direction.x + direction.z * direction.z).sqrt();
+            bridge.session.update([GameplayCommand::MovePlayer {
+                player: bridge.player,
+                direction: GameplayVec3 {
+                    x: direction.x / length,
+                    y: 0.0,
+                    z: direction.z / length,
+                },
+                delta: Duration(1_000),
+            }]);
+            bridge.session.update([GameplayCommand::AttackEnemy {
+                player: bridge.player,
+                enemy: bridge.enemy,
+            }]);
+            if bridge
+                .session
+                .world()
+                .enemies()
+                .find(|value| value.entity == bridge.enemy)
+                .is_none_or(|value| value.is_defeated())
+            {
+                break;
+            }
+            bridge.session.update([GameplayCommand::AdvanceTime {
+                delta: Duration(1_000),
+            }]);
+        }
+        let reward = bridge
+            .session
+            .world()
+            .collectibles()
+            .find(|value| value.active && value.item == ItemId(3))
+            .copied()
+            .expect("Mission2 reward should exist");
+        bridge.session.update([GameplayCommand::CollectItem {
+            player: bridge.player,
+            collectible: reward.entity,
+            amount: 1,
+        }]);
+
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        }]);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        }]);
+        bridge.handle_key(KeyCode::KeyE, ElementState::Pressed);
+        let engineering_position = bridge
+            .session
+            .world()
+            .interactable(bridge.engineering_station)
+            .expect("engineering station should exist")
+            .position;
+        for _ in 0..20 {
+            let player_position = bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .expect("player should exist")
+                .position;
+            let direction = GameplayVec3 {
+                x: engineering_position.x - player_position.x,
+                y: 0.0,
+                z: engineering_position.z - player_position.z,
+            };
+            let length = (direction.x * direction.x + direction.z * direction.z).sqrt();
+            if length <= 3.0 {
+                break;
+            }
+            bridge.session.update([GameplayCommand::MovePlayer {
+                player: bridge.player,
+                direction: GameplayVec3 {
+                    x: direction.x / length,
+                    y: 0.0,
+                    z: direction.z / length,
+                },
+                delta: Duration(1_000),
+            }]);
+        }
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        }]);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        }]);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        }]);
+
+        let mission_three = bridge
+            .session
+            .mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL)
+            .expect("Mission3 should exist");
+        assert_eq!(mission_three.state, gameplay::domains::mission::MissionState::Completed);
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::la_defensa_imposible::LA_DEFENSA_IMPOSIBLE)
+                .expect("Mission4 should exist")
+                .state,
+            gameplay::domains::mission::MissionState::Available
+        );
+
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        let shielded = bridge.enemy;
+        assert!(bridge
+            .session
+            .world()
+            .enemies()
+            .any(|value| value.entity == shielded
+                && value.archetype == Some(EnemyArchetype::Shielded)
+                && value.active));
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::la_defensa_imposible::LA_DEFENSA_IMPOSIBLE)
+                .expect("Mission4 should exist")
+                .state,
+            gameplay::domains::mission::MissionState::Active
+        );
+        let shielded_count = bridge
+            .session
+            .world()
+            .enemies()
+            .filter(|value| value.archetype == Some(EnemyArchetype::Shielded) && value.active)
+            .count();
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .enemies()
+                .filter(|value| value.archetype == Some(EnemyArchetype::Shielded) && value.active)
+                .count(),
+            shielded_count
+        );
+
+        bridge.handle_key(KeyCode::KeyF, ElementState::Pressed);
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::la_defensa_imposible::LA_DEFENSA_IMPOSIBLE)
+                .expect("Mission4 progress should exist")
+                .required_completed,
+            1
+        );
+        bridge.handle_key(KeyCode::KeyV, ElementState::Pressed);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1_000),
+        }]);
+        bridge.handle_key(KeyCode::KeyF, ElementState::Pressed);
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::la_defensa_imposible::LA_DEFENSA_IMPOSIBLE)
+                .expect("Mission4 progress should exist")
+                .required_completed,
+            3
+        );
+        bridge.handle_key(KeyCode::KeyE, ElementState::Pressed);
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::la_defensa_imposible::LA_DEFENSA_IMPOSIBLE)
+                .expect("Mission4 progress should exist")
+                .state,
+            gameplay::domains::mission::MissionState::Completed
+        );
+
+        let mission_five = bridge
+            .session
+            .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+            .expect("Mission5 should exist");
+        assert_eq!(mission_five.state, gameplay::domains::mission::MissionState::Available);
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        let mission_five = bridge
+            .session
+            .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+            .expect("Mission5 should exist after start");
+        assert_eq!(mission_five.state, gameplay::domains::mission::MissionState::Active);
+        assert!(bridge
+            .session
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .is_some());
+        let shooter_count = bridge
+            .session
+            .world()
+            .enemies()
+            .filter(|value| {
+                value.active
+                    && value.archetype == Some(EnemyArchetype::Shooter)
+                    && !value.is_defeated()
+            })
+            .count();
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .enemies()
+                .filter(|value| {
+                    value.active
+                        && value.archetype == Some(EnemyArchetype::Shooter)
+                        && !value.is_defeated()
+                })
+                .count(),
+            shooter_count
+        );
+        bridge.handle_key(KeyCode::KeyT, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyT, ElementState::Pressed);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .enemies()
+                .filter(|value| {
+                    value.active
+                        && value.archetype == Some(EnemyArchetype::Shooter)
+                        && !value.is_defeated()
+                })
+                .count(),
+            shooter_count
+        );
+
+        bridge.handle_key(KeyCode::KeyQ, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Space, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyQ, ElementState::Pressed);
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+                .expect("Mission5 progress should exist")
+                .required_completed,
+            1
+        );
+
+        bridge.handle_key(KeyCode::KeyC, ElementState::Pressed);
+        let shooter = bridge.enemy;
+        for _ in 0..30 {
+            let Some(enemy_position) = bridge
+                .session
+                .world()
+                .enemies()
+                .find(|value| value.entity == shooter)
+                .map(|value| value.position)
+            else {
+                break;
+            };
+            let player_position = bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .expect("player should exist")
+                .position;
+            let direction = GameplayVec3 {
+                x: enemy_position.x - player_position.x,
+                y: 0.0,
+                z: enemy_position.z - player_position.z,
+            };
+            let length = (direction.x * direction.x + direction.z * direction.z).sqrt();
+            bridge.session.update([GameplayCommand::MovePlayer {
+                player: bridge.player,
+                direction: GameplayVec3 {
+                    x: direction.x / length,
+                    y: 0.0,
+                    z: direction.z / length,
+                },
+                delta: Duration(1_000),
+            }]);
+            bridge.handle_key(KeyCode::KeyF, ElementState::Pressed);
+            if bridge
+                .session
+                .world()
+                .enemies()
+                .find(|value| value.entity == shooter)
+                .is_none_or(|value| value.is_defeated())
+            {
+                break;
+            }
+            bridge.session.update([GameplayCommand::AdvanceTime {
+                delta: Duration(1_000),
+            }]);
+        }
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+                .expect("Mission5 progress should exist")
+                .required_completed,
+            2
+        );
+        bridge.handle_key(KeyCode::KeyE, ElementState::Pressed);
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+                .expect("Mission5 progress should exist")
+                .state,
+            gameplay::domains::mission::MissionState::Completed
+        );
     }
 
     #[test]
