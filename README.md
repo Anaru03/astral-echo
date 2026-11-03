@@ -23,22 +23,8 @@ Abre PowerShell o CMD. Debes ver un prompt parecido a `PS C:\...>` o `C:\...>`. 
 
 ### 3. Entrar al repositorio
 
-En PowerShell, reemplaza la ruta si el repositorio está en otra carpeta:
-
 ```powershell
-Set-Location "C:\Users\Tiffa\Desktop\UVG\GRAFICAS\PROYECTO3\astral-echo"
-```
-
-En CMD:
-
-```bat
-cd /d C:\Users\Tiffa\Desktop\UVG\GRAFICAS\PROYECTO3\astral-echo
-```
-
-Comprueba que estás en la raíz correcta:
-
-```powershell
-Get-ChildItem Cargo.toml
+cd astral-echo
 ```
 
 ### 4. Abrir la ventana del juego
@@ -87,15 +73,39 @@ La opción `--output` es para modo sin ventana y no debe combinarse con `--windo
 
 ## Controles visuales
 
-- `W/A/S/D`: mover al jugador.
-- `Space`: avanzar el tiempo.
-- `P`: iniciar o retirar el viaje de la nave.
+### Inicio y exploración interior
+
+- `Enter`: comenzar la partida desde la pantalla inicial.
+- `W/A/S/D`: mover al personaje dentro de ECHO-7 o controlar el desplazamiento de la nave durante el pilotaje.
+- Flechas: orientar la cámara del personaje dentro de ECHO-7.
+- `I`: interactuar con el elemento contextual seleccionado dentro del alcance. En la consola de pilotaje, entra o sale del modo de pilotaje.
+- `M`: iniciar la misión disponible. En una partida nueva inicia Mission1; las misiones sucesoras requieren que estén disponibles.
+- `R`: reparar el sistema eléctrico cuando el panel y la condición de gameplay lo permiten.
+- `Y`: reparar el soporte vital cuando el panel y la condición de gameplay lo permiten.
+
+### Exterior, observación y misiones
+
+- `Q`: escanear señales cuando la acción está disponible.
+- `P`: iniciar o invertir el viaje/autopiloto cuando el jugador está en exterior o pilotando ECHO-7 y existe una ruta válida.
 - `O`: iniciar o invertir la observación del planeta.
-- Flechas: mover la cámara alrededor de la superficie.
-- `Q`: escanear.
-- `E`: recoger.
-- `F`: aterrizar cuando corresponda o atacar fuera de esa ventana.
-- `G`: cambiar entre CPU y GPU cuando el host de hot-swap esté activo.
+- Flechas: orbitar la cámara durante la observación planetaria; durante el pilotaje ajustan el rumbo de ECHO-7.
+- `F`: aterrizar cuando la ventana de aterrizaje es válida; en otro contexto intenta atacar al enemigo seleccionado.
+- `E`: recoger un coleccionable activo cuando está disponible.
+- `T`: reintentar la preparación del contenido cooperativo de Mission5 cuando la misión está activa y la recuperación corresponde.
+- `V`: equipar el arma de energía.
+- `C`: equipar el arma cinética.
+
+### Pilotaje de ECHO-7
+
+- `W/A/S/D`: acelerar la nave en la dirección correspondiente mientras el modo de pilotaje está activo.
+- Flechas: cambiar el rumbo de ECHO-7.
+- `P`: activar o invertir el autopiloto configurado.
+- `I`: abandonar el pilotaje y devolver el control al personaje.
+
+### Renderizado
+
+- `G`: cambiar entre CPU y GPU cuando el host de hot-swap de la ventana visual está activo.
+- `Space`: avanzar manualmente 100 ms de tiempo de gameplay. El modo visual también avanza el tiempo automáticamente mientras la partida está activa.
 
 ## Problemas frecuentes
 

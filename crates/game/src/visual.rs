@@ -3459,8 +3459,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn campaign_missions_one_through_five_complete_end_to_end() {
+    fn completed_campaign_bridge() -> VisualBridge {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         for _ in 0..5 {
@@ -3799,6 +3798,147 @@ mod tests {
                 .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
                 .expect("Mission5 progress should exist")
                 .state,
+            gameplay::domains::mission::MissionState::Completed
+        );
+        bridge
+    }
+
+    #[test]
+    fn campaign_missions_one_through_five_complete_end_to_end() {
+        let _ = completed_campaign_bridge();
+    }
+
+    #[test]
+    fn campaign_missions_one_through_five_persist_after_mission_five() {
+        let bridge = completed_campaign_bridge();
+        let player = bridge.player;
+        let mission_ids = [
+            crate::el_despertar::EL_DESPERTAR,
+            crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+            crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL,
+            crate::la_defensa_imposible::LA_DEFENSA_IMPOSIBLE,
+            crate::cooperacion::PROGRESION_COOPERATIVA,
+        ];
+        let mission_state = |session: &ProjectEchoSession, mission| {
+            session
+                .mission_progress(mission)
+                .expect("campaign mission should exist")
+        };
+        let before_inventory = bridge
+            .session
+            .world()
+            .inventory(player)
+            .cloned()
+            .expect("campaign player inventory should exist");
+        let before_item_three = before_inventory.quantity(ItemId(3));
+        assert!(before_item_three > 0, "Mission5 should preserve its ItemId(3) reward");
+        let defeated_enemies: Vec<_> = bridge
+            .session
+            .world()
+            .enemies()
+            .filter(|enemy| enemy.is_defeated())
+            .map(|enemy| enemy.entity)
+            .collect();
+        let consumed_collectibles: Vec<_> = bridge
+            .session
+            .world()
+            .collectibles()
+            .filter(|collectible| !collectible.active || collectible.amount == 0)
+            .map(|collectible| (collectible.entity, collectible.active, collectible.amount))
+            .collect();
+        let consumed_collectible = consumed_collectibles
+            .first()
+            .map(|value| value.0)
+            .expect("campaign should have a consumed reward collectible");
+        let before_missions: Vec<_> = mission_ids
+            .iter()
+            .map(|mission| mission_state(&bridge.session, *mission))
+            .collect();
+        assert!(before_missions.iter().all(|progress| {
+            progress.state == gameplay::domains::mission::MissionState::Completed
+                && progress.required_completed == progress.required_total
+        }));
+        let before_ship_position = bridge.session.world().ship_position();
+        let saved = bridge.session.save_state();
+        let serialized = saved.serialize();
+        let decoded = gameplay::GameplaySaveState::deserialize(&serialized)
+            .expect("completed campaign save should deserialize");
+        let mut restored = ProjectEchoSession::new();
+        restored
+            .restore_state(decoded)
+            .expect("completed campaign save should restore into a new session");
+
+        let restored_missions: Vec<_> = mission_ids
+            .iter()
+            .map(|mission| mission_state(&restored, *mission))
+            .collect();
+        assert_eq!(restored_missions, before_missions);
+        assert_eq!(
+            mission_state(&restored, crate::cooperacion::PROGRESION_COOPERATIVA).state,
+            gameplay::domains::mission::MissionState::Completed
+        );
+        assert_eq!(
+            mission_state(&restored, crate::cooperacion::PROGRESION_COOPERATIVA).required_completed,
+            mission_state(&restored, crate::cooperacion::PROGRESION_COOPERATIVA).required_total
+        );
+        assert_eq!(restored.world().inventory(player), Some(&before_inventory));
+        assert_eq!(
+            restored
+                .world()
+                .inventory(player)
+                .expect("restored inventory should exist")
+                .quantity(ItemId(3)),
+            before_item_three
+        );
+        assert_eq!(restored.world().ship_position(), before_ship_position);
+        for enemy in defeated_enemies {
+            assert!(restored
+                .world()
+                .combatant(enemy)
+                .is_some_and(|value| value.is_defeated() && !value.active));
+        }
+        for (collectible, active, amount) in consumed_collectibles {
+            assert_eq!(
+                restored.world().collectible(collectible).map(|value| (value.active, value.amount)),
+                Some((active, amount))
+            );
+        }
+
+        let restored_before_repeat = restored.save_state().serialize();
+        let repeated_collect = restored.update([GameplayCommand::CollectItem {
+            player,
+            collectible: consumed_collectible,
+            amount: 1,
+        }]);
+        assert!(matches!(
+            repeated_collect.first().map(|result| &result.status),
+            Some(gameplay::CommandStatus::Rejected { .. })
+        ));
+        assert_eq!(restored.save_state().serialize(), restored_before_repeat);
+        assert_eq!(
+            mission_state(&restored, crate::cooperacion::PROGRESION_COOPERATIVA).state,
+            gameplay::domains::mission::MissionState::Completed
+        );
+
+        let continuation_results = restored.update([GameplayCommand::AdvanceTime {
+            delta: Duration(1),
+        }]);
+        assert!(matches!(
+            continuation_results.first().map(|result| &result.status),
+            Some(gameplay::CommandStatus::Success { .. })
+        ));
+        let continued = restored.save_state().serialize();
+        let mut continued_restored = ProjectEchoSession::new();
+        continued_restored
+            .restore_state(
+                gameplay::GameplaySaveState::deserialize(&continued)
+                    .expect("post-campaign continuation save should deserialize"),
+            )
+            .expect("post-campaign continuation save should restore");
+        assert_eq!(continued_restored.save_state().serialize(), continued);
+        assert_eq!(continued_restored.world().inventory(player), Some(&before_inventory));
+        assert_eq!(
+            mission_state(&continued_restored, crate::cooperacion::PROGRESION_COOPERATIVA).state,
             gameplay::domains::mission::MissionState::Completed
         );
     }
