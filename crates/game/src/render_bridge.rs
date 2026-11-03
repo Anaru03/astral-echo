@@ -329,6 +329,15 @@ pub fn snapshot_from_world_with_camera_and_view(
         snapshot.overlay.game_over = fade >= 1.0;
     }
     snapshot.overlay.hud = hud_state(world, academic_planet);
+    let player_defeated = world.players().any(|player| {
+        world
+            .combatant(player.entity_id)
+            .is_some_and(|combatant| combatant.is_defeated())
+    });
+    if player_defeated {
+        snapshot.overlay.game_over = true;
+        snapshot.overlay.hud.feedback = Some("JUGADOR DERROTADO".to_owned());
+    }
     snapshot.visual_events = world
         .visual_events()
         .map(|event| RenderVisualEvent {

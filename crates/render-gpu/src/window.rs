@@ -378,6 +378,12 @@ impl SurfaceRenderer {
                 Mat4::IDENTITY,
                 [0, 0, 0, 255],
             )?;
+            let hud_scene = hud_overlay_scene(&overlay.hud, self.config.width, self.config.height);
+            if !hud_scene.is_empty() {
+                let mut hud_renderer = GpuRenderer::new(self.gpu.clone(), self.config.format, &hud_scene)?;
+                let hud_depth = DepthTarget::new(&self.gpu, self.config.width, self.config.height)?;
+                hud_renderer.render_to_view_matrix_over(&view, &hud_depth.view, Mat4::IDENTITY)?;
+            }
             self.window.pre_present_notify();
             texture.present();
             if reconfigure {

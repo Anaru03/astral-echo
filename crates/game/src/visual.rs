@@ -226,7 +226,15 @@ impl VisualBridge {
         Self::new_with_mode(false)
     }
 
+    #[cfg(test)]
     fn new_with_mode(interior_mode: bool) -> Result<Self, String> {
+        Self::new_with_mode_and_enemy_distance(interior_mode, false)
+    }
+
+    fn new_with_mode_and_enemy_distance(
+        interior_mode: bool,
+        safe_interior_enemy_start: bool,
+    ) -> Result<Self, String> {
         let mut session = ProjectEchoSession::new();
         let player = session.ids.first_player;
         let ship = session.ids.first_ship;
@@ -373,13 +381,25 @@ impl VisualBridge {
                 3.0,
             )
             .map_err(|error| format!("crear puerta del puente visual: {error:?}"))?;
-        let enemy_configuration = EnemyConfiguration::for_archetype(
-            EnemyArchetype::Shooter,
+        // Keep the initial interior encounter outside the player's immediate
+        // weapon range. The enemy remains active and autonomous, but the
+        // player gets a meaningful exploration window before combat begins.
+        let enemy_position = if interior_mode && safe_interior_enemy_start {
+            GameplayVec3 {
+                x: 60.0,
+                y: 0.0,
+                z: -60.0,
+            }
+        } else {
             GameplayVec3 {
                 x: 18.0,
                 y: 0.0,
                 z: -18.0,
-            },
+            }
+        };
+        let enemy_configuration = EnemyConfiguration::for_archetype(
+            EnemyArchetype::Shooter,
+            enemy_position,
         );
         session.update([
             GameplayCommand::ConfigureSignalScanner {
@@ -486,7 +506,7 @@ impl VisualBridge {
     }
 
     fn new_visual_runtime() -> Result<Self, String> {
-        let mut bridge = Self::new_with_mode(true)?;
+        let mut bridge = Self::new_with_mode_and_enemy_distance(true, true)?;
         bridge.started = false;
         bridge.feedback = "ASTRAL ECHO - PULSA ENTER PARA COMENZAR".to_owned();
         Ok(bridge)
@@ -2014,11 +2034,19 @@ pub fn run() -> Result<(), String> {
                 &camera,
                 bridge.interior_mode,
             );
-            snapshot.overlay.hud.interaction_prompt = bridge.contextual_prompt();
-            snapshot.overlay.hud.guidance = bridge.guidance_prompt();
-            snapshot.overlay.hud.controls = Some(bridge.controls_hint());
-            snapshot.overlay.hud.instructions = Some(bridge.instructions_hint());
-            snapshot.overlay.hud.feedback = Some(bridge.feedback.clone());
+            if snapshot.overlay.game_over {
+                snapshot.overlay.hud.interaction_prompt = None;
+                snapshot.overlay.hud.guidance = None;
+                snapshot.overlay.hud.controls = None;
+                snapshot.overlay.hud.instructions = None;
+                snapshot.overlay.hud.feedback = Some("JUGADOR DERROTADO".to_owned());
+            } else {
+                snapshot.overlay.hud.interaction_prompt = bridge.contextual_prompt();
+                snapshot.overlay.hud.guidance = bridge.guidance_prompt();
+                snapshot.overlay.hud.controls = Some(bridge.controls_hint());
+                snapshot.overlay.hud.instructions = Some(bridge.instructions_hint());
+                snapshot.overlay.hud.feedback = Some(bridge.feedback.clone());
+            }
             Ok(snapshot)
         }),
         true,
@@ -2520,10 +2548,44 @@ mod tests {
             bridge.session.world(),
             Default::default(),
         );
+        assert!(snapshot.overlay.game_over);
+        assert_eq!(snapshot.overlay.hud.feedback.as_deref(), Some("JUGADOR DERROTADO"));
         assert!(snapshot.nodes.iter().all(|node| {
             node.transform.translation.is_finite()
                 && node.transform.rotation.is_finite()
                 && node.transform.scale.is_finite()
+        }));
+    }
+
+    #[test]
+    fn interior_start_keeps_enemy_outside_immediate_weapon_range() {
+        let mut bridge = VisualBridge::new_with_mode_and_enemy_distance(true, true)
+            .expect("visual bridge should initialize");
+        let enemy = bridge
+            .session
+            .world()
+            .combatant(bridge.enemy)
+            .copied()
+            .expect("visual enemy should exist");
+        let player = bridge
+            .session
+            .world()
+            .combatant(bridge.player)
+            .copied()
+            .expect("visual player should exist");
+        let dx = f64::from(enemy.position.x - player.position.x);
+        let dy = f64::from(enemy.position.y - player.position.y);
+        let dz = f64::from(enemy.position.z - player.position.z);
+        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+        assert!(distance > f64::from(enemy.weapon.range));
+
+        for _ in 0..4 {
+            bridge.advance_visual_time_by(Duration(500));
+        }
+
+        assert!(!bridge.player_defeated);
+        assert!(!bridge.session.world().events().iter().any(|event| {
+            matches!(event, GameplayEvent::CombatDamageApplied { target, .. } if *target == bridge.player)
         }));
     }
 
