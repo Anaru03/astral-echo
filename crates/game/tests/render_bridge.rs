@@ -109,6 +109,48 @@ fn station_nodes_use_stable_ids_positions_and_registered_assets() {
 }
 
 #[test]
+fn echo7_station_and_player_have_distinct_visual_identity_and_scale_contracts() {
+    let mut world = support::fixture_world();
+    let station = world
+        .create_station(
+            engine::Vec3 {
+                x: 4.0,
+                y: 0.0,
+                z: -3.0,
+            },
+            3.0,
+            gameplay::StationType::Engineering,
+        )
+        .unwrap();
+    let ship = world.navigation().ship_id().unwrap();
+    let player = world.players().next().unwrap().entity_id;
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let ship_node = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Entity(ship))
+        .expect("ECHO-7 should be present");
+    let station_node = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Entity(station))
+        .expect("Station should be present");
+    let player_node = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Entity(player))
+        .expect("player should be present");
+
+    assert_eq!(ship_node.mesh, ECHO7_MESH);
+    assert_eq!(station_node.mesh, STATION_MESH);
+    assert_eq!(player_node.mesh, PLAYER_MESH);
+    assert_ne!(ship_node.mesh, station_node.mesh);
+    assert_eq!(ship_node.transform.scale, ECHO7_VISUAL_SCALE);
+    assert_eq!(station_node.transform.scale, STATION_VISUAL_SCALE);
+    assert_eq!(player_node.transform.scale, PLAYER_VISUAL_SCALE);
+}
+
+#[test]
 fn station_visibility_and_identity_are_preserved_across_snapshots() {
     let mut world = support::fixture_world();
     let first = world
@@ -538,6 +580,13 @@ fn academic_surface_objects_are_four_deterministic_exterior_visual_nodes() {
         4
     );
     assert_eq!(before, format!("{world:?}"));
+}
+
+#[test]
+fn planetary_surface_props_do_not_use_gameplay_enemy_identity() {
+    assert!(academic_surface_objects(0.0)
+        .iter()
+        .all(|node| node.mesh != ENEMY_MESH));
 }
 
 #[test]

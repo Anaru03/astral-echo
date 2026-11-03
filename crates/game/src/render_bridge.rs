@@ -46,6 +46,10 @@ pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
 pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
 pub const ECHO7_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
 pub const ECHO7_MATERIAL: MaterialHandle = VisualAssets::SHIP;
+pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::new(2.0, 3.0, 1.0);
+pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
+pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
+pub const PLAYER_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
 pub const ECHO7_INTERIOR_HALF_WIDTH: f32 = 9.0;
 pub const ECHO7_INTERIOR_HALF_DEPTH: f32 = 7.0;
 pub const ECHO7_INTERIOR_FLOOR_Y: f32 = -1.2;
@@ -84,7 +88,11 @@ pub fn station_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
         }
         nodes.push(SnapshotNode::new(
             interactable.entity_id,
-            Transform::from_translation(from_engine(interactable.position)),
+            Transform::new(
+                from_engine(interactable.position),
+                Quat::IDENTITY,
+                STATION_VISUAL_SCALE,
+            ),
             STATION_MESH,
             STATION_MATERIAL,
             interactable.enabled,
@@ -178,7 +186,10 @@ pub fn academic_surface_objects_with_seed(
         );
         let (mesh, material) = match index % 4 {
             0 => (PLAYER_MESH, PLAYER_MATERIAL),
-            1 => (ENEMY_MESH, ENEMY_MATERIAL),
+            // This is a planetary surface prop, not a gameplay enemy. Keep
+            // enemy identity reserved for world.enemies() so it cannot look
+            // like an enemy ship permanently attached to the planet orbit.
+            1 => (PLACEHOLDER_MESH, PLACEHOLDER_MATERIAL),
             2 => (DESTINATION_MESH, DESTINATION_MATERIAL),
             _ => (COLLECTIBLE_MESH, COLLECTIBLE_MATERIAL),
         };
@@ -321,6 +332,15 @@ pub fn snapshot_from_world_with_camera_and_view(
         snapshot.overlay.game_over = fade >= 1.0;
     }
     snapshot.overlay.hud = hud_state(world, academic_planet);
+    let player_defeated = world.players().any(|player| {
+        world
+            .combatant(player.entity_id)
+            .is_some_and(|combatant| combatant.is_defeated())
+    });
+    if player_defeated {
+        snapshot.overlay.game_over = true;
+        snapshot.overlay.hud.feedback = Some("JUGADOR DERROTADO".to_owned());
+    }
     snapshot.visual_events = world
         .visual_events()
         .map(|event| RenderVisualEvent {
@@ -374,7 +394,7 @@ pub fn snapshot_from_world_with_camera_and_view(
                 pos,
                 Quat::from_rotation_y(orientation.yaw_degrees.to_radians())
                     * Quat::from_rotation_x(orientation.pitch_degrees.to_radians()),
-                Vec3::ONE,
+                ECHO7_VISUAL_SCALE,
             ),
             ECHO7_MESH,
             ECHO7_MATERIAL,
@@ -430,7 +450,11 @@ pub fn snapshot_from_world_with_camera_and_view(
             enemy.active && !enemy.is_defeated() && world.entities().contains(enemy.entity);
         snapshot.push_node(SnapshotNode::new(
             enemy.entity,
-            Transform::from_translation(from_engine(enemy.position)),
+            Transform::new(
+                from_engine(enemy.position),
+                Quat::IDENTITY,
+                ENEMY_SHIP_VISUAL_SCALE,
+            ),
             ENEMY_MESH,
             ENEMY_MATERIAL,
             visible,
@@ -746,6 +770,7 @@ fn hud_state(
         interaction_prompt: None,
         guidance: None,
         controls: None,
+        instructions: None,
         feedback: None,
     }
 }
@@ -972,7 +997,7 @@ fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
     Transform::new(
         from_engine(position),
         Quat::from_rotation_y(yaw.to_radians()) * Quat::from_rotation_x(pitch.to_radians()),
-        Vec3::ONE,
+        PLAYER_VISUAL_SCALE,
     )
 }
 

@@ -36,9 +36,7 @@ pub fn render_snapshot_scene_with_stats(
         overlay_clear_color(scene.overlay()),
         scene.overlay().game_over,
     )?;
-    if !scene.overlay().game_over {
-        compose_hud_overlay(framebuffer, &scene.overlay().hud);
-    }
+    compose_hud_overlay(framebuffer, &scene.overlay().hud);
     Ok((prepared_stats, pipeline_stats))
 }
 
@@ -87,9 +85,7 @@ pub fn render_snapshot_scene_with_timing(
             ..Default::default()
         },
     )?;
-    if !scene.overlay().game_over {
-        compose_hud_overlay(framebuffer, &scene.overlay().hud);
-    }
+    compose_hud_overlay(framebuffer, &scene.overlay().hud);
     Ok((prepared_stats, pipeline_stats, preparation_ns))
 }
 
@@ -133,9 +129,7 @@ pub fn render_snapshot_scene_with_shader_at_time_with_stats(
         time,
         PipelineConfig::default(),
     )?;
-    if !scene.overlay().game_over {
-        compose_hud_overlay(framebuffer, &scene.overlay().hud);
-    }
+    compose_hud_overlay(framebuffer, &scene.overlay().hud);
     Ok((prepared_stats, pipeline_stats))
 }
 
@@ -189,9 +183,7 @@ pub fn render_snapshot_scene_reference(
     }
     let stats = pipeline.stats;
     drop(pipeline);
-    if !scene.overlay().game_over {
-        compose_hud_overlay(framebuffer, &scene.overlay().hud);
-    }
+    compose_hud_overlay(framebuffer, &scene.overlay().hud);
     Ok(stats)
 }
 

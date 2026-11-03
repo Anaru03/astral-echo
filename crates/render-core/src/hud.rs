@@ -6,7 +6,7 @@ pub struct HudOverlayRect { pub x: u32, pub y: u32, pub width: u32, pub height: 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HudOverlay { pub background: HudOverlayRect, pub glyphs: Vec<HudOverlayRect> }
 
-const FONT: [([u8; 7], char); 38] = [
+const FONT: [([u8; 7], char); 39] = [
     ([14,17,17,31,17,17,17],'A'),([30,17,17,30,17,17,30],'B'),([14,17,16,16,16,17,14],'C'),
     ([30,17,17,17,17,17,30],'D'),([31,16,16,30,16,16,31],'E'),([31,16,16,30,16,16,16],'F'),
     ([14,17,16,23,17,17,15],'G'),([17,17,17,31,17,17,17],'H'),([14,4,4,4,4,4,14],'I'),
@@ -19,11 +19,14 @@ const FONT: [([u8; 7], char); 38] = [
     ([4,12,4,4,4,4,14],'1'),([14,17,1,2,4,8,31],'2'),([30,1,1,14,1,1,30],'3'),
     ([2,6,10,18,31,2,2],'4'),([31,16,16,30,1,1,30],'5'),([14,16,16,30,17,17,14],'6'),
     ([31,1,2,4,8,8,8],'7'),([14,17,17,14,17,17,14],'8'),([14,17,17,15,1,1,14],'9'),
-    ([0,0,0,31,0,0,0],'-'),([0,0,4,0,0,4,0],':')
+    ([0,0,0,31,0,0,0],'-'),([0,0,4,0,0,4,0],':'),([1,2,4,8,16,0,0],'/')
 ];
 
-fn glyph(ch: char) -> [u8; 7] { FONT.iter().find_map(|(p, c)| (*c == ch).then_some(*p)).unwrap_or([17,10,4,4,4,10,17]) }
+fn glyph(ch: char) -> Option<[u8; 7]> { FONT.iter().find_map(|(p, c)| (*c == ch).then_some(*p)) }
 fn normalize(ch: char) -> char {
+    if ch == '—' {
+        return '-';
+    }
     match ch {
         'á'|'à'|'ä'|'â'|'Á'|'À'|'Ä'|'Â' => 'A', 'é'|'è'|'ë'|'ê'|'É'|'È'|'Ë'|'Ê' => 'E',
         'í'|'ì'|'ï'|'î'|'Í'|'Ì'|'Ï'|'Î' => 'I', 'ó'|'ò'|'ö'|'ô'|'Ó'|'Ò'|'Ö'|'Ô' => 'O',
@@ -46,6 +49,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         && hud.interaction_prompt.is_none()
         && hud.guidance.is_none()
         && hud.controls.is_none()
+        && hud.instructions.is_none()
         && hud.feedback.as_deref().is_none_or(str::is_empty)
     {
         return HudOverlay {
@@ -55,7 +59,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     }
     let scale = (width / 480).clamp(1, 3);
     let margin = 12 * scale;
-    let char_width = 6 * scale;
+    let char_width = 7 * scale;
     let max_chars = ((width.saturating_sub(margin * 2)) / char_width).clamp(24, 64) as usize;
     let progress = hud.mission_progress.map(|(d, t)| format!("{d}/{t}"));
     let mut lines = vec![
@@ -65,6 +69,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         hud.guidance.as_deref().map(|v| format!("GUIA: {v}")),
         hud.interaction_prompt.as_deref().map(|v| format!("INTERACCION: {v}")),
         hud.controls.as_deref().map(|v| format!("CONTROLES: {v}")),
+        hud.instructions.as_deref().map(|v| format!("INSTRUCCIONES: {v}")),
         hud.feedback.as_deref().filter(|v| !v.is_empty()).map(|v| format!("FEEDBACK: {v}")),
     ].into_iter().flatten().collect::<Vec<_>>();
     for value in &mut lines { value.truncate(max_chars); }
@@ -77,7 +82,8 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     let mut glyphs = Vec::new();
     for (row, text) in lines.iter().enumerate() {
         for (column, ch) in text.chars().enumerate() {
-            for (glyph_row, bits) in glyph(normalize(ch)).iter().copied().enumerate() {
+            let Some(pattern) = glyph(normalize(ch)) else { continue };
+            for (glyph_row, bits) in pattern.iter().copied().enumerate() {
                 for glyph_column in 0..5u32 {
                     if bits & (1 << (4 - glyph_column)) != 0 {
                         glyphs.push(HudOverlayRect { x: margin + column as u32 * char_width + glyph_column * scale, y: margin + row as u32 * 8 * scale + glyph_row as u32 * scale, width: scale, height: scale, color });
@@ -111,5 +117,25 @@ mod tests {
         let hud = HudState { feedback: Some("JUGADOR DERROTADO".into()), ..Default::default() };
         let overlay = hud_overlay(&hud, 640, 360);
         assert!(overlay.glyphs.iter().all(|rect| rect.color[0] > rect.color[1]));
+    }
+
+    #[test]
+    fn spaces_have_no_fallback_glyph_and_words_keep_an_advance() {
+        assert!(glyph(' ').is_none());
+        assert!(glyph('A').is_some());
+
+        let overlay = hud_overlay(
+            &HudState { feedback: Some("A B".into()), ..Default::default() },
+            640,
+            360,
+        );
+        // "FEEDBACK: A B": the second space starts at column 11 with the
+        // seven-pixel advance used by the shared CPU/GPU layout.
+        let space_start = 12 + 11 * 7;
+        let next_word_start = space_start + 7;
+        assert!(!overlay.glyphs.iter().any(|rect| {
+            rect.x >= space_start && rect.x < next_word_start
+        }));
+        assert!(overlay.glyphs.iter().any(|rect| rect.x >= next_word_start));
     }
 }
