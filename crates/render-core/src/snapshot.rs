@@ -199,6 +199,7 @@ pub struct HudState {
     pub interaction_prompt: Option<String>,
     pub guidance: Option<String>,
     pub controls: Option<String>,
+    pub instructions: Option<String>,
     pub feedback: Option<String>,
 }
 

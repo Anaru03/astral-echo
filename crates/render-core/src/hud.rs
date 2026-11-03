@@ -46,6 +46,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         && hud.interaction_prompt.is_none()
         && hud.guidance.is_none()
         && hud.controls.is_none()
+        && hud.instructions.is_none()
         && hud.feedback.as_deref().is_none_or(str::is_empty)
     {
         return HudOverlay {
@@ -65,6 +66,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         hud.guidance.as_deref().map(|v| format!("GUIA: {v}")),
         hud.interaction_prompt.as_deref().map(|v| format!("INTERACCION: {v}")),
         hud.controls.as_deref().map(|v| format!("CONTROLES: {v}")),
+        hud.instructions.as_deref().map(|v| format!("INSTRUCCIONES: {v}")),
         hud.feedback.as_deref().filter(|v| !v.is_empty()).map(|v| format!("FEEDBACK: {v}")),
     ].into_iter().flatten().collect::<Vec<_>>();
     for value in &mut lines { value.truncate(max_chars); }
