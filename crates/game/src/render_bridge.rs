@@ -186,7 +186,10 @@ pub fn academic_surface_objects_with_seed(
         );
         let (mesh, material) = match index % 4 {
             0 => (PLAYER_MESH, PLAYER_MATERIAL),
-            1 => (ENEMY_MESH, ENEMY_MATERIAL),
+            // This is a planetary surface prop, not a gameplay enemy. Keep
+            // enemy identity reserved for world.enemies() so it cannot look
+            // like an enemy ship permanently attached to the planet orbit.
+            1 => (PLACEHOLDER_MESH, PLACEHOLDER_MATERIAL),
             2 => (DESTINATION_MESH, DESTINATION_MATERIAL),
             _ => (COLLECTIBLE_MESH, COLLECTIBLE_MATERIAL),
         };

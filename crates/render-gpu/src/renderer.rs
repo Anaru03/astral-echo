@@ -74,15 +74,18 @@ pub fn game_over_overlay_scene(width: u32, height: u32) -> Vec<(RasterMesh, Tran
 
 pub fn hud_overlay_scene(hud: &HudState, width: u32, height: u32) -> Vec<(RasterMesh, Transform)> {
     let overlay = hud_overlay(hud, width, height);
-    let to_ndc = |x: u32, y: u32| {
+    let to_ndc = |x: u32, y: u32, z: f32| {
         Vec3::new(
             (x as f32 / width.max(1) as f32) * 2.0 - 1.0,
             1.0 - (y as f32 / height.max(1) as f32) * 2.0,
-            0.0,
+            z,
         )
     };
     let mut result = Vec::with_capacity(1 + overlay.glyphs.len());
-    for rect in std::iter::once(overlay.background).chain(overlay.glyphs) {
+    for (index, rect) in std::iter::once(overlay.background)
+        .chain(overlay.glyphs)
+        .enumerate()
+    {
         let color = Vec4::new(
             f32::from(rect.color[0]) / 255.0,
             f32::from(rect.color[1]) / 255.0,
@@ -91,13 +94,14 @@ pub fn hud_overlay_scene(hud: &HudState, width: u32, height: u32) -> Vec<(Raster
         );
         let x1 = rect.x.saturating_add(rect.width);
         let y1 = rect.y.saturating_add(rect.height);
+        let depth = if index == 0 { 0.5 } else { 0.0 };
         result.push((
             RasterMesh::new(
                 vec![
-                    RasterVertex::new(to_ndc(rect.x, y1), color),
-                    RasterVertex::new(to_ndc(x1, y1), color),
-                    RasterVertex::new(to_ndc(x1, rect.y), color),
-                    RasterVertex::new(to_ndc(rect.x, rect.y), color),
+                    RasterVertex::new(to_ndc(rect.x, y1, depth), color),
+                    RasterVertex::new(to_ndc(x1, y1, depth), color),
+                    RasterVertex::new(to_ndc(x1, rect.y, depth), color),
+                    RasterVertex::new(to_ndc(rect.x, rect.y, depth), color),
                 ],
                 vec![0, 1, 2, 0, 2, 3],
             ),
@@ -780,5 +784,27 @@ impl DepthTarget {
         });
         let view = texture.create_view(&Default::default());
         Ok(Self { texture, view })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hud_overlay_scene;
+    use render_core::HudState;
+
+    #[test]
+    fn hud_glyphs_are_in_front_of_the_background_depth() {
+        let scene = hud_overlay_scene(
+            &HudState {
+                instructions: Some("WASD MOVER".to_owned()),
+                ..Default::default()
+            },
+            640,
+            360,
+        );
+        assert!(scene.len() > 1);
+        let background_depth = scene[0].0.vertices[0].position.z;
+        let glyph_depth = scene[1].0.vertices[0].position.z;
+        assert!(glyph_depth < background_depth);
     }
 }

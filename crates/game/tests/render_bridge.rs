@@ -583,6 +583,13 @@ fn academic_surface_objects_are_four_deterministic_exterior_visual_nodes() {
 }
 
 #[test]
+fn planetary_surface_props_do_not_use_gameplay_enemy_identity() {
+    assert!(academic_surface_objects(0.0)
+        .iter()
+        .all(|node| node.mesh != ENEMY_MESH));
+}
+
+#[test]
 fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
     let assets = VisualAssets::default();
     let planet = academic_planet_transform(3.75);
