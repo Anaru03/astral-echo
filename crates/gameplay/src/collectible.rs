@@ -9,6 +9,7 @@ pub enum ItemCategory {
     CombatAmmunition,
     MineralSample,
     ElectronicComponent,
+    Weapon,
     HealingConsumable,
     RevivalConsumable,
 }

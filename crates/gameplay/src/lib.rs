@@ -82,7 +82,7 @@ pub use companion::{
 };
 pub use combat::{
     AttackType, CombatConfigurationError, Combatant, EnemyArchetype, EnemyConfiguration, Shield,
-    WeaponAmmunition, WeaponConfiguration,
+    WeaponAmmunition, WeaponConfiguration, ENERGY_WEAPON_ITEM, PLASMA_WEAPON_ITEM,
 };
 pub use commands::{
     CommandInvalidity, CommandRejection, CommandResult, CommandStatus, GameplayCommand,

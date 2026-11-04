@@ -121,6 +121,10 @@ pub enum GameplayCommand {
         player: EntityId,
         weapon: WeaponConfiguration,
     },
+    EquipPlayerWeaponItem {
+        player: EntityId,
+        item: crate::types::ItemId,
+    },
     AttackEnemy {
         player: EntityId,
         enemy: EntityId,
@@ -415,6 +419,7 @@ pub enum CommandRejection {
     CombatantInactive,
     CombatantDefeated,
     WeaponUnavailable,
+    WeaponNotOwned,
     AmmunitionUnavailable,
     OutOfAttackRange,
     AttackCooldown,
