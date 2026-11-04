@@ -47,7 +47,16 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     assert!(snapshot
         .nodes
         .iter()
-        .any(|n| n.entity == SnapshotId::Entity(enemy.entity) && n.mesh == ENEMY_MESH));
+        .any(|n| {
+            n.entity == SnapshotId::Entity(enemy.entity)
+                && n.mesh == ENEMY_MESH
+                && n.material
+                    == match enemy.archetype {
+                        Some(gameplay::EnemyArchetype::Charger) => CHARGER_MATERIAL,
+                        Some(gameplay::EnemyArchetype::Shielded) => SHIELDED_MATERIAL,
+                        Some(gameplay::EnemyArchetype::Shooter) | None => ENEMY_MATERIAL,
+                    }
+        }));
     assert!(snapshot
         .nodes
         .iter()
@@ -56,7 +65,7 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
         n.entity == SnapshotId::Destination(1)
             && n.mesh == PLANET_MESH
             && n.material == PLANET_MATERIAL
-            && n.transform.scale == render_core::Vec3::splat(5.0)
+            && n.transform.scale == render_core::Vec3::splat(PLANET_VISUAL_RADIUS)
     }));
     let collectible = world.collectibles().next().unwrap();
     assert!(snapshot

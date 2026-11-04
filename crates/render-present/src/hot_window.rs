@@ -4,7 +4,10 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use render_core::{InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene};
+use render_core::{
+    hud_contextual_button_hit, hud_controls_button_hit, hud_controls_panel_hit,
+    InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene,
+};
 use render_cpu::{
     render_snapshot_scene_with_stats, render_snapshot_scene_with_shader, write_png, Framebuffer,
     FragmentShader, RasterMode,
@@ -13,7 +16,7 @@ use render_gpu::{GpuError, GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -154,6 +157,7 @@ struct HostState {
     cpu_redraw: CpuRedrawGate,
     pending_gpu: Option<PendingGpu>,
     pending_gpu_started: Option<Instant>,
+    cursor_position: (f64, f64),
 }
 
 struct PendingGpu {
@@ -261,6 +265,7 @@ impl ApplicationHandler for Host {
             cpu_redraw: CpuRedrawGate::default(),
             pending_gpu: None,
             pending_gpu_started: None,
+            cursor_position: (0.0, 0.0),
         });
         if self.start_gpu {
             self.toggle();
@@ -329,6 +334,36 @@ impl ApplicationHandler for Host {
                         }
                     }
                     (self.input)(code, event.state);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(state) = self.state.as_mut() {
+                    state.cursor_position = (position.x, position.y);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let input_action = self.state.as_ref().and_then(|state| {
+                    let (x, y) = state.cursor_position;
+                    let hud = &state.snapshot.overlay().hud;
+                    let x = x.max(0.0) as u32;
+                    let y = y.max(0.0) as u32;
+                    if hud.controls_panel.open {
+                        hud_controls_panel_hit(hud, state.framebuffer.width(), state.framebuffer.height(), x, y)
+                            .then_some(KeyCode::F1)
+                    } else if hud_controls_button_hit(hud, state.framebuffer.width(), state.framebuffer.height(), x, y) {
+                        Some(KeyCode::F1)
+                    } else if hud_contextual_button_hit(hud, state.framebuffer.width(), state.framebuffer.height(), x, y) {
+                        Some(KeyCode::KeyI)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(key) = input_action {
+                    (self.input)(key, ElementState::Pressed);
                 }
             }
             WindowEvent::RedrawRequested => self.draw(),

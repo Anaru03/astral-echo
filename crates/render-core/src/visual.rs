@@ -142,6 +142,8 @@ impl VisualAssets {
     pub const SHIP: MaterialHandle = MaterialHandle::new(0);
     pub const ENEMY: MaterialHandle = MaterialHandle::new(1);
     pub const PLAYER: MaterialHandle = MaterialHandle::new(2);
+    pub const ENEMY_CHARGER: MaterialHandle = MaterialHandle::new(10);
+    pub const ENEMY_SHIELDED: MaterialHandle = MaterialHandle::new(11);
     pub const DESTINATION: MaterialHandle = MaterialHandle::new(3);
     pub const COLLECTIBLE: MaterialHandle = MaterialHandle::new(4);
     pub const SUN: MaterialHandle = MaterialHandle::new(5);
@@ -213,7 +215,15 @@ impl Default for VisualAssets {
             ),
             (
                 (MeshHandle::ENEMY_PLACEHOLDER, Self::ENEMY),
-                diamond(1.8, Vec4::new(0.9, 0.03, 0.1, 1.0)),
+                diamond(1.8, Vec4::ONE),
+            ),
+            (
+                (MeshHandle::ENEMY_PLACEHOLDER, Self::ENEMY_CHARGER),
+                diamond(1.8, Vec4::ONE),
+            ),
+            (
+                (MeshHandle::ENEMY_PLACEHOLDER, Self::ENEMY_SHIELDED),
+                diamond(1.8, Vec4::ONE),
             ),
             (
                 (MeshHandle::DESTINATION_PLACEHOLDER, Self::DESTINATION),
@@ -294,6 +304,16 @@ mod tests {
         ));
 
         assert!(SnapshotScene::default().update(&snapshot).is_ok());
+    }
+
+    #[test]
+    fn enemy_archetype_fallbacks_are_registered_with_distinct_material_handles() {
+        let assets = VisualAssets::default();
+        for material in [VisualAssets::ENEMY, VisualAssets::ENEMY_CHARGER, VisualAssets::ENEMY_SHIELDED] {
+            assert!(assets.mesh(MeshHandle::ENEMY_PLACEHOLDER, material).is_ok());
+        }
+        assert_ne!(VisualAssets::ENEMY, VisualAssets::ENEMY_CHARGER);
+        assert_ne!(VisualAssets::ENEMY, VisualAssets::ENEMY_SHIELDED);
     }
 }
 

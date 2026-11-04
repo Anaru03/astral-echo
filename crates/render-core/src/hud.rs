@@ -4,7 +4,13 @@ use crate::HudState;
 pub struct HudOverlayRect { pub x: u32, pub y: u32, pub width: u32, pub height: u32, pub color: [u8; 4] }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HudOverlay { pub background: HudOverlayRect, pub glyphs: Vec<HudOverlayRect> }
+pub struct HudOverlay {
+    pub background: HudOverlayRect,
+    pub glyphs: Vec<HudOverlayRect>,
+    pub contextual_button: Option<HudOverlayRect>,
+    pub controls_button: Option<HudOverlayRect>,
+    pub controls_close_button: Option<HudOverlayRect>,
+}
 
 const FONT: [([u8; 7], char); 39] = [
     ([14,17,17,31,17,17,17],'A'),([30,17,17,30,17,17,30],'B'),([14,17,16,16,16,17,14],'C'),
@@ -41,11 +47,26 @@ fn status(hud: &HudState) -> &'static str {
     }
 }
 
+fn objective_status(state: crate::HudObjectiveState) -> &'static str {
+    match state {
+        crate::HudObjectiveState::Locked => "BLOQUEADA",
+        crate::HudObjectiveState::Available => "PENDIENTE",
+        crate::HudObjectiveState::Active => "ACTIVA",
+        crate::HudObjectiveState::Failed => "FALLIDA",
+        crate::HudObjectiveState::Completed => "COMPLETADA",
+    }
+}
+
 pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     if hud.mission_name.is_none()
+        && hud.mission_description.is_none()
         && hud.objective_name.is_none()
+        && hud.mission_objectives.is_empty()
         && hud.mission_progress.is_none()
         && hud.mission_state.is_none()
+        && hud.mission_notification.is_none()
+        && hud.contextual_action.is_none()
+        && hud.controls_panel.entries.is_empty()
         && hud.interaction_prompt.is_none()
         && hud.guidance.is_none()
         && hud.controls.is_none()
@@ -55,6 +76,9 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         return HudOverlay {
             background: HudOverlayRect { x: 0, y: 0, width: 0, height: 0, color: [0; 4] },
             glyphs: Vec::new(),
+            contextual_button: None,
+            controls_button: None,
+            controls_close_button: None,
         };
     }
     let scale = (width / 480).clamp(1, 3);
@@ -65,17 +89,42 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     let mut lines = vec![
         hud.mission_name.as_deref().map(|v| format!("MISION: {v}")),
         Some(format!("ESTADO: {}  PROGRESO: {}", status(hud), progress.as_deref().unwrap_or("-"))),
+        hud.mission_description.as_deref().map(|v| format!("CONTEXTO: {v}")),
         hud.objective_name.as_deref().map(|v| format!("OBJETIVO: {v}")),
+        hud.mission_notification.as_deref().map(|v| format!("AVISO: {v}")),
+        None,
+        Some("OBJETIVOS:".to_owned()).filter(|_| !hud.mission_objectives.is_empty()),
+        None,
+        None,
         hud.guidance.as_deref().map(|v| format!("GUIA: {v}")),
         hud.interaction_prompt.as_deref().map(|v| format!("INTERACCION: {v}")),
         hud.controls.as_deref().map(|v| format!("CONTROLES: {v}")),
         hud.instructions.as_deref().map(|v| format!("INSTRUCCIONES: {v}")),
         hud.feedback.as_deref().filter(|v| !v.is_empty()).map(|v| format!("FEEDBACK: {v}")),
     ].into_iter().flatten().collect::<Vec<_>>();
+    if !hud.mission_objectives.is_empty() {
+        let objective_lines = hud.mission_objectives.iter().enumerate().map(|(index, objective)| {
+            let optional = if objective.required { "" } else { " OPCIONAL" };
+            format!(
+                "{} {} {}/{} {}{}",
+                index + 1,
+                objective_status(objective.state),
+                objective.progress,
+                objective.required_progress,
+                objective.name,
+                optional,
+            )
+        });
+        let insertion = lines.iter().position(|line| line == "OBJETIVOS:").unwrap_or(lines.len());
+        lines.splice(insertion + 1..insertion + 1, objective_lines);
+    }
+    lines.retain(|line| !line.is_empty());
     for value in &mut lines { value.truncate(max_chars); }
     if lines.is_empty() { lines.push("ASTRAL ECHO".to_owned()); }
     let panel_width = (max_chars as u32 * char_width + margin * 2).min(width.saturating_sub(margin));
-    let panel_height = (margin + lines.len() as u32 * 8 * scale + margin).min(height.saturating_sub(margin));
+    let button_height = hud.contextual_action.as_ref().map_or(0, |_| 12 * scale);
+    let panel_height = (margin + lines.len() as u32 * 8 * scale + margin + button_height)
+        .min(height.saturating_sub(margin));
     let terminal = hud.feedback.as_deref().is_some_and(|v| v.contains("DERROTADO"));
     let color = if terminal { [255,96,80,255] } else { [210,240,255,255] };
     let background = HudOverlayRect { x: margin, y: margin, width: panel_width, height: panel_height, color: [5,12,24,220] };
@@ -92,7 +141,155 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             }
         }
     }
-    HudOverlay { background, glyphs }
+    let contextual_button = hud.contextual_action.as_ref().map(|action| {
+        let label_width = (action.key.chars().count() + action.action.chars().count() + 1) as u32
+            * char_width;
+        let width = (label_width + margin).min(panel_width.saturating_sub(margin));
+        let height = button_height.max(8 * scale);
+        let button = HudOverlayRect {
+            x: margin,
+            y: panel_height.saturating_sub(margin + height),
+            width,
+            height,
+            color: [24, 106, 150, 255],
+        };
+        let label = format!("{} {}", action.key, action.action);
+        for (column, ch) in label.chars().enumerate() {
+            let Some(pattern) = glyph(normalize(ch)) else { continue };
+            for (glyph_row, bits) in pattern.iter().copied().enumerate() {
+                for glyph_column in 0..5u32 {
+                    if bits & (1 << (4 - glyph_column)) != 0 {
+                        glyphs.push(HudOverlayRect {
+                            x: button.x + margin / 2 + column as u32 * char_width + glyph_column * scale,
+                            y: button.y + (button.height.saturating_sub(7 * scale)) / 2 + glyph_row as u32 * scale,
+                            width: scale,
+                            height: scale,
+                            color: [235, 250, 255, 255],
+                        });
+                    }
+                }
+            }
+        }
+        glyphs.insert(0, button);
+        button
+    });
+    let controls_available = !hud.controls_panel.entries.is_empty();
+    let indicator_height = 12 * scale;
+    let indicator_label = if hud.controls_panel.open { "F1 CERRAR" } else { "F1 CONTROLES" };
+    let indicator_width = ((indicator_label.chars().count() as u32 + 1) * char_width + margin)
+        .min(width.saturating_sub(margin * 2));
+    let indicator = HudOverlayRect {
+        x: width.saturating_sub(margin + indicator_width),
+        y: height.saturating_sub(margin + indicator_height),
+        width: indicator_width,
+        height: indicator_height,
+        color: [42, 76, 110, 255],
+    };
+    if controls_available {
+        glyphs.insert(0, indicator);
+    }
+    for (column, ch) in indicator_label.chars().enumerate() {
+        if !controls_available { break; }
+        let Some(pattern) = glyph(normalize(ch)) else { continue };
+        for (glyph_row, bits) in pattern.iter().copied().enumerate() {
+            for glyph_column in 0..5u32 {
+                if bits & (1 << (4 - glyph_column)) != 0 {
+                    glyphs.push(HudOverlayRect {
+                        x: indicator.x + margin / 2 + column as u32 * char_width + glyph_column * scale,
+                        y: indicator.y + (indicator.height.saturating_sub(7 * scale)) / 2 + glyph_row as u32 * scale,
+                        width: scale,
+                        height: scale,
+                        color: [235, 250, 255, 255],
+                    });
+                }
+            }
+        }
+    }
+    let controls_close_button = if controls_available && hud.controls_panel.open {
+        let panel_lines = std::iter::once("CONTROLES - F1 CERRAR".to_owned())
+            .chain(hud.controls_panel.entries.iter().cloned())
+            .collect::<Vec<_>>();
+        let panel_width = panel_lines.iter().map(|line| line.chars().count()).max().unwrap_or(1) as u32
+            * char_width + margin * 2;
+        let panel_width = panel_width.min(width.saturating_sub(margin * 2));
+        let panel_height = (margin + panel_lines.len() as u32 * 8 * scale + margin)
+            .min(height.saturating_sub(margin * 2));
+        let panel = HudOverlayRect {
+            x: width.saturating_sub(margin + panel_width),
+            y: indicator.y.saturating_sub(margin + panel_height),
+            width: panel_width,
+            height: panel_height,
+            color: [5, 18, 36, 245],
+        };
+        glyphs.insert(0, panel);
+        for (row, text) in panel_lines.iter().enumerate() {
+            for (column, ch) in text.chars().enumerate() {
+                let Some(pattern) = glyph(normalize(ch)) else { continue };
+                for (glyph_row, bits) in pattern.iter().copied().enumerate() {
+                    for glyph_column in 0..5u32 {
+                        if bits & (1 << (4 - glyph_column)) != 0 {
+                            glyphs.push(HudOverlayRect {
+                                x: panel.x + margin / 2 + column as u32 * char_width + glyph_column * scale,
+                                y: panel.y + margin + row as u32 * 8 * scale + glyph_row as u32 * scale,
+                                width: scale,
+                                height: scale,
+                                color: [235, 250, 255, 255],
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Some(indicator)
+    } else {
+        None
+    };
+    HudOverlay {
+        background,
+        glyphs,
+        contextual_button,
+        controls_button: controls_available.then_some(indicator),
+        controls_close_button,
+    }
+}
+
+pub fn hud_contextual_button_hit(
+    hud: &HudState,
+    width: u32,
+    height: u32,
+    x: u32,
+    y: u32,
+) -> bool {
+    hud_overlay(hud, width, height)
+        .contextual_button
+        .is_some_and(|button| x >= button.x && x < button.x.saturating_add(button.width)
+            && y >= button.y && y < button.y.saturating_add(button.height))
+}
+
+pub fn hud_controls_button_hit(
+    hud: &HudState,
+    width: u32,
+    height: u32,
+    x: u32,
+    y: u32,
+) -> bool {
+    hud_overlay(hud, width, height)
+        .controls_button
+        .is_some_and(|button| x >= button.x && x < button.x.saturating_add(button.width)
+            && y >= button.y && y < button.y.saturating_add(button.height))
+}
+
+pub fn hud_controls_panel_hit(
+    hud: &HudState,
+    width: u32,
+    height: u32,
+    x: u32,
+    y: u32,
+) -> bool {
+    hud_overlay(hud, width, height)
+        .controls_close_button
+        .is_some_and(|button| x >= button.x && x < button.x.saturating_add(button.width)
+            && y >= button.y && y < button.y.saturating_add(button.height))
 }
 
 #[cfg(test)]
@@ -117,6 +314,99 @@ mod tests {
         let hud = HudState { feedback: Some("JUGADOR DERROTADO".into()), ..Default::default() };
         let overlay = hud_overlay(&hud, 640, 360);
         assert!(overlay.glyphs.iter().all(|rect| rect.color[0] > rect.color[1]));
+    }
+
+    #[test]
+    fn contextual_action_has_a_hit_testable_button() {
+        let hud = HudState {
+            contextual_action: Some(crate::HudContextualAction {
+                target: 7,
+                object: "PUERTA".into(),
+                action: "ABRIR".into(),
+                key: "I".into(),
+            }),
+            ..Default::default()
+        };
+        let overlay = hud_overlay(&hud, 640, 360);
+        let button = overlay.contextual_button.expect("contextual button should exist");
+        assert!(hud_contextual_button_hit(&hud, 640, 360, button.x + 1, button.y + 1));
+        assert!(!hud_contextual_button_hit(&hud, 640, 360, 0, 0));
+    }
+
+    #[test]
+    fn controls_panel_has_open_and_close_hit_targets() {
+        let hud = HudState {
+            controls_panel: crate::HudControlsPanel {
+                open: true,
+                entries: vec!["WASD MOVER".into()],
+            },
+            ..Default::default()
+        };
+        let overlay = hud_overlay(&hud, 640, 360);
+        let button = overlay.controls_button.expect("controls indicator should exist");
+        assert!(hud_controls_button_hit(&hud, 640, 360, button.x + 1, button.y + 1));
+        assert!(hud_controls_panel_hit(&hud, 640, 360, button.x + 1, button.y + 1));
+        assert!(!hud_controls_panel_hit(&hud, 640, 360, 0, 0));
+    }
+
+    #[test]
+    fn controls_indicator_contains_visible_text_inside_its_button() {
+        let hud = HudState {
+            controls_panel: crate::HudControlsPanel {
+                entries: vec!["WASD MOVER".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let overlay = hud_overlay(&hud, 640, 360);
+        let button = overlay.controls_button.expect("controls indicator should exist");
+        let text_color = [235, 250, 255, 255];
+        assert!(overlay.glyphs.iter().any(|rect| {
+            rect.color == text_color
+                && rect.x >= button.x
+                && rect.y >= button.y
+                && rect.x.saturating_add(rect.width) <= button.x.saturating_add(button.width)
+                && rect.y.saturating_add(rect.height) <= button.y.saturating_add(button.height)
+        }));
+        assert!(hud_controls_button_hit(
+            &hud,
+            640,
+            360,
+            button.x + button.width / 2,
+            button.y + button.height / 2,
+        ));
+    }
+
+    #[test]
+    fn mission_overlay_contains_all_objective_states_and_progress() {
+        let hud = HudState {
+            mission_name: Some("El despertar".into()),
+            mission_objectives: vec![
+                crate::HudMissionObjective {
+                    id: 1,
+                    name: "Evaluar el estado".into(),
+                    state: crate::HudObjectiveState::Completed,
+                    progress: 1,
+                    required_progress: 1,
+                    required: true,
+                },
+                crate::HudMissionObjective {
+                    id: 2,
+                    name: "Restaurar energia".into(),
+                    state: crate::HudObjectiveState::Active,
+                    progress: 0,
+                    required_progress: 1,
+                    required: true,
+                },
+            ],
+            ..Default::default()
+        };
+        let overlay = hud_overlay(&hud, 640, 360);
+        assert!(overlay.background.height > 60);
+        assert!(!overlay.glyphs.is_empty());
+        assert!(overlay.glyphs.iter().all(|rect| {
+            rect.x + rect.width <= 640 && rect.y + rect.height <= 360
+        }));
     }
 
     #[test]

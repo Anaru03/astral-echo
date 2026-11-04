@@ -81,6 +81,7 @@ pub fn hud_overlay_scene(hud: &HudState, width: u32, height: u32) -> Vec<(Raster
             z,
         )
     };
+    let glyph_count = overlay.glyphs.len().max(1) as f32;
     let mut result = Vec::with_capacity(1 + overlay.glyphs.len());
     for (index, rect) in std::iter::once(overlay.background)
         .chain(overlay.glyphs)
@@ -94,7 +95,11 @@ pub fn hud_overlay_scene(hud: &HudState, width: u32, height: u32) -> Vec<(Raster
         );
         let x1 = rect.x.saturating_add(rect.width);
         let y1 = rect.y.saturating_add(rect.height);
-        let depth = if index == 0 { 0.5 } else { 0.0 };
+        let depth = if index == 0 {
+            0.5
+        } else {
+            0.25 * (1.0 - index as f32 / (glyph_count + 1.0))
+        };
         result.push((
             RasterMesh::new(
                 vec![
@@ -806,5 +811,23 @@ mod tests {
         let background_depth = scene[0].0.vertices[0].position.z;
         let glyph_depth = scene[1].0.vertices[0].position.z;
         assert!(glyph_depth < background_depth);
+    }
+
+    #[test]
+    fn hud_glyphs_keep_a_strict_front_to_back_order() {
+        let scene = hud_overlay_scene(
+            &HudState {
+                controls_panel: render_core::HudControlsPanel {
+                    entries: vec!["WASD MOVER".to_owned()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            640,
+            360,
+        );
+        let depths: Vec<_> = scene.iter().map(|(mesh, _)| mesh.vertices[0].position.z).collect();
+        assert!(depths.len() > 2);
+        assert!(depths.windows(2).all(|pair| pair[0] > pair[1]));
     }
 }
