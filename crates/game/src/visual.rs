@@ -893,6 +893,7 @@ impl VisualBridge {
             KeyCode::KeyI => self.guided_interaction(),
             KeyCode::KeyR => self.restore_energy(),
             KeyCode::KeyY => self.restore_life_support(),
+            KeyCode::KeyU if self.pilot_mode => self.use_fuel_resource(),
             KeyCode::Space => {
                 self.issue([GameplayCommand::AdvanceTime {
                     delta: Duration(100),
@@ -2077,6 +2078,7 @@ impl VisualBridge {
                 "G ESCUDO - PILOTAJE".to_owned(),
                 "SHIFT BOOST - PILOTAJE".to_owned(),
                 "X FRENAR - PILOTAJE".to_owned(),
+                "U USAR COMBUSTIBLE - PILOTAJE".to_owned(),
                 "B EQUIPAR PLASMA - ARMAMENTO ENCONTRADO".to_owned(),
                 "P AUTOPILOTO - PILOTAJE".to_owned(),
                 "I SALIR DEL PILOTAJE - PILOTAJE".to_owned(),
@@ -2119,6 +2121,17 @@ impl VisualBridge {
             state: BreakerState::On,
         }], &mut aggregate);
         self.finish_issue(aggregate);
+    }
+
+    fn use_fuel_resource(&mut self) {
+        let result = self.session.update([GameplayCommand::UseFuelResource {
+            player: self.player,
+            ship: self.ship,
+            item: gameplay::FUEL_RESOURCE_ITEM,
+            amount: 1,
+        }]);
+        self.feedback = format!("ABASTECIMIENTO DE COMBUSTIBLE: {:?}", result.first().map(|value| value.status));
+        println!("visual gameplay: {}", self.feedback);
     }
 
     fn restore_life_support(&mut self) {
@@ -4840,5 +4853,50 @@ mod tests {
             .world()
             .collectibles()
             .any(|value| value.active && value.item == gameplay::ENERGY_WEAPON_ITEM));
+    }
+
+    #[test]
+    fn resource_derelicts_publish_collectible_resources_and_persist_consumption() {
+        let mut bridge = VisualBridge::new().expect("resource scenario should initialize");
+        bridge.session.update([GameplayCommand::RegisterDerelict {
+            derelict: Derelict::new(DerelictId::new(9_020), GameplayVec3::ZERO, 3.5)
+                .with_rewards(
+                    vec![DerelictReward { item: gameplay::FUEL_RESOURCE_ITEM, amount: 4 }],
+                    RewardDistributionPolicy::Shared,
+                ),
+        }]);
+        bridge.guided_interaction();
+        let fuel_collectible = bridge
+            .session
+            .world()
+            .collectibles()
+            .find(|value| value.item == gameplay::FUEL_RESOURCE_ITEM)
+            .copied()
+            .expect("fuel derelict should create a collectible");
+        assert!(fuel_collectible.active);
+        let collect_result = bridge.session.update([GameplayCommand::CollectItem {
+            player: bridge.player,
+            collectible: fuel_collectible.entity,
+            amount: fuel_collectible.amount,
+        }]);
+        assert!(matches!(collect_result.first().map(|value| value.status), Some(gameplay::CommandStatus::Success { changed: true })));
+        assert!(!bridge.session.world().collectible(fuel_collectible.entity).unwrap().active);
+        let fuel_before = bridge.session.world().ship_fuel(bridge.ship).unwrap().current();
+        bridge.session.update([GameplayCommand::AddInventoryItem {
+            player: bridge.player,
+            item: gameplay::FUEL_RESOURCE_ITEM,
+            amount: 1,
+        }]);
+        let result = bridge.session.update([GameplayCommand::UseFuelResource {
+            player: bridge.player,
+            ship: bridge.ship,
+            item: gameplay::FUEL_RESOURCE_ITEM,
+            amount: 1,
+        }]);
+        assert!(matches!(result.first().map(|value| value.status), Some(gameplay::CommandStatus::Success { changed: true })));
+        assert_eq!(bridge.session.world().ship_fuel(bridge.ship).unwrap().current(), fuel_before + 1);
+        let restored = bridge.session.save_state().serialize();
+        assert!(restored.contains("fuel|"));
+        assert!(restored.contains("collectible|"));
     }
 }

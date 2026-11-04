@@ -689,7 +689,7 @@ fn parse_combatant(fields: &[&str]) -> Result<CombatantSaveState, SaveError> {
 
 fn item_category(value: ItemCategory) -> u8 { 
     match value { 
-        ItemCategory::RepairMaterial => 0, ItemCategory::CombatAmmunition => 1, ItemCategory::MineralSample => 2, ItemCategory::ElectronicComponent => 3, ItemCategory::HealingConsumable => 4, ItemCategory::RevivalConsumable => 5 
+        ItemCategory::RepairMaterial => 0, ItemCategory::CombatAmmunition => 1, ItemCategory::MineralSample => 2, ItemCategory::ElectronicComponent => 3, ItemCategory::HealingConsumable => 4, ItemCategory::RevivalConsumable => 5, ItemCategory::Weapon => 6, ItemCategory::Fuel => 7, ItemCategory::Oxygen => 8
     } 
 }
 
@@ -701,6 +701,9 @@ fn parse_item_category(value: &str) -> Result<ItemCategory, SaveError> {
         3 => Ok(ItemCategory::ElectronicComponent),
         4 => Ok(ItemCategory::HealingConsumable),
         5 => Ok(ItemCategory::RevivalConsumable),
+        6 => Ok(ItemCategory::Weapon),
+        7 => Ok(ItemCategory::Fuel),
+        8 => Ok(ItemCategory::Oxygen),
         _ => Err(SaveError::InvalidState),
     }
 }

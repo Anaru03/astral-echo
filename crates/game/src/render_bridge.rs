@@ -824,6 +824,17 @@ fn hud_state(
         ship_supplies: (world.ship_control_active() == Some(true))
             .then(|| world.players().next().and_then(|player| world.inventory(player.entity_id)).map(|inventory| inventory.quantity(gameplay::types::ItemId(1))))
             .flatten(),
+        ship_resource_alert: if world.ship_control_active() == Some(true) {
+            let fuel_alert = world.navigation().ship_id().and_then(|ship| world.ship_fuel(ship)).and_then(|fuel| {
+                (fuel.current() == 0).then_some("COMBUSTIBLE AGOTADO").or_else(|| (fuel.current() * 4 <= fuel.capacity()).then_some("COMBUSTIBLE BAJO"))
+            });
+            let oxygen_alert = world.life_support_panels().next().and_then(|panel| {
+                (panel.allocated_total() == 0).then_some("OXIGENO AGOTADO").or_else(|| (panel.allocated_total() * 4 <= panel.capacity()).then_some("OXIGENO BAJO"))
+            });
+            fuel_alert.or(oxygen_alert).map(str::to_owned)
+        } else {
+            None
+        },
         target,
         active_enemies: world
             .enemies()
