@@ -210,6 +210,7 @@ struct VisualBridge {
     player_defeated: bool,
     started: bool,
     interior_mode: bool,
+    introductory_threat_pending: bool,
     pilot_mode: bool,
     legacy_exterior_controls: bool,
     look_left: bool,
@@ -458,6 +459,19 @@ impl VisualBridge {
                 _ => None,
             })
             .ok_or_else(|| "el escenario visual no creó el enemigo".to_owned())?;
+        let introductory_threat_pending = interior_mode;
+        if introductory_threat_pending {
+            let result = session.update([GameplayCommand::SetEnemyActive {
+                enemy,
+                active: false,
+            }]);
+            if !matches!(
+                result.first().map(|value| &value.status),
+                Some(gameplay::CommandStatus::Success { .. })
+            ) {
+                return Err("no se pudo proteger la amenaza introductoria".to_owned());
+            }
+        }
         session.update([GameplayCommand::Interact {
             player,
             target: pilot_station,
@@ -494,6 +508,7 @@ impl VisualBridge {
             player_defeated: false,
             started: true,
             interior_mode,
+            introductory_threat_pending,
             pilot_mode: false,
             legacy_exterior_controls: !interior_mode,
             look_left: false,
@@ -540,6 +555,7 @@ impl VisualBridge {
             return;
         }
         self.session.update([GameplayCommand::AdvanceTime { delta }]);
+        self.activate_introductory_threat_if_ready();
         self.refresh_player_defeat_state();
     }
 
@@ -562,6 +578,7 @@ impl VisualBridge {
         }
         let commands: Vec<_> = commands.into_iter().collect();
         let results = self.session.update(commands.clone());
+        self.activate_introductory_threat_if_ready();
         self.refresh_player_defeat_state();
         let accepted = results.iter().all(|result| {
             matches!(result.status, gameplay::CommandStatus::Success { .. })
@@ -574,6 +591,36 @@ impl VisualBridge {
             .map(|value| format!("{:?}", value));
         aggregate.record(&commands, &results, events);
         accepted
+    }
+
+    fn activate_introductory_threat_if_ready(&mut self) {
+        if !self.introductory_threat_pending
+            || !self
+                .session
+                .mission_progress(crate::el_despertar::EL_DESPERTAR)
+                .is_some_and(|mission| {
+                    mission.state == gameplay::domains::mission::MissionState::Completed
+                })
+        {
+            return;
+        }
+        let Some(enemy) = self.session.world().combatant(self.enemy).copied() else {
+            return;
+        };
+        if enemy.is_defeated() {
+            self.introductory_threat_pending = false;
+            return;
+        }
+        let result = self.session.update([GameplayCommand::SetEnemyActive {
+            enemy: self.enemy,
+            active: true,
+        }]);
+        if matches!(
+            result.first().map(|value| &value.status),
+            Some(gameplay::CommandStatus::Success { .. })
+        ) {
+            self.introductory_threat_pending = false;
+        }
     }
 
     fn finish_issue(&mut self, aggregate: FeedbackAggregate) -> bool {
@@ -2567,6 +2614,7 @@ mod tests {
             .combatant(bridge.enemy)
             .copied()
             .expect("visual enemy should exist");
+        assert!(!enemy.active, "the introductory threat must start inactive");
         let player = bridge
             .session
             .world()
@@ -2584,9 +2632,73 @@ mod tests {
         }
 
         assert!(!bridge.player_defeated);
+        assert_eq!(
+            bridge.session.world().combatant(bridge.enemy).unwrap().position,
+            enemy.position
+        );
         assert!(!bridge.session.world().events().iter().any(|event| {
             matches!(event, GameplayEvent::CombatDamageApplied { target, .. } if *target == bridge.player)
         }));
+    }
+
+    #[test]
+    fn introductory_threat_activates_once_after_mission_one_completion() {
+        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        assert!(!bridge.session.world().combatant(bridge.enemy).unwrap().active);
+
+        for _ in 0..6 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::el_despertar::EL_DESPERTAR)
+                .unwrap()
+                .state,
+            gameplay::domains::mission::MissionState::Completed
+        );
+        assert!(bridge.session.world().combatant(bridge.enemy).unwrap().active);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .combatants()
+                .filter(|combatant| {
+                    !combatant.is_player
+                        && combatant.archetype == Some(gameplay::EnemyArchetype::Shooter)
+                })
+                .count(),
+            1
+        );
+        assert!(!bridge.introductory_threat_pending);
+
+        let position_before = bridge.session.world().combatant(bridge.enemy).unwrap().position;
+        bridge.advance_visual_time_by(Duration(1_000));
+        assert_ne!(
+            bridge.session.world().combatant(bridge.enemy).unwrap().position,
+            position_before
+        );
+        for _ in 0..8 {
+            bridge.advance_visual_time_by(Duration(1_000));
+        }
+        assert!(bridge.session.world().events().iter().any(|event| {
+            matches!(event, GameplayEvent::CombatDamageApplied { target, .. } if *target == bridge.player)
+        }));
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .combatants()
+                .filter(|combatant| {
+                    !combatant.is_player
+                        && combatant.archetype == Some(gameplay::EnemyArchetype::Shooter)
+                })
+                .count(),
+            1
+        );
     }
 
     #[test]

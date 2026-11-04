@@ -1,11 +1,12 @@
 use std::collections::BTreeSet;
 
 use gameplay::GameplayWorld;
-use gameplay::domains::mission::MissionState;
+use gameplay::domains::{mission::MissionState, objective::ObjectiveState};
 use gameplay::types::MissionId;
 use render_core::{
     from_engine, Camera, CameraError, MaterialHandle, MeshHandle, Projection, Quat,
-    HudAutopilotState, HudFlightState, HudMissionState, HudState, RenderSnapshot, RenderVisualEvent,
+    HudAutopilotState, HudFlightState, HudMissionObjective, HudMissionState, HudObjectiveState,
+    HudState, RenderSnapshot, RenderVisualEvent,
     RenderVisualEventKind, SnapshotLight, SnapshotNode,
     Transform, Vec3, VisualAssets,
 };
@@ -725,30 +726,45 @@ fn hud_state(
         | gameplay::TravelState::Cancelled { destination } => Some(destination.value()),
         gameplay::TravelState::Idle => None,
     });
+    let mut completed_mission = None;
+    for event in world.events().iter() {
+        if let gameplay::GameplayEvent::MissionCompleted { mission, .. } = event {
+            completed_mission = Some(*mission);
+        }
+    }
     let presented_mission = presentation_mission(world);
     let mission = presented_mission.and_then(|mission| world.mission(mission));
-    let guidance = world
-        .players()
-        .next()
-        .and_then(|player| world.guidance_for_player(player.entity_id).ok());
-    let current_objective = guidance
-        .as_ref()
-        .and_then(|state| state.current_objective)
-        .and_then(|objective| {
-            guidance
-                .as_ref()
-                .and_then(|state| {
-                    state
-                        .objectives
-                        .iter()
-                        .find(|value| {
-                            value.id == objective
-                                && Some(value.mission) == presented_mission
-                        })
-                })
-        });
+    let current_objective = mission.and_then(|value| {
+        value
+            .objectives()
+            .iter()
+            .find(|objective| objective.state() == ObjectiveState::Active)
+            .or_else(|| {
+                value
+                    .objectives()
+                    .iter()
+                    .find(|objective| objective.state() == ObjectiveState::Available)
+            })
+            .or_else(|| value.objectives().first())
+    });
     let mission_progress = mission.map(|value| value.progress());
     let mission_state = mission_progress.map(|value| hud_mission_state(value.state));
+    let mission_objectives = mission
+        .map(|value| {
+            value
+                .objectives()
+                .iter()
+                .map(|objective| HudMissionObjective {
+                    id: objective.id.0,
+                    name: objective.name.clone(),
+                    state: hud_objective_state(objective.state()),
+                    progress: objective.progress(),
+                    required_progress: objective.required_progress(),
+                    required: objective.required,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     HudState {
         flight,
         autopilot,
@@ -759,7 +775,10 @@ fn hud_state(
             .count() as u32,
         landing_available: academic_planet.is_some_and(|planet| world.landing_available(planet)),
         mission_name: mission.map(|value| value.name.clone()),
+        mission_description: mission.and_then(|value| value.description.clone()),
         objective_name: current_objective.map(|value| value.name.clone()),
+        mission_current_objective: current_objective.map(|value| value.id.0),
+        mission_objectives,
         mission_progress: mission_progress.map(|value| {
             (
                 value.required_completed as u8,
@@ -767,12 +786,55 @@ fn hud_state(
             )
         }),
         mission_state,
+        mission_notification: completed_mission
+            .or(presented_mission)
+            .and_then(|value| mission_notification(world, value)),
         interaction_prompt: None,
         guidance: None,
         controls: None,
         instructions: None,
         feedback: None,
     }
+}
+
+fn hud_objective_state(state: ObjectiveState) -> HudObjectiveState {
+    match state {
+        ObjectiveState::Locked => HudObjectiveState::Locked,
+        ObjectiveState::Available => HudObjectiveState::Available,
+        ObjectiveState::Active => HudObjectiveState::Active,
+        ObjectiveState::Failed => HudObjectiveState::Failed,
+        ObjectiveState::Completed => HudObjectiveState::Completed,
+    }
+}
+
+fn mission_notification(world: &GameplayWorld, mission: MissionId) -> Option<String> {
+    let mut selected = None;
+    let mut selected_priority = 0;
+    for event in world.events().iter() {
+        let (priority, text) = match event {
+            gameplay::GameplayEvent::MissionStarted { mission: actual, .. }
+                if *actual == mission => (3, "NUEVA MISION"),
+            gameplay::GameplayEvent::ObjectiveAvailable { objective, .. }
+            | gameplay::GameplayEvent::ObjectiveStarted { objective, .. }
+                if world.objective(*objective).is_some_and(|value| value.mission_id == mission) =>
+            {
+                (2, "OBJETIVO ACTUALIZADO")
+            }
+            gameplay::GameplayEvent::ObjectiveCompleted { objective, .. }
+                if world.objective(*objective).is_some_and(|value| value.mission_id == mission) =>
+            {
+                (4, "OBJETIVO COMPLETADO")
+            }
+            gameplay::GameplayEvent::MissionCompleted { mission: actual, .. }
+                if *actual == mission => (5, "MISION COMPLETADA"),
+            _ => continue,
+        };
+        if priority >= selected_priority {
+            selected_priority = priority;
+            selected = Some(text.to_owned());
+        }
+    }
+    selected
 }
 
 fn hud_mission_state(state: gameplay::domains::mission::MissionState) -> HudMissionState {
@@ -1094,6 +1156,43 @@ mod tests {
     }
 
     #[test]
+    fn hud_exposes_authoritative_objective_list_progress_and_transition_notice() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+
+        let started = super::hud_state(&world, None);
+        assert_eq!(started.mission_description.as_deref(), Some("La tripulación de ECHO-7 despierta tras un incidente desconocido y debe recuperar el control de la nave."));
+        assert_eq!(started.mission_current_objective, Some(crate::el_despertar::EVALUAR_ESTADO_NAVE.0));
+        assert_eq!(started.mission_objectives.len(), 6);
+        assert_eq!(started.mission_objectives[0].id, crate::el_despertar::EVALUAR_ESTADO_NAVE.0);
+        assert_eq!(started.mission_objectives[0].progress, 0);
+        assert_eq!(started.mission_objectives[0].required_progress, 1);
+        assert_eq!(started.mission_notification.as_deref(), Some("NUEVA MISION"));
+
+        apply(&mut system, &mut world, GameplayCommand::StartObjective {
+            objective: crate::el_despertar::EVALUAR_ESTADO_NAVE,
+        });
+        apply(&mut system, &mut world, GameplayCommand::CompleteObjective {
+            objective: crate::el_despertar::EVALUAR_ESTADO_NAVE,
+        });
+
+        let progressed = super::hud_state(&world, None);
+        assert_eq!(progressed.mission_objectives[0].state, render_core::HudObjectiveState::Completed);
+        assert_eq!(progressed.mission_objectives[0].progress, 0);
+        assert_eq!(progressed.mission_current_objective, Some(crate::el_despertar::RESTAURAR_ENERGIA.0));
+        assert_eq!(progressed.objective_name.as_deref(), Some("Restaurar la energía"));
+        assert_eq!(progressed.mission_notification.as_deref(), Some("OBJETIVO COMPLETADO"));
+        assert_eq!(progressed, super::hud_state(&world, None));
+
+        world.take_events();
+        let quiet = super::hud_state(&world, None);
+        assert_eq!(quiet.mission_objectives, progressed.mission_objectives);
+        assert_eq!(quiet.mission_current_objective, progressed.mission_current_objective);
+        assert!(quiet.mission_notification.is_none());
+    }
+
+    #[test]
     fn hud_does_not_import_objective_from_another_available_mission() {
         let (mut world, _player) = world_with_missions();
         let mut system = MissionSystem::new();
@@ -1240,6 +1339,7 @@ mod tests {
         let hud = super::hud_state(&world, None);
         assert_eq!(hud.mission_name.as_deref(), Some("Ecos de la anomalía"));
         assert_eq!(hud.mission_state, Some(HudMissionState::Available));
+        assert_eq!(hud.mission_notification.as_deref(), Some("MISION COMPLETADA"));
         assert_eq!(world.mission(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state(), MissionState::Available);
         assert!(hud.objective_name.is_some());
     }

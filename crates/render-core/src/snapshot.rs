@@ -185,6 +185,25 @@ pub enum HudMissionState {
     Completed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HudObjectiveState {
+    Locked,
+    Available,
+    Active,
+    Failed,
+    Completed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HudMissionObjective {
+    pub id: u32,
+    pub name: String,
+    pub state: HudObjectiveState,
+    pub progress: u32,
+    pub required_progress: u32,
+    pub required: bool,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HudState {
     pub flight: HudFlightState,
@@ -193,9 +212,13 @@ pub struct HudState {
     pub active_enemies: u32,
     pub landing_available: bool,
     pub mission_name: Option<String>,
+    pub mission_description: Option<String>,
     pub objective_name: Option<String>,
+    pub mission_current_objective: Option<u32>,
+    pub mission_objectives: Vec<HudMissionObjective>,
     pub mission_progress: Option<(u8, u8)>,
     pub mission_state: Option<HudMissionState>,
+    pub mission_notification: Option<String>,
     pub interaction_prompt: Option<String>,
     pub guidance: Option<String>,
     pub controls: Option<String>,

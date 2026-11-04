@@ -41,11 +41,24 @@ fn status(hud: &HudState) -> &'static str {
     }
 }
 
+fn objective_status(state: crate::HudObjectiveState) -> &'static str {
+    match state {
+        crate::HudObjectiveState::Locked => "BLOQUEADA",
+        crate::HudObjectiveState::Available => "PENDIENTE",
+        crate::HudObjectiveState::Active => "ACTIVA",
+        crate::HudObjectiveState::Failed => "FALLIDA",
+        crate::HudObjectiveState::Completed => "COMPLETADA",
+    }
+}
+
 pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     if hud.mission_name.is_none()
+        && hud.mission_description.is_none()
         && hud.objective_name.is_none()
+        && hud.mission_objectives.is_empty()
         && hud.mission_progress.is_none()
         && hud.mission_state.is_none()
+        && hud.mission_notification.is_none()
         && hud.interaction_prompt.is_none()
         && hud.guidance.is_none()
         && hud.controls.is_none()
@@ -65,13 +78,36 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     let mut lines = vec![
         hud.mission_name.as_deref().map(|v| format!("MISION: {v}")),
         Some(format!("ESTADO: {}  PROGRESO: {}", status(hud), progress.as_deref().unwrap_or("-"))),
+        hud.mission_description.as_deref().map(|v| format!("CONTEXTO: {v}")),
         hud.objective_name.as_deref().map(|v| format!("OBJETIVO: {v}")),
+        hud.mission_notification.as_deref().map(|v| format!("AVISO: {v}")),
+        None,
+        Some("OBJETIVOS:".to_owned()).filter(|_| !hud.mission_objectives.is_empty()),
+        None,
+        None,
         hud.guidance.as_deref().map(|v| format!("GUIA: {v}")),
         hud.interaction_prompt.as_deref().map(|v| format!("INTERACCION: {v}")),
         hud.controls.as_deref().map(|v| format!("CONTROLES: {v}")),
         hud.instructions.as_deref().map(|v| format!("INSTRUCCIONES: {v}")),
         hud.feedback.as_deref().filter(|v| !v.is_empty()).map(|v| format!("FEEDBACK: {v}")),
     ].into_iter().flatten().collect::<Vec<_>>();
+    if !hud.mission_objectives.is_empty() {
+        let objective_lines = hud.mission_objectives.iter().enumerate().map(|(index, objective)| {
+            let optional = if objective.required { "" } else { " OPCIONAL" };
+            format!(
+                "{} {} {}/{} {}{}",
+                index + 1,
+                objective_status(objective.state),
+                objective.progress,
+                objective.required_progress,
+                objective.name,
+                optional,
+            )
+        });
+        let insertion = lines.iter().position(|line| line == "OBJETIVOS:").unwrap_or(lines.len());
+        lines.splice(insertion + 1..insertion + 1, objective_lines);
+    }
+    lines.retain(|line| !line.is_empty());
     for value in &mut lines { value.truncate(max_chars); }
     if lines.is_empty() { lines.push("ASTRAL ECHO".to_owned()); }
     let panel_width = (max_chars as u32 * char_width + margin * 2).min(width.saturating_sub(margin));
@@ -117,6 +153,38 @@ mod tests {
         let hud = HudState { feedback: Some("JUGADOR DERROTADO".into()), ..Default::default() };
         let overlay = hud_overlay(&hud, 640, 360);
         assert!(overlay.glyphs.iter().all(|rect| rect.color[0] > rect.color[1]));
+    }
+
+    #[test]
+    fn mission_overlay_contains_all_objective_states_and_progress() {
+        let hud = HudState {
+            mission_name: Some("El despertar".into()),
+            mission_objectives: vec![
+                crate::HudMissionObjective {
+                    id: 1,
+                    name: "Evaluar el estado".into(),
+                    state: crate::HudObjectiveState::Completed,
+                    progress: 1,
+                    required_progress: 1,
+                    required: true,
+                },
+                crate::HudMissionObjective {
+                    id: 2,
+                    name: "Restaurar energia".into(),
+                    state: crate::HudObjectiveState::Active,
+                    progress: 0,
+                    required_progress: 1,
+                    required: true,
+                },
+            ],
+            ..Default::default()
+        };
+        let overlay = hud_overlay(&hud, 640, 360);
+        assert!(overlay.background.height > 60);
+        assert!(!overlay.glyphs.is_empty());
+        assert!(overlay.glyphs.iter().all(|rect| {
+            rect.x + rect.width <= 640 && rect.y + rect.height <= 360
+        }));
     }
 
     #[test]
