@@ -12,6 +12,8 @@ pub enum ItemCategory {
     Weapon,
     HealingConsumable,
     RevivalConsumable,
+    Fuel,
+    Oxygen,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

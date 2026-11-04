@@ -814,6 +814,16 @@ fn hud_state(
                     .map(|(item, amount)| (item.0, amount))
             })
             .flatten(),
+        ship_fuel: (world.ship_control_active() == Some(true))
+            .then(|| world.navigation().ship_id().and_then(|ship| world.ship_fuel(ship)))
+            .flatten()
+            .map(|fuel| (fuel.current(), fuel.capacity())),
+        ship_oxygen: (world.ship_control_active() == Some(true))
+            .then(|| world.life_support_panels().next().map(|panel| (panel.allocated_total(), panel.capacity())))
+            .flatten(),
+        ship_supplies: (world.ship_control_active() == Some(true))
+            .then(|| world.players().next().and_then(|player| world.inventory(player.entity_id)).map(|inventory| inventory.quantity(gameplay::types::ItemId(1))))
+            .flatten(),
         target,
         active_enemies: world
             .enemies()

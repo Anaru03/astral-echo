@@ -114,6 +114,19 @@ pub enum GameplayCommand {
         ship: EntityId,
         amount: u32,
     },
+    UseFuelResource {
+        player: EntityId,
+        ship: EntityId,
+        item: crate::types::ItemId,
+        amount: u32,
+    },
+    UseOxygenResource {
+        player: EntityId,
+        panel: EntityId,
+        compartment: CompartmentId,
+        item: crate::types::ItemId,
+        amount: u32,
+    },
     CreateEnemy {
         configuration: EnemyConfiguration,
     },
@@ -413,6 +426,8 @@ pub enum CommandRejection {
     ResourcesNotInitialized,
     FuelCapacityExceeded,
     InsufficientFuel,
+    ResourceNotOwned,
+    OxygenCapacityExceeded,
     ResourcesAlreadyInitialized,
     ResourceInitializationClosed,
     EnemyNotFound,

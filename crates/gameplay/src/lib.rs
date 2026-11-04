@@ -82,8 +82,10 @@ pub use companion::{
 };
 pub use combat::{
     AttackType, CombatConfigurationError, Combatant, EnemyArchetype, EnemyConfiguration, Shield,
-    WeaponAmmunition, WeaponConfiguration, ENERGY_WEAPON_ITEM, PLASMA_WEAPON_ITEM,
+    weapon_for_item, WeaponAmmunition, WeaponConfiguration, ENERGY_WEAPON_ITEM, PLASMA_WEAPON_ITEM,
 };
+pub const FUEL_RESOURCE_ITEM: types::ItemId = types::ItemId(92);
+pub const OXYGEN_RESOURCE_ITEM: types::ItemId = types::ItemId(93);
 pub use commands::{
     CommandInvalidity, CommandRejection, CommandResult, CommandStatus, GameplayCommand,
 };

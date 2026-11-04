@@ -293,6 +293,39 @@ impl VisualBridge {
                     RewardDistributionPolicy::Shared,
                 ),
             },
+            GameplayCommand::RegisterDerelict {
+                derelict: Derelict::new(
+                    DerelictId::new(9_012),
+                    GameplayVec3 { x: 60.0, y: 0.0, z: 0.0 },
+                    3.5,
+                )
+                .with_rewards(
+                    vec![DerelictReward { item: gameplay::FUEL_RESOURCE_ITEM, amount: 4 }],
+                    RewardDistributionPolicy::Shared,
+                ),
+            },
+            GameplayCommand::RegisterDerelict {
+                derelict: Derelict::new(
+                    DerelictId::new(9_013),
+                    GameplayVec3 { x: -60.0, y: 0.0, z: 0.0 },
+                    3.5,
+                )
+                .with_rewards(
+                    vec![DerelictReward { item: gameplay::OXYGEN_RESOURCE_ITEM, amount: 4 }],
+                    RewardDistributionPolicy::Shared,
+                ),
+            },
+            GameplayCommand::RegisterDerelict {
+                derelict: Derelict::new(
+                    DerelictId::new(9_014),
+                    GameplayVec3 { x: 0.0, y: 0.0, z: 60.0 },
+                    3.5,
+                )
+                .with_rewards(
+                    vec![DerelictReward { item: gameplay::types::ItemId(1), amount: 2 }],
+                    RewardDistributionPolicy::Shared,
+                ),
+            },
         ]);
         session
             .world_mut()
@@ -1477,6 +1510,17 @@ impl VisualBridge {
             }
             return;
         }
+        if let Some(collectible) = self.selected_resource_collectible() {
+            if self.issue([GameplayCommand::CollectItem {
+                player: self.player,
+                collectible: collectible.entity,
+                amount: collectible.amount,
+            }]) {
+                self.feedback = "RECURSO RECUPERADO".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+            }
+            return;
+        }
         let action = self
             .session
             .world()
@@ -1797,6 +1841,19 @@ impl VisualBridge {
                 key: "I".to_owned(),
             }
         })
+        .or_else(|| self.selected_resource_collectible().map(|collectible| {
+            render_core::HudContextualAction {
+                target: collectible.entity.value(),
+                object: match collectible.item {
+                    gameplay::FUEL_RESOURCE_ITEM => "COMBUSTIBLE",
+                    gameplay::OXYGEN_RESOURCE_ITEM => "OXIGENO",
+                    _ => "SUMINISTROS",
+                }
+                .to_owned(),
+                action: "RECOGER".to_owned(),
+                key: "I".to_owned(),
+            }
+        }))
     }
 
     fn selected_derelict(&self) -> Option<&gameplay::Derelict> {
@@ -1862,8 +1919,42 @@ impl VisualBridge {
             .map(|(_, value)| value)
     }
 
+    fn selected_resource_collectible(&self) -> Option<gameplay::Collectible> {
+        if self.interior_mode || self.pilot_mode {
+            return None;
+        }
+        let position = self.session.world().ship_position()?;
+        self.session
+            .world()
+            .collectibles()
+            .filter(|value| {
+                value.active
+                    && matches!(
+                        self.session.world().item_definition(value.item).map(|definition| definition.category),
+                        Some(gameplay::ItemCategory::Fuel)
+                            | Some(gameplay::ItemCategory::Oxygen)
+                            | Some(gameplay::ItemCategory::RepairMaterial)
+                    )
+            })
+            .filter_map(|value| {
+                let dx = position.x - value.position.x;
+                let dy = position.y - value.position.y;
+                let dz = position.z - value.position.z;
+                let distance_squared = dx * dx + dy * dy + dz * dz;
+                (distance_squared <= value.interaction_range * value.interaction_range)
+                    .then_some((distance_squared, *value))
+            })
+            .min_by(|left, right| {
+                left.0
+                    .partial_cmp(&right.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.1.entity.cmp(&right.1.entity))
+            })
+            .map(|(_, value)| value)
+    }
+
     fn selected_interactable(&self) -> Option<&gameplay::Interactable> {
-        if self.pilot_mode {
+        if !self.interior_mode || self.pilot_mode {
             return None;
         }
         let player = self.session.world().player(self.player)?;
@@ -4672,6 +4763,7 @@ mod tests {
             bridge.session.world().derelict(derelict).map(|value| value.state),
             Some(gameplay::DerelictState::Exploring)
         );
+        assert_eq!(bridge.contextual_action().map(|value| value.object), Some("ARMA DE ENERGIA".to_owned()));
         assert!(bridge
             .session
             .world()
@@ -4688,6 +4780,7 @@ mod tests {
                 .quantity(gameplay::ENERGY_WEAPON_ITEM),
             1
         );
+        assert!(bridge.contextual_action().is_none());
         assert!(matches!(
             bridge.session.update([GameplayCommand::EquipPlayerWeaponItem {
                 player,
@@ -4699,6 +4792,32 @@ mod tests {
             bridge.session.world().equipped_weapon(player).map(|value| value.attack_type),
             Some(gameplay::AttackType::Energy)
         );
+        bridge.session.update([GameplayCommand::AddInventoryItem {
+            player,
+            item: ItemId(3),
+            amount: 1,
+        }]);
+        let enemy_health = bridge.session.world().combatant(bridge.enemy).unwrap().current_health;
+        assert!(matches!(
+            bridge.session.update([GameplayCommand::AttackEnemy {
+                player,
+                enemy: bridge.enemy,
+            }])[0].status,
+            gameplay::CommandStatus::Success { changed: true }
+        ));
+        assert!(bridge.session.world().combatant(bridge.enemy).unwrap().current_health < enemy_health);
+        assert!(matches!(
+            bridge.session.update([GameplayCommand::EquipPlayerWeaponItem {
+                player,
+                item: gameplay::PLASMA_WEAPON_ITEM,
+            }])[0].status,
+            gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::WeaponNotOwned
+            }
+        ));
+        let energy = gameplay::weapon_for_item(gameplay::ENERGY_WEAPON_ITEM).expect("energy weapon");
+        let plasma = gameplay::weapon_for_item(gameplay::PLASMA_WEAPON_ITEM).expect("plasma weapon");
+        assert_ne!((energy.damage, energy.range, energy.cooldown), (plasma.damage, plasma.range, plasma.cooldown));
 
         let save = bridge.session.save_state();
         let serialized = save.serialize();
