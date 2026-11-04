@@ -333,6 +333,25 @@ impl VisualBridge {
         }) {
             return Err("configurar la fÃ­sica planetaria visual".to_owned());
         }
+        if initial_ship_position != GameplayVec3::ZERO
+            && !session.world_mut().configure_solar_physics(PlanetPhysics {
+            destination: gameplay::SUN_DESTINATION_ID,
+            orbit_center: GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0,
+            },
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 12.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 80.0,
+            gravitational_parameter: 6_000.0,
+            atmosphere_height: 0.0,
+            })
+        {
+            return Err("configurar la física solar visual".to_owned());
+        }
         let pilot_station = session
             .create_station(
                 GameplayVec3 { x: 0.0, y: 0.0, z: 1.5 },
@@ -409,14 +428,12 @@ impl VisualBridge {
                 3.0,
             )
             .map_err(|error| format!("crear puerta del puente visual: {error:?}"))?;
-        // Keep the initial interior encounter outside the player's immediate
-        // weapon range. The enemy remains active and autonomous, but the
-        // player gets a meaningful exploration window before combat begins.
-        let enemy_position = if interior_mode && safe_interior_enemy_start {
+        
+            let enemy_position = if interior_mode && safe_interior_enemy_start {
             GameplayVec3 {
-                x: 60.0,
+                x: 24.0,
                 y: 0.0,
-                z: -60.0,
+                z: 120.0,
             }
         } else {
             GameplayVec3 {
@@ -673,7 +690,7 @@ impl VisualBridge {
         }
         let defeated = self.session.world().events().iter().any(|event| {
             matches!(event, GameplayEvent::PlayerDefeated { player } if *player == self.player)
-        });
+        }) || self.session.world().ship_is_destroyed(self.ship) == Some(true);
         if defeated {
             self.player_defeated = true;
             self.feedback = "JUGADOR DERROTADO — SESION VISUAL DETENIDA".to_owned();
@@ -2340,11 +2357,88 @@ mod tests {
         assert!(world.destinations().filter(|value| value.id != ORIGIN).all(|value| {
             distance_squared(ship, value.position) > 30.0 * 30.0
         }));
-        assert!(world.enemies().all(|enemy| distance_squared(ship, enemy.position) > 30.0 * 30.0));
+        let enemy = world
+            .combatant(bridge.enemy)
+            .expect("visual runtime should have its enemy");
+        let enemy_distance_squared = distance_squared(ship, enemy.position);
+        assert!(enemy_distance_squared > (enemy.weapon.range as f32).powi(2));
+        assert!(enemy_distance_squared <= gameplay::EnemyAiSystem::DETECTION_RADIUS as f32
+            * gameplay::EnemyAiSystem::DETECTION_RADIUS as f32);
+        assert!(distance_squared(enemy.position, GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }) > 80.0 * 80.0);
+        assert!(world.destinations().all(|value| {
+            distance_squared(enemy.position, value.position) > 10.0 * 10.0
+        }));
+        assert!(world.derelicts().all(|value| {
+            distance_squared(enemy.position, value.position) > 10.0 * 10.0
+        }));
+        assert!(world.collectibles().all(|value| {
+            distance_squared(enemy.position, value.position) > 10.0 * 10.0
+        }));
+        assert!(world.enemies().filter(|value| value.entity != bridge.enemy).all(|value| {
+            distance_squared(ship, value.position) > 30.0 * 30.0
+        }));
         assert!(world.derelicts().all(|derelict| distance_squared(ship, derelict.position) > 30.0 * 30.0));
         assert!(world.collectibles().all(|collectible| {
             distance_squared(ship, collectible.position) > 30.0 * 30.0
         }));
+
+        let checkpoint = bridge.session.save_state().serialize();
+        let mut restored = ProjectEchoSession::new();
+        restored
+            .restore_state(
+                gameplay::GameplaySaveState::deserialize(&checkpoint)
+                    .expect("visual position checkpoint should deserialize"),
+            )
+            .expect("visual position checkpoint should restore");
+        assert_eq!(restored.world().ship_position(), Some(ship));
+
+        let mut restored_visual = VisualBridge::new_visual_runtime()
+            .expect("visual runtime should initialize for restoration");
+        restored_visual
+            .session
+            .restore_state(
+                gameplay::GameplaySaveState::deserialize(&checkpoint)
+                    .expect("visual physics checkpoint should deserialize"),
+            )
+            .expect("visual physics checkpoint should restore");
+        assert!(restored_visual.session.world().solar_physics().is_some());
+    }
+
+    #[test]
+    fn solar_impact_defeats_the_player_and_stops_visual_gameplay() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        assert!(bridge.session.world_mut().configure_solar_physics(PlanetPhysics {
+            destination: gameplay::SUN_DESTINATION_ID,
+            orbit_center: GameplayVec3::ZERO,
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 12.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 80.0,
+            gravitational_parameter: 6_000.0,
+            atmosphere_height: 0.0,
+        }));
+        let results = bridge.session.update([GameplayCommand::SetShipControlActive {
+            player: bridge.player,
+            pilot_station: bridge.pilot_station,
+            active: true,
+        }]);
+        assert!(matches!(
+            results.first().map(|result| &result.status),
+            Some(gameplay::CommandStatus::Success { .. })
+        ));
+
+        bridge.session.update([GameplayCommand::AdvanceTime { delta: Duration(100) }]);
+        bridge.refresh_player_defeat_state();
+        assert!(bridge.session.world().ship_is_destroyed(bridge.ship) == Some(true));
+        assert!(bridge.session.world().combatant(bridge.player).is_some_and(|value| value.is_defeated()));
+        assert!(bridge
+            .session
+            .world()
+            .events()
+            .iter()
+            .any(|event| matches!(event, GameplayEvent::PlanetImpact { planet, .. } if *planet == gameplay::SUN_DESTINATION_ID)));
+        assert!(bridge.player_defeated);
     }
 
     #[test]
@@ -2863,7 +2957,7 @@ mod tests {
         for _ in 0..8 {
             bridge.advance_visual_time_by(Duration(1_000));
         }
-        assert!(bridge.session.world().events().iter().any(|event| {
+        assert!(!bridge.session.world().events().iter().any(|event| {
             matches!(event, GameplayEvent::CombatDamageApplied { target, .. } if *target == bridge.player)
         }));
         assert_eq!(

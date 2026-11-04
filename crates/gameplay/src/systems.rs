@@ -1018,6 +1018,22 @@ impl PilotSystem {
             CommandResult::success(false)
         }
     }
+
+    fn boost(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        station: engine::EntityId,
+        active: bool,
+    ) -> CommandResult {
+        if let Err(result) = self.control_access(world, player, station) {
+            return result;
+        }
+        if !world.navigation().control_active() {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipControlInactive);
+        }
+        CommandResult::success(world.set_ship_boost_active(active))
+    }
 }
 
 impl Default for PilotSystem {
@@ -1052,6 +1068,11 @@ impl GameplaySystem for PilotSystem {
                 player,
                 pilot_station,
             } => self.brake(world, player, pilot_station),
+            GameplayCommand::SetShipBoost {
+                player,
+                pilot_station,
+                active,
+            } => self.boost(world, player, pilot_station, active),
             GameplayCommand::SetShipControlActive {
                 player,
                 pilot_station,
@@ -1117,11 +1138,8 @@ impl GameplaySystem for PilotSystem {
             }
             if let Some((planet, impact)) = contact {
                 if impact {
-                    world.publish(crate::events::GameplayEvent::PlanetImpact {
-                        ship,
-                        planet,
-                        position: world.navigation().current_position(),
-                    });
+                    let position = world.navigation().current_position();
+                    process_navigation_impact(world, ship, planet, position);
                 } else if matches!(
                     world.navigation().planet_flight_state(),
                     crate::navigation::PlanetFlightState::Landed { .. }
@@ -2804,11 +2822,7 @@ impl NavigationSystem {
                     continue;
                 };
                 if impact {
-                    world.publish(crate::events::GameplayEvent::PlanetImpact {
-                        ship,
-                        planet,
-                        position,
-                    });
+                    process_navigation_impact(world, ship, planet, position);
                 } else {
                     world.publish(crate::events::GameplayEvent::PlanetLanded {
                         ship,
@@ -2834,11 +2848,7 @@ impl NavigationSystem {
                     let Some(ship) = world.navigation().ship_id() else {
                         continue;
                     };
-                    world.publish(crate::events::GameplayEvent::PlanetImpact {
-                        ship,
-                        planet,
-                        position,
-                    });
+                    process_navigation_impact(world, ship, planet, position);
                     continue;
                 }
             };
@@ -2901,6 +2911,23 @@ impl NavigationSystem {
 impl Default for NavigationSystem {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn process_navigation_impact(
+    world: &mut GameplayWorld,
+    ship: engine::EntityId,
+    planet: crate::navigation::DestinationId,
+    position: engine::Vec3,
+) {
+    world.publish(crate::events::GameplayEvent::PlanetImpact {
+        ship,
+        planet,
+        position,
+    });
+    if planet == crate::navigation::SUN_DESTINATION_ID {
+        let _ = world.apply_ship_damage(ship, u32::MAX);
+        world.defeat_active_players();
     }
 }
 
@@ -3322,12 +3349,34 @@ impl GameplaySystem for CombatSystem {
             GameplayCommand::SetEnemyActive { enemy, active } => {
                 Some(self.set_enemy_active(world, enemy, active))
             }
+            GameplayCommand::SetShipShieldActive { player, ship, active } => {
+                Some(self.set_ship_shield_active(world, player, ship, active))
+            }
             _ => None,
         }
     }
 }
 
 impl CombatSystem {
+    fn set_ship_shield_active(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        ship: engine::EntityId,
+        active: bool,
+    ) -> CommandResult {
+        if world.player(player).is_none_or(|value| !value.is_active) {
+            return CommandResult::rejected(crate::commands::CommandRejection::PlayerInactive);
+        }
+        if world.navigation().ship_id() != Some(ship) {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        }
+        if !world.navigation().control_active() {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipControlInactive);
+        }
+        CommandResult::success(world.set_ship_shield_active(ship, active))
+    }
+
     fn validate_weapon_ammunition(
         &self,
         world: &GameplayWorld,
@@ -3753,13 +3802,24 @@ impl CombatSystem {
 pub struct EnemyAiSystem {
     event_cursor: usize,
     anchors: BTreeMap<engine::EntityId, engine::Vec3>,
+    targets: BTreeMap<engine::EntityId, engine::EntityId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EnemyAiState {
+    Patrol,
+    Pursuit(engine::EntityId),
 }
 
 impl EnemyAiSystem {
+    pub const DETECTION_RADIUS: f64 = 30.0;
+    pub const LOSS_RADIUS: f64 = 45.0;
+
     pub const fn new() -> Self {
         Self {
             event_cursor: 0,
             anchors: BTreeMap::new(),
+            targets: BTreeMap::new(),
         }
     }
 
@@ -3773,10 +3833,17 @@ impl EnemyAiSystem {
                 continue;
             }
             let anchor = *self.anchors.entry(enemy.entity).or_insert(enemy.position);
-            let Some((target, target_position, distance_squared)) =
-                Self::select_target(world, enemy.position)
-            else {
+            let state = self.state_for_enemy(world, enemy.entity, enemy.position);
+            let EnemyAiState::Pursuit(target) = state else {
                 Self::move_on_patrol(world, enemy, anchor, world.time().elapsed.0, delta);
+                continue;
+            };
+            let Some(target_position) = world.player(target).filter(|player| player.is_active).map(|player| player.position) else {
+                self.targets.remove(&enemy.entity);
+                Self::move_on_patrol(world, enemy, anchor, world.time().elapsed.0, delta);
+                continue;
+            };
+            let Some(distance_squared) = safe_distance_squared(enemy.position, target_position) else {
                 continue;
             };
             let range_squared = f64::from(enemy.weapon.range) * f64::from(enemy.weapon.range);
@@ -3801,11 +3868,41 @@ impl EnemyAiSystem {
                 .combatant(*entity)
                 .is_some_and(|enemy| !enemy.is_player && enemy.active && !enemy.is_defeated())
         });
+        self.targets.retain(|entity, target| {
+            world.combatant(*entity).is_some_and(|enemy| !enemy.is_player && enemy.active && !enemy.is_defeated())
+                && world.player(*target).is_some_and(|player| player.is_active)
+        });
+    }
+
+    fn state_for_enemy(
+        &mut self,
+        world: &GameplayWorld,
+        enemy: engine::EntityId,
+        enemy_position: engine::Vec3,
+    ) -> EnemyAiState {
+        if let Some(target) = self.targets.get(&enemy).copied() {
+            let valid = world
+                .player(target)
+                .filter(|player| player.is_active)
+                .and_then(|player| safe_distance_squared(enemy_position, player.position))
+                .is_some_and(|distance| distance <= Self::LOSS_RADIUS * Self::LOSS_RADIUS);
+            if valid {
+                return EnemyAiState::Pursuit(target);
+            }
+            self.targets.remove(&enemy);
+        }
+        if let Some((target, _, _)) = Self::select_target(world, enemy_position, Self::DETECTION_RADIUS) {
+            self.targets.insert(enemy, target);
+            EnemyAiState::Pursuit(target)
+        } else {
+            EnemyAiState::Patrol
+        }
     }
 
     fn select_target(
         world: &GameplayWorld,
         enemy_position: engine::Vec3,
+        detection_radius: f64,
     ) -> Option<(engine::EntityId, engine::Vec3, f64)> {
         world
             .players()
@@ -3820,6 +3917,9 @@ impl EnemyAiSystem {
                     return None;
                 }
                 let distance_squared = safe_distance_squared(enemy_position, player.position)?;
+                if distance_squared > detection_radius * detection_radius {
+                    return None;
+                }
                 Some((player.entity_id, player.position, distance_squared))
             })
             .min_by(|left, right| {
@@ -3987,7 +4087,7 @@ mod enemy_ai_tests {
     use crate::combat::{EnemyArchetype, EnemyConfiguration};
     use crate::pipeline::GameplayProcessor;
 
-    fn session_with_enemy(position: engine::Vec3) -> (GameplayWorld, GameplayProcessor, engine::EntityId) {
+    fn session_with_enemy(position: engine::Vec3) -> (GameplayWorld, GameplayProcessor, engine::EntityId, engine::EntityId) {
         let mut world = GameplayWorld::new();
         world.start();
         let player = world.create_player().expect("player should be created");
@@ -3999,12 +4099,12 @@ mod enemy_ai_tests {
         processor.add_system(CombatSystem);
         processor.add_system(EnemyAiSystem::new());
         assert!(world.player(player).is_some());
-        (world, processor, enemy)
+        (world, processor, enemy, player)
     }
 
     #[test]
     fn enemy_moves_autonomously_even_when_player_is_in_weapon_range() {
-        let (mut world, mut processor, enemy) = session_with_enemy(engine::Vec3::ZERO);
+        let (mut world, mut processor, enemy, _) = session_with_enemy(engine::Vec3::ZERO);
         let before = world.combatant(enemy).expect("enemy should exist").position;
 
         processor.update(
@@ -4023,9 +4123,9 @@ mod enemy_ai_tests {
 
     #[test]
     fn enemy_patrol_is_deterministic_for_equal_initial_state_and_time() {
-        let (mut first, mut first_processor, first_enemy) =
+        let (mut first, mut first_processor, first_enemy, _) =
             session_with_enemy(engine::Vec3 { x: 4.0, y: 0.0, z: -3.0 });
-        let (mut second, mut second_processor, second_enemy) =
+        let (mut second, mut second_processor, second_enemy, _) =
             session_with_enemy(engine::Vec3 { x: 4.0, y: 0.0, z: -3.0 });
         let delta = engine::Duration(750);
 
@@ -4043,7 +4143,7 @@ mod enemy_ai_tests {
 
     #[test]
     fn enemy_navigation_is_kept_inside_world_limits() {
-        let (mut world, mut processor, enemy) =
+        let (mut world, mut processor, enemy, _) =
             session_with_enemy(engine::Vec3 { x: 150.0, y: 70.0, z: -150.0 });
 
         processor.update(
@@ -4057,6 +4157,46 @@ mod enemy_ai_tests {
         assert!(position.x.abs() <= 100.0);
         assert!(position.y.abs() <= 50.0);
         assert!(position.z.abs() <= 100.0);
+    }
+
+    #[test]
+    fn enemy_detection_pursuit_and_loss_use_hysteresis() {
+        assert!(EnemyAiSystem::LOSS_RADIUS > EnemyAiSystem::DETECTION_RADIUS);
+        let (mut world, _, enemy, player) =
+            session_with_enemy(engine::Vec3 { x: 40.0, y: 0.0, z: 0.0 });
+        let mut ai = EnemyAiSystem::new();
+
+        assert_eq!(
+            ai.state_for_enemy(&world, enemy, world.combatant(enemy).unwrap().position),
+            EnemyAiState::Patrol
+        );
+        world.player_mut(player).unwrap().position = engine::Vec3 { x: 20.0, y: 0.0, z: 0.0 };
+        assert_eq!(
+            ai.state_for_enemy(&world, enemy, world.combatant(enemy).unwrap().position),
+            EnemyAiState::Pursuit(player)
+        );
+        world.player_mut(player).unwrap().position = engine::Vec3 { x: 35.0, y: 0.0, z: 0.0 };
+        assert_eq!(
+            ai.state_for_enemy(&world, enemy, world.combatant(enemy).unwrap().position),
+            EnemyAiState::Pursuit(player)
+        );
+        world.player_mut(player).unwrap().position = engine::Vec3 { x: 100.0, y: 0.0, z: 0.0 };
+        assert_eq!(
+            ai.state_for_enemy(&world, enemy, world.combatant(enemy).unwrap().position),
+            EnemyAiState::Patrol
+        );
+        assert!(!ai.targets.contains_key(&enemy));
+    }
+
+    #[test]
+    fn enemy_does_not_target_inactive_or_defeated_players() {
+        let (mut world, _, enemy, player) = session_with_enemy(engine::Vec3::ZERO);
+        let mut ai = EnemyAiSystem::new();
+        world.player_mut(player).unwrap().is_active = false;
+        assert_eq!(
+            ai.state_for_enemy(&world, enemy, world.combatant(enemy).unwrap().position),
+            EnemyAiState::Patrol
+        );
     }
 }
 

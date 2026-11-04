@@ -214,9 +214,19 @@ pub enum GameplayCommand {
         player: EntityId,
         pilot_station: EntityId,
     },
+    SetShipBoost {
+        player: EntityId,
+        pilot_station: EntityId,
+        active: bool,
+    },
     SetShipControlActive {
         player: EntityId,
         pilot_station: EntityId,
+        active: bool,
+    },
+    SetShipShieldActive {
+        player: EntityId,
+        ship: EntityId,
         active: bool,
     },
     ConfigureSignalScanner {

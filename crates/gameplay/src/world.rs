@@ -118,6 +118,7 @@ pub struct GameplayWorld {
     item_definitions: BTreeMap<crate::types::ItemId, ItemDefinition>,
     collectibles: BTreeMap<EntityId, Collectible>,
     ship_integrity: BTreeMap<EntityId, ShipIntegrity>,
+    ship_shields: BTreeSet<EntityId>,
     environmental_hazards: BTreeMap<HazardId, EnvironmentalHazard>,
     spatial_encounters: BTreeMap<EncounterId, SpatialEncounter>,
     derelicts: BTreeMap<DerelictId, Derelict>,
@@ -5170,6 +5171,12 @@ impl GameplayWorld {
     pub fn configure_planet_physics(&mut self, physics: PlanetPhysics) -> bool {
         self.navigation.configure_planet_physics(physics)
     }
+    pub fn configure_solar_physics(&mut self, physics: PlanetPhysics) -> bool {
+        self.navigation.configure_solar_physics(physics)
+    }
+    pub fn solar_physics(&self) -> Option<PlanetPhysics> {
+        self.navigation.solar_physics()
+    }
     pub fn planet_position_at(
         &self,
         destination: DestinationId,
@@ -5270,6 +5277,29 @@ impl GameplayWorld {
         self.navigation
             .ship_id()
             .map(|_| self.navigation.control_active())
+    }
+    pub fn ship_boost_active(&self) -> Option<bool> {
+        self.navigation
+            .ship_id()
+            .map(|_| self.navigation.boost_active())
+    }
+    pub fn ship_speed(&self) -> Option<f32> {
+        self.navigation.ship_id().map(|_| {
+            let velocity = self.navigation.velocity();
+            (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z).sqrt()
+        })
+    }
+    pub fn ship_speed_limit(&self) -> Option<f32> {
+        self.navigation.ship_id().map(|_| self.navigation.speed_limit())
+    }
+    pub fn ship_shield_active(&self, ship: EntityId) -> bool {
+        self.ship_shields.contains(&ship)
+    }
+    pub(crate) fn set_ship_shield_active(&mut self, ship: EntityId, active: bool) -> bool {
+        if active { self.ship_shields.insert(ship) } else { self.ship_shields.remove(&ship) }
+    }
+    pub(crate) fn set_ship_boost_active(&mut self, active: bool) -> bool {
+        self.navigation.set_boost_active(active)
     }
     pub fn ship_at_rest(&self) -> Option<bool> {
         self.navigation
@@ -6130,6 +6160,33 @@ impl GameplayWorld {
         }
         deactivated
     }
+
+    pub(crate) fn defeat_active_players(&mut self) {
+        let players: Vec<_> = self
+            .players
+            .values()
+            .filter(|player| player.is_active)
+            .map(|player| player.entity_id)
+            .collect();
+        for player in players {
+            let defeated = self
+                .combatants
+                .get_mut(&player)
+                .is_some_and(|combatant| {
+                    if !combatant.is_player || combatant.is_defeated() {
+                        return false;
+                    }
+                    combatant.current_health = 0;
+                    combatant.active = false;
+                    true
+                });
+            if defeated {
+                self.deactivate_entity(player);
+                self.publish(crate::events::GameplayEvent::PlayerDefeated { player });
+            }
+        }
+    }
+
     pub fn take_events(&mut self) -> Vec<crate::events::GameplayEvent> {
         self.events.take()
     }
@@ -7136,6 +7193,11 @@ impl GameplayWorld {
         let effective_amount = self
             .ship_damage_after_upgrades(ship, amount)
             .ok_or(IntegrityError::InvalidAmount)?;
+        let effective_amount = if self.ship_shield_active(ship) {
+            effective_amount.saturating_add(1) / 2
+        } else {
+            effective_amount
+        };
         let outcome = {
             let Some(integrity) = self.ship_integrity.get_mut(&ship) else {
                 return Err(IntegrityError::NotInitialized);

@@ -130,7 +130,7 @@ pub use navigation::{
     NavigationInitializationError, NavigationMovementError, NavigationRegistrationError,
     NavigationRoute, NavigationRouteError, NavigationRouteState, NavigationState, ScannerError,
     PlanetFlightState, PlanetPhysics, ShipMovementParameters, ShipOrientation, SignalDetection,
-    SignalKnowledge, SignalScanner, TravelProgress, TravelState,
+    SignalKnowledge, SignalScanner, TravelProgress, TravelState, SUN_DESTINATION_ID,
 };
 pub use objective::{Objective, ObjectiveTrigger, ObjectiveTriggerError};
 pub use pipeline::GameplayProcessor;
