@@ -26,7 +26,9 @@ pub const PLANET_ORBIT_RADIUS: f32 = 42.0;
 pub const PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.25;
 pub const PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.5;
 pub const PLANET_SURFACE_RADIUS: f32 = 5.0;
-pub const SURFACE_OBJECT_RADIAL_OFFSET: f32 = 2.0;
+pub const PLANET_VISUAL_RADIUS: f32 = 8.0;
+pub const SUN_VISUAL_RADIUS: f32 = 14.0;
+pub const SURFACE_OBJECT_RADIAL_OFFSET: f32 = PLANET_VISUAL_RADIUS + 0.4;
 pub const ACADEMIC_SURFACE_OBJECT_SEED: u64 = 0xA57A_1E5D;
 pub const MAX_ACADEMIC_SURFACE_OBJECTS: usize = 64;
 pub const PLANET_OBSERVATION_RADIUS: f32 = 14.0;
@@ -65,6 +67,8 @@ pub const INTERIOR_LIGHT_ENTITY: engine::EntityId = engine::EntityId::new(9_406)
 
 pub const SHIP_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const ENEMY_MATERIAL: MaterialHandle = VisualAssets::ENEMY;
+pub const CHARGER_MATERIAL: MaterialHandle = VisualAssets::ENEMY_CHARGER;
+pub const SHIELDED_MATERIAL: MaterialHandle = VisualAssets::ENEMY_SHIELDED;
 pub const PLAYER_MATERIAL: MaterialHandle = VisualAssets::PLAYER;
 pub const ERICK_MATERIAL: MaterialHandle = VisualAssets::DESTINATION;
 pub const PLACEHOLDER_MATERIAL: MaterialHandle = VisualAssets::DESTINATION;
@@ -75,6 +79,14 @@ pub const COLLECTIBLE_MATERIAL: MaterialHandle = VisualAssets::COLLECTIBLE;
 pub const STATION_MATERIAL: MaterialHandle = VisualAssets::STATION;
 pub const DERELICT_MATERIAL: MaterialHandle = VisualAssets::DERELICT;
 pub const ASTEROID_MATERIAL: MaterialHandle = VisualAssets::ASTEROID;
+
+fn enemy_material(archetype: Option<gameplay::EnemyArchetype>) -> MaterialHandle {
+    match archetype {
+        Some(gameplay::EnemyArchetype::Charger) => CHARGER_MATERIAL,
+        Some(gameplay::EnemyArchetype::Shielded) => SHIELDED_MATERIAL,
+        Some(gameplay::EnemyArchetype::Shooter) | None => ENEMY_MATERIAL,
+    }
+}
 
 pub fn station_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
     let mut nodes = Vec::new();
@@ -379,7 +391,7 @@ pub fn snapshot_from_world_with_camera_and_view(
             Transform::new(
                 SUN_POSITION,
                 Quat::IDENTITY,
-                Vec3::splat(8.0),
+                Vec3::splat(SUN_VISUAL_RADIUS),
             ),
             SUN_MESH,
             SUN_MATERIAL,
@@ -457,7 +469,7 @@ pub fn snapshot_from_world_with_camera_and_view(
                 ENEMY_SHIP_VISUAL_SCALE,
             ),
             ENEMY_MESH,
-            ENEMY_MATERIAL,
+            enemy_material(enemy.archetype),
             visible,
         ));
     }
@@ -468,7 +480,7 @@ pub fn snapshot_from_world_with_camera_and_view(
                 gameplay::DestinationType::Planet => (
                     PLANET_MESH,
                     PLANET_MATERIAL,
-                    Vec3::splat(5.0),
+                    Vec3::splat(PLANET_VISUAL_RADIUS),
                 ),
                 _ => (DESTINATION_MESH, DESTINATION_MATERIAL, Vec3::ONE),
             };
@@ -507,7 +519,7 @@ pub fn snapshot_from_world_with_camera_and_view(
                 snapshot.push_node(SnapshotNode::new(
                     LANDING_INDICATOR_ENTITY,
                     Transform::new(
-                        position + Vec3::new(0.0, PLANET_SURFACE_RADIUS + 2.0, 0.0),
+                        position + Vec3::new(0.0, PLANET_VISUAL_RADIUS + 0.8, 0.0),
                         Quat::IDENTITY,
                         Vec3::splat(0.65),
                     ),
@@ -789,6 +801,8 @@ fn hud_state(
         mission_notification: completed_mission
             .or(presented_mission)
             .and_then(|value| mission_notification(world, value)),
+        contextual_action: None,
+        controls_panel: Default::default(),
         interaction_prompt: None,
         guidance: None,
         controls: None,
@@ -1051,7 +1065,7 @@ pub fn academic_planet_transform(elapsed_seconds: f64) -> Transform {
                 (orbit_angle.sin() as f32) * PLANET_ORBIT_RADIUS,
             ),
         Quat::from_rotation_y(rotation_angle as f32),
-        Vec3::splat(5.0),
+        Vec3::splat(PLANET_VISUAL_RADIUS),
     )
 }
 
@@ -1342,5 +1356,14 @@ mod tests {
         assert_eq!(hud.mission_notification.as_deref(), Some("MISION COMPLETADA"));
         assert_eq!(world.mission(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state(), MissionState::Available);
         assert!(hud.objective_name.is_some());
+    }
+
+    #[test]
+    fn visual_scale_policy_separates_celestial_and_physical_scales() {
+        assert!(PLANET_VISUAL_RADIUS >= ECHO7_VISUAL_SCALE.max_element() * 2.0);
+        assert!(SUN_VISUAL_RADIUS > PLANET_VISUAL_RADIUS);
+        assert_eq!(PLANET_SURFACE_RADIUS, 5.0);
+        assert!(PLANET_ORBIT_RADIUS > PLANET_VISUAL_RADIUS * 4.0);
+        assert_eq!(academic_planet_transform(0.0).scale, Vec3::splat(PLANET_VISUAL_RADIUS));
     }
 }

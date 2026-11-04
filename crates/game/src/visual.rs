@@ -211,6 +211,7 @@ struct VisualBridge {
     started: bool,
     interior_mode: bool,
     introductory_threat_pending: bool,
+    controls_panel_open: bool,
     pilot_mode: bool,
     legacy_exterior_controls: bool,
     look_left: bool,
@@ -509,6 +510,7 @@ impl VisualBridge {
             started: true,
             interior_mode,
             introductory_threat_pending,
+            controls_panel_open: false,
             pilot_mode: false,
             legacy_exterior_controls: !interior_mode,
             look_left: false,
@@ -654,6 +656,20 @@ impl VisualBridge {
             if state == ElementState::Pressed && key == KeyCode::Enter {
                 self.start_game();
             }
+            return;
+        }
+        if state == ElementState::Pressed && key == KeyCode::F1 {
+            if !self.player_defeated {
+                self.controls_panel_open = !self.controls_panel_open;
+                self.flight_keys = FlightKeys::default();
+                self.look_left = false;
+                self.look_right = false;
+                self.look_up = false;
+                self.look_down = false;
+            }
+            return;
+        }
+        if self.controls_panel_open {
             return;
         }
         let player = self.player;
@@ -1543,24 +1559,35 @@ impl VisualBridge {
     }
 
     fn contextual_prompt(&self) -> Option<String> {
+        self.contextual_action().map(|action| {
+            format!("{} [{}] {}", action.object, action.key, action.action)
+        })
+    }
+
+    fn contextual_action(&self) -> Option<render_core::HudContextualAction> {
         self.selected_interactable().map(|interactable| {
-            let label = match interactable.behavior {
-                InteractionBehavior::Door { .. } => "PUERTA DEL PUENTE [I] ABRIR",
+            let (object, action) = match interactable.behavior {
+                InteractionBehavior::Door { .. } => ("PUERTA DEL PUENTE", "ABRIR"),
                 InteractionBehavior::Station { station } => match station.station_type {
-                    StationType::Piloting => "CONSOLA DE PILOTAJE [I] ACCEDER",
-                    StationType::Navigation => "ESTACION DE NAVEGACION [I] ACCEDER",
-                    StationType::Engineering => "ESTACION DE INGENIERIA [I] ACCEDER",
-                    StationType::LifeSupport => "ESTACION DE SOPORTE VITAL [I] ACCEDER",
-                    StationType::Weapons => "ESTACION DE ARMAS [I] ACCEDER",
+                    StationType::Piloting => ("CONSOLA DE PILOTAJE", "ACCEDER"),
+                    StationType::Navigation => ("ESTACION DE NAVEGACION", "ACCEDER"),
+                    StationType::Engineering => ("ESTACION DE INGENIERIA", "ACCEDER"),
+                    StationType::LifeSupport => ("ESTACION DE SOPORTE VITAL", "ACCEDER"),
+                    StationType::Weapons => ("ESTACION DE ARMAS", "ACCEDER"),
                 },
-                InteractionBehavior::ElectricalPanel => "PANEL ELECTRICO [I] REPARAR",
-                InteractionBehavior::LifeSupportPanel => "SOPORTE VITAL [I] REPARAR",
+                InteractionBehavior::ElectricalPanel => ("PANEL ELECTRICO", "REPARAR"),
+                InteractionBehavior::LifeSupportPanel => ("SOPORTE VITAL", "REPARAR"),
                 InteractionBehavior::Console { role, .. } => match role {
-                    gameplay::ConsoleRole::ShipStatus => "CONSOLA DE ESTADO [I] CONSULTAR",
-                    gameplay::ConsoleRole::Generic => "CONSOLA [I] INTERACTUAR",
+                    gameplay::ConsoleRole::ShipStatus => ("CONSOLA DE ESTADO", "CONSULTAR"),
+                    gameplay::ConsoleRole::Generic => ("CONSOLA", "INTERACTUAR"),
                 },
             };
-            label.to_owned()
+            render_core::HudContextualAction {
+                target: interactable.entity_id.value(),
+                object: object.to_owned(),
+                action: action.to_owned(),
+                key: "I".to_owned(),
+            }
         })
     }
 
@@ -1603,7 +1630,7 @@ impl VisualBridge {
             return "PULSA ENTER PARA COMENZAR".to_owned();
         }
         if self.pilot_mode {
-            return "PILOTAJE ACTIVO: WASD VOLAR - FLECHAS RUMBO - P AUTOPILOTO - I SALIR".to_owned();
+            return "PILOTAJE ACTIVO: USA F1 PARA VER CONTROLES".to_owned();
         }
         if let Some(prompt) = self.contextual_prompt() {
             return format!("{prompt} - ACERCATE Y USA I");
@@ -1615,9 +1642,9 @@ impl VisualBridge {
             {
                 return "PULSA M PARA INICIAR LA MISION DISPONIBLE".to_owned();
             }
-            return "EXPLORACION: WASD MOVER - FLECHAS MIRAR - I INTERACTUAR".to_owned();
+            return "EXPLORACION: USA F1 PARA VER CONTROLES".to_owned();
         }
-        "EXTERIOR: SIGUE LA GUIA Y USA Q, P, F O E SEGUN EL OBJETIVO".to_owned()
+        "EXTERIOR: SIGUE LA GUIA Y USA F1 PARA VER CONTROLES".to_owned()
     }
 
     fn guidance_prompt(&self) -> Option<String> {
@@ -1676,6 +1703,40 @@ impl VisualBridge {
         } else {
             "Q ESCANEAR | P VIAJAR | F ATACAR | E RECOGER".to_owned()
         }
+    }
+
+    fn controls_panel_entries(&self) -> Vec<String> {
+        let mut entries = vec!["F1 ABRIR O CERRAR PANEL".to_owned()];
+        if self.pilot_mode {
+            entries.extend([
+                "WASD VOLAR - PILOTAJE".to_owned(),
+                "FLECHAS CAMBIAR RUMBO - PILOTAJE".to_owned(),
+                "P AUTOPILOTO - PILOTAJE".to_owned(),
+                "I SALIR DEL PILOTAJE - PILOTAJE".to_owned(),
+            ]);
+        } else if self.interior_mode {
+            entries.extend([
+                "WASD MOVER - EXPLORACION".to_owned(),
+                "FLECHAS MIRAR - EXPLORACION".to_owned(),
+                "I INTERACTUAR - OBJETOS".to_owned(),
+                "M INICIAR MISION - GENERAL".to_owned(),
+            ]);
+        } else {
+            entries.extend([
+                "Q ESCANEAR - EXTERIOR".to_owned(),
+                "P VIAJAR - EXTERIOR".to_owned(),
+                "F ATACAR - COMBATE".to_owned(),
+                "E RECOGER - EXTERIOR".to_owned(),
+            ]);
+            if self
+                .session
+                .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
+                .is_some_and(|mission| mission.state == gameplay::domains::mission::MissionState::Active)
+            {
+                entries.push("T RECUPERAR - COOPERACION".to_owned());
+            }
+        }
+        entries
     }
 
     fn restore_energy(&mut self) {
@@ -2083,14 +2144,25 @@ pub fn run() -> Result<(), String> {
             );
             if snapshot.overlay.game_over {
                 snapshot.overlay.hud.interaction_prompt = None;
+                snapshot.overlay.hud.contextual_action = None;
+                snapshot.overlay.hud.controls_panel = Default::default();
                 snapshot.overlay.hud.guidance = None;
                 snapshot.overlay.hud.controls = None;
                 snapshot.overlay.hud.instructions = None;
                 snapshot.overlay.hud.feedback = Some("JUGADOR DERROTADO".to_owned());
             } else {
                 snapshot.overlay.hud.interaction_prompt = bridge.contextual_prompt();
+                snapshot.overlay.hud.contextual_action = bridge.contextual_action();
+                snapshot.overlay.hud.controls_panel = if bridge.started {
+                    render_core::HudControlsPanel {
+                        open: bridge.controls_panel_open,
+                        entries: bridge.controls_panel_entries(),
+                    }
+                } else {
+                    Default::default()
+                };
                 snapshot.overlay.hud.guidance = bridge.guidance_prompt();
-                snapshot.overlay.hud.controls = Some(bridge.controls_hint());
+                snapshot.overlay.hud.controls = None;
                 snapshot.overlay.hud.instructions = Some(bridge.instructions_hint());
                 snapshot.overlay.hud.feedback = Some(bridge.feedback.clone());
             }
@@ -2106,17 +2178,26 @@ pub fn run() -> Result<(), String> {
             }
         },
         |scene| {
-            scene.set_lighting_mode(LightingMode::Lambert);
+            scene.set_lighting_mode(LightingMode::Pbr);
             let assets_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");
             for (path, mesh, material) in [
                 (assets_root.join("station/station.obj"), render_core::MeshHandle::STATION, VisualAssets::STATION),
                 (assets_root.join("shooter/shooter.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY),
+                (assets_root.join("charger/charger.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY_CHARGER),
+                (assets_root.join("shielded/shielded.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY_SHIELDED),
             ] {
                 match render_core::load_obj(&path) {
                     Ok(mesh_data) => scene.register_mesh(mesh, material, mesh_data),
                     Err(error) => eprintln!("modelo no cargado {}: {error}", path.display()),
                 }
             }
+            scene.set_material(VisualAssets::SHIP, MaterialInfo::ship());
+            scene.set_material(VisualAssets::PLAYER, MaterialInfo::player());
+            scene.set_material(VisualAssets::ENEMY, MaterialInfo::enemy_shooter());
+            scene.set_material(VisualAssets::ENEMY_CHARGER, MaterialInfo::enemy_charger());
+            scene.set_material(VisualAssets::ENEMY_SHIELDED, MaterialInfo::enemy_shielded());
+            scene.set_material(VisualAssets::DESTINATION, MaterialInfo::destination());
+            scene.set_material(VisualAssets::COLLECTIBLE, MaterialInfo::new(render_core::Vec4::new(1.0, 0.62, 0.04, 1.0), 0.38, 0.25).with_emissive(render_core::Vec3::new(0.16, 0.035, 0.002)));
             scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
             scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
             scene.set_material(VisualAssets::STATION, MaterialInfo::station());
@@ -2221,6 +2302,24 @@ mod tests {
     }
 
     #[test]
+    fn controls_panel_is_modal_and_uses_real_mode_assignments() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let elapsed_before = bridge.session.world().time().elapsed.0;
+        bridge.handle_key(KeyCode::F1, ElementState::Pressed);
+        assert!(bridge.controls_panel_open);
+        assert!(bridge.controls_panel_entries().iter().any(|entry| entry == "WASD MOVER - EXPLORACION"));
+
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        assert!(!bridge.flight_keys.forward);
+        assert_eq!(bridge.session.world().time().elapsed.0, elapsed_before);
+
+        bridge.handle_key(KeyCode::F1, ElementState::Pressed);
+        assert!(!bridge.controls_panel_open);
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        assert!(bridge.flight_keys.forward);
+    }
+
+    #[test]
     fn initial_playable_cycle_keeps_one_session_through_pilot_and_return() {
         let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         let session_address = (&bridge.session as *const ProjectEchoSession) as usize;
@@ -2242,9 +2341,6 @@ mod tests {
             gameplay::domains::mission::MissionState::Active
         );
 
-        // The first five interactions complete Mission1's real interior
-        // objectives. The next interaction explicitly enters the nearby
-        // piloting console instead of changing mode as a side effect.
         for _ in 0..6 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
         }

@@ -204,6 +204,20 @@ pub struct HudMissionObjective {
     pub required: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HudContextualAction {
+    pub target: u64,
+    pub object: String,
+    pub action: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HudControlsPanel {
+    pub open: bool,
+    pub entries: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HudState {
     pub flight: HudFlightState,
@@ -219,6 +233,8 @@ pub struct HudState {
     pub mission_progress: Option<(u8, u8)>,
     pub mission_state: Option<HudMissionState>,
     pub mission_notification: Option<String>,
+    pub contextual_action: Option<HudContextualAction>,
+    pub controls_panel: HudControlsPanel,
     pub interaction_prompt: Option<String>,
     pub guidance: Option<String>,
     pub controls: Option<String>,
