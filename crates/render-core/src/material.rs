@@ -86,7 +86,27 @@ impl MaterialInfo {
     }
 
     pub fn enemy() -> Self {
-        Self::new(Vec4::new(0.9, 0.03, 0.1, 1.0), 0.5, 0.0)
+        Self::enemy_shooter()
+    }
+
+    pub fn player() -> Self {
+        Self::new(Vec4::new(0.72, 0.86, 1.0, 1.0), 0.52, 0.18)
+            .with_emissive(Vec3::new(0.0, 0.035, 0.12))
+    }
+
+    pub fn enemy_shooter() -> Self {
+        Self::new(Vec4::new(0.86, 0.04, 0.08, 1.0), 0.42, 0.28)
+            .with_emissive(Vec3::new(0.12, 0.005, 0.008))
+    }
+
+    pub fn enemy_charger() -> Self {
+        Self::new(Vec4::new(0.95, 0.24, 0.035, 1.0), 0.58, 0.2)
+            .with_emissive(Vec3::new(0.13, 0.018, 0.002))
+    }
+
+    pub fn enemy_shielded() -> Self {
+        Self::new(Vec4::new(0.08, 0.44, 0.82, 1.0), 0.3, 0.72)
+            .with_emissive(Vec3::new(0.01, 0.08, 0.18))
     }
 
     pub fn destination() -> Self {
@@ -119,5 +139,31 @@ impl MaterialInfo {
 impl Default for MaterialInfo {
     fn default() -> Self {
         Self::new(Vec4::ONE, 0.8, 0.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semantic_ship_and_enemy_materials_are_distinct_and_valid() {
+        let materials = [
+            MaterialInfo::ship(),
+            MaterialInfo::player(),
+            MaterialInfo::enemy_shooter(),
+            MaterialInfo::enemy_charger(),
+            MaterialInfo::enemy_shielded(),
+            MaterialInfo::station(),
+        ];
+        assert!(materials.iter().all(|material| {
+            let sanitized = material.sanitized();
+            sanitized == *material
+                && sanitized.base_color.is_finite()
+                && sanitized.emissive.is_finite()
+        }));
+        assert_ne!(MaterialInfo::enemy_shooter(), MaterialInfo::enemy_charger());
+        assert_ne!(MaterialInfo::enemy_charger(), MaterialInfo::enemy_shielded());
+        assert_ne!(MaterialInfo::ship(), MaterialInfo::station());
     }
 }

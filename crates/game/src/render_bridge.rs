@@ -1079,7 +1079,8 @@ fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
 
 #[cfg(test)]
 mod tests {
-    use super::hud_mission_state;
+    use super::{academic_planet_transform, hud_mission_state, ECHO7_VISUAL_SCALE,
+        PLANET_ORBIT_RADIUS, PLANET_SURFACE_RADIUS, PLANET_VISUAL_RADIUS, SUN_VISUAL_RADIUS};
     use gameplay::{
         commands::GameplayCommand,
         domains::mission::MissionState,
@@ -1088,7 +1089,7 @@ mod tests {
         types::MissionId,
         GameplayWorld,
     };
-    use render_core::HudMissionState;
+    use render_core::{HudMissionState, Vec3};
 
     fn world_with_missions() -> (GameplayWorld, engine::EntityId) {
         let mut world = GameplayWorld::new();
