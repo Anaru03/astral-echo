@@ -81,6 +81,12 @@ pub struct CollectibleSaveState {
     pub active: bool,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct LifeSupportSaveState {
+    pub panel: EntityId,
+    pub allocations: Vec<(u16, u32)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct GameplaySaveState {
     pub schema_version: u32,
@@ -96,6 +102,7 @@ pub struct GameplaySaveState {
     pub knowledge: Vec<(KnowledgeTarget, KnowledgeState)>,
     pub collectibles: Vec<CollectibleSaveState>,
     pub ship_fuel: Vec<(EntityId, u32, u32)>,
+    pub life_support: Vec<LifeSupportSaveState>,
     pub ship_integrity: Vec<(EntityId, u32, u32, u32, u32)>,
     pub ship_upgrades: Vec<(EntityId, ShipUpgrade)>,
     pub ship_position: Option<Vec3>,
@@ -247,6 +254,15 @@ impl GameplaySaveState {
         for (ship, current, capacity) in &self.ship_fuel {
             output.push_str(&format!("fuel|{}|{}|{}\n", ship.value(), current, capacity));
         }
+        for panel in &self.life_support {
+            let allocations = panel
+                .allocations
+                .iter()
+                .map(|(id, allocation)| format!("{id}:{allocation}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            output.push_str(&format!("oxygen|{}|{}\n", panel.panel.value(), allocations));
+        }
         for (ship, upgrade) in &self.ship_upgrades {
             output.push_str(&format!("ship_upgrade|{}|{}\n", ship.value(), upgrade.code()));
         }
@@ -270,7 +286,7 @@ impl GameplaySaveState {
         let mut state = Self {
             schema_version, phase: SimulationPhase::Loading, time: GameTime::new(), registry: EntityRegistrySnapshot::default(),
             players: Vec::new(), companions: Vec::new(), inventories: Vec::new(), combatants: Vec::new(), currencies: Vec::new(),
-            missions: Vec::new(), knowledge: Vec::new(), collectibles: Vec::new(), ship_fuel: Vec::new(),
+            missions: Vec::new(), knowledge: Vec::new(), collectibles: Vec::new(), ship_fuel: Vec::new(), life_support: Vec::new(),
             ship_integrity: Vec::new(), ship_upgrades: Vec::new(), ship_position: None,
             destinations: Vec::new(), routes: Vec::new(), item_definitions: Vec::new(),
             enemy_rewards: Vec::new(), processed_enemy_rewards: Vec::new(), hazards: Vec::new(), encounters: Vec::new(), derelicts: Vec::new(), functional_worlds: Vec::new(),
@@ -316,6 +332,19 @@ impl GameplaySaveState {
                 "knowledge" if fields.len() == 4 => state.knowledge.push((parse_knowledge_target(fields[1])?, parse_knowledge_state(fields[2])?)),
                 "collectible" if fields.len() == 10 => state.collectibles.push(CollectibleSaveState { entity: EntityId::new(parse_u64(fields[1])?), item: ItemId(parse_u32(fields[2])?), amount: parse_u32(fields[3])?, position: vec3(&fields, 4)?, interaction_range: float(fields[7])?, owner: match parse_u64(fields[8])? { 0 => None, value => Some(EntityId::new(value)) }, active: parse_bool(fields[9])? }),
                 "fuel" if fields.len() == 4 => state.ship_fuel.push((EntityId::new(parse_u64(fields[1])?), parse_u32(fields[2])?, parse_u32(fields[3])?)),
+                "oxygen" if fields.len() == 3 => {
+                    let mut allocations = Vec::new();
+                    if !fields[2].is_empty() {
+                        for entry in fields[2].split(',') {
+                            let pair = entry.split(':').collect::<Vec<_>>();
+                            if pair.len() != 2 {
+                                return Err(SaveError::MalformedRecord);
+                            }
+                            allocations.push((u16::try_from(parse_u32(pair[0])?).map_err(|_| SaveError::InvalidState)?, parse_u32(pair[1])?));
+                        }
+                    }
+                    state.life_support.push(LifeSupportSaveState { panel: EntityId::new(parse_u64(fields[1])?), allocations });
+                }
                 "ship_upgrade" if fields.len() == 3 => {
                     let code = parse_u32(fields[2])?;
                     let code = u8::try_from(code).map_err(|_| SaveError::InvalidState)?;
@@ -689,7 +718,7 @@ fn parse_combatant(fields: &[&str]) -> Result<CombatantSaveState, SaveError> {
 
 fn item_category(value: ItemCategory) -> u8 { 
     match value { 
-        ItemCategory::RepairMaterial => 0, ItemCategory::CombatAmmunition => 1, ItemCategory::MineralSample => 2, ItemCategory::ElectronicComponent => 3, ItemCategory::HealingConsumable => 4, ItemCategory::RevivalConsumable => 5 
+        ItemCategory::RepairMaterial => 0, ItemCategory::CombatAmmunition => 1, ItemCategory::MineralSample => 2, ItemCategory::ElectronicComponent => 3, ItemCategory::HealingConsumable => 4, ItemCategory::RevivalConsumable => 5, ItemCategory::Weapon => 6, ItemCategory::Fuel => 7, ItemCategory::Oxygen => 8
     } 
 }
 
@@ -701,6 +730,9 @@ fn parse_item_category(value: &str) -> Result<ItemCategory, SaveError> {
         3 => Ok(ItemCategory::ElectronicComponent),
         4 => Ok(ItemCategory::HealingConsumable),
         5 => Ok(ItemCategory::RevivalConsumable),
+        6 => Ok(ItemCategory::Weapon),
+        7 => Ok(ItemCategory::Fuel),
+        8 => Ok(ItemCategory::Oxygen),
         _ => Err(SaveError::InvalidState),
     }
 }

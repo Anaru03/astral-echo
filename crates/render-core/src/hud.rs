@@ -65,6 +65,15 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         && hud.mission_progress.is_none()
         && hud.mission_state.is_none()
         && hud.mission_notification.is_none()
+        && !hud.ship_shield_active
+        && !hud.ship_boost_active
+        && hud.ship_speed.is_none()
+        && hud.weapon_name.is_none()
+        && hud.weapon_ammunition.is_none()
+        && hud.ship_fuel.is_none()
+        && hud.ship_oxygen.is_none()
+        && hud.ship_supplies.is_none()
+        && hud.ship_resource_alert.is_none()
         && hud.contextual_action.is_none()
         && hud.controls_panel.entries.is_empty()
         && hud.interaction_prompt.is_none()
@@ -92,6 +101,16 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         hud.mission_description.as_deref().map(|v| format!("CONTEXTO: {v}")),
         hud.objective_name.as_deref().map(|v| format!("OBJETIVO: {v}")),
         hud.mission_notification.as_deref().map(|v| format!("AVISO: {v}")),
+        Some(format!("ESCUDO: {}", if hud.ship_shield_active { "ACTIVO" } else { "INACTIVO" }))
+            .filter(|_| hud.ship_speed.is_some() || hud.ship_shield_active),
+        hud.ship_speed.map(|(speed, limit)| format!("VELOCIDAD: {speed}/{limit}")),
+        Some("BOOST: ACTIVO".to_owned()).filter(|_| hud.ship_boost_active),
+        hud.weapon_name.as_deref().map(|name| format!("ARMA: {name}")),
+        hud.weapon_ammunition.map(|(_, amount)| format!("MUNICION: {amount}")),
+        hud.ship_fuel.map(|(current, capacity)| format!("COMBUSTIBLE: {current}/{capacity}")),
+        hud.ship_oxygen.map(|(current, capacity)| format!("OXIGENO: {current}/{capacity}")),
+        hud.ship_supplies.map(|amount| format!("SUMINISTROS: {amount}")),
+        hud.ship_resource_alert.as_deref().map(|value| format!("ALERTA: {value}")),
         None,
         Some("OBJETIVOS:".to_owned()).filter(|_| !hud.mission_objectives.is_empty()),
         None,
@@ -419,8 +438,7 @@ mod tests {
             640,
             360,
         );
-        // "FEEDBACK: A B": the second space starts at column 11 with the
-        // seven-pixel advance used by the shared CPU/GPU layout.
+        
         let space_start = 12 + 11 * 7;
         let next_word_start = space_start + 7;
         assert!(!overlay.glyphs.iter().any(|rect| {

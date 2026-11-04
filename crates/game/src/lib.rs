@@ -93,6 +93,20 @@ impl ProjectEchoSession {
             ))
             .expect("la munición de energía debe registrarse una sola vez");
         world
+            .register_item_definition(gameplay::ItemDefinition::new(
+                gameplay::FUEL_RESOURCE_ITEM,
+                gameplay::ItemCategory::Fuel,
+                20,
+            ))
+            .expect("el combustible recuperable debe registrarse una sola vez");
+        world
+            .register_item_definition(gameplay::ItemDefinition::new(
+                gameplay::OXYGEN_RESOURCE_ITEM,
+                gameplay::ItemCategory::Oxygen,
+                20,
+            ))
+            .expect("el oxigeno recuperable debe registrarse una sola vez");
+        world
             .register_item_definition(
                 gameplay::ItemDefinition::new(
                     gameplay::types::ItemId(4),

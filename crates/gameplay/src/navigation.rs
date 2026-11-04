@@ -16,6 +16,8 @@ impl DestinationId {
     }
 }
 
+pub const SUN_DESTINATION_ID: DestinationId = DestinationId::new(9_000);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DestinationType {
     Planet,
@@ -180,7 +182,7 @@ impl PlanetPhysics {
     pub fn validate(self) -> bool {
         finite_position(self.orbit_center)
             && self.orbit_radius.is_finite()
-            && self.orbit_radius > 0.0
+            && self.orbit_radius >= 0.0
             && self.orbit_angular_speed.is_finite()
             && self.surface_radius.is_finite()
             && self.surface_radius > 0.0
@@ -195,6 +197,9 @@ impl PlanetPhysics {
     }
 
     pub fn position_at(self, elapsed: Duration) -> Vec3 {
+        if self.orbit_radius == 0.0 {
+            return self.orbit_center;
+        }
         let angle = self.orbit_angular_speed * elapsed.0 as f32 / 1_000.0;
         add_vec(
             self.orbit_center,
@@ -336,6 +341,7 @@ pub struct NavigationState {
     velocity: Vec3,
     movement: ShipMovementParameters,
     control_active: bool,
+    boost_active: bool,
     acceleration_input: Vec3,
     braking: bool,
     scanner: SignalScanner,
@@ -345,6 +351,7 @@ pub struct NavigationState {
     autopilot: AutopilotState,
     autopilot_continuation_authorized: bool,
     planet_physics: BTreeMap<DestinationId, PlanetPhysics>,
+    solar_physics: Option<PlanetPhysics>,
     planet_flight_state: PlanetFlightState,
     travel_origin: Vec3,
     impact_started_at: Option<Duration>,
@@ -362,6 +369,7 @@ impl Default for NavigationState {
             velocity: Vec3::ZERO,
             movement: ShipMovementParameters::default(),
             control_active: false,
+            boost_active: false,
             acceleration_input: Vec3::ZERO,
             braking: false,
             scanner: SignalScanner::default(),
@@ -371,6 +379,7 @@ impl Default for NavigationState {
             autopilot: AutopilotState::Inactive,
             autopilot_continuation_authorized: false,
             planet_physics: BTreeMap::new(),
+            solar_physics: None,
             planet_flight_state: PlanetFlightState::Free,
             travel_origin: Vec3::ZERO,
             impact_started_at: None,
@@ -468,15 +477,30 @@ impl NavigationState {
     }
 
     pub fn configure_planet_physics(&mut self, physics: PlanetPhysics) -> bool {
-        if !physics.validate() || self.destination(physics.destination).is_none() {
+        if !physics.validate() || physics.orbit_radius <= 0.0 || self.destination(physics.destination).is_none() {
             return false;
         }
         self.planet_physics.insert(physics.destination, physics);
         true
     }
 
+    pub fn configure_solar_physics(&mut self, physics: PlanetPhysics) -> bool {
+        if !physics.validate()
+            || physics.orbit_radius != 0.0
+            || physics.destination != SUN_DESTINATION_ID
+        {
+            return false;
+        }
+        self.solar_physics = Some(physics);
+        true
+    }
+
     pub fn planet_physics(&self, destination: DestinationId) -> Option<PlanetPhysics> {
         self.planet_physics.get(&destination).copied()
+    }
+
+    pub fn solar_physics(&self) -> Option<PlanetPhysics> {
+        self.solar_physics
     }
 
     pub fn planet_position_at(&self, destination: DestinationId, elapsed: Duration) -> Option<Vec3> {
@@ -550,6 +574,12 @@ impl NavigationState {
     pub const fn control_active(&self) -> bool {
         self.control_active
     }
+    pub const fn boost_active(&self) -> bool {
+        self.boost_active
+    }
+    pub fn speed_limit(&self) -> f32 {
+        if self.boost_active { self.movement.max_speed * 1.5 } else { self.movement.max_speed }
+    }
     pub fn is_at_rest(&self) -> bool {
         self.velocity.x == 0.0 && self.velocity.y == 0.0 && self.velocity.z == 0.0
     }
@@ -571,7 +601,17 @@ impl NavigationState {
         self.control_active = active;
         if !active {
             self.acceleration_input = Vec3::ZERO;
+            self.boost_active = false;
         }
+        true
+    }
+
+    pub(crate) fn set_boost_active(&mut self, active: bool) -> bool {
+        if self.boost_active == active {
+            return false;
+        }
+        self.boost_active = active;
+        self.velocity = clamp_speed(self.velocity, self.speed_limit());
         true
     }
 
@@ -675,11 +715,12 @@ impl NavigationState {
             self.velocity = add_velocity(
                 self.velocity,
                 self.acceleration_input,
-                self.movement.acceleration * seconds,
+                self.movement.acceleration * if self.boost_active { 1.5 } else { 1.0 } * seconds,
             );
-            self.velocity = clamp_speed(self.velocity, self.movement.max_speed);
+            self.velocity = clamp_speed(self.velocity, self.speed_limit());
         }
         let mut atmospheric = None;
+        let solar_physics = self.solar_physics;
         for (destination, physics) in &self.planet_physics {
             let planet = physics.position_at(now);
             let offset = sub_vec(planet, self.current_position);
@@ -692,9 +733,9 @@ impl NavigationState {
                 };
                 let denominator = distance.max(physics.collision_radius()).powi(2);
                 let gravity = (physics.gravitational_parameter / denominator)
-                    .min(self.movement.max_speed / seconds.max(0.001));
+                    .min(self.speed_limit() / seconds.max(0.001));
                 self.velocity = add_vec(self.velocity, scale_vec(direction, gravity * seconds));
-                self.velocity = clamp_speed(self.velocity, self.movement.max_speed);
+                self.velocity = clamp_speed(self.velocity, self.speed_limit());
             }
             let atmosphere_radius = physics.collision_radius() + physics.atmosphere_height;
             if distance <= atmosphere_radius && distance > physics.collision_radius() {
@@ -705,6 +746,23 @@ impl NavigationState {
                     1.0
                 };
                 atmospheric = Some((*destination, intensity));
+            }
+        }
+        if let Some(physics) = solar_physics {
+            let solar_position = physics.position_at(now);
+            let offset = sub_vec(solar_position, self.current_position);
+            let distance = dot(offset, offset).sqrt();
+            if distance > 0.0 && distance < physics.gravity_influence_radius {
+                let direction = Vec3 {
+                    x: offset.x / distance,
+                    y: offset.y / distance,
+                    z: offset.z / distance,
+                };
+                let denominator = distance.max(physics.collision_radius()).powi(2);
+                let gravity = (physics.gravitational_parameter / denominator)
+                    .min(self.speed_limit() / seconds.max(0.001));
+                self.velocity = add_vec(self.velocity, scale_vec(direction, gravity * seconds));
+                self.velocity = clamp_speed(self.velocity, self.speed_limit());
             }
         }
         let displacement = Vec3 {
@@ -731,6 +789,29 @@ impl NavigationState {
                 self.impact_started_at = Some(now);
                 contact = Some((*destination, true));
                 break;
+            }
+        }
+        if contact.is_none() {
+            if let Some(physics) = solar_physics {
+                let solar_position = physics.position_at(now);
+                if segment_intersects_sphere(
+                    previous_position,
+                    next_position,
+                    solar_position,
+                    physics.collision_radius(),
+                ) {
+                    self.velocity = Vec3::ZERO;
+                    self.current_position = impact_position(
+                        previous_position,
+                        solar_position,
+                        physics.collision_radius(),
+                    );
+                    self.planet_flight_state = PlanetFlightState::Impacted {
+                        planet: SUN_DESTINATION_ID,
+                    };
+                    self.impact_started_at = Some(now);
+                    contact = Some((SUN_DESTINATION_ID, true));
+                }
             }
         }
         if contact.is_none() && finite_vec3(next_position) {
@@ -771,6 +852,28 @@ impl NavigationState {
             self.travel_origin,
             scale_vec(sub_vec(target, self.travel_origin), progress),
         );
+        if let Some(solar) = self.solar_physics {
+            let solar_position = solar.position_at(now);
+            if segment_intersects_sphere(
+                self.current_position,
+                proposed,
+                solar_position,
+                solar.collision_radius(),
+            ) {
+                self.current_position = impact_position(
+                    self.current_position,
+                    solar_position,
+                    solar.collision_radius(),
+                );
+                self.velocity = Vec3::ZERO;
+                self.planet_flight_state = PlanetFlightState::Impacted {
+                    planet: SUN_DESTINATION_ID,
+                };
+                self.impact_started_at = Some(now);
+                self.travel_state = TravelState::Cancelled { destination };
+                return Some((SUN_DESTINATION_ID, self.current_position, true));
+            }
+        }
         let planet = target;
         let radius = physics.collision_radius();
         if matches!(
@@ -1517,6 +1620,12 @@ fn segment_intersects_sphere(start: Vec3, end: Vec3, center: Vec3, radius: f32) 
     dot(distance, distance) <= radius * radius
 }
 
+fn impact_position(start: Vec3, center: Vec3, radius: f32) -> Vec3 {
+    let direction = sub_vec(start, center);
+    let length = distance(start, center).max(radius);
+    add_vec(center, scale_vec(direction, radius / length))
+}
+
 fn dot(left: Vec3, right: Vec3) -> f32 {
     left.x * right.x + left.y * right.y + left.z * right.z
 }
@@ -1613,6 +1722,20 @@ mod tests {
         }
     }
 
+    fn solar_physics() -> PlanetPhysics {
+        PlanetPhysics {
+            destination: SUN_DESTINATION_ID,
+            orbit_center: Vec3::ZERO,
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 2.0,
+            ship_radius: 0.0,
+            gravity_influence_radius: 20.0,
+            gravitational_parameter: 4.0,
+            atmosphere_height: 0.0,
+        }
+    }
+
     fn navigation(position: Vec3) -> NavigationState {
         let mut navigation = NavigationState::default();
         let destination = DestinationId::new(7);
@@ -1658,6 +1781,80 @@ mod tests {
             .expect("active control advances");
         assert!(velocity.x < 0.0);
         assert!(velocity.x.is_finite());
+    }
+
+    #[test]
+    fn solar_gravity_is_fixed_directional_and_outside_influence_is_inert() {
+        let mut outside = NavigationState::default();
+        assert!(outside.configure_solar_physics(solar_physics()));
+        outside
+            .restore_position(Vec3 { x: 30.0, y: 0.0, z: 0.0 })
+            .expect("position is finite");
+        outside.initialize_ship(EntityId::new(1)).expect("ship should initialize");
+        outside.set_control_active(true);
+        outside.set_acceleration_input(Vec3::ZERO).expect("zero input is valid");
+        outside
+            .advance_manual(Duration(100), Duration(0))
+            .expect("outside flight advances");
+        assert_eq!(outside.velocity(), Vec3::ZERO);
+
+        let mut inside = NavigationState::default();
+        assert!(inside.configure_solar_physics(solar_physics()));
+        inside
+            .restore_position(Vec3 { x: 10.0, y: 0.0, z: 0.0 })
+            .expect("position is finite");
+        inside.initialize_ship(EntityId::new(1)).expect("ship should initialize");
+        inside.set_control_active(true);
+        inside.set_acceleration_input(Vec3::ZERO).expect("zero input is valid");
+        let (_, velocity, _, _) = inside
+            .advance_manual(Duration(100), Duration(0))
+            .expect("inside flight advances");
+        assert!(velocity.x < 0.0);
+    }
+
+    #[test]
+    fn solar_impact_is_swept_terminal_and_not_landable() {
+        let mut navigation = NavigationState::default();
+        assert!(navigation.configure_solar_physics(solar_physics()));
+        navigation
+            .restore_position(Vec3 { x: 10.0, y: 0.0, z: 0.0 })
+            .expect("position is finite");
+        navigation.initialize_ship(EntityId::new(1)).expect("ship should initialize");
+        navigation.set_control_active(true);
+        navigation
+            .set_acceleration_input(Vec3 { x: -1.0, y: 0.0, z: 0.0 })
+            .expect("input is valid");
+
+        let contact = navigation
+            .advance_manual(Duration(10_000), Duration(0))
+            .expect("flight advances to the sun");
+        assert_eq!(contact.3, Some((SUN_DESTINATION_ID, true)));
+        assert_eq!(navigation.planet_flight_state(), PlanetFlightState::Impacted { planet: SUN_DESTINATION_ID });
+        assert!(!navigation.landing_available(SUN_DESTINATION_ID, Duration(10_000)));
+        assert!(navigation.current_position().x.abs() >= solar_physics().collision_radius());
+        assert!(navigation.advance_manual(Duration(100), Duration(100)).is_none());
+    }
+
+    #[test]
+    fn boost_raises_the_speed_limit_only_while_active() {
+        let mut navigation = NavigationState::default();
+        navigation.initialize_ship(EntityId::new(1)).expect("ship should initialize");
+        navigation.set_control_active(true);
+        navigation
+            .set_acceleration_input(Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+            .expect("input is valid");
+        for _ in 0..20 {
+            navigation.advance_manual(Duration(1_000), Duration(0));
+        }
+        assert!(navigation.velocity().x <= navigation.movement_parameters().max_speed);
+        assert!(navigation.set_boost_active(true));
+        for _ in 0..20 {
+            navigation.advance_manual(Duration(1_000), Duration(0));
+        }
+        assert!(navigation.velocity().x > navigation.movement_parameters().max_speed);
+        assert!(navigation.velocity().x <= navigation.speed_limit());
+        navigation.set_boost_active(false);
+        assert!(navigation.velocity().x <= navigation.movement_parameters().max_speed);
     }
 
     #[test]
