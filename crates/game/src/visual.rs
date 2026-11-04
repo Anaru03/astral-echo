@@ -12,7 +12,8 @@ use gameplay::{
     EnemyArchetype, EnemyConfiguration, EncounterId, EnvironmentalHazard, GameplayCommand, GameplayEvent,
     LifeSupportConfiguration, NavigationRoute, NavigationRouteState,
     OxygenCompartmentConfiguration, PlanetPhysics, SpatialEncounter, SpatialEncounterKind,
-    InteractionBehavior, StationType, WeaponAmmunition, WeaponConfiguration,
+    Derelict, DerelictId, DerelictReward, InteractionBehavior, RewardDistributionPolicy,
+    StationType, WeaponAmmunition, WeaponConfiguration,
 };
 use render_core::{LightingMode, MaterialInfo, VisualAssets};
 use render_present::{
@@ -218,6 +219,9 @@ struct VisualBridge {
     introductory_threat_pending: bool,
     controls_panel_open: bool,
     pilot_mode: bool,
+    fire_pressed: bool,
+    boost_pressed: bool,
+    shield_active: bool,
     legacy_exterior_controls: bool,
     look_left: bool,
     look_right: bool,
@@ -246,6 +250,83 @@ impl VisualBridge {
         let mut session = ProjectEchoSession::new();
         let player = session.ids.first_player;
         let ship = session.ids.first_ship;
+        session.update([
+            GameplayCommand::RegisterItemDefinition {
+                definition: gameplay::ItemDefinition::new(
+                    gameplay::ENERGY_WEAPON_ITEM,
+                    gameplay::ItemCategory::Weapon,
+                    1,
+                ),
+            },
+            GameplayCommand::RegisterItemDefinition {
+                definition: gameplay::ItemDefinition::new(
+                    gameplay::PLASMA_WEAPON_ITEM,
+                    gameplay::ItemCategory::Weapon,
+                    1,
+                ),
+            },
+            GameplayCommand::RegisterDerelict {
+                derelict: Derelict::new(
+                    DerelictId::new(9_010),
+                    GameplayVec3 { x: 40.0, y: 0.0, z: 0.0 },
+                    3.5,
+                )
+                .with_rewards(
+                    vec![DerelictReward {
+                        item: gameplay::ENERGY_WEAPON_ITEM,
+                        amount: 1,
+                    }],
+                    RewardDistributionPolicy::Shared,
+                ),
+            },
+            GameplayCommand::RegisterDerelict {
+                derelict: Derelict::new(
+                    DerelictId::new(9_011),
+                    GameplayVec3 { x: -40.0, y: 0.0, z: 0.0 },
+                    3.5,
+                )
+                .with_rewards(
+                    vec![DerelictReward {
+                        item: gameplay::PLASMA_WEAPON_ITEM,
+                        amount: 1,
+                    }],
+                    RewardDistributionPolicy::Shared,
+                ),
+            },
+            GameplayCommand::RegisterDerelict {
+                derelict: Derelict::new(
+                    DerelictId::new(9_012),
+                    GameplayVec3 { x: 60.0, y: 0.0, z: 0.0 },
+                    3.5,
+                )
+                .with_rewards(
+                    vec![DerelictReward { item: gameplay::FUEL_RESOURCE_ITEM, amount: 4 }],
+                    RewardDistributionPolicy::Shared,
+                ),
+            },
+            GameplayCommand::RegisterDerelict {
+                derelict: Derelict::new(
+                    DerelictId::new(9_013),
+                    GameplayVec3 { x: -60.0, y: 0.0, z: 0.0 },
+                    3.5,
+                )
+                .with_rewards(
+                    vec![DerelictReward { item: gameplay::OXYGEN_RESOURCE_ITEM, amount: 4 }],
+                    RewardDistributionPolicy::Shared,
+                ),
+            },
+            GameplayCommand::RegisterDerelict {
+                derelict: Derelict::new(
+                    DerelictId::new(9_014),
+                    GameplayVec3 { x: 0.0, y: 0.0, z: 60.0 },
+                    3.5,
+                )
+                .with_rewards(
+                    vec![DerelictReward { item: gameplay::types::ItemId(1), amount: 2 }],
+                    RewardDistributionPolicy::Shared,
+                ),
+            },
+        ]);
         session
             .world_mut()
             .initialize_ship_position(initial_ship_position)
@@ -333,6 +414,25 @@ impl VisualBridge {
         }) {
             return Err("configurar la fÃ­sica planetaria visual".to_owned());
         }
+        if initial_ship_position != GameplayVec3::ZERO
+            && !session.world_mut().configure_solar_physics(PlanetPhysics {
+            destination: gameplay::SUN_DESTINATION_ID,
+            orbit_center: GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0,
+            },
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 12.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 80.0,
+            gravitational_parameter: 6_000.0,
+            atmosphere_height: 0.0,
+            })
+        {
+            return Err("configurar la física solar visual".to_owned());
+        }
         let pilot_station = session
             .create_station(
                 GameplayVec3 { x: 0.0, y: 0.0, z: 1.5 },
@@ -409,14 +509,12 @@ impl VisualBridge {
                 3.0,
             )
             .map_err(|error| format!("crear puerta del puente visual: {error:?}"))?;
-        // Keep the initial interior encounter outside the player's immediate
-        // weapon range. The enemy remains active and autonomous, but the
-        // player gets a meaningful exploration window before combat begins.
-        let enemy_position = if interior_mode && safe_interior_enemy_start {
+        
+            let enemy_position = if interior_mode && safe_interior_enemy_start {
             GameplayVec3 {
-                x: 60.0,
+                x: 24.0,
                 y: 0.0,
-                z: -60.0,
+                z: 120.0,
             }
         } else {
             GameplayVec3 {
@@ -538,6 +636,9 @@ impl VisualBridge {
             introductory_threat_pending,
             controls_panel_open: false,
             pilot_mode: false,
+            fire_pressed: false,
+            boost_pressed: false,
+            shield_active: false,
             legacy_exterior_controls: !interior_mode,
             look_left: false,
             look_right: false,
@@ -673,7 +774,7 @@ impl VisualBridge {
         }
         let defeated = self.session.world().events().iter().any(|event| {
             matches!(event, GameplayEvent::PlayerDefeated { player } if *player == self.player)
-        });
+        }) || self.session.world().ship_is_destroyed(self.ship) == Some(true);
         if defeated {
             self.player_defeated = true;
             self.feedback = "JUGADOR DERROTADO — SESION VISUAL DETENIDA".to_owned();
@@ -733,6 +834,44 @@ impl VisualBridge {
             }
             return;
         }
+        if matches!(key, KeyCode::ShiftLeft | KeyCode::ShiftRight) && self.pilot_mode {
+            self.boost_pressed = state == ElementState::Pressed;
+            self.issue([GameplayCommand::SetShipBoost {
+                player,
+                pilot_station,
+                active: self.boost_pressed,
+            }]);
+            return;
+        }
+        if key == KeyCode::KeyG && self.pilot_mode {
+            if state == ElementState::Pressed {
+                let active = !self.shield_active;
+                if self.issue([GameplayCommand::SetShipShieldActive {
+                    player,
+                    ship,
+                    active,
+                }]) {
+                    self.shield_active = active;
+                }
+            }
+            return;
+        }
+        if key == KeyCode::KeyX && self.pilot_mode {
+            if state == ElementState::Pressed {
+                self.issue([GameplayCommand::BrakeShip {
+                    player,
+                    pilot_station,
+                }]);
+            }
+            return;
+        }
+        if key == KeyCode::KeyF && self.pilot_mode {
+            self.fire_pressed = state == ElementState::Pressed;
+            if self.fire_pressed {
+                self.issue([GameplayCommand::AttackEnemy { player, enemy }]);
+            }
+            return;
+        }
         if (self.interior_mode || self.pilot_mode) && state == ElementState::Released {
             match key {
                 KeyCode::ArrowLeft => self.look_left = false,
@@ -754,6 +893,7 @@ impl VisualBridge {
             KeyCode::KeyI => self.guided_interaction(),
             KeyCode::KeyR => self.restore_energy(),
             KeyCode::KeyY => self.restore_life_support(),
+            KeyCode::KeyU if self.pilot_mode => self.use_fuel_resource(),
             KeyCode::Space => {
                 self.issue([GameplayCommand::AdvanceTime {
                     delta: Duration(100),
@@ -766,6 +906,7 @@ impl VisualBridge {
                 }
             }
             KeyCode::KeyV => self.equip_energy_weapon(),
+            KeyCode::KeyB => self.equip_found_weapon(gameplay::PLASMA_WEAPON_ITEM),
             KeyCode::KeyC => self.equip_kinetic_weapon(),
             KeyCode::KeyF => {
                 let mission_five_active = self
@@ -779,7 +920,7 @@ impl VisualBridge {
                         self.feedback = "ATERRIZAJE CONFIRMADO".to_owned();
                         println!("visual gameplay: {}", self.feedback);
                     }
-                } else {
+                } else if self.pilot_mode || self.legacy_exterior_controls {
                     self.issue([GameplayCommand::AttackEnemy { player, enemy }]);
                 }
             }
@@ -1228,6 +1369,20 @@ impl VisualBridge {
         }
     }
 
+    fn equip_found_weapon(&mut self, item: ItemId) {
+        if self.issue([GameplayCommand::EquipPlayerWeaponItem {
+            player: self.player,
+            item,
+        }]) {
+            self.feedback = match item {
+                gameplay::ENERGY_WEAPON_ITEM => "ARMA DE ENERGIA EQUIPADA".to_owned(),
+                gameplay::PLASMA_WEAPON_ITEM => "ARMA DE PLASMA EQUIPADA".to_owned(),
+                _ => "ARMA EQUIPADA".to_owned(),
+            };
+            println!("visual gameplay: {}", self.feedback);
+        }
+    }
+
     fn equip_kinetic_weapon(&mut self) {
         let completed = self.issue([GameplayCommand::EquipPlayerWeapon {
             player: self.player,
@@ -1322,6 +1477,48 @@ impl VisualBridge {
                 self.enter_pilot();
             } else {
                 self.feedback = aggregate.message();
+            }
+            return;
+        }
+        if let Some(derelict) = self.selected_derelict().cloned() {
+            let mut commands = Vec::new();
+            if derelict.state == gameplay::DerelictState::Undiscovered {
+                commands.push(GameplayCommand::DiscoverDerelict {
+                    player: self.player,
+                    derelict: derelict.id,
+                });
+            }
+            if derelict.state != gameplay::DerelictState::Resolved {
+                commands.push(GameplayCommand::ExploreDerelict {
+                    player: self.player,
+                    derelict: derelict.id,
+                });
+            }
+            if self.issue(commands) {
+                self.feedback = "NAVE ABANDONADA EXPLORADA".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+            }
+            return;
+        }
+        if let Some(collectible) = self.selected_weapon_collectible() {
+            if self.issue([GameplayCommand::CollectItem {
+                player: self.player,
+                collectible: collectible.entity,
+                amount: collectible.amount,
+            }]) {
+                self.feedback = "ARMAMENTO RECUPERADO - USA B PARA EQUIPAR PLASMA".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+            }
+            return;
+        }
+        if let Some(collectible) = self.selected_resource_collectible() {
+            if self.issue([GameplayCommand::CollectItem {
+                player: self.player,
+                collectible: collectible.entity,
+                amount: collectible.amount,
+            }]) {
+                self.feedback = "RECURSO RECUPERADO".to_owned();
+                println!("visual gameplay: {}", self.feedback);
             }
             return;
         }
@@ -1595,7 +1792,7 @@ impl VisualBridge {
     }
 
     fn contextual_action(&self) -> Option<render_core::HudContextualAction> {
-        self.selected_interactable().map(|interactable| {
+        if let Some(interactable) = self.selected_interactable() {
             let (object, action) = match interactable.behavior {
                 InteractionBehavior::Door { .. } => ("PUERTA DEL PUENTE", "ABRIR"),
                 InteractionBehavior::Station { station } => match station.station_type {
@@ -1612,17 +1809,153 @@ impl VisualBridge {
                     gameplay::ConsoleRole::Generic => ("CONSOLA", "INTERACTUAR"),
                 },
             };
-            render_core::HudContextualAction {
+            return Some(render_core::HudContextualAction {
                 target: interactable.entity_id.value(),
                 object: object.to_owned(),
                 action: action.to_owned(),
                 key: "I".to_owned(),
+            });
+        }
+        if let Some(derelict) = self.selected_derelict() {
+            return Some(render_core::HudContextualAction {
+                target: u64::from(derelict.id.value()),
+                object: "NAVE ABANDONADA".to_owned(),
+                action: match derelict.state {
+                    gameplay::DerelictState::Undiscovered => "DESCUBRIR",
+                    gameplay::DerelictState::Discovered => "EXPLORAR",
+                    _ => "REVISAR",
+                }
+                .to_owned(),
+                key: "I".to_owned(),
+            });
+        }
+        self.selected_weapon_collectible().map(|collectible| {
+            render_core::HudContextualAction {
+                target: collectible.entity.value(),
+                object: match collectible.item {
+                    gameplay::ENERGY_WEAPON_ITEM => "ARMA DE ENERGIA",
+                    gameplay::PLASMA_WEAPON_ITEM => "ARMA DE PLASMA",
+                    _ => "ARMAMENTO",
+                }
+                .to_owned(),
+                action: "RECOGER".to_owned(),
+                key: "I".to_owned(),
             }
         })
+        .or_else(|| self.selected_resource_collectible().map(|collectible| {
+            render_core::HudContextualAction {
+                target: collectible.entity.value(),
+                object: match collectible.item {
+                    gameplay::FUEL_RESOURCE_ITEM => "COMBUSTIBLE",
+                    gameplay::OXYGEN_RESOURCE_ITEM => "OXIGENO",
+                    _ => "SUMINISTROS",
+                }
+                .to_owned(),
+                action: "RECOGER".to_owned(),
+                key: "I".to_owned(),
+            }
+        }))
+    }
+
+    fn selected_derelict(&self) -> Option<&gameplay::Derelict> {
+        if self.interior_mode || self.pilot_mode {
+            return None;
+        }
+        let position = self.session.world().ship_position()?;
+        self.session
+            .world()
+            .derelicts()
+            .filter(|value| {
+                matches!(
+                    value.state,
+                    gameplay::DerelictState::Undiscovered | gameplay::DerelictState::Discovered
+                )
+            })
+            .filter_map(|value| {
+                let dx = position.x - value.position.x;
+                let dy = position.y - value.position.y;
+                let dz = position.z - value.position.z;
+                let distance_squared = dx * dx + dy * dy + dz * dz;
+                (distance_squared <= value.interaction_range * value.interaction_range)
+                    .then_some((distance_squared, value))
+            })
+            .min_by(|left, right| {
+                left.0
+                    .partial_cmp(&right.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.1.id.cmp(&right.1.id))
+            })
+            .map(|(_, value)| value)
+    }
+
+    fn selected_weapon_collectible(&self) -> Option<gameplay::Collectible> {
+        if self.interior_mode || self.pilot_mode {
+            return None;
+        }
+        let position = self.session.world().ship_position()?;
+        self.session
+            .world()
+            .collectibles()
+            .filter(|value| {
+                value.active
+                    && matches!(
+                        value.item,
+                        gameplay::ENERGY_WEAPON_ITEM | gameplay::PLASMA_WEAPON_ITEM
+                    )
+            })
+            .filter_map(|value| {
+                let dx = position.x - value.position.x;
+                let dy = position.y - value.position.y;
+                let dz = position.z - value.position.z;
+                let distance_squared = dx * dx + dy * dy + dz * dz;
+                (distance_squared <= value.interaction_range * value.interaction_range)
+                    .then_some((distance_squared, *value))
+            })
+            .min_by(|left, right| {
+                left.0
+                    .partial_cmp(&right.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.1.entity.cmp(&right.1.entity))
+            })
+            .map(|(_, value)| value)
+    }
+
+    fn selected_resource_collectible(&self) -> Option<gameplay::Collectible> {
+        if self.interior_mode || self.pilot_mode {
+            return None;
+        }
+        let position = self.session.world().ship_position()?;
+        self.session
+            .world()
+            .collectibles()
+            .filter(|value| {
+                value.active
+                    && matches!(
+                        self.session.world().item_definition(value.item).map(|definition| definition.category),
+                        Some(gameplay::ItemCategory::Fuel)
+                            | Some(gameplay::ItemCategory::Oxygen)
+                            | Some(gameplay::ItemCategory::RepairMaterial)
+                    )
+            })
+            .filter_map(|value| {
+                let dx = position.x - value.position.x;
+                let dy = position.y - value.position.y;
+                let dz = position.z - value.position.z;
+                let distance_squared = dx * dx + dy * dy + dz * dz;
+                (distance_squared <= value.interaction_range * value.interaction_range)
+                    .then_some((distance_squared, *value))
+            })
+            .min_by(|left, right| {
+                left.0
+                    .partial_cmp(&right.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.1.entity.cmp(&right.1.entity))
+            })
+            .map(|(_, value)| value)
     }
 
     fn selected_interactable(&self) -> Option<&gameplay::Interactable> {
-        if self.pilot_mode {
+        if !self.interior_mode || self.pilot_mode {
             return None;
         }
         let player = self.session.world().player(self.player)?;
@@ -1741,6 +2074,12 @@ impl VisualBridge {
             entries.extend([
                 "WASD VOLAR - PILOTAJE".to_owned(),
                 "FLECHAS CAMBIAR RUMBO - PILOTAJE".to_owned(),
+                "F DISPARAR - PILOTAJE".to_owned(),
+                "G ESCUDO - PILOTAJE".to_owned(),
+                "SHIFT BOOST - PILOTAJE".to_owned(),
+                "X FRENAR - PILOTAJE".to_owned(),
+                "U USAR COMBUSTIBLE - PILOTAJE".to_owned(),
+                "B EQUIPAR PLASMA - ARMAMENTO ENCONTRADO".to_owned(),
                 "P AUTOPILOTO - PILOTAJE".to_owned(),
                 "I SALIR DEL PILOTAJE - PILOTAJE".to_owned(),
             ]);
@@ -1782,6 +2121,17 @@ impl VisualBridge {
             state: BreakerState::On,
         }], &mut aggregate);
         self.finish_issue(aggregate);
+    }
+
+    fn use_fuel_resource(&mut self) {
+        let result = self.session.update([GameplayCommand::UseFuelResource {
+            player: self.player,
+            ship: self.ship,
+            item: gameplay::FUEL_RESOURCE_ITEM,
+            amount: 1,
+        }]);
+        self.feedback = format!("ABASTECIMIENTO DE COMBUSTIBLE: {:?}", result.first().map(|value| value.status));
+        println!("visual gameplay: {}", self.feedback);
     }
 
     fn restore_life_support(&mut self) {
@@ -1833,6 +2183,9 @@ impl VisualBridge {
         if accepted {
             self.pilot_mode = true;
             self.interior_mode = false;
+            self.fire_pressed = false;
+            self.boost_pressed = false;
+            self.shield_active = false;
             self.feedback = "PILOTAJE DE ECHO-7 ACTIVO - I SALIR, P AUTOPILOTO".to_owned();
         } else {
             self.feedback = aggregate.message();
@@ -1850,6 +2203,11 @@ impl VisualBridge {
             &mut aggregate,
         );
         if accepted {
+            self.issue([GameplayCommand::SetShipShieldActive {
+                player: self.player,
+                ship: self.ship,
+                active: false,
+            }]);
             self.issue_into(
                 [GameplayCommand::ReleaseStation {
                     station: self.pilot_station,
@@ -1861,6 +2219,9 @@ impl VisualBridge {
             self.interior_mode = true;
             self.flight_keys = FlightKeys::default();
             self.gamepad_flight = GameplayVec3::ZERO;
+            self.fire_pressed = false;
+            self.boost_pressed = false;
+            self.shield_active = false;
             self.feedback = "PILOTAJE FINALIZADO - CONTROL DE PERSONAJE RESTAURADO".to_owned();
         } else {
             self.feedback = aggregate.message();
@@ -1887,6 +2248,12 @@ impl VisualBridge {
             pilot_station: self.pilot_station,
             input: self.current_flight_input(),
         }]);
+        if self.fire_pressed {
+            self.issue([GameplayCommand::AttackEnemy {
+                player: self.player,
+                enemy: self.enemy,
+            }]);
+        }
     }
 
     fn current_flight_input(&self) -> GameplayVec3 {
@@ -2340,11 +2707,88 @@ mod tests {
         assert!(world.destinations().filter(|value| value.id != ORIGIN).all(|value| {
             distance_squared(ship, value.position) > 30.0 * 30.0
         }));
-        assert!(world.enemies().all(|enemy| distance_squared(ship, enemy.position) > 30.0 * 30.0));
+        let enemy = world
+            .combatant(bridge.enemy)
+            .expect("visual runtime should have its enemy");
+        let enemy_distance_squared = distance_squared(ship, enemy.position);
+        assert!(enemy_distance_squared > (enemy.weapon.range as f32).powi(2));
+        assert!(enemy_distance_squared <= gameplay::EnemyAiSystem::DETECTION_RADIUS as f32
+            * gameplay::EnemyAiSystem::DETECTION_RADIUS as f32);
+        assert!(distance_squared(enemy.position, GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }) > 80.0 * 80.0);
+        assert!(world.destinations().all(|value| {
+            distance_squared(enemy.position, value.position) > 10.0 * 10.0
+        }));
+        assert!(world.derelicts().all(|value| {
+            distance_squared(enemy.position, value.position) > 10.0 * 10.0
+        }));
+        assert!(world.collectibles().all(|value| {
+            distance_squared(enemy.position, value.position) > 10.0 * 10.0
+        }));
+        assert!(world.enemies().filter(|value| value.entity != bridge.enemy).all(|value| {
+            distance_squared(ship, value.position) > 30.0 * 30.0
+        }));
         assert!(world.derelicts().all(|derelict| distance_squared(ship, derelict.position) > 30.0 * 30.0));
         assert!(world.collectibles().all(|collectible| {
             distance_squared(ship, collectible.position) > 30.0 * 30.0
         }));
+
+        let checkpoint = bridge.session.save_state().serialize();
+        let mut restored = ProjectEchoSession::new();
+        restored
+            .restore_state(
+                gameplay::GameplaySaveState::deserialize(&checkpoint)
+                    .expect("visual position checkpoint should deserialize"),
+            )
+            .expect("visual position checkpoint should restore");
+        assert_eq!(restored.world().ship_position(), Some(ship));
+
+        let mut restored_visual = VisualBridge::new_visual_runtime()
+            .expect("visual runtime should initialize for restoration");
+        restored_visual
+            .session
+            .restore_state(
+                gameplay::GameplaySaveState::deserialize(&checkpoint)
+                    .expect("visual physics checkpoint should deserialize"),
+            )
+            .expect("visual physics checkpoint should restore");
+        assert!(restored_visual.session.world().solar_physics().is_some());
+    }
+
+    #[test]
+    fn solar_impact_defeats_the_player_and_stops_visual_gameplay() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        assert!(bridge.session.world_mut().configure_solar_physics(PlanetPhysics {
+            destination: gameplay::SUN_DESTINATION_ID,
+            orbit_center: GameplayVec3::ZERO,
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 12.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 80.0,
+            gravitational_parameter: 6_000.0,
+            atmosphere_height: 0.0,
+        }));
+        let results = bridge.session.update([GameplayCommand::SetShipControlActive {
+            player: bridge.player,
+            pilot_station: bridge.pilot_station,
+            active: true,
+        }]);
+        assert!(matches!(
+            results.first().map(|result| &result.status),
+            Some(gameplay::CommandStatus::Success { .. })
+        ));
+
+        bridge.session.update([GameplayCommand::AdvanceTime { delta: Duration(100) }]);
+        bridge.refresh_player_defeat_state();
+        assert!(bridge.session.world().ship_is_destroyed(bridge.ship) == Some(true));
+        assert!(bridge.session.world().combatant(bridge.player).is_some_and(|value| value.is_defeated()));
+        assert!(bridge
+            .session
+            .world()
+            .events()
+            .iter()
+            .any(|event| matches!(event, GameplayEvent::PlanetImpact { planet, .. } if *planet == gameplay::SUN_DESTINATION_ID)));
+        assert!(bridge.player_defeated);
     }
 
     #[test]
@@ -2530,6 +2974,28 @@ mod tests {
         assert_ne!(bridge.session.world().ship_position().unwrap(), ship_before);
         assert_ne!(bridge.session.world().ship_orientation().unwrap(), orientation_before);
         assert_eq!(bridge.session.world().player(bridge.player).unwrap().position, player_before);
+    }
+
+    #[test]
+    fn pilot_shield_mitigates_damage_and_resets_when_disabled() {
+        let mut bridge = VisualBridge::new_with_mode(false).expect("visual bridge should initialize");
+        assert_eq!(bridge.session.world().ship_control_active(), Some(true));
+        let shield = bridge.session.update([GameplayCommand::SetShipShieldActive {
+            player: bridge.player,
+            ship: bridge.ship,
+            active: true,
+        }]);
+        assert!(matches!(shield.first().map(|result| &result.status), Some(gameplay::CommandStatus::Success { changed: true })));
+        assert!(bridge.session.world().ship_shield_active(bridge.ship));
+        bridge.session.update([GameplayCommand::DamageShip { ship: bridge.ship, amount: 10 }]);
+        assert_eq!(bridge.session.world().ship_integrity(bridge.ship).unwrap().current(), 95);
+        bridge.session.update([GameplayCommand::SetShipShieldActive {
+            player: bridge.player,
+            ship: bridge.ship,
+            active: false,
+        }]);
+        bridge.session.update([GameplayCommand::DamageShip { ship: bridge.ship, amount: 10 }]);
+        assert_eq!(bridge.session.world().ship_integrity(bridge.ship).unwrap().current(), 85);
     }
 
     #[test]
@@ -2860,10 +3326,10 @@ mod tests {
             bridge.session.world().combatant(bridge.enemy).unwrap().position,
             position_before
         );
-        for _ in 0..8 {
+        for _ in 0..5 {
             bridge.advance_visual_time_by(Duration(1_000));
         }
-        assert!(bridge.session.world().events().iter().any(|event| {
+        assert!(!bridge.session.world().events().iter().any(|event| {
             matches!(event, GameplayEvent::CombatDamageApplied { target, .. } if *target == bridge.player)
         }));
         assert_eq!(
@@ -3076,7 +3542,7 @@ mod tests {
     fn s_then_w_can_invert_forward_velocity_after_releasing_s() {
         let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
         bridge.handle_key(KeyCode::KeyS, ElementState::Pressed);
-        for _ in 0..12 {
+        for _ in 0..8 {
             bridge.handle_key(KeyCode::Space, ElementState::Pressed);
         }
         bridge.handle_key(KeyCode::KeyS, ElementState::Released);
@@ -3927,6 +4393,8 @@ mod tests {
             shielded_count
         );
 
+        bridge.enter_pilot();
+        assert!(bridge.pilot_mode);
         bridge.handle_key(KeyCode::KeyF, ElementState::Pressed);
         assert_eq!(
             bridge
@@ -4029,6 +4497,12 @@ mod tests {
 
         bridge.handle_key(KeyCode::KeyC, ElementState::Pressed);
         let shooter = bridge.enemy;
+        bridge.issue([GameplayCommand::Interact {
+            player: bridge.player,
+            target: bridge.pilot_station,
+        }]);
+        bridge.enter_pilot();
+        assert!(bridge.pilot_mode);
         for _ in 0..30 {
             let Some(enemy_position) = bridge
                 .session
@@ -4271,5 +4745,240 @@ mod tests {
                 .state,
             gameplay::domains::mission::MissionState::Active
         );
+    }
+
+    #[test]
+    fn derelict_weapon_can_be_collected_equipped_and_restored() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let player = bridge.player;
+        let derelict = DerelictId::new(9_010);
+
+        for _ in 0..4 {
+            bridge.session.update([
+                GameplayCommand::AccelerateShip {
+                    player,
+                    pilot_station: bridge.pilot_station,
+                    input: GameplayVec3 { x: 1.0, y: 0.0, z: 0.0 },
+                },
+                GameplayCommand::AdvanceTime {
+                    delta: Duration(1_000),
+                },
+            ]);
+        }
+        assert!(bridge
+            .session
+            .world()
+            .ship_position()
+            .is_some_and(|value| value.x > 35.0));
+
+        bridge.guided_interaction();
+        assert_eq!(
+            bridge.session.world().derelict(derelict).map(|value| value.state),
+            Some(gameplay::DerelictState::Exploring)
+        );
+        assert_eq!(bridge.contextual_action().map(|value| value.object), Some("ARMA DE ENERGIA".to_owned()));
+        assert!(bridge
+            .session
+            .world()
+            .collectibles()
+            .any(|value| value.active && value.item == gameplay::ENERGY_WEAPON_ITEM));
+
+        bridge.guided_interaction();
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .inventory(player)
+                .expect("player inventory should exist")
+                .quantity(gameplay::ENERGY_WEAPON_ITEM),
+            1
+        );
+        assert!(bridge.contextual_action().is_none());
+        assert!(matches!(
+            bridge.session.update([GameplayCommand::EquipPlayerWeaponItem {
+                player,
+                item: gameplay::ENERGY_WEAPON_ITEM,
+            }])[0].status,
+            gameplay::CommandStatus::Success { changed: true }
+        ));
+        assert_eq!(
+            bridge.session.world().equipped_weapon(player).map(|value| value.attack_type),
+            Some(gameplay::AttackType::Energy)
+        );
+        bridge.session.update([GameplayCommand::AddInventoryItem {
+            player,
+            item: ItemId(3),
+            amount: 1,
+        }]);
+        let enemy_health = bridge.session.world().combatant(bridge.enemy).unwrap().current_health;
+        assert!(matches!(
+            bridge.session.update([GameplayCommand::AttackEnemy {
+                player,
+                enemy: bridge.enemy,
+            }])[0].status,
+            gameplay::CommandStatus::Success { changed: true }
+        ));
+        assert!(bridge.session.world().combatant(bridge.enemy).unwrap().current_health < enemy_health);
+        assert!(matches!(
+            bridge.session.update([GameplayCommand::EquipPlayerWeaponItem {
+                player,
+                item: gameplay::PLASMA_WEAPON_ITEM,
+            }])[0].status,
+            gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::WeaponNotOwned
+            }
+        ));
+        let energy = gameplay::weapon_for_item(gameplay::ENERGY_WEAPON_ITEM).expect("energy weapon");
+        let plasma = gameplay::weapon_for_item(gameplay::PLASMA_WEAPON_ITEM).expect("plasma weapon");
+        assert_ne!((energy.damage, energy.range, energy.cooldown), (plasma.damage, plasma.range, plasma.cooldown));
+
+        let save = bridge.session.save_state();
+        let serialized = save.serialize();
+        let mut restored = VisualBridge::new().expect("restored visual bridge should initialize");
+        restored
+            .session
+            .restore_state(save)
+            .expect("weapon state should restore");
+        assert!(serialized.contains("item=",) || serialized.contains("inventory|"));
+        assert_eq!(
+            restored.session.world().inventory(player).unwrap().quantity(gameplay::ENERGY_WEAPON_ITEM),
+            1
+        );
+        assert_eq!(
+            restored.session.world().equipped_weapon(player).map(|value| value.attack_type),
+            Some(gameplay::AttackType::Energy)
+        );
+        assert!(!restored
+            .session
+            .world()
+            .collectibles()
+            .any(|value| value.active && value.item == gameplay::ENERGY_WEAPON_ITEM));
+    }
+
+    #[test]
+    fn resource_derelicts_publish_collectible_resources_and_persist_consumption() {
+        let mut bridge = VisualBridge::new().expect("resource scenario should initialize");
+        bridge.session.update([GameplayCommand::RegisterDerelict {
+            derelict: Derelict::new(DerelictId::new(9_020), GameplayVec3::ZERO, 3.5)
+                .with_rewards(
+                    vec![DerelictReward { item: gameplay::FUEL_RESOURCE_ITEM, amount: 4 }],
+                    RewardDistributionPolicy::Shared,
+                ),
+        }]);
+        bridge.guided_interaction();
+        let fuel_collectible = bridge
+            .session
+            .world()
+            .collectibles()
+            .find(|value| value.item == gameplay::FUEL_RESOURCE_ITEM)
+            .copied()
+            .expect("fuel derelict should create a collectible");
+        assert!(fuel_collectible.active);
+        let collect_result = bridge.session.update([GameplayCommand::CollectItem {
+            player: bridge.player,
+            collectible: fuel_collectible.entity,
+            amount: fuel_collectible.amount,
+        }]);
+        assert!(matches!(collect_result.first().map(|value| value.status), Some(gameplay::CommandStatus::Success { changed: true })));
+        assert!(!bridge.session.world().collectible(fuel_collectible.entity).unwrap().active);
+        let fuel_before = bridge.session.world().ship_fuel(bridge.ship).unwrap().current();
+        bridge.session.update([GameplayCommand::AddInventoryItem {
+            player: bridge.player,
+            item: gameplay::FUEL_RESOURCE_ITEM,
+            amount: 1,
+        }]);
+        let result = bridge.session.update([GameplayCommand::UseFuelResource {
+            player: bridge.player,
+            ship: bridge.ship,
+            item: gameplay::FUEL_RESOURCE_ITEM,
+            amount: 1,
+        }]);
+        assert!(matches!(result.first().map(|value| value.status), Some(gameplay::CommandStatus::Success { changed: true })));
+        assert_eq!(bridge.session.world().ship_fuel(bridge.ship).unwrap().current(), fuel_before + 1);
+        let restored = bridge.session.save_state().serialize();
+        assert!(restored.contains("fuel|"));
+        assert!(restored.contains("collectible|"));
+    }
+
+    #[test]
+    fn textual_save_restores_life_support_allocations_and_old_saves_default_them() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("interior scenario should initialize");
+        bridge.restore_life_support();
+        let before = bridge
+            .session
+            .world()
+            .life_support_panel(bridge.life_support_panel)
+            .unwrap()
+            .progress();
+        assert!(before.repaired);
+        let serialized = bridge.session.save_state().serialize();
+        assert!(serialized.lines().any(|line| line.starts_with("oxygen|")));
+
+        let decoded = gameplay::GameplaySaveState::deserialize(&serialized).expect("oxygen save should parse");
+        let mut restored = VisualBridge::new_with_mode(true).expect("restored interior should initialize");
+        restored.session.restore_state(decoded).expect("oxygen save should restore");
+        assert_eq!(
+            restored.session.world().life_support_panel(restored.life_support_panel).unwrap().progress(),
+            before
+        );
+        let repeated = restored.session.save_state().serialize();
+        let repeated_decoded = gameplay::GameplaySaveState::deserialize(&repeated).expect("repeated save should parse");
+        restored.session.restore_state(repeated_decoded).expect("repeated oxygen save should restore");
+        assert_eq!(restored.session.world().life_support_panel(restored.life_support_panel).unwrap().progress(), before);
+
+        let old_text = serialized
+            .lines()
+            .filter(|line| !line.starts_with("oxygen|"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let old_decoded = gameplay::GameplaySaveState::deserialize(&old_text).expect("old save should parse");
+        let mut old_restored = VisualBridge::new_with_mode(true).expect("old restored interior should initialize");
+        old_restored.session.restore_state(old_decoded).expect("old save should restore");
+        assert_eq!(old_restored.session.world().life_support_panel(old_restored.life_support_panel).unwrap().allocated_total(), 0);
+        let invalid_text = serialized
+            .lines()
+            .map(|line| if line.starts_with("oxygen|") { "oxygen|6|1:99,2:2" } else { line })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let invalid_decoded = gameplay::GameplaySaveState::deserialize(&invalid_text).expect("invalid oxygen record should parse before domain validation");
+        let mut invalid_restored = VisualBridge::new_with_mode(true).expect("invalid restored interior should initialize");
+        assert!(invalid_restored.session.restore_state(invalid_decoded).is_err());
+    }
+
+    #[test]
+    fn collected_supplies_repair_the_ship_once_and_invalid_repairs_are_atomic() {
+        let mut bridge = VisualBridge::new().expect("repair scenario should initialize");
+        bridge.session.update([GameplayCommand::RegisterDerelict {
+            derelict: Derelict::new(DerelictId::new(9_021), GameplayVec3::ZERO, 3.5)
+                .with_rewards(
+                    vec![DerelictReward { item: ItemId(1), amount: 1 }],
+                    RewardDistributionPolicy::Shared,
+                ),
+        }]);
+        bridge.guided_interaction();
+        bridge.guided_interaction();
+        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 1);
+        bridge.session.update([GameplayCommand::DamageShip { ship: bridge.ship, amount: 20 }]);
+        let before = bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1));
+        bridge.session.update([GameplayCommand::Interact {
+            player: bridge.player,
+            target: bridge.engineering_station,
+        }]);
+        let repaired = bridge.session.update([GameplayCommand::RepairShipAtStation {
+            player: bridge.player,
+            ship: bridge.ship,
+            station: bridge.engineering_station,
+        }]);
+        assert!(matches!(repaired.first().map(|value| value.status), Some(gameplay::CommandStatus::Success { changed: true })));
+        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), before - 1);
+        let after = bridge.session.world().ship_integrity(bridge.ship).unwrap().current();
+        assert!(after > 80);
+        let rejected = bridge.session.update([GameplayCommand::RepairShipAtStation {
+            player: bridge.player,
+            ship: bridge.ship,
+            station: bridge.engineering_station,
+        }]);
+        assert!(matches!(rejected.first().map(|value| value.status), Some(gameplay::CommandStatus::Rejected { .. })));
+        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 0);
     }
 }

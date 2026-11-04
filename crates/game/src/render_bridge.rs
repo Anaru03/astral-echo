@@ -784,6 +784,57 @@ fn hud_state(
     HudState {
         flight,
         autopilot,
+        ship_shield_active: world.ship_control_active() == Some(true)
+            && world
+                .navigation()
+                .ship_id()
+                .is_some_and(|ship| world.ship_shield_active(ship)),
+        ship_boost_active: world.ship_control_active() == Some(true)
+            && world.ship_boost_active().unwrap_or(false),
+        ship_speed: (world.ship_control_active() == Some(true))
+            .then(|| world.ship_speed().zip(world.ship_speed_limit()))
+            .flatten()
+            .map(|(speed, limit)| {
+                (speed.round().max(0.0) as u32, limit.round().max(0.0) as u32)
+            }),
+        weapon_name: (world.ship_control_active() == Some(true))
+            .then(|| world.combatants().find(|value| value.is_player).and_then(|value| value.equipped_weapon))
+            .flatten()
+            .map(|weapon| match weapon.attack_type {
+                gameplay::AttackType::Kinetic => "CINETICA".to_owned(),
+                gameplay::AttackType::Energy => "ENERGIA".to_owned(),
+                gameplay::AttackType::Plasma => "PLASMA".to_owned(),
+            }),
+        weapon_ammunition: (world.ship_control_active() == Some(true))
+            .then(|| {
+                world
+                    .players()
+                    .next()
+                    .and_then(|player| world.player_weapon_ammunition(player.entity_id))
+                    .map(|(item, amount)| (item.0, amount))
+            })
+            .flatten(),
+        ship_fuel: (world.ship_control_active() == Some(true))
+            .then(|| world.navigation().ship_id().and_then(|ship| world.ship_fuel(ship)))
+            .flatten()
+            .map(|fuel| (fuel.current(), fuel.capacity())),
+        ship_oxygen: (world.ship_control_active() == Some(true))
+            .then(|| world.life_support_panels().next().map(|panel| (panel.allocated_total(), panel.capacity())))
+            .flatten(),
+        ship_supplies: (world.ship_control_active() == Some(true))
+            .then(|| world.players().next().and_then(|player| world.inventory(player.entity_id)).map(|inventory| inventory.quantity(gameplay::types::ItemId(1))))
+            .flatten(),
+        ship_resource_alert: if world.ship_control_active() == Some(true) {
+            let fuel_alert = world.navigation().ship_id().and_then(|ship| world.ship_fuel(ship)).and_then(|fuel| {
+                (fuel.current() == 0).then_some("COMBUSTIBLE AGOTADO").or_else(|| (fuel.current() * 4 <= fuel.capacity()).then_some("COMBUSTIBLE BAJO"))
+            });
+            let oxygen_alert = world.life_support_panels().next().and_then(|panel| {
+                (panel.allocated_total() == 0).then_some("OXIGENO AGOTADO").or_else(|| (panel.allocated_total() * 4 <= panel.capacity()).then_some("OXIGENO BAJO"))
+            });
+            fuel_alert.or(oxygen_alert).map(str::to_owned)
+        } else {
+            None
+        },
         target,
         active_enemies: world
             .enemies()
