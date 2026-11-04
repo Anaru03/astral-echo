@@ -67,6 +67,7 @@ use crate::{
     resources::{FuelError, FuelTank, ShipResources, ShipUpgrade},
     persistence::{
         CombatantSaveState, CollectibleSaveState, GameplaySaveState, InventorySaveState,
+        LifeSupportSaveState,
         MissionSaveState, PlayerSaveState, SaveError,
     },
     revival::{RevivalError, ReviveResult},
@@ -230,6 +231,18 @@ impl GameplayWorld {
                     (resources.ship_id, fuel.current(), fuel.capacity())
                 })
                 .collect(),
+            life_support: self
+                .life_support_panels
+                .values()
+                .map(|panel| LifeSupportSaveState {
+                    panel: panel.entity_id,
+                    allocations: panel
+                        .compartments()
+                        .iter()
+                        .map(|compartment| (compartment.id.value(), compartment.allocation))
+                        .collect(),
+                })
+                .collect(),
             ship_integrity: self
                 .ship_integrity
                 .values()
@@ -376,6 +389,37 @@ impl GameplayWorld {
                 ShipIntegrity::new(*ship, *maximum, *current, *threshold)
                     .map_err(|_| SaveError::InvalidState)?,
             );
+        }
+        let mut life_support = BTreeMap::new();
+        if !self.life_support_panels.is_empty() {
+            for saved in &save.life_support {
+                if !registry.snapshot().known.contains(&saved.panel)
+                    || life_support.insert(saved.panel, saved.allocations.clone()).is_some()
+                {
+                    return Err(SaveError::DuplicateRecord);
+                }
+                let Some(panel) = self.life_support_panels.get(&saved.panel) else {
+                    return Err(SaveError::InvalidReference);
+                };
+                let mut seen = BTreeSet::new();
+                let mut total = 0_u32;
+                for (id, allocation) in &saved.allocations {
+                    if !seen.insert(*id)
+                        || panel.compartments().iter().all(|value| value.id.value() != *id)
+                        || panel
+                            .compartments()
+                            .iter()
+                            .find(|value| value.id.value() == *id)
+                            .is_some_and(|value| *allocation > value.maximum_allocation)
+                    {
+                        return Err(SaveError::InvalidState);
+                    }
+                    total = total.checked_add(*allocation).ok_or(SaveError::InvalidState)?;
+                }
+                if saved.allocations.len() != panel.compartments().len() || total > panel.capacity() {
+                    return Err(SaveError::InvalidState);
+                }
+            }
         }
         let mut restored_navigation = self.navigation.clone();
         if let Some(position) = save.ship_position {
@@ -541,6 +585,13 @@ impl GameplayWorld {
         self.functional_worlds = functional_worlds;
         self.currencies = save.currencies.into_iter().collect();
         self.ship_resources = ship_resources;
+        for (panel_id, allocations) in life_support {
+            self.life_support_panels
+                .get_mut(&panel_id)
+                .ok_or(SaveError::InvalidReference)?
+                .restore_allocations(&allocations)
+                .map_err(|_| SaveError::InvalidState)?;
+        }
         self.ship_integrity = ship_integrity;
         self.ship_upgrades = ship_upgrades;
         self.collectibles = save

@@ -218,6 +218,42 @@ impl LifeSupportPanel {
             .fold(0u32, |total, compartment| total + compartment.allocation)
     }
 
+    pub(crate) fn restore_allocations(
+        &mut self,
+        allocations: &[(u16, u32)],
+    ) -> Result<(), LifeSupportRegistrationError> {
+        if allocations.len() != self.compartments.len() {
+            return Err(LifeSupportRegistrationError::InvalidCompartmentId);
+        }
+        let mut seen = BTreeSet::new();
+        let mut total = 0_u32;
+        for (id, allocation) in allocations {
+            let compartment_id = CompartmentId::new(*id);
+            if !seen.insert(compartment_id) {
+                return Err(LifeSupportRegistrationError::DuplicateCompartmentId);
+            }
+            let Some(compartment) = self.compartments.iter_mut().find(|value| value.id == compartment_id) else {
+                return Err(LifeSupportRegistrationError::InvalidCompartmentId);
+            };
+            if *allocation > compartment.maximum_allocation {
+                return Err(LifeSupportRegistrationError::InitialAllocationOutOfBounds);
+            }
+            total = total
+                .checked_add(*allocation)
+                .ok_or(LifeSupportRegistrationError::ArithmeticOverflow)?;
+            compartment.allocation = *allocation;
+        }
+        if total > self.capacity {
+            return Err(LifeSupportRegistrationError::InitialCapacityExceeded);
+        }
+        self.state = if self.is_solved() {
+            LifeSupportState::Repaired
+        } else {
+            LifeSupportState::Pending
+        };
+        Ok(())
+    }
+
     pub fn is_solved(&self) -> bool {
         self.allocated_total() == self.capacity
             && self.compartments.iter().all(|compartment| {

@@ -4899,4 +4899,86 @@ mod tests {
         assert!(restored.contains("fuel|"));
         assert!(restored.contains("collectible|"));
     }
+
+    #[test]
+    fn textual_save_restores_life_support_allocations_and_old_saves_default_them() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("interior scenario should initialize");
+        bridge.restore_life_support();
+        let before = bridge
+            .session
+            .world()
+            .life_support_panel(bridge.life_support_panel)
+            .unwrap()
+            .progress();
+        assert!(before.repaired);
+        let serialized = bridge.session.save_state().serialize();
+        assert!(serialized.lines().any(|line| line.starts_with("oxygen|")));
+
+        let decoded = gameplay::GameplaySaveState::deserialize(&serialized).expect("oxygen save should parse");
+        let mut restored = VisualBridge::new_with_mode(true).expect("restored interior should initialize");
+        restored.session.restore_state(decoded).expect("oxygen save should restore");
+        assert_eq!(
+            restored.session.world().life_support_panel(restored.life_support_panel).unwrap().progress(),
+            before
+        );
+        let repeated = restored.session.save_state().serialize();
+        let repeated_decoded = gameplay::GameplaySaveState::deserialize(&repeated).expect("repeated save should parse");
+        restored.session.restore_state(repeated_decoded).expect("repeated oxygen save should restore");
+        assert_eq!(restored.session.world().life_support_panel(restored.life_support_panel).unwrap().progress(), before);
+
+        let old_text = serialized
+            .lines()
+            .filter(|line| !line.starts_with("oxygen|"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let old_decoded = gameplay::GameplaySaveState::deserialize(&old_text).expect("old save should parse");
+        let mut old_restored = VisualBridge::new_with_mode(true).expect("old restored interior should initialize");
+        old_restored.session.restore_state(old_decoded).expect("old save should restore");
+        assert_eq!(old_restored.session.world().life_support_panel(old_restored.life_support_panel).unwrap().allocated_total(), 0);
+        let invalid_text = serialized
+            .lines()
+            .map(|line| if line.starts_with("oxygen|") { "oxygen|6|1:99,2:2" } else { line })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let invalid_decoded = gameplay::GameplaySaveState::deserialize(&invalid_text).expect("invalid oxygen record should parse before domain validation");
+        let mut invalid_restored = VisualBridge::new_with_mode(true).expect("invalid restored interior should initialize");
+        assert!(invalid_restored.session.restore_state(invalid_decoded).is_err());
+    }
+
+    #[test]
+    fn collected_supplies_repair_the_ship_once_and_invalid_repairs_are_atomic() {
+        let mut bridge = VisualBridge::new().expect("repair scenario should initialize");
+        bridge.session.update([GameplayCommand::RegisterDerelict {
+            derelict: Derelict::new(DerelictId::new(9_021), GameplayVec3::ZERO, 3.5)
+                .with_rewards(
+                    vec![DerelictReward { item: ItemId(1), amount: 1 }],
+                    RewardDistributionPolicy::Shared,
+                ),
+        }]);
+        bridge.guided_interaction();
+        bridge.guided_interaction();
+        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 1);
+        bridge.session.update([GameplayCommand::DamageShip { ship: bridge.ship, amount: 20 }]);
+        let before = bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1));
+        bridge.session.update([GameplayCommand::Interact {
+            player: bridge.player,
+            target: bridge.engineering_station,
+        }]);
+        let repaired = bridge.session.update([GameplayCommand::RepairShipAtStation {
+            player: bridge.player,
+            ship: bridge.ship,
+            station: bridge.engineering_station,
+        }]);
+        assert!(matches!(repaired.first().map(|value| value.status), Some(gameplay::CommandStatus::Success { changed: true })));
+        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), before - 1);
+        let after = bridge.session.world().ship_integrity(bridge.ship).unwrap().current();
+        assert!(after > 80);
+        let rejected = bridge.session.update([GameplayCommand::RepairShipAtStation {
+            player: bridge.player,
+            ship: bridge.ship,
+            station: bridge.engineering_station,
+        }]);
+        assert!(matches!(rejected.first().map(|value| value.status), Some(gameplay::CommandStatus::Rejected { .. })));
+        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 0);
+    }
 }

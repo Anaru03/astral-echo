@@ -799,6 +799,75 @@ impl LifeSupportSystem {
         }
         CommandResult::success(true)
     }
+
+    fn use_oxygen_resource(
+        &self,
+        world: &mut GameplayWorld,
+        player_id: engine::EntityId,
+        panel_id: engine::EntityId,
+        compartment_id: crate::life_support::CompartmentId,
+        item: crate::types::ItemId,
+        amount: u32,
+    ) -> CommandResult {
+        if world.phase() != crate::types::SimulationPhase::Running {
+            return CommandResult::rejected(crate::commands::CommandRejection::SimulationNotRunning);
+        }
+        if amount == 0 {
+            return CommandResult::invalid(crate::commands::CommandInvalidity::InvalidInventoryConfiguration);
+        }
+        if world.item_definition(item).is_none_or(|definition| definition.category != crate::collectible::ItemCategory::Oxygen) {
+            return CommandResult::rejected(crate::commands::CommandRejection::ItemDefinitionNotFound);
+        }
+        let Some(inventory) = world.inventory(player_id).cloned() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::InventoryNotInitialized);
+        };
+        if inventory.quantity(item) < amount {
+            return CommandResult::rejected(crate::commands::CommandRejection::ResourceNotOwned);
+        }
+        let Some(interactable) = world.interactable(panel_id).copied() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::LifeSupportPanelNotFound);
+        };
+        let Some(player) = world.player(player_id).copied() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound);
+        };
+        let Some(panel) = world.life_support_panel(panel_id).cloned() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::LifeSupportPanelNotFound);
+        };
+        if panel.is_repaired() || !self.authorized_interactions.contains(&(player_id, panel_id)) {
+            return CommandResult::rejected(crate::commands::CommandRejection::LifeSupportInteractionRequired);
+        }
+        if !matches!(interactable.behavior, crate::interaction::InteractionBehavior::LifeSupportPanel)
+            || !interactable.enabled
+            || squared_distance(player.position, interactable.position) > interactable.interaction_range * interactable.interaction_range
+        {
+            return CommandResult::rejected(crate::commands::CommandRejection::OutOfInteractionRange);
+        }
+        let Some(compartment) = panel.compartments().iter().find(|value| value.id == compartment_id).copied() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::CompartmentNotFound);
+        };
+        let available = compartment.maximum_allocation.saturating_sub(compartment.allocation);
+        if available < amount {
+            return CommandResult::rejected(crate::commands::CommandRejection::OxygenCapacityExceeded);
+        }
+        let new_allocation = compartment.allocation + amount;
+        let mut panel_after = panel;
+        if panel_after.set_allocation(compartment_id, new_allocation).is_none_or(|result| result.is_err()) {
+            return CommandResult::rejected(crate::commands::CommandRejection::OxygenCapacityExceeded);
+        }
+        let mut inventory_after = inventory;
+        if inventory_after.try_remove(item, amount).is_err() {
+            return CommandResult::rejected(crate::commands::CommandRejection::ResourceNotOwned);
+        }
+        *world.inventory_mut(player_id).expect("inventory validated") = inventory_after;
+        *world.life_support_panel_mut(panel_id).expect("panel validated") = panel_after;
+        world.publish(crate::events::GameplayEvent::ItemRemoved { player: player_id, item, amount });
+        world.publish(crate::events::GameplayEvent::OxygenAllocationChanged {
+            panel: panel_id,
+            compartment: compartment_id,
+            allocation: new_allocation,
+        });
+        CommandResult::success(true)
+    }
 }
 
 impl Default for LifeSupportSystem {
@@ -837,6 +906,9 @@ impl GameplaySystem for LifeSupportSystem {
                 compartment,
                 allocation,
             } => self.set_allocation(world, player, panel, compartment, allocation),
+            GameplayCommand::UseOxygenResource { player, panel, compartment, item, amount } => {
+                self.use_oxygen_resource(world, player, panel, compartment, item, amount)
+            }
             _ => return None,
         };
         Some(result)
@@ -3122,6 +3194,37 @@ impl GameplaySystem for ResourceSystem {
                     ),
                 }
             }
+            GameplayCommand::UseFuelResource { player, ship, item, amount } => {
+                if amount == 0 || world.player(player).is_none_or(|value| !value.is_active) {
+                    CommandResult::rejected(crate::commands::CommandRejection::PlayerInactive)
+                } else if world.item_definition(item).is_none_or(|definition| definition.category != crate::collectible::ItemCategory::Fuel) {
+                    CommandResult::rejected(crate::commands::CommandRejection::ItemDefinitionNotFound)
+                } else {
+                    let Some(inventory) = world.inventory(player).cloned() else {
+                        return Some(CommandResult::rejected(crate::commands::CommandRejection::InventoryNotInitialized));
+                    };
+                    let Some(mut resources) = world.ship_resources(ship) else {
+                        return Some(CommandResult::rejected(crate::commands::CommandRejection::ResourcesNotInitialized));
+                    };
+                    if inventory.quantity(item) < amount {
+                        CommandResult::rejected(crate::commands::CommandRejection::ResourceNotOwned)
+                    } else if resources.fuel().capacity().saturating_sub(resources.fuel().current()) < amount {
+                        CommandResult::rejected(crate::commands::CommandRejection::FuelCapacityExceeded)
+                    } else if resources.fuel_mut().add(amount).is_err() {
+                        CommandResult::invalid(crate::commands::CommandInvalidity::InvalidResourceConfiguration)
+                    } else {
+                        let mut inventory_after = inventory;
+                        if inventory_after.try_remove(item, amount).is_err() {
+                            return Some(CommandResult::rejected(crate::commands::CommandRejection::ResourceNotOwned));
+                        }
+                        *world.inventory_mut(player).expect("inventory validated") = inventory_after;
+                        *world.ship_resources_mut(ship).expect("resources validated") = resources;
+                        world.publish(crate::events::GameplayEvent::ItemRemoved { player, item, amount });
+                        world.publish(crate::events::GameplayEvent::FuelAdded { ship, amount, fuel: resources.fuel().current() });
+                        CommandResult::success(true)
+                    }
+                }
+            }
             _ => return None,
         };
         Some(result)
@@ -3340,6 +3443,9 @@ impl GameplaySystem for CombatSystem {
             GameplayCommand::EquipPlayerWeapon { player, weapon } => {
                 Some(self.equip_player_weapon(world, player, weapon))
             }
+            GameplayCommand::EquipPlayerWeaponItem { player, item } => {
+                Some(self.equip_player_weapon_item(world, player, item))
+            }
             GameplayCommand::AttackEnemy { player, enemy } => {
                 Some(self.attack(world, player, enemy, true))
             }
@@ -3361,6 +3467,30 @@ impl GameplaySystem for CombatSystem {
 }
 
 impl CombatSystem {
+    fn equip_player_weapon_item(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        item: crate::types::ItemId,
+    ) -> CommandResult {
+        let Some(definition) = world.item_definition(item) else {
+            return CommandResult::rejected(crate::commands::CommandRejection::ItemDefinitionNotFound);
+        };
+        if definition.category != crate::collectible::ItemCategory::Weapon {
+            return CommandResult::rejected(crate::commands::CommandRejection::WeaponUnavailable);
+        }
+        if world
+            .inventory(player)
+            .is_none_or(|inventory| inventory.quantity(item) == 0)
+        {
+            return CommandResult::rejected(crate::commands::CommandRejection::WeaponNotOwned);
+        }
+        let Some(weapon) = crate::combat::weapon_for_item(item) else {
+            return CommandResult::rejected(crate::commands::CommandRejection::WeaponUnavailable);
+        };
+        self.equip_player_weapon(world, player, weapon)
+    }
+
     fn set_ship_shield_active(
         &self,
         world: &mut GameplayWorld,
@@ -4205,6 +4335,70 @@ mod enemy_ai_tests {
 
 pub struct InventorySystem;
 
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+    use crate::{
+        collectible::{ItemCategory, ItemDefinition},
+        life_support::{CompartmentId, LifeSupportConfiguration, OxygenCompartmentConfiguration},
+        types::ItemId,
+    };
+
+    #[test]
+    fn fuel_resource_is_consumed_atomically_into_the_real_tank() {
+        let mut world = GameplayWorld::new();
+        world.start();
+        let player = world.create_player().expect("player should exist");
+        let ship = world.create_entity();
+        world.initialize_navigation_ship(ship).expect("ship should exist");
+        world.initialize_ship_resources(ship, 10, 0).expect("fuel tank should exist");
+        world.initialize_inventory(player, 10).expect("inventory should exist");
+        world.register_item_definition(ItemDefinition::new(ItemId(92), ItemCategory::Fuel, 10)).unwrap();
+        let mut processor = crate::pipeline::GameplayProcessor::new();
+        processor.add_system(InventorySystem);
+        processor.add_system(ResourceSystem);
+        assert!(matches!(processor.update(&mut world, [GameplayCommand::AddInventoryItem { player, item: ItemId(92), amount: 2 }]).first().map(|value| value.status), Some(crate::commands::CommandStatus::Success { .. })));
+        let result = processor.update(&mut world, [GameplayCommand::UseFuelResource { player, ship, item: ItemId(92), amount: 1 }]);
+        assert!(matches!(result.first().map(|value| value.status), Some(crate::commands::CommandStatus::Success { changed: true })));
+        assert_eq!(world.ship_fuel(ship).unwrap().current(), 1);
+        assert_eq!(world.inventory(player).unwrap().quantity(ItemId(92)), 1);
+        let rejected = processor.update(&mut world, [GameplayCommand::UseFuelResource { player, ship, item: ItemId(92), amount: 10 }]);
+        assert!(matches!(rejected.first().map(|value| value.status), Some(crate::commands::CommandStatus::Rejected { reason: crate::commands::CommandRejection::ResourceNotOwned })));
+        assert_eq!(world.ship_fuel(ship).unwrap().current(), 1);
+        assert_eq!(world.inventory(player).unwrap().quantity(ItemId(92)), 1);
+    }
+
+    #[test]
+    fn oxygen_resource_replenishes_the_existing_life_support_allocation() {
+        let mut world = GameplayWorld::new();
+        world.start();
+        let player = world.create_player().expect("player should exist");
+        world.initialize_inventory(player, 10).expect("inventory should exist");
+        world.register_item_definition(ItemDefinition::new(ItemId(93), ItemCategory::Oxygen, 10)).unwrap();
+        let panel = world.create_life_support_panel(
+            engine::Vec3::ZERO,
+            3.0,
+            LifeSupportConfiguration::new(4, vec![OxygenCompartmentConfiguration {
+                id: CompartmentId::new(1), initial_allocation: 0, minimum_allocation: 0, maximum_allocation: 4,
+            }]),
+        ).unwrap();
+        world.player_mut(player).unwrap().position = engine::Vec3::ZERO;
+        let mut processor = crate::pipeline::GameplayProcessor::new();
+        processor.add_system(PlayerSystem);
+        processor.add_system(InteractionSystem);
+        processor.add_system(InventorySystem);
+        processor.add_system(LifeSupportSystem::new());
+        processor.update(&mut world, [GameplayCommand::AddInventoryItem { player, item: ItemId(93), amount: 2 }]);
+        processor.update(&mut world, [GameplayCommand::Interact { player, target: panel }]);
+        let result = processor.update(&mut world, [GameplayCommand::UseOxygenResource {
+            player, panel, compartment: CompartmentId::new(1), item: ItemId(93), amount: 1,
+        }]);
+        assert!(matches!(result.first().map(|value| value.status), Some(crate::commands::CommandStatus::Success { changed: true })));
+        assert_eq!(world.life_support_panel(panel).unwrap().allocated_total(), 1);
+        assert_eq!(world.inventory(player).unwrap().quantity(ItemId(93)), 1);
+    }
+}
+
 impl GameplaySystem for InventorySystem {
     fn process(
         &mut self,
@@ -4496,9 +4690,15 @@ impl InventorySystem {
                 crate::commands::CommandInvalidity::InvalidInventoryConfiguration,
             );
         }
-        let distance = Vec3Distance::between(player_state.position, item_state.position);
-        if distance.is_none() || distance.unwrap_or(u32::MAX) as f32 > item_state.interaction_range
-        {
+        let player_distance = Vec3Distance::between(player_state.position, item_state.position);
+        let ship_distance = world
+            .ship_position()
+            .and_then(|position| Vec3Distance::between(position, item_state.position));
+        let player_in_range = player_distance
+            .is_some_and(|value| value as f32 <= item_state.interaction_range);
+        let ship_in_range = ship_distance
+            .is_some_and(|value| value as f32 <= item_state.interaction_range);
+        if !player_in_range && !ship_in_range {
             return CommandResult::rejected(
                 crate::commands::CommandRejection::CollectibleOutOfRange,
             );
