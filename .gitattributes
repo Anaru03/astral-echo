@@ -1,0 +1,2 @@
+assets/models/seraphim/*.blend filter=lfs diff=lfs merge=lfs -text
+assets/models/seraphim/*.obj filter=lfs diff=lfs merge=lfs -text
