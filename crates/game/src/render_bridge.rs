@@ -89,6 +89,10 @@ fn enemy_material(archetype: Option<gameplay::EnemyArchetype>) -> MaterialHandle
 }
 
 pub fn station_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    station_nodes_for_view(world, false)
+}
+
+fn station_nodes_for_view(world: &GameplayWorld, interior: bool) -> Vec<SnapshotNode> {
     let mut nodes = Vec::new();
     let mut seen = BTreeSet::new();
     for interactable in world.interactables() {
@@ -104,10 +108,10 @@ pub fn station_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
             Transform::new(
                 from_engine(interactable.position),
                 Quat::IDENTITY,
-                STATION_VISUAL_SCALE,
+                if interior { Vec3::splat(0.55) } else { STATION_VISUAL_SCALE },
             ),
-            STATION_MESH,
-            STATION_MATERIAL,
+            if interior { PLACEHOLDER_MESH } else { STATION_MESH },
+            if interior { DESTINATION_MATERIAL } else { STATION_MATERIAL },
             interactable.enabled,
         ));
     }
@@ -415,7 +419,7 @@ pub fn snapshot_from_world_with_camera_and_view(
         ));
     }
 
-    for node in station_nodes(world) {
+    for node in station_nodes_for_view(world, interior) {
         snapshot.push_node(node);
     }
 
@@ -1156,6 +1160,25 @@ mod tests {
         assert!(snapshot.nodes.iter().any(|node| {
             node.entity == render_core::SnapshotId::Entity(super::INTERIOR_BACK_WALL_ENTITY)
         }));
+    }
+
+    #[test]
+    fn interior_station_representation_is_distinct_from_exterior_station_model() {
+        let mut world = GameplayWorld::new();
+        let station = world
+            .create_station(engine::Vec3::ZERO, 3.0, gameplay::StationType::Piloting)
+            .expect("station should register");
+
+        let interior = super::station_nodes_for_view(&world, true);
+        let exterior = super::station_nodes_for_view(&world, false);
+        assert_eq!(interior.len(), 1);
+        assert_eq!(exterior.len(), 1);
+        assert_eq!(interior[0].entity, render_core::SnapshotId::Entity(station));
+        assert_eq!(exterior[0].entity, render_core::SnapshotId::Entity(station));
+        assert_eq!(interior[0].mesh, super::PLACEHOLDER_MESH);
+        assert_eq!(interior[0].material, super::DESTINATION_MATERIAL);
+        assert_eq!(exterior[0].mesh, super::STATION_MESH);
+        assert_eq!(exterior[0].material, super::STATION_MATERIAL);
     }
 
     #[test]

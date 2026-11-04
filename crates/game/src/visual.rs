@@ -29,6 +29,11 @@ use audio::{AudioEvent, AudioManager, SoundEffect};
 
 const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
+const VISUAL_INITIAL_SHIP_POSITION: GameplayVec3 = GameplayVec3 {
+    x: 0.0,
+    y: 0.0,
+    z: 120.0,
+};
 const SIGNAL: DestinationId = DestinationId::new(9_003);
 const ENCOUNTER: EncounterId = EncounterId::new(9_004);
 const OBSERVATION_AZIMUTH_STEP: f32 = 0.2;
@@ -230,21 +235,26 @@ impl VisualBridge {
 
     #[cfg(test)]
     fn new_with_mode(interior_mode: bool) -> Result<Self, String> {
-        Self::new_with_mode_and_enemy_distance(interior_mode, false)
+        Self::new_with_mode_and_enemy_distance(interior_mode, false, GameplayVec3::ZERO)
     }
 
     fn new_with_mode_and_enemy_distance(
         interior_mode: bool,
         safe_interior_enemy_start: bool,
+        initial_ship_position: GameplayVec3,
     ) -> Result<Self, String> {
         let mut session = ProjectEchoSession::new();
         let player = session.ids.first_player;
         let ship = session.ids.first_ship;
         session
+            .world_mut()
+            .initialize_ship_position(initial_ship_position)
+            .map_err(|error| format!("inicializar posición visual de ECHO-7: {error:?}"))?;
+        session
             .register_destination(Destination {
                 id: ORIGIN,
                 destination_type: DestinationType::SpacePoint,
-                position: GameplayVec3::ZERO,
+                position: initial_ship_position,
                 travel_duration: Duration(1_000),
                 fuel_cost: 1,
                 discovery: DiscoveryState::Discovered,
@@ -282,7 +292,11 @@ impl VisualBridge {
             route: NavigationRoute {
                 from: ORIGIN,
                 to: DESTINATION,
-                distance: 49.0,
+                distance: if initial_ship_position == GameplayVec3::ZERO {
+                    49.0
+                } else {
+                    144.2
+                },
                 duration: Duration(1_000),
                 fuel_cost: 1,
                 state: NavigationRouteState::Available,
@@ -292,7 +306,11 @@ impl VisualBridge {
             route: NavigationRoute {
                 from: DESTINATION,
                 to: ORIGIN,
-                distance: 49.0,
+                distance: if initial_ship_position == GameplayVec3::ZERO {
+                    49.0
+                } else {
+                    144.2
+                },
                 duration: Duration(1_000),
                 fuel_cost: 1,
                 state: NavigationRouteState::Available,
@@ -316,10 +334,18 @@ impl VisualBridge {
             return Err("configurar la fÃ­sica planetaria visual".to_owned());
         }
         let pilot_station = session
-            .create_station(GameplayVec3::ZERO, 3.0, StationType::Piloting)
+            .create_station(
+                GameplayVec3 { x: 0.0, y: 0.0, z: 1.5 },
+                3.0,
+                StationType::Piloting,
+            )
             .map_err(|error| format!("crear estación visual: {error:?}"))?;
         let engineering_station = session
-            .create_station(GameplayVec3::ZERO, 3.0, StationType::Engineering)
+            .create_station(
+                GameplayVec3 { x: 2.5, y: 0.0, z: 0.0 },
+                3.0,
+                StationType::Engineering,
+            )
             .map_err(|error| format!("engineering station: {error:?}"))?;
         let _status_console = session
             .create_ship_status_console(
@@ -523,7 +549,11 @@ impl VisualBridge {
     }
 
     fn new_visual_runtime() -> Result<Self, String> {
-        let mut bridge = Self::new_with_mode_and_enemy_distance(true, true)?;
+        let mut bridge = Self::new_with_mode_and_enemy_distance(
+            true,
+            true,
+            VISUAL_INITIAL_SHIP_POSITION,
+        )?;
         bridge.started = false;
         bridge.feedback = "ASTRAL ECHO - PULSA ENTER PARA COMENZAR".to_owned();
         Ok(bridge)
@@ -2291,6 +2321,54 @@ mod tests {
     }
 
     #[test]
+    fn visual_runtime_starts_echo7_in_clear_space() {
+        let bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        let world = bridge.session.world();
+        let ship = world.ship_position().expect("visual runtime should have a ship");
+        let distance_squared = |left: GameplayVec3, right: GameplayVec3| {
+            let delta = GameplayVec3 {
+                x: left.x - right.x,
+                y: left.y - right.y,
+                z: left.z - right.z,
+            };
+            delta.x * delta.x + delta.y * delta.y + delta.z * delta.z
+        };
+
+        assert_eq!(ship, VISUAL_INITIAL_SHIP_POSITION);
+        assert_eq!(world.destination(ORIGIN).map(|value| value.position), Some(ship));
+        assert!(distance_squared(ship, GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }) > 100.0 * 100.0);
+        assert!(world.destinations().filter(|value| value.id != ORIGIN).all(|value| {
+            distance_squared(ship, value.position) > 30.0 * 30.0
+        }));
+        assert!(world.enemies().all(|enemy| distance_squared(ship, enemy.position) > 30.0 * 30.0));
+        assert!(world.derelicts().all(|derelict| distance_squared(ship, derelict.position) > 30.0 * 30.0));
+        assert!(world.collectibles().all(|collectible| {
+            distance_squared(ship, collectible.position) > 30.0 * 30.0
+        }));
+    }
+
+    #[test]
+    fn introductory_interactables_are_placed_inside_echo7_space() {
+        let bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let interactables: Vec<_> = bridge.session.world().interactables().collect();
+
+        assert!(interactables.len() >= 6);
+        assert!(interactables.iter().all(|value| {
+            value.position != GameplayVec3::ZERO
+                && value.position.x.abs() < game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+                && value.position.z.abs() < game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
+        }));
+        assert!(interactables.iter().any(|value| {
+            matches!(value.behavior, InteractionBehavior::Station { station } if station.station_type == StationType::Piloting)
+                && value.position == GameplayVec3 { x: 0.0, y: 0.0, z: 1.5 }
+        }));
+        assert!(interactables.iter().any(|value| {
+            matches!(value.behavior, InteractionBehavior::Station { station } if station.station_type == StationType::Engineering)
+                && value.position == GameplayVec3 { x: 2.5, y: 0.0, z: 0.0 }
+        }));
+    }
+
+    #[test]
     fn visual_runtime_pauses_time_after_player_defeat() {
         let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
@@ -2589,7 +2667,8 @@ mod tests {
         let echo7 = snapshot.nodes.iter().find(|node| node.entity == render_core::SnapshotId::Entity(bridge.ship));
         assert_eq!(echo7.map(|node| node.mesh), Some(game::render_bridge::ECHO7_MESH));
         assert_ne!(game::render_bridge::ECHO7_MESH, game::render_bridge::STATION_MESH);
-        assert!(snapshot.nodes.iter().filter(|node| node.mesh == game::render_bridge::STATION_MESH).count() >= 2);
+        assert_eq!(snapshot.nodes.iter().filter(|node| node.mesh == game::render_bridge::STATION_MESH).count(), 0);
+        assert!(snapshot.nodes.iter().filter(|node| node.mesh == game::render_bridge::PLACEHOLDER_MESH).count() >= 2);
     }
 
     #[test]
@@ -2702,7 +2781,11 @@ mod tests {
 
     #[test]
     fn interior_start_keeps_enemy_outside_immediate_weapon_range() {
-        let mut bridge = VisualBridge::new_with_mode_and_enemy_distance(true, true)
+        let mut bridge = VisualBridge::new_with_mode_and_enemy_distance(
+            true,
+            true,
+            GameplayVec3::ZERO,
+        )
             .expect("visual bridge should initialize");
         let enemy = bridge
             .session

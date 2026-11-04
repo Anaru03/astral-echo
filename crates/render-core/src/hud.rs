@@ -350,6 +350,34 @@ mod tests {
     }
 
     #[test]
+    fn controls_indicator_contains_visible_text_inside_its_button() {
+        let hud = HudState {
+            controls_panel: crate::HudControlsPanel {
+                entries: vec!["WASD MOVER".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let overlay = hud_overlay(&hud, 640, 360);
+        let button = overlay.controls_button.expect("controls indicator should exist");
+        let text_color = [235, 250, 255, 255];
+        assert!(overlay.glyphs.iter().any(|rect| {
+            rect.color == text_color
+                && rect.x >= button.x
+                && rect.y >= button.y
+                && rect.x.saturating_add(rect.width) <= button.x.saturating_add(button.width)
+                && rect.y.saturating_add(rect.height) <= button.y.saturating_add(button.height)
+        }));
+        assert!(hud_controls_button_hit(
+            &hud,
+            640,
+            360,
+            button.x + button.width / 2,
+            button.y + button.height / 2,
+        ));
+    }
+
+    #[test]
     fn mission_overlay_contains_all_objective_states_and_progress() {
         let hud = HudState {
             mission_name: Some("El despertar".into()),

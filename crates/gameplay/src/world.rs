@@ -5556,6 +5556,19 @@ impl GameplayWorld {
         }
         self.navigation.initialize_ship(ship)
     }
+
+    pub fn initialize_ship_position(
+        &mut self,
+        position: engine::Vec3,
+    ) -> Result<(), crate::navigation::NavigationMovementError> {
+        if self.navigation.ship_id().is_none()
+            || self.navigation.current_position() != engine::Vec3::ZERO
+        {
+            return Err(crate::navigation::NavigationMovementError::InvalidInput);
+        }
+        self.navigation.restore_position(position)
+    }
+
     pub fn initialize_ship_integrity(
         &mut self,
         ship: EntityId,
