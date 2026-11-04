@@ -784,6 +784,14 @@ fn hud_state(
     HudState {
         flight,
         autopilot,
+        ship_shield_active: world
+            .navigation()
+            .ship_id()
+            .is_some_and(|ship| world.ship_shield_active(ship)),
+        ship_boost_active: world.ship_boost_active().unwrap_or(false),
+        ship_speed: world.ship_speed().zip(world.ship_speed_limit()).map(|(speed, limit)| {
+            (speed.round().max(0.0) as u32, limit.round().max(0.0) as u32)
+        }),
         target,
         active_enemies: world
             .enemies()

@@ -218,6 +218,9 @@ struct VisualBridge {
     introductory_threat_pending: bool,
     controls_panel_open: bool,
     pilot_mode: bool,
+    fire_pressed: bool,
+    boost_pressed: bool,
+    shield_active: bool,
     legacy_exterior_controls: bool,
     look_left: bool,
     look_right: bool,
@@ -555,6 +558,9 @@ impl VisualBridge {
             introductory_threat_pending,
             controls_panel_open: false,
             pilot_mode: false,
+            fire_pressed: false,
+            boost_pressed: false,
+            shield_active: false,
             legacy_exterior_controls: !interior_mode,
             look_left: false,
             look_right: false,
@@ -750,6 +756,35 @@ impl VisualBridge {
             }
             return;
         }
+        if matches!(key, KeyCode::ShiftLeft | KeyCode::ShiftRight) && self.pilot_mode {
+            self.boost_pressed = state == ElementState::Pressed;
+            self.issue([GameplayCommand::SetShipBoost {
+                player,
+                pilot_station,
+                active: self.boost_pressed,
+            }]);
+            return;
+        }
+        if key == KeyCode::KeyG && self.pilot_mode {
+            if state == ElementState::Pressed {
+                let active = !self.shield_active;
+                if self.issue([GameplayCommand::SetShipShieldActive {
+                    player,
+                    ship,
+                    active,
+                }]) {
+                    self.shield_active = active;
+                }
+            }
+            return;
+        }
+        if key == KeyCode::KeyF && self.pilot_mode {
+            self.fire_pressed = state == ElementState::Pressed;
+            if self.fire_pressed {
+                self.issue([GameplayCommand::AttackEnemy { player, enemy }]);
+            }
+            return;
+        }
         if (self.interior_mode || self.pilot_mode) && state == ElementState::Released {
             match key {
                 KeyCode::ArrowLeft => self.look_left = false,
@@ -796,7 +831,7 @@ impl VisualBridge {
                         self.feedback = "ATERRIZAJE CONFIRMADO".to_owned();
                         println!("visual gameplay: {}", self.feedback);
                     }
-                } else {
+                } else if self.pilot_mode || self.legacy_exterior_controls {
                     self.issue([GameplayCommand::AttackEnemy { player, enemy }]);
                 }
             }
@@ -1758,6 +1793,10 @@ impl VisualBridge {
             entries.extend([
                 "WASD VOLAR - PILOTAJE".to_owned(),
                 "FLECHAS CAMBIAR RUMBO - PILOTAJE".to_owned(),
+                "F DISPARAR - PILOTAJE".to_owned(),
+                "G ESCUDO - PILOTAJE".to_owned(),
+                "SHIFT BOOST - PILOTAJE".to_owned(),
+                "S FRENAR - PILOTAJE".to_owned(),
                 "P AUTOPILOTO - PILOTAJE".to_owned(),
                 "I SALIR DEL PILOTAJE - PILOTAJE".to_owned(),
             ]);
@@ -1850,6 +1889,9 @@ impl VisualBridge {
         if accepted {
             self.pilot_mode = true;
             self.interior_mode = false;
+            self.fire_pressed = false;
+            self.boost_pressed = false;
+            self.shield_active = false;
             self.feedback = "PILOTAJE DE ECHO-7 ACTIVO - I SALIR, P AUTOPILOTO".to_owned();
         } else {
             self.feedback = aggregate.message();
@@ -1867,6 +1909,11 @@ impl VisualBridge {
             &mut aggregate,
         );
         if accepted {
+            self.issue([GameplayCommand::SetShipShieldActive {
+                player: self.player,
+                ship: self.ship,
+                active: false,
+            }]);
             self.issue_into(
                 [GameplayCommand::ReleaseStation {
                     station: self.pilot_station,
@@ -1878,6 +1925,9 @@ impl VisualBridge {
             self.interior_mode = true;
             self.flight_keys = FlightKeys::default();
             self.gamepad_flight = GameplayVec3::ZERO;
+            self.fire_pressed = false;
+            self.boost_pressed = false;
+            self.shield_active = false;
             self.feedback = "PILOTAJE FINALIZADO - CONTROL DE PERSONAJE RESTAURADO".to_owned();
         } else {
             self.feedback = aggregate.message();
@@ -1904,6 +1954,12 @@ impl VisualBridge {
             pilot_station: self.pilot_station,
             input: self.current_flight_input(),
         }]);
+        if self.fire_pressed {
+            self.issue([GameplayCommand::AttackEnemy {
+                player: self.player,
+                enemy: self.enemy,
+            }]);
+        }
     }
 
     fn current_flight_input(&self) -> GameplayVec3 {
@@ -4021,6 +4077,8 @@ mod tests {
             shielded_count
         );
 
+        bridge.enter_pilot();
+        assert!(bridge.pilot_mode);
         bridge.handle_key(KeyCode::KeyF, ElementState::Pressed);
         assert_eq!(
             bridge
@@ -4123,6 +4181,12 @@ mod tests {
 
         bridge.handle_key(KeyCode::KeyC, ElementState::Pressed);
         let shooter = bridge.enemy;
+        bridge.issue([GameplayCommand::Interact {
+            player: bridge.player,
+            target: bridge.pilot_station,
+        }]);
+        bridge.enter_pilot();
+        assert!(bridge.pilot_mode);
         for _ in 0..30 {
             let Some(enemy_position) = bridge
                 .session

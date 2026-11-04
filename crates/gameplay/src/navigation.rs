@@ -611,6 +611,7 @@ impl NavigationState {
             return false;
         }
         self.boost_active = active;
+        self.velocity = clamp_speed(self.velocity, self.speed_limit());
         true
     }
 
@@ -1832,6 +1833,28 @@ mod tests {
         assert!(!navigation.landing_available(SUN_DESTINATION_ID, Duration(10_000)));
         assert!(navigation.current_position().x.abs() >= solar_physics().collision_radius());
         assert!(navigation.advance_manual(Duration(100), Duration(100)).is_none());
+    }
+
+    #[test]
+    fn boost_raises_the_speed_limit_only_while_active() {
+        let mut navigation = NavigationState::default();
+        navigation.initialize_ship(EntityId::new(1)).expect("ship should initialize");
+        navigation.set_control_active(true);
+        navigation
+            .set_acceleration_input(Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+            .expect("input is valid");
+        for _ in 0..20 {
+            navigation.advance_manual(Duration(1_000), Duration(0));
+        }
+        assert!(navigation.velocity().x <= navigation.movement_parameters().max_speed);
+        assert!(navigation.set_boost_active(true));
+        for _ in 0..20 {
+            navigation.advance_manual(Duration(1_000), Duration(0));
+        }
+        assert!(navigation.velocity().x > navigation.movement_parameters().max_speed);
+        assert!(navigation.velocity().x <= navigation.speed_limit());
+        navigation.set_boost_active(false);
+        assert!(navigation.velocity().x <= navigation.movement_parameters().max_speed);
     }
 
     #[test]

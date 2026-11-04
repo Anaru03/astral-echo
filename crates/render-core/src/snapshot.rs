@@ -222,6 +222,9 @@ pub struct HudControlsPanel {
 pub struct HudState {
     pub flight: HudFlightState,
     pub autopilot: HudAutopilotState,
+    pub ship_shield_active: bool,
+    pub ship_boost_active: bool,
+    pub ship_speed: Option<(u32, u32)>,
     pub target: Option<u32>,
     pub active_enemies: u32,
     pub landing_available: bool,

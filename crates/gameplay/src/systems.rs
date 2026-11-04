@@ -933,6 +933,9 @@ impl PilotSystem {
             return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
         };
         if world.navigation_mut().set_control_active(active) {
+            if !active {
+                world.set_ship_shield_active(ship, false);
+            }
             world.publish(crate::events::GameplayEvent::ShipControlChanged { ship, active });
             CommandResult::success(true)
         } else {
