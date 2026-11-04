@@ -21,6 +21,10 @@ pub enum ServerEvent {
     PlayerLeft {
         player_id: NetworkPlayerId,
     },
+    MissionRecoveryRequested {
+        player_id: NetworkPlayerId,
+        request_id: u64,
+    },
 }
 
 #[derive(Clone, Default)]
@@ -48,7 +52,10 @@ pub use client::GameClient;
 
 pub use protocol::{
     decode_client, decode_server, encode, ClientMessage, NetworkPlayerId, ProtocolError,
-    ServerMessage, MAX_PLAYERS, PROTOCOL_VERSION,
+    Mission5ContentProjection, Mission5DestinationProjection, Mission5ObjectiveProjection,
+    Mission5DiscoveryProjection, Mission5ShooterProjection, Mission5DestinationTypeProjection,
+    MissionRecoveryOutcome, MissionStateProjection, ObjectiveStateProjection, ServerMessage,
+    MAX_PLAYERS, PROTOCOL_VERSION,
 };
 
 pub use remote_players::{RemotePlayer, RemotePlayers};

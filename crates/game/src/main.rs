@@ -8461,12 +8461,6 @@ fn run_cooperative_progression_scenario() -> Result<(), String> {
         return Err("los jugadores de la progresion no son entidades activas distintas".to_owned());
     }
     session
-        .register_mission(
-            cooperacion::definition()
-                .map_err(|error| format!("definir misión cooperativa: {error:?}"))?,
-        )
-        .map_err(|error| format!("registrar misión cooperativa: {error:?}"))?;
-    session
         .register_destination(Destination {
             id: cooperacion::SIGNAL_DESTINATION,
             destination_type: DestinationType::SpacePoint,
@@ -8645,12 +8639,6 @@ fn run_cooperative_progression_scenario() -> Result<(), String> {
     let checkpoint_text = checkpoint.serialize();
     let mut restored = ProjectEchoSession::new();
     restored
-        .register_mission(
-            cooperacion::definition()
-                .map_err(|error| format!("definir misión cooperativa restaurada: {error:?}"))?,
-        )
-        .map_err(|error| format!("registrar misión cooperativa restaurada: {error:?}"))?;
-    restored
         .restore_state(
             gameplay::GameplaySaveState::deserialize(&checkpoint_text)
                 .map_err(|error| format!("deserializar checkpoint de misión: {error}"))?,
@@ -8700,22 +8688,16 @@ fn run_cooperative_progression_scenario() -> Result<(), String> {
             ),
         },
     )?;
-    run_command(
-        &mut session,
-        "crear amenaza cooperativa",
-        GameplayCommand::CreateEnemy {
-            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
-        },
-    )?;
     let enemy = session
         .world()
-        .events()
-        .iter()
-        .find_map(|event| match event {
-            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
-            _ => None,
+        .combatants()
+        .find(|combatant| {
+            !combatant.is_player
+                && combatant.active
+                && combatant.archetype == Some(EnemyArchetype::Shooter)
         })
-        .ok_or_else(|| "la amenaza cooperativa no publico su evento".to_owned())?;
+        .map(|combatant| combatant.entity)
+        .ok_or_else(|| "la preparación cooperativa no creó la amenaza".to_owned())?;
     run_command(
         &mut session,
         "derrotar amenaza con jugador B",
@@ -8933,12 +8915,6 @@ fn run_player_count_scenario(player_count: usize) -> Result<(), String> {
     }
 
     session
-        .register_mission(
-            cooperacion::definition()
-                .map_err(|error| format!("definir misión de {player_count} jugadores: {error:?}"))?,
-        )
-        .map_err(|error| format!("registrar misión de {player_count} jugadores: {error:?}"))?;
-    session
         .register_destination(Destination {
             id: cooperacion::SIGNAL_DESTINATION,
             destination_type: DestinationType::SpacePoint,
@@ -9043,22 +9019,16 @@ fn run_player_count_scenario(player_count: usize) -> Result<(), String> {
             ),
         },
     )?;
-    run_command(
-        &mut session,
-        "crear enemigo de completabilidad",
-        GameplayCommand::CreateEnemy {
-            configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, Vec3::ZERO),
-        },
-    )?;
     let enemy = session
         .world()
-        .events()
-        .iter()
-        .find_map(|event| match event {
-            GameplayEvent::EnemyCreated { enemy, .. } => Some(*enemy),
-            _ => None,
+        .combatants()
+        .find(|combatant| {
+            !combatant.is_player
+                && combatant.active
+                && combatant.archetype == Some(EnemyArchetype::Shooter)
         })
-        .ok_or_else(|| "el enemigo de completabilidad no fue creado".to_owned())?;
+        .map(|combatant| combatant.entity)
+        .ok_or_else(|| "la preparación de completabilidad no creó el enemigo".to_owned())?;
     run_command(
         &mut session,
         "derrotar enemigo de completabilidad",
@@ -11353,12 +11323,6 @@ fn create_runtime_session() -> Result<RuntimeSession, String> {
         })
         .map_err(|error| format!("registrar señal de misión runtime: {error:?}"))?;
     gameplay
-        .register_mission(
-            cooperacion::definition()
-                .map_err(|error| format!("definir misión runtime: {error:?}"))?,
-        )
-        .map_err(|error| format!("registrar misión runtime: {error:?}"))?;
-    gameplay
         .world_mut()
         .register_navigation_route(NavigationRoute {
             from: origin,
@@ -11960,6 +11924,9 @@ fn parse_runtime_command(line: &str) -> Result<RuntimeCommand, String> {
             }
             RuntimeCommand::StartMission(mission)
         }
+        "retrymission5" | "reintentarcooperativa" if parts.next().is_none() => {
+            RuntimeCommand::RetryCooperativeMissionContent
+        }
         "scan" | "escanear" if parts.next().is_none() => RuntimeCommand::Scan,
         "collectibles" | "recompensas" if parts.next().is_none() => RuntimeCommand::Collectibles,
         "collect" | "recoger" => {
@@ -12049,7 +12016,7 @@ fn parse_runtime_command(line: &str) -> Result<RuntimeCommand, String> {
 fn write_runtime_help(output: &mut dyn Write) -> Result<(), String> {
     writeln!(
         output,
-        "Comandos: help, status, ship, players, inventory [jugador], resources, economy, upgrades, missions, mission <id>, unlock <id>, startmission <id>, scan, collectibles, collect <coleccionable> <cantidad> [jugador], erick [status|navigation|tactical|support|recovery|all], checkpoint [status], restore, breaker <panel> <breaker> <on|off>, oxygen <panel> <compartimento> <asignacion>, unlockdoor <puerta>, release <estacion>, equip <kinetic|energy>, spawn <shooter|shielded>, navigation, combat, pilot, select <destino>, travel, plan <origen> <destino>, start, encounter, activate, continue, cancel, attack <enemigo> [jugador], damage <cantidad>, interact <objetivo>, repair <estacion>, enemyattack <enemigo> <jugador>, revive <ayudante> <objetivo> <item>, heal <jugador> <item> <cantidad>, extract <destino>, transfer <origen> <destino> <item> <cantidad>, buy <destino> <item> <cantidad>, sell <destino> <item> <cantidad>, upgrade <codigo> <destino>, move <x> <y> <z> <ms>, advance <duracion>, events, quit"
+        "Comandos: help, status, ship, players, inventory [jugador], resources, economy, upgrades, missions, mission <id>, unlock <id>, startmission <id>, retrymission5, scan, collectibles, collect <coleccionable> <cantidad> [jugador], erick [status|navigation|tactical|support|recovery|all], checkpoint [status], restore, breaker <panel> <breaker> <on|off>, oxygen <panel> <compartimento> <asignacion>, unlockdoor <puerta>, release <estacion>, equip <kinetic|energy>, spawn <shooter|shielded>, navigation, combat, pilot, select <destino>, travel, plan <origen> <destino>, start, encounter, activate, continue, cancel, attack <enemigo> [jugador], damage <cantidad>, interact <objetivo>, repair <estacion>, enemyattack <enemigo> <jugador>, revive <ayudante> <objetivo> <item>, heal <jugador> <item> <cantidad>, extract <destino>, transfer <origen> <destino> <item> <cantidad>, buy <destino> <item> <cantidad>, sell <destino> <item> <cantidad>, upgrade <codigo> <destino>, move <x> <y> <z> <ms>, advance <duracion>, events, quit"
     )
         .map_err(|error| format!("escribir ayuda: {error}"))
 }
@@ -12519,6 +12486,11 @@ fn execute_runtime_command(
             }]);
             writeln!(output, "startmission {id}: {:?}", result)
                 .map_err(|error| format!("escribir resultado de inicio de misión: {error}"))?;
+        }
+        RuntimeCommand::RetryCooperativeMissionContent => {
+            let result = session.update([GameplayCommand::RetryCooperativeMissionContent]);
+            writeln!(output, "retrymission5: {:?}", result)
+                .map_err(|error| format!("escribir resultado de recuperaciÃ³n: {error}"))?;
         }
         RuntimeCommand::Scan => {
             let result = session.update([GameplayCommand::ScanSignals {
@@ -13280,6 +13252,7 @@ fn run_runtime_mission_scenario() -> Result<(), String> {
 
     execute_runtime_command(&mut runtime, &parse_runtime_command("unlock 5")?, &mut output)?;
     execute_runtime_command(&mut runtime, &parse_runtime_command("startmission 5")?, &mut output)?;
+    execute_runtime_command(&mut runtime, &parse_runtime_command("retrymission5")?, &mut output)?;
     execute_runtime_command(&mut runtime, &parse_runtime_command("mission 5")?, &mut output)?;
     if runtime.gameplay.world().mission(mission_id).is_none_or(|mission| mission.state() != MissionState::Active || mission.progress().required_completed != 0)
     {
@@ -13698,7 +13671,6 @@ fn run_runtime_campaign_scenario() -> Result<(), String> {
         ],
     )?;
 
-    run_action(&mut runtime, &mut output, "unlock 2")?;
     run_action(&mut runtime, &mut output, "startmission 2")?;
     run_action(&mut runtime, &mut output, "unlock 5")?;
     run_action(&mut runtime, &mut output, "startmission 5")?;
@@ -13766,7 +13738,6 @@ fn run_runtime_campaign_scenario() -> Result<(), String> {
         return Err("la restauración no conservó progreso o ERICK".to_owned());
     }
 
-    run_action(&mut runtime, &mut output, "unlock 3")?;
     run_action(&mut runtime, &mut output, "startmission 3")?;
     run_action(&mut runtime, &mut output, "advance 1000")?;
     run_action(&mut runtime, &mut output, &format!("move 1 0 0 2000"))?;
@@ -13789,7 +13760,6 @@ fn run_runtime_campaign_scenario() -> Result<(), String> {
         ],
     )?;
 
-    run_action(&mut runtime, &mut output, "unlock 4")?;
     run_action(&mut runtime, &mut output, "startmission 4")?;
     run_action(&mut runtime, &mut output, "spawn shielded")?;
     let shielded = runtime
@@ -18583,12 +18553,6 @@ fn run_resource_mission_integration_scenario() -> Result<(), String> {
     let mut session = ProjectEchoSession::new();
     let player = session.ids.first_player;
     let ship = session.ids.first_ship;
-    session
-        .register_mission(
-            cooperacion::definition()
-                .map_err(|error| format!("definir misión de extracción: {error:?}"))?,
-        )
-        .map_err(|error| format!("registrar misión de extracción: {error:?}"))?;
     let station = session
         .create_station(Vec3::ZERO, 2.0, StationType::Piloting)
         .map_err(|error| format!("crear estación de extracción: {error:?}"))?;
@@ -18756,12 +18720,6 @@ fn run_resource_mission_integration_scenario() -> Result<(), String> {
 
     let saved = session.save_state().serialize();
     let mut restored = ProjectEchoSession::new();
-    restored
-        .register_mission(
-            cooperacion::definition()
-                .map_err(|error| format!("definir misión restaurada de extracción: {error:?}"))?,
-        )
-        .map_err(|error| format!("registrar misión restaurada de extracción: {error:?}"))?;
     restored
         .restore_state(
             gameplay::GameplaySaveState::deserialize(&saved)
@@ -20124,7 +20082,6 @@ fn run_full_mission_progression_scenario() -> Result<(), String> {
     session
         .register_destination(Destination { id: anomaly_signal, destination_type: DestinationType::SpacePoint, position: Vec3 { x: 25.0, y: 0.0, z: 0.0 }, travel_duration: Duration(200), fuel_cost: 8, discovery: DiscoveryState::Unknown })
         .map_err(|error| format!("registrar señal global: {error:?}"))?;
-    run_command(&mut session, "desbloquear Ecos global", GameplayCommand::UnlockMission { mission: ecos_anomalia::ECOS_DE_LA_ANOMALIA })?;
     run_command(&mut session, "iniciar Ecos global", GameplayCommand::StartMission { mission: ecos_anomalia::ECOS_DE_LA_ANOMALIA })?;
     run_command(&mut session, "detectar señal global", GameplayCommand::ScanSignals { player: player_a, ship })?;
     run_command(&mut session, "esperar identificacion global", GameplayCommand::AdvanceTime { delta: Duration(1_000) })?;
@@ -20168,7 +20125,6 @@ fn run_full_mission_progression_scenario() -> Result<(), String> {
         .register_destination(Destination { id: storm_destination, destination_type: DestinationType::Planet, position: Vec3 { x: 20.0, y: 0.0, z: 0.0 }, travel_duration: Duration(100), fuel_cost: 5, discovery: DiscoveryState::Known })
         .map_err(|error| format!("registrar escape global: {error:?}"))?;
     run_command(&mut session, "registrar tormenta global", GameplayCommand::RegisterEnvironmentalHazard { hazard: EnvironmentalHazard::new(tormenta_gravitacional::HAZARD, gameplay::EnvironmentalHazardType::GravitationalAnomaly, Vec3 { x: 10.0, y: 0.0, z: 0.0 }, 5.0, 80, Duration(1_000), true) })?;
-    run_command(&mut session, "desbloquear tormenta global", GameplayCommand::UnlockMission { mission: tormenta_gravitacional::TORMENTA_GRAVITACIONAL })?;
     run_command(&mut session, "iniciar tormenta global", GameplayCommand::StartMission { mission: tormenta_gravitacional::TORMENTA_GRAVITACIONAL })?;
     run_command(&mut session, "mover jugador a ingenieria global", GameplayCommand::MovePlayer { player: player_a, direction: Vec3 { x: 1.0, y: 0.0, z: 0.0 }, delta: Duration(2_000) })?;
     run_command(&mut session, "ocupar ingenieria global", GameplayCommand::Interact { player: player_a, target: engineering_station })?;
@@ -20183,7 +20139,6 @@ fn run_full_mission_progression_scenario() -> Result<(), String> {
     run_command(&mut session, "llegar tras tormenta global", GameplayCommand::AdvanceTime { delta: Duration(100) })?;
     completed(&session, tormenta_gravitacional::TORMENTA_GRAVITACIONAL, "Tormenta gravitacional")?;
 
-    run_command(&mut session, "desbloquear defensa global", GameplayCommand::UnlockMission { mission: la_defensa_imposible::LA_DEFENSA_IMPOSIBLE })?;
     run_command(&mut session, "iniciar defensa global", GameplayCommand::StartMission { mission: la_defensa_imposible::LA_DEFENSA_IMPOSIBLE })?;
     run_command(&mut session, "crear escudado global", GameplayCommand::CreateEnemy { configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shielded, origin) })?;
     let shielded = session.world().events().iter().find_map(|event| match event { GameplayEvent::EnemyCreated { enemy, archetype, .. } if *archetype == EnemyArchetype::Shielded => Some(*enemy), _ => None }).ok_or_else(|| "falta escudado global".to_owned())?;
@@ -20199,20 +20154,24 @@ fn run_full_mission_progression_scenario() -> Result<(), String> {
     completed(&session, la_defensa_imposible::LA_DEFENSA_IMPOSIBLE, "La defensa imposible")?;
 
     session
-        .register_mission(cooperacion::definition().map_err(|error| format!("definir progresion global: {error:?}"))?)
-        .map_err(|error| format!("registrar progresion global: {error:?}"))?;
-    session
         .register_destination(Destination { id: cooperacion::SIGNAL_DESTINATION, destination_type: DestinationType::SpacePoint, position: Vec3 { x: 20.0, y: 0.0, z: 0.0 }, travel_duration: Duration(100), fuel_cost: 1, discovery: DiscoveryState::Unknown })
         .map_err(|error| format!("registrar señal cooperativa global: {error:?}"))?;
-    run_command(&mut session, "desbloquear progresion global", GameplayCommand::UnlockMission { mission: cooperacion::PROGRESION_COOPERATIVA })?;
     run_command(&mut session, "iniciar progresion global", GameplayCommand::StartMission { mission: cooperacion::PROGRESION_COOPERATIVA })?;
     run_command(&mut session, "detectar señal cooperativa global", GameplayCommand::ScanSignals { player: player_b, ship })?;
     run_command(&mut session, "esperar señal cooperativa global", GameplayCommand::AdvanceTime { delta: Duration(1_000) })?;
     run_command(&mut session, "identificar señal cooperativa global", GameplayCommand::ScanSignals { player: player_b, ship })?;
     run_command(&mut session, "dar munición al cooperante global", GameplayCommand::AddInventoryItem { player: player_b, item: ItemId(2), amount: 1 })?;
     run_command(&mut session, "equipar cooperante global", GameplayCommand::EquipPlayerWeapon { player: player_b, weapon: WeaponConfiguration::with_ammunition(AttackType::Kinetic, 60, 20, Duration(1_000), WeaponAmmunition { item: ItemId(2), amount_per_attack: 1 }) })?;
-    run_command(&mut session, "crear amenaza cooperativa global", GameplayCommand::CreateEnemy { configuration: EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, origin) })?;
-    let cooperative_enemy = session.world().events().iter().filter_map(|event| match event { GameplayEvent::EnemyCreated { enemy, archetype, .. } if *archetype == EnemyArchetype::Shooter => Some(*enemy), _ => None }).last().ok_or_else(|| "falta enemigo cooperativo global".to_owned())?;
+    let cooperative_enemy = session
+        .world()
+        .combatants()
+        .find(|combatant| {
+            !combatant.is_player
+                && combatant.active
+                && combatant.archetype == Some(EnemyArchetype::Shooter)
+        })
+        .map(|combatant| combatant.entity)
+        .ok_or_else(|| "falta enemigo cooperativo global".to_owned())?;
     run_command(&mut session, "derrotar amenaza cooperativa global", GameplayCommand::AttackEnemy { player: player_b, enemy: cooperative_enemy })?;
     let cooperative_reward = session.world().collectibles().find(|collectible| collectible.active && collectible.item == ItemId(3)).copied().ok_or_else(|| "falta recompensa cooperativa global".to_owned())?;
     run_command(&mut session, "recoger recompensa cooperativa global", GameplayCommand::CollectItem { player: player_b, collectible: cooperative_reward.entity, amount: 1 })?;
@@ -20225,9 +20184,6 @@ fn run_full_mission_progression_scenario() -> Result<(), String> {
         return Err("la progresion global no conservo inventarios o posicion".to_owned());
     }
     let mut post_campaign = ProjectEchoSession::new();
-    post_campaign
-        .register_mission(cooperacion::definition().map_err(|error| format!("definir misión post-campana: {error:?}"))?)
-        .map_err(|error| format!("registrar misión post-campana: {error:?}"))?;
     post_campaign
         .restore_state(
             gameplay::GameplaySaveState::deserialize(&final_state)
@@ -20263,9 +20219,6 @@ fn run_full_mission_progression_scenario() -> Result<(), String> {
     run_command(&mut post_campaign, "transferir inventario post-campana", GameplayCommand::TransferInventoryItem { from: player_a, to: player_b, item: ItemId(1), amount: 1 })?;
     let post_action_state = post_campaign.save_state().serialize();
     let mut post_action_restored = ProjectEchoSession::new();
-    post_action_restored
-        .register_mission(cooperacion::definition().map_err(|error| format!("definir segunda misión post-campana: {error:?}"))?)
-        .map_err(|error| format!("registrar segunda misión post-campana: {error:?}"))?;
     post_action_restored
         .restore_state(
             gameplay::GameplaySaveState::deserialize(&post_action_state)
@@ -20595,18 +20548,19 @@ fn run_scenario() -> Result<(), String> {
         return Err("la estación de pilotaje no quedó ocupada".to_owned());
     }
     let progress = required_completed(&session)?;
+    if session
+        .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        .is_none_or(|value| value.state != MissionState::Available)
+    {
+        return Err("la siguiente misión no quedó disponible tras completar El despertar".to_owned());
+    }
     for mission in [
-        ecos_anomalia::ECOS_DE_LA_ANOMALIA,
         tormenta_gravitacional::TORMENTA_GRAVITACIONAL,
         la_defensa_imposible::LA_DEFENSA_IMPOSIBLE,
+        cooperacion::PROGRESION_COOPERATIVA,
     ] {
-        if session
-            .mission_progress(mission)
-            .is_none_or(|value| value.state != MissionState::Locked)
-        {
-            return Err(format!(
-                "la misión {mission:?} se desbloqueo sin una dependencia entre misiones"
-            ));
+        if session.mission_progress(mission).is_none_or(|value| value.state != MissionState::Locked) {
+            return Err(format!("la misión {mission:?} se desbloqueo prematuramente"));
         }
     }
     println!(

@@ -1,9 +1,11 @@
 use std::collections::BTreeSet;
 
 use gameplay::GameplayWorld;
+use gameplay::domains::mission::MissionState;
+use gameplay::types::MissionId;
 use render_core::{
     from_engine, Camera, CameraError, MaterialHandle, MeshHandle, Projection, Quat,
-    HudAutopilotState, HudFlightState, HudState, RenderSnapshot, RenderVisualEvent,
+    HudAutopilotState, HudFlightState, HudMissionState, HudState, RenderSnapshot, RenderVisualEvent,
     RenderVisualEventKind, SnapshotLight, SnapshotNode,
     Transform, Vec3, VisualAssets,
 };
@@ -42,6 +44,23 @@ pub const COLLECTIBLE_MESH: MeshHandle = MeshHandle::COLLECTIBLE_PLACEHOLDER;
 pub const STATION_MESH: MeshHandle = MeshHandle::STATION;
 pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
 pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
+pub const ECHO7_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
+pub const ECHO7_MATERIAL: MaterialHandle = VisualAssets::SHIP;
+pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::new(2.0, 3.0, 1.0);
+pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
+pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
+pub const PLAYER_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
+pub const ECHO7_INTERIOR_HALF_WIDTH: f32 = 9.0;
+pub const ECHO7_INTERIOR_HALF_DEPTH: f32 = 7.0;
+pub const ECHO7_INTERIOR_FLOOR_Y: f32 = -1.2;
+pub const ECHO7_INTERIOR_CEILING_Y: f32 = 6.4;
+pub const ECHO7_PLAYER_RADIUS: f32 = 0.45;
+pub const INTERIOR_FLOOR_ENTITY: engine::EntityId = engine::EntityId::new(9_401);
+pub const INTERIOR_BACK_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_402);
+pub const INTERIOR_LEFT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_403);
+pub const INTERIOR_RIGHT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_404);
+pub const INTERIOR_CEILING_ENTITY: engine::EntityId = engine::EntityId::new(9_405);
+pub const INTERIOR_LIGHT_ENTITY: engine::EntityId = engine::EntityId::new(9_406);
 
 pub const SHIP_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const ENEMY_MATERIAL: MaterialHandle = VisualAssets::ENEMY;
@@ -69,13 +88,41 @@ pub fn station_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
         }
         nodes.push(SnapshotNode::new(
             interactable.entity_id,
-            Transform::from_translation(from_engine(interactable.position)),
+            Transform::new(
+                from_engine(interactable.position),
+                Quat::IDENTITY,
+                STATION_VISUAL_SCALE,
+            ),
             STATION_MESH,
             STATION_MATERIAL,
             interactable.enabled,
         ));
     }
     nodes
+}
+
+fn mission_interaction_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    world
+        .interactables()
+        .filter(|interactable| {
+            matches!(
+                interactable.behavior,
+                gameplay::InteractionBehavior::Console { .. }
+                    | gameplay::InteractionBehavior::ElectricalPanel
+                    | gameplay::InteractionBehavior::LifeSupportPanel
+                    | gameplay::InteractionBehavior::Door { .. }
+            )
+        })
+        .map(|interactable| {
+            SnapshotNode::new(
+                interactable.entity_id,
+                Transform::from_translation(from_engine(interactable.position)),
+                PLACEHOLDER_MESH,
+                PLACEHOLDER_MATERIAL,
+                interactable.enabled,
+            )
+        })
+        .collect()
 }
 
 pub fn derelict_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
@@ -139,7 +186,10 @@ pub fn academic_surface_objects_with_seed(
         );
         let (mesh, material) = match index % 4 {
             0 => (PLAYER_MESH, PLAYER_MATERIAL),
-            1 => (ENEMY_MESH, ENEMY_MATERIAL),
+            // This is a planetary surface prop, not a gameplay enemy. Keep
+            // enemy identity reserved for world.enemies() so it cannot look
+            // like an enemy ship permanently attached to the planet orbit.
+            1 => (PLACEHOLDER_MESH, PLACEHOLDER_MATERIAL),
             2 => (DESTINATION_MESH, DESTINATION_MATERIAL),
             _ => (COLLECTIBLE_MESH, COLLECTIBLE_MATERIAL),
         };
@@ -204,6 +254,39 @@ pub struct BridgeParams<'a> {
     pub include_collectibles: bool,
 }
 
+/// Selects the mission that the visual presentation should expose.
+///
+/// Active missions have priority over available missions.  The final fallback
+/// is only for presenting the initial locked campaign state; callers that want
+/// to start a mission must still require `Available` (or use the legacy
+/// first-mission bootstrap in `VisualBridge`).
+pub fn presentation_mission(world: &GameplayWorld) -> Option<MissionId> {
+    crate::campaign::CAMPAIGN_ORDER
+        .iter()
+        .copied()
+        .find(|mission| {
+            world
+                .mission(*mission)
+                .is_some_and(|value| value.state() == MissionState::Active)
+        })
+        .or_else(|| {
+            crate::campaign::CAMPAIGN_ORDER
+                .iter()
+                .copied()
+                .find(|mission| {
+                    world
+                        .mission(*mission)
+                        .is_some_and(|value| value.state() == MissionState::Available)
+                })
+        })
+        .or_else(|| {
+            crate::campaign::CAMPAIGN_ORDER
+                .iter()
+                .copied()
+                .find(|mission| world.mission(*mission).is_some())
+        })
+}
+
 impl Default for BridgeParams<'_> {
     fn default() -> Self {
         Self {
@@ -221,6 +304,15 @@ pub fn snapshot_from_world_with_camera(
     world: &GameplayWorld,
     params: BridgeParams<'_>,
     camera: &Camera,
+) -> RenderSnapshot {
+    snapshot_from_world_with_camera_and_view(world, params, camera, false)
+}
+
+pub fn snapshot_from_world_with_camera_and_view(
+    world: &GameplayWorld,
+    params: BridgeParams<'_>,
+    camera: &Camera,
+    interior: bool,
 ) -> RenderSnapshot {
     let tick = world.time().tick;
     let academic_planet = academic_planet_id(world);
@@ -240,6 +332,15 @@ pub fn snapshot_from_world_with_camera(
         snapshot.overlay.game_over = fade >= 1.0;
     }
     snapshot.overlay.hud = hud_state(world, academic_planet);
+    let player_defeated = world.players().any(|player| {
+        world
+            .combatant(player.entity_id)
+            .is_some_and(|combatant| combatant.is_defeated())
+    });
+    if player_defeated {
+        snapshot.overlay.game_over = true;
+        snapshot.overlay.hud.feedback = Some("JUGADOR DERROTADO".to_owned());
+    }
     snapshot.visual_events = world
         .visual_events()
         .map(|event| RenderVisualEvent {
@@ -265,6 +366,12 @@ pub fn snapshot_from_world_with_camera(
         snapshot.push_node(node);
     }
 
+    if interior {
+        for node in interior_nodes() {
+            snapshot.push_node(node);
+        }
+    }
+
     if world.navigation().ship_id().is_some() {
         snapshot.push_node(SnapshotNode::new(
             SUN_ENTITY,
@@ -287,15 +394,19 @@ pub fn snapshot_from_world_with_camera(
                 pos,
                 Quat::from_rotation_y(orientation.yaw_degrees.to_radians())
                     * Quat::from_rotation_x(orientation.pitch_degrees.to_radians()),
-                Vec3::ONE,
+                ECHO7_VISUAL_SCALE,
             ),
-            SHIP_MESH,
-            SHIP_MATERIAL,
+            ECHO7_MESH,
+            ECHO7_MATERIAL,
             world.entities().contains(ship),
         ));
     }
 
     for node in station_nodes(world) {
+        snapshot.push_node(node);
+    }
+
+    for node in mission_interaction_nodes(world) {
         snapshot.push_node(node);
     }
 
@@ -339,7 +450,11 @@ pub fn snapshot_from_world_with_camera(
             enemy.active && !enemy.is_defeated() && world.entities().contains(enemy.entity);
         snapshot.push_node(SnapshotNode::new(
             enemy.entity,
-            Transform::from_translation(from_engine(enemy.position)),
+            Transform::new(
+                from_engine(enemy.position),
+                Quat::IDENTITY,
+                ENEMY_SHIP_VISUAL_SCALE,
+            ),
             ENEMY_MESH,
             ENEMY_MATERIAL,
             visible,
@@ -458,6 +573,77 @@ pub fn snapshot_from_world_with_camera(
     snapshot
 }
 
+fn interior_nodes() -> [SnapshotNode; 6] {
+    [
+        SnapshotNode::new(
+            INTERIOR_FLOOR_ENTITY,
+            Transform::new(
+                Vec3::new(0.0, ECHO7_INTERIOR_FLOOR_Y, 0.0),
+                Quat::IDENTITY,
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 0.15, ECHO7_INTERIOR_HALF_DEPTH),
+            ),
+            MeshHandle::CUBE,
+            DESTINATION_MATERIAL,
+            true,
+        ),
+        SnapshotNode::new(
+            INTERIOR_BACK_WALL_ENTITY,
+            Transform::new(
+                Vec3::new(0.0, 2.6, -ECHO7_INTERIOR_HALF_DEPTH),
+                Quat::IDENTITY,
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 3.8, 0.15),
+            ),
+            MeshHandle::CUBE,
+            DESTINATION_MATERIAL,
+            true,
+        ),
+        SnapshotNode::new(
+            INTERIOR_LEFT_WALL_ENTITY,
+            Transform::new(
+                Vec3::new(-ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0),
+                Quat::IDENTITY,
+                Vec3::new(0.15, 3.8, ECHO7_INTERIOR_HALF_DEPTH),
+            ),
+            MeshHandle::CUBE,
+            DESTINATION_MATERIAL,
+            true,
+        ),
+        SnapshotNode::new(
+            INTERIOR_RIGHT_WALL_ENTITY,
+            Transform::new(
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0),
+                Quat::IDENTITY,
+                Vec3::new(0.15, 3.8, ECHO7_INTERIOR_HALF_DEPTH),
+            ),
+            MeshHandle::CUBE,
+            DESTINATION_MATERIAL,
+            true,
+        ),
+        SnapshotNode::new(
+            INTERIOR_CEILING_ENTITY,
+            Transform::new(
+                Vec3::new(0.0, ECHO7_INTERIOR_CEILING_Y, 0.0),
+                Quat::IDENTITY,
+                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 0.15, ECHO7_INTERIOR_HALF_DEPTH),
+            ),
+            MeshHandle::CUBE,
+            DESTINATION_MATERIAL,
+            true,
+        ),
+        SnapshotNode::new(
+            INTERIOR_LIGHT_ENTITY,
+            Transform::new(
+                Vec3::new(0.0, 5.8, 0.0),
+                Quat::IDENTITY,
+                Vec3::new(0.8, 0.15, 0.8),
+            ),
+            MeshHandle::SUN_SPHERE,
+            SUN_MATERIAL,
+            true,
+        ),
+    ]
+}
+
 fn visual_event_nodes(snapshot: &RenderSnapshot) -> Vec<SnapshotNode> {
     snapshot
         .visual_events
@@ -539,6 +725,30 @@ fn hud_state(
         | gameplay::TravelState::Cancelled { destination } => Some(destination.value()),
         gameplay::TravelState::Idle => None,
     });
+    let presented_mission = presentation_mission(world);
+    let mission = presented_mission.and_then(|mission| world.mission(mission));
+    let guidance = world
+        .players()
+        .next()
+        .and_then(|player| world.guidance_for_player(player.entity_id).ok());
+    let current_objective = guidance
+        .as_ref()
+        .and_then(|state| state.current_objective)
+        .and_then(|objective| {
+            guidance
+                .as_ref()
+                .and_then(|state| {
+                    state
+                        .objectives
+                        .iter()
+                        .find(|value| {
+                            value.id == objective
+                                && Some(value.mission) == presented_mission
+                        })
+                })
+        });
+    let mission_progress = mission.map(|value| value.progress());
+    let mission_state = mission_progress.map(|value| hud_mission_state(value.state));
     HudState {
         flight,
         autopilot,
@@ -548,6 +758,30 @@ fn hud_state(
             .filter(|enemy| enemy.active && !enemy.is_defeated())
             .count() as u32,
         landing_available: academic_planet.is_some_and(|planet| world.landing_available(planet)),
+        mission_name: mission.map(|value| value.name.clone()),
+        objective_name: current_objective.map(|value| value.name.clone()),
+        mission_progress: mission_progress.map(|value| {
+            (
+                value.required_completed as u8,
+                value.required_total as u8,
+            )
+        }),
+        mission_state,
+        interaction_prompt: None,
+        guidance: None,
+        controls: None,
+        instructions: None,
+        feedback: None,
+    }
+}
+
+fn hud_mission_state(state: gameplay::domains::mission::MissionState) -> HudMissionState {
+    match state {
+        gameplay::domains::mission::MissionState::Locked => HudMissionState::Locked,
+        gameplay::domains::mission::MissionState::Available => HudMissionState::Available,
+        gameplay::domains::mission::MissionState::Active => HudMissionState::Active,
+        gameplay::domains::mission::MissionState::Failed => HudMissionState::Failed,
+        gameplay::domains::mission::MissionState::Completed => HudMissionState::Completed,
     }
 }
 
@@ -566,6 +800,7 @@ fn expected_snapshot_node_count(
     count += world.players().count();
     count += world.companions().count();
     count += station_nodes(world).len();
+    count += mission_interaction_nodes(world).len();
     count += derelict_nodes(world).len();
     count += asteroid_field_nodes(world).len();
     count += world.enemies().filter(|enemy| !enemy.is_player).count();
@@ -691,6 +926,39 @@ pub fn observation_camera(
     )
 }
 
+pub fn interior_camera(
+    world: &GameplayWorld,
+    aspect: f32,
+) -> Result<Camera, CameraError> {
+    let player = world.players().next().ok_or(CameraError::InvalidAspect)?;
+    interior_camera_for_player(world, player.entity_id, aspect)
+}
+
+pub fn interior_camera_for_player(
+    world: &GameplayWorld,
+    player_id: engine::EntityId,
+    aspect: f32,
+) -> Result<Camera, CameraError> {
+    let player = world.player(player_id).ok_or(CameraError::InvalidAspect)?;
+    let position = from_engine(player.position) + Vec3::new(0.0, 1.45, 0.0);
+    let yaw = player.orientation.yaw_degrees.to_radians();
+    let pitch = player.orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);
+    let horizontal = pitch.cos();
+    let direction = Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal)
+        .normalize_or_zero();
+    Camera::new(
+        position,
+        position + direction,
+        Vec3::Y,
+        Projection::Perspective {
+            fov_y_rad: 72.0_f32.to_radians(),
+            aspect,
+            near: 0.05,
+            far: 120.0,
+        },
+    )
+}
+
 fn academic_planet_id(world: &GameplayWorld) -> Option<gameplay::DestinationId> {
     let planets: Vec<_> = world
         .destinations()
@@ -729,6 +997,250 @@ fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
     Transform::new(
         from_engine(position),
         Quat::from_rotation_y(yaw.to_radians()) * Quat::from_rotation_x(pitch.to_radians()),
-        Vec3::ONE,
+        PLAYER_VISUAL_SCALE,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hud_mission_state;
+    use gameplay::{
+        commands::GameplayCommand,
+        domains::mission::MissionState,
+        mission_system::MissionSystem,
+        systems::GameplaySystem,
+        types::MissionId,
+        GameplayWorld,
+    };
+    use render_core::HudMissionState;
+
+    fn world_with_missions() -> (GameplayWorld, engine::EntityId) {
+        let mut world = GameplayWorld::new();
+        let player = world.create_player().expect("player should be created");
+        world
+            .register_mission(crate::el_despertar::definition().expect("awakening is valid"))
+            .expect("awakening should register");
+        world
+            .register_mission(crate::ecos_anomalia::definition().expect("anomaly is valid"))
+            .expect("anomaly should register");
+        (world, player)
+    }
+
+    fn apply(system: &mut MissionSystem, world: &mut GameplayWorld, command: GameplayCommand) {
+        let result = system
+            .process(world, command)
+            .expect("mission command should be handled");
+        assert!(matches!(result.status, gameplay::CommandStatus::Success { .. }));
+    }
+
+    fn unlock_and_start(
+        system: &mut MissionSystem,
+        world: &mut GameplayWorld,
+        mission: MissionId,
+    ) {
+        apply(system, world, GameplayCommand::UnlockMission { mission });
+        apply(system, world, GameplayCommand::StartMission { mission });
+    }
+
+    #[test]
+    fn mission_state_conversion_preserves_all_domain_states() {
+        let states = [
+            (MissionState::Locked, HudMissionState::Locked),
+            (MissionState::Available, HudMissionState::Available),
+            (MissionState::Active, HudMissionState::Active),
+            (MissionState::Failed, HudMissionState::Failed),
+            (MissionState::Completed, HudMissionState::Completed),
+        ];
+
+        for (domain_state, hud_state) in states {
+            assert_eq!(hud_mission_state(domain_state), hud_state);
+        }
+    }
+
+    #[test]
+    fn interior_view_has_a_player_camera_and_spatial_shell() {
+        let mut world = GameplayWorld::new();
+        let player = world.create_player().expect("player should exist");
+        let camera = super::interior_camera(&world, 16.0 / 9.0).expect("camera should be valid");
+        assert_eq!(camera.position(), render_core::Vec3::new(0.0, 1.45, 0.0));
+
+        let snapshot = super::snapshot_from_world_with_camera_and_view(
+            &world,
+            Default::default(),
+            &camera,
+            true,
+        );
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.entity == render_core::SnapshotId::Entity(super::INTERIOR_FLOOR_ENTITY)
+        }));
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.entity == render_core::SnapshotId::Entity(player)
+        }));
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.entity == render_core::SnapshotId::Entity(super::INTERIOR_BACK_WALL_ENTITY)
+        }));
+    }
+
+    #[test]
+    fn hud_objective_belongs_to_presented_active_mission() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+
+        let hud = super::hud_state(&world, None);
+
+        assert_eq!(hud.mission_name.as_deref(), Some("El despertar"));
+        assert_eq!(hud.objective_name.as_deref(), Some("Evaluar el estado de la nave"));
+    }
+
+    #[test]
+    fn hud_does_not_import_objective_from_another_available_mission() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::UnlockMission {
+                mission: crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+            },
+        );
+
+        let hud = super::hud_state(&world, None);
+
+        assert_eq!(hud.mission_name.as_deref(), Some("Ecos de la anomalía"));
+        assert_eq!(hud.mission_state, Some(HudMissionState::Available));
+        assert!(hud.objective_name.is_some());
+    }
+
+    #[test]
+    fn hud_does_not_import_objective_from_another_active_mission_after_terminal_state() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+        for objective in [
+            crate::el_despertar::EVALUAR_ESTADO_NAVE,
+            crate::el_despertar::RESTAURAR_ENERGIA,
+            crate::el_despertar::RESTABLECER_SOPORTE_VITAL,
+            crate::el_despertar::ACCEDER_PUENTE_MANDO,
+            crate::el_despertar::TOMAR_CONTROL_NAVE,
+        ] {
+            apply(&mut system, &mut world, GameplayCommand::StartObjective { objective });
+            apply(&mut system, &mut world, GameplayCommand::CompleteObjective { objective });
+        }
+        unlock_and_start(&mut system, &mut world, crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA);
+
+        let hud = super::hud_state(&world, None);
+
+        assert_eq!(hud.mission_name.as_deref(), Some("Ecos de la anomalía"));
+        assert_eq!(hud.mission_state, Some(HudMissionState::Active));
+        assert!(hud.objective_name.is_some());
+    }
+
+    #[test]
+    fn hud_does_not_import_objective_from_another_active_mission_after_failure() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::FailMission {
+                mission: crate::el_despertar::EL_DESPERTAR,
+            },
+        );
+        unlock_and_start(&mut system, &mut world, crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA);
+
+        let hud = super::hud_state(&world, None);
+
+        assert_eq!(hud.mission_name.as_deref(), Some("Ecos de la anomalía"));
+        assert_eq!(hud.mission_state, Some(HudMissionState::Active));
+        assert!(hud.objective_name.is_some());
+    }
+
+    #[test]
+    fn hud_keeps_optional_awakening_objective_within_same_mission() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+
+        let hud = super::hud_state(&world, None);
+        let guidance = world
+            .guidance_for_player(_player)
+            .expect("guidance should be available");
+
+        assert_eq!(hud.mission_name.as_deref(), Some("El despertar"));
+        assert!(guidance.objectives.iter().any(|objective| {
+            objective.mission == crate::el_despertar::EL_DESPERTAR
+                && !objective.required
+                && objective.recommended_action.is_some()
+        }));
+        assert_eq!(hud.objective_name.as_deref(), Some("Evaluar el estado de la nave"));
+    }
+
+    #[test]
+    fn presentation_prefers_active_mission_over_another_available_mission() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::UnlockMission {
+                mission: crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+            },
+        );
+
+        assert_eq!(
+            super::presentation_mission(&world),
+            Some(crate::el_despertar::EL_DESPERTAR)
+        );
+    }
+
+    #[test]
+    fn presentation_selects_first_available_in_campaign_order() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::UnlockMission {
+                mission: crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+            },
+        );
+
+        assert_eq!(
+            super::presentation_mission(&world),
+            Some(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+        );
+    }
+
+    #[test]
+    fn hud_switches_to_available_successor_without_starting_it() {
+        let (mut world, _player) = world_with_missions();
+        let mut system = MissionSystem::new();
+        unlock_and_start(&mut system, &mut world, crate::el_despertar::EL_DESPERTAR);
+        for objective in [
+            crate::el_despertar::EVALUAR_ESTADO_NAVE,
+            crate::el_despertar::RESTAURAR_ENERGIA,
+            crate::el_despertar::RESTABLECER_SOPORTE_VITAL,
+            crate::el_despertar::ACCEDER_PUENTE_MANDO,
+            crate::el_despertar::TOMAR_CONTROL_NAVE,
+        ] {
+            apply(&mut system, &mut world, GameplayCommand::StartObjective { objective });
+            apply(&mut system, &mut world, GameplayCommand::CompleteObjective { objective });
+        }
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::UnlockMission {
+                mission: crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+            },
+        );
+
+        let hud = super::hud_state(&world, None);
+        assert_eq!(hud.mission_name.as_deref(), Some("Ecos de la anomalía"));
+        assert_eq!(hud.mission_state, Some(HudMissionState::Available));
+        assert_eq!(world.mission(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state(), MissionState::Available);
+        assert!(hud.objective_name.is_some());
+    }
 }

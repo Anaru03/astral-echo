@@ -33,7 +33,6 @@ impl Stage {
     }
 }
 
-/// Tiempo acumulado por etapa del pipeline, en nanosegundos.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StageTimings {
     pub vertex_ns: u64,
@@ -42,6 +41,12 @@ pub struct StageTimings {
     pub raster_ns: u64,
     pub fragment_ns: u64,
     pub depth_ns: u64,
+    pub vertex_clip_ns: u64,
+    pub vertex_world_ns: u64,
+    pub vertex_normal_ns: u64,
+    pub vertex_shading_ns: u64,
+    pub vertex_write_ns: u64,
+    pub shade: render_core::ShadeTimings,
 }
 
 impl StageTimings {
@@ -92,6 +97,7 @@ pub struct StageMetrics {
     pub fragments_depth_rejected: u32,
     /// Píxeles escritos en el framebuffer.
     pub pixels_written: u32,
+    pub clipping: crate::clip::ClipMetrics,
     /// Tiempo acumulado por etapa.
     pub timings: StageTimings,
 }
@@ -109,12 +115,27 @@ impl StageMetrics {
         self.fragments_shaded += other.fragments_shaded;
         self.fragments_depth_rejected += other.fragments_depth_rejected;
         self.pixels_written += other.pixels_written;
+        self.clipping.triangles_received += other.clipping.triangles_received;
+        self.clipping.trivial_rejects += other.clipping.trivial_rejects;
+        self.clipping.trivial_accepts += other.clipping.trivial_accepts;
+        self.clipping.full_clip_calls += other.clipping.full_clip_calls;
+        self.clipping.plane_distance_evaluations +=
+            other.clipping.plane_distance_evaluations;
+        self.clipping.plane_intersections += other.clipping.plane_intersections;
+        self.clipping.interpolated_vertices += other.clipping.interpolated_vertices;
+        self.clipping.final_polygon_vertices += other.clipping.final_polygon_vertices;
         self.timings.vertex_ns += other.timings.vertex_ns;
         self.timings.assembly_ns += other.timings.assembly_ns;
         self.timings.clipping_ns += other.timings.clipping_ns;
         self.timings.raster_ns += other.timings.raster_ns;
         self.timings.fragment_ns += other.timings.fragment_ns;
         self.timings.depth_ns += other.timings.depth_ns;
+        self.timings.vertex_clip_ns += other.timings.vertex_clip_ns;
+        self.timings.vertex_world_ns += other.timings.vertex_world_ns;
+        self.timings.vertex_normal_ns += other.timings.vertex_normal_ns;
+        self.timings.vertex_shading_ns += other.timings.vertex_shading_ns;
+        self.timings.vertex_write_ns += other.timings.vertex_write_ns;
+        self.timings.shade.merge(other.timings.shade);
     }
 }
 

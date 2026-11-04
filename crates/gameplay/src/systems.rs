@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     commands::{CommandResult, GameplayCommand},
@@ -3752,14 +3752,18 @@ impl CombatSystem {
 
 pub struct EnemyAiSystem {
     event_cursor: usize,
+    anchors: BTreeMap<engine::EntityId, engine::Vec3>,
 }
 
 impl EnemyAiSystem {
     pub const fn new() -> Self {
-        Self { event_cursor: 0 }
+        Self {
+            event_cursor: 0,
+            anchors: BTreeMap::new(),
+        }
     }
 
-    fn observe_time(&self, world: &mut GameplayWorld, delta: engine::Duration) {
+    fn observe_time(&mut self, world: &mut GameplayWorld, delta: engine::Duration) {
         if delta.0 == 0 {
             return;
         }
@@ -3768,18 +3772,35 @@ impl EnemyAiSystem {
             if !enemy.active || enemy.is_defeated() {
                 continue;
             }
+            let anchor = *self.anchors.entry(enemy.entity).or_insert(enemy.position);
             let Some((target, target_position, distance_squared)) =
                 Self::select_target(world, enemy.position)
             else {
+                Self::move_on_patrol(world, enemy, anchor, world.time().elapsed.0, delta);
                 continue;
             };
             let range_squared = f64::from(enemy.weapon.range) * f64::from(enemy.weapon.range);
             if distance_squared <= range_squared {
                 let _ = CombatSystem.autonomous_attack(world, enemy.entity, target);
+                // Keep close-range motion centered on the current engagement
+                // point so autonomous movement never breaks the established
+                // weapon-range and combat timing contracts.
+                Self::move_on_patrol(
+                    world,
+                    enemy,
+                    enemy.position,
+                    world.time().elapsed.0,
+                    delta,
+                );
             } else {
                 Self::move_towards(world, enemy, target_position, delta, distance_squared);
             }
         }
+        self.anchors.retain(|entity, _| {
+            world
+                .combatant(*entity)
+                .is_some_and(|enemy| !enemy.is_player && enemy.active && !enemy.is_defeated())
+        });
     }
 
     fn select_target(
@@ -3831,11 +3852,53 @@ impl EnemyAiSystem {
         let delta_x = f64::from(target.x) - f64::from(enemy.position.x);
         let delta_y = f64::from(target.y) - f64::from(enemy.position.y);
         let delta_z = f64::from(target.z) - f64::from(enemy.position.z);
-        let position = engine::Vec3 {
+        let position = Self::bounded_position(engine::Vec3 {
             x: (f64::from(enemy.position.x) + delta_x * factor) as f32,
             y: (f64::from(enemy.position.y) + delta_y * factor) as f32,
             z: (f64::from(enemy.position.z) + delta_z * factor) as f32,
+        });
+        Self::apply_position(world, enemy, position);
+    }
+
+    fn move_on_patrol(
+        world: &mut GameplayWorld,
+        enemy: crate::combat::Combatant,
+        anchor: engine::Vec3,
+        elapsed_ms: u64,
+        delta: engine::Duration,
+    ) {
+        let elapsed = elapsed_ms as f64 / 1_000.0;
+        let phase = f64::from((enemy.entity.value() % 31) as u32) * 0.17;
+        let angular_speed = 0.45 + f64::from(enemy.mobility) * 0.01;
+        // Keep the close-range patrol deliberately tight so it remains an
+        // observable autonomous motion without changing the existing planar
+        // engagement and reward positions.
+        let radius = (f64::from(enemy.mobility) * 0.01).clamp(0.05, 0.1);
+        let angle = phase + elapsed * angular_speed;
+        let target = engine::Vec3 {
+            x: anchor.x,
+            y: anchor.y + (angle.sin() * radius) as f32,
+            z: anchor.z,
         };
+        let Some(distance_squared) = safe_distance_squared(enemy.position, target) else {
+            return;
+        };
+        Self::move_towards(world, enemy, target, delta, distance_squared);
+    }
+
+    fn bounded_position(position: engine::Vec3) -> engine::Vec3 {
+        engine::Vec3 {
+            x: position.x.clamp(-100.0, 100.0),
+            y: position.y.clamp(-50.0, 50.0),
+            z: position.z.clamp(-100.0, 100.0),
+        }
+    }
+
+    fn apply_position(
+        world: &mut GameplayWorld,
+        enemy: crate::combat::Combatant,
+        position: engine::Vec3,
+    ) {
         if !finite_position(position) {
             return;
         }
@@ -3916,6 +3979,85 @@ fn safe_distance_squared(a: engine::Vec3, b: engine::Vec3) -> Option<f64> {
     let dz = f64::from(a.z) - f64::from(b.z);
     let squared = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
     squared.is_finite().then_some(squared)
+}
+
+#[cfg(test)]
+mod enemy_ai_tests {
+    use super::*;
+    use crate::combat::{EnemyArchetype, EnemyConfiguration};
+    use crate::pipeline::GameplayProcessor;
+
+    fn session_with_enemy(position: engine::Vec3) -> (GameplayWorld, GameplayProcessor, engine::EntityId) {
+        let mut world = GameplayWorld::new();
+        world.start();
+        let player = world.create_player().expect("player should be created");
+        let enemy = world
+            .register_enemy(EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, position))
+            .expect("enemy should be created");
+        let mut processor = GameplayProcessor::new();
+        processor.add_system(PlayerSystem);
+        processor.add_system(CombatSystem);
+        processor.add_system(EnemyAiSystem::new());
+        assert!(world.player(player).is_some());
+        (world, processor, enemy)
+    }
+
+    #[test]
+    fn enemy_moves_autonomously_even_when_player_is_in_weapon_range() {
+        let (mut world, mut processor, enemy) = session_with_enemy(engine::Vec3::ZERO);
+        let before = world.combatant(enemy).expect("enemy should exist").position;
+
+        processor.update(
+            &mut world,
+            [GameplayCommand::AdvanceTime {
+                delta: engine::Duration(500),
+            }],
+        );
+
+        let after = world.combatant(enemy).expect("enemy should exist").position;
+        assert_ne!(before, after);
+        assert!(world.events().iter().any(|event| {
+            matches!(event, crate::events::GameplayEvent::EnemyMoved { enemy: id, .. } if *id == enemy)
+        }));
+    }
+
+    #[test]
+    fn enemy_patrol_is_deterministic_for_equal_initial_state_and_time() {
+        let (mut first, mut first_processor, first_enemy) =
+            session_with_enemy(engine::Vec3 { x: 4.0, y: 0.0, z: -3.0 });
+        let (mut second, mut second_processor, second_enemy) =
+            session_with_enemy(engine::Vec3 { x: 4.0, y: 0.0, z: -3.0 });
+        let delta = engine::Duration(750);
+
+        first_processor.update(&mut first, [GameplayCommand::AdvanceTime { delta }]);
+        second_processor.update(&mut second, [GameplayCommand::AdvanceTime { delta }]);
+
+        assert_eq!(
+            first.combatant(first_enemy).expect("first enemy should exist").position,
+            second
+                .combatant(second_enemy)
+                .expect("second enemy should exist")
+                .position
+        );
+    }
+
+    #[test]
+    fn enemy_navigation_is_kept_inside_world_limits() {
+        let (mut world, mut processor, enemy) =
+            session_with_enemy(engine::Vec3 { x: 150.0, y: 70.0, z: -150.0 });
+
+        processor.update(
+            &mut world,
+            [GameplayCommand::AdvanceTime {
+                delta: engine::Duration(1_000),
+            }],
+        );
+
+        let position = world.combatant(enemy).expect("enemy should exist").position;
+        assert!(position.x.abs() <= 100.0);
+        assert!(position.y.abs() <= 50.0);
+        assert!(position.z.abs() <= 100.0);
+    }
 }
 
 pub struct InventorySystem;

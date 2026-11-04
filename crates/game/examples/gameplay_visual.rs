@@ -10,8 +10,51 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use game::render_backend::{select_backend, BackendDecision, BackendRequest};
-use render_core::{LightingMode, MaterialInfo, SnapshotScene, VisualAssets};
+use render_core::{CullingConfig, LightingMode, MaterialInfo, MeshHandle, SnapshotScene, VisualAssets};
 use render_gpu::{GpuContext, GpuRenderer, OffscreenTarget};
+
+fn print_cpu_timing(label: &str, preparation_ns: u64, stats: &render_cpu::PipelineStats) {
+    let timings = stats.metrics.timings;
+    println!(
+        "cpu-profile label={label} preparation_ms={:.3} vertex_ms={:.3} clip_position_ms={:.3} world_position_ms={:.3} normal_ms={:.3} shading_ms={:.3} vertex_write_ms={:.3} shade_calls={} light_calls={} directional_lights={} point_lights={} point_distance_calculations={} point_normalizations={} shade_inputs_ms={:.3} shade_normal_ms={:.3} shade_view_ms={:.3} shade_light_direction_ms={:.3} shade_attenuation_ms={:.3} shade_diffuse_ms={:.3} shade_specular_ms={:.3} shade_ambient_ms={:.3} shade_composition_ms={:.3} assembly_ms={:.3} clipping_ms={:.3} clip_triangles_received={} clip_trivial_rejects={} clip_trivial_accepts={} clip_full_calls={} clip_plane_distance_evaluations={} clip_plane_intersections={} clip_interpolated_vertices={} clip_final_polygon_vertices={} raster_ms={:.3} fragment_ms={:.3} depth_ms={:.3} pipeline_timed_ms={:.3}",
+        preparation_ns as f64 / 1_000_000.0,
+        timings.vertex_ns as f64 / 1_000_000.0,
+        timings.vertex_clip_ns as f64 / 1_000_000.0,
+        timings.vertex_world_ns as f64 / 1_000_000.0,
+        timings.vertex_normal_ns as f64 / 1_000_000.0,
+        timings.vertex_shading_ns as f64 / 1_000_000.0,
+        timings.vertex_write_ns as f64 / 1_000_000.0,
+        timings.shade.calls,
+        timings.shade.light_calls,
+        timings.shade.directional_lights,
+        timings.shade.point_lights,
+        timings.shade.point_distance_calculations,
+        timings.shade.point_normalizations,
+        timings.shade.inputs_ns as f64 / 1_000_000.0,
+        timings.shade.normal_ns as f64 / 1_000_000.0,
+        timings.shade.view_ns as f64 / 1_000_000.0,
+        timings.shade.light_direction_ns as f64 / 1_000_000.0,
+        timings.shade.attenuation_ns as f64 / 1_000_000.0,
+        timings.shade.diffuse_ns as f64 / 1_000_000.0,
+        timings.shade.specular_ns as f64 / 1_000_000.0,
+        timings.shade.ambient_ns as f64 / 1_000_000.0,
+        timings.shade.composition_ns as f64 / 1_000_000.0,
+        timings.assembly_ns as f64 / 1_000_000.0,
+        timings.clipping_ns as f64 / 1_000_000.0,
+        stats.metrics.clipping.triangles_received,
+        stats.metrics.clipping.trivial_rejects,
+        stats.metrics.clipping.trivial_accepts,
+        stats.metrics.clipping.full_clip_calls,
+        stats.metrics.clipping.plane_distance_evaluations,
+        stats.metrics.clipping.plane_intersections,
+        stats.metrics.clipping.interpolated_vertices,
+        stats.metrics.clipping.final_polygon_vertices,
+        timings.raster_ns as f64 / 1_000_000.0,
+        timings.fragment_ns as f64 / 1_000_000.0,
+        timings.depth_ns as f64 / 1_000_000.0,
+        timings.total_ns() as f64 / 1_000_000.0,
+    );
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut backend = String::from("cpu");
@@ -19,9 +62,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut frames = None;
     let mut output = None;
     let mut shader_time = None;
+    let mut profile_cpu = false;
     let mut demo_flight = false;
     let mut demo_impact = false;
     let mut graphics_debug = false;
+    let mut lights = String::from("both");
     let mut args = std::env::args().skip(1);
     while let Some(option) = args.next() {
         match option.as_str() {
@@ -39,11 +84,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--shader-time" => {
                 shader_time = Some(args.next().ok_or("missing shader time")?.parse::<f32>()?)
             }
+            "--lights" => lights = args.next().ok_or("missing lights variant")?,
+            "--profile-cpu" => profile_cpu = true,
             "--demo-flight" => demo_flight = true,
             "--demo-impact" => demo_impact = true,
             "--help" => {
                 println!(
-                    "gameplay_visual [--backend cpu|gpu|auto] [--window] [--graphics-validate] [--frames N] [--output PATH] [--shader-time T] [--demo-flight|--demo-impact]"
+                    "gameplay_visual [--backend cpu|gpu|auto] [--window] [--graphics-validate] [--frames N] [--output PATH] [--shader-time T] [--profile-cpu] [--lights none|directional|point|both] [--demo-flight|--demo-impact]"
                 );
                 return Ok(());
             }
@@ -52,6 +99,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if demo_flight && demo_impact {
         return Err("--demo-flight and --demo-impact are mutually exclusive".into());
+    }
+    if !matches!(lights.as_str(), "none" | "directional" | "point" | "both") {
+        return Err(format!("invalid lights variant {lights}; expected none, directional, point, or both").into());
     }
     let requested = BackendRequest::parse(&backend)?;
     let decision = select_backend(requested, || {
@@ -72,6 +122,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     if window && output.is_some() {
         return Err("PNG output uses offscreen mode; omit --window".into());
     }
+    let load_started = Instant::now();
+    let shooter_mesh = render_core::load_obj(shooter_obj_path())
+        .map_err(|error| format!("failed to load Shooter OBJ: {error}"))?;
+    println!(
+        "shooter-load elapsed_ms={:.3} vertices={} indices={} triangles={} approx_bytes={}",
+        load_started.elapsed().as_secs_f64() * 1000.0,
+        shooter_mesh.vertices.len(),
+        shooter_mesh.indices.len(),
+        shooter_mesh.indices.len() / 3,
+        shooter_mesh.vertices.len() * std::mem::size_of::<render_core::RasterVertex>()
+            + shooter_mesh.indices.len() * std::mem::size_of::<u32>()
+    );
     if window {
         let source: render_present::SnapshotSource = if demo_flight {
             let session = Rc::new(RefCell::new(support::deterministic_flight_session().0));
@@ -109,12 +171,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         let debug = render_present::GraphicsDebugConfig {
             directory: graphics_debug.then(|| PathBuf::from("target/graphics-debug")),
         };
+        let mut shooter_mesh = Some(shooter_mesh);
         let report = render_present::run_hot_swap_window_with_input_and_scene(
             config,
             source,
             start_gpu,
             |_, _| {},
-            |scene| {
+            move |scene| {
+                scene.register_mesh(
+                    MeshHandle::ENEMY_PLACEHOLDER,
+                    VisualAssets::ENEMY,
+                    shooter_mesh
+                        .take()
+                        .expect("scene configuration should run once"),
+                );
                 scene.set_lighting_mode(LightingMode::Lambert);
                 scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
                 scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
@@ -134,18 +204,44 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tick = world.time().tick;
     println!("F5B read-only world tick={} ship={:?} players={} enemies={} destinations={} collectibles={}",tick.0,world.navigation().ship_id(),world.players().count(),world.enemies().count(),world.destinations().count(),world.collectibles().count());
     let (width, height) = (640, 360);
-    let snapshots = if demo_flight {
+    let mut snapshots = if demo_flight {
         support::deterministic_flight_snapshots(width, height)
     } else if demo_impact {
         support::deterministic_impact_snapshots(width, height)
     } else {
         vec![support::snapshot(&world, width, height)]
     };
+    if lights != "both" {
+        for snapshot in &mut snapshots {
+            snapshot.lights.retain(|light| match (lights.as_str(), light.light.kind) {
+                ("none", _) => false,
+                ("directional", render_core::RenderLightKind::Directional { .. }) => true,
+                ("point", render_core::RenderLightKind::Point { .. }) => true,
+                _ => false,
+            });
+        }
+    }
     if demo_impact {
         validate_impact_snapshots(&snapshots)?;
     }
     let mut scene = SnapshotScene::default();
+    let register_started = Instant::now();
+    scene.register_mesh(
+        MeshHandle::ENEMY_PLACEHOLDER,
+        VisualAssets::ENEMY,
+        shooter_mesh,
+    );
+    println!(
+        "shooter-register elapsed_ms={:.3}",
+        register_started.elapsed().as_secs_f64() * 1000.0
+    );
+    let update_started = Instant::now();
     scene.update(&snapshots[0])?;
+    println!(
+        "scene-update elapsed_ms={:.3} nodes={}",
+        update_started.elapsed().as_secs_f64() * 1000.0,
+        scene.snapshot().nodes.len()
+    );
     scene.set_lighting_mode(LightingMode::Lambert);
     scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
     scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
@@ -162,6 +258,48 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
     let impact_paths = demo_impact.then(|| unique_impact_paths(&path));
     if matches!(decision, BackendDecision::Cpu { .. }) {
+        let mut baseline_scene = SnapshotScene::default();
+        baseline_scene.update(&snapshots[0])?;
+        let mut baseline_framebuffer = render_cpu::Framebuffer::new(width, height)?;
+        let baseline_started = Instant::now();
+        let (baseline_prepared, baseline_pipeline, baseline_preparation_ns) = if profile_cpu && shader_time.is_none() {
+            let (prepared, pipeline, preparation_ns) = render_cpu::render_snapshot_scene_with_timing(
+                &mut baseline_framebuffer,
+                &baseline_scene,
+                render_cpu::RasterMode::Secuencial,
+            )?;
+            (prepared, pipeline, preparation_ns)
+        } else if let Some(time) = shader_time {
+            let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
+                &mut baseline_framebuffer,
+                &baseline_scene,
+                render_cpu::RasterMode::Secuencial,
+                render_cpu::FragmentShader::SolarBands,
+                time,
+            )?;
+            (prepared, pipeline, 0)
+        } else {
+            let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_stats(
+                &mut baseline_framebuffer,
+                &baseline_scene,
+                render_cpu::RasterMode::Secuencial,
+            )?;
+            (prepared, pipeline, 0)
+        };
+        println!(
+            "cpu-baseline elapsed_ms={:.3} prepared_triangles={} vertices_in={} culled={} degenerate={} fragments={} depth_rejected={} pixels_written={}",
+            baseline_started.elapsed().as_secs_f64() * 1000.0,
+            baseline_prepared.triangles,
+            baseline_pipeline.metrics.vertices_in,
+            baseline_pipeline.metrics.triangles_culled,
+            baseline_pipeline.metrics.triangles_degenerate,
+            baseline_pipeline.metrics.fragments_rasterized,
+            baseline_pipeline.metrics.fragments_depth_rejected,
+            baseline_pipeline.metrics.pixels_written
+        );
+        if profile_cpu && shader_time.is_none() {
+            print_cpu_timing("placeholder", baseline_preparation_ns, &baseline_pipeline);
+        }
         let mut framebuffer = render_cpu::Framebuffer::new(width, height)?;
         let start = Instant::now();
         let iterations = if demo_flight || demo_impact {
@@ -169,17 +307,59 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else {
             count as usize
         };
+        let mut frame_times_ms = Vec::with_capacity(iterations);
         for index in 0..iterations {
-            if index > 0 {
+            if index > 0 && index < snapshots.len() {
                 scene.update(&snapshots[index])?;
             }
-            render_cpu::render_snapshot_scene_with_shader_at_time(
-                &mut framebuffer,
-                &scene,
-                render_cpu::RasterMode::Secuencial,
-                render_cpu::FragmentShader::SolarBands,
-                shader_time.unwrap_or((tick.0 % 4096) as f32),
-            )?;
+            let render_started = Instant::now();
+            let (prepared, pipeline, preparation_ns) = if profile_cpu && shader_time.is_none() {
+                let (prepared, pipeline, preparation_ns) = render_cpu::render_snapshot_scene_with_timing(
+                    &mut framebuffer,
+                    &scene,
+                    render_cpu::RasterMode::Secuencial,
+                )?;
+                (prepared, pipeline, preparation_ns)
+            } else if let Some(time) = shader_time {
+                let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
+                    &mut framebuffer,
+                    &scene,
+                    render_cpu::RasterMode::Secuencial,
+                    render_cpu::FragmentShader::SolarBands,
+                    time,
+                )?;
+                (prepared, pipeline, 0)
+            } else {
+                let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_stats(
+                    &mut framebuffer,
+                    &scene,
+                    render_cpu::RasterMode::Secuencial,
+                )?;
+                (prepared, pipeline, 0)
+            };
+            frame_times_ms.push(render_started.elapsed().as_secs_f64() * 1000.0);
+            if index == 0 {
+                println!(
+                    "cpu-shooter-frame elapsed_ms={:.3} considered={} visible={} discarded={} triangles={} vertices_in={} rejected={} clipped={} culled={} degenerate={} fragments={} shaded={} depth_rejected={} pixels_written={}",
+                    render_started.elapsed().as_secs_f64() * 1000.0,
+                    prepared.considered,
+                    prepared.visible,
+                    prepared.discarded,
+                    prepared.triangles,
+                    pipeline.metrics.vertices_in,
+                    pipeline.metrics.triangles_rejected,
+                    pipeline.metrics.triangles_clipped,
+                    pipeline.metrics.triangles_culled,
+                    pipeline.metrics.triangles_degenerate,
+                    pipeline.metrics.fragments_rasterized,
+                    pipeline.metrics.fragments_shaded,
+                    pipeline.metrics.fragments_depth_rejected,
+                    pipeline.metrics.pixels_written
+                );
+                if profile_cpu && shader_time.is_none() {
+                    print_cpu_timing("shooter", preparation_ns, &pipeline);
+                }
+            }
             if demo_flight {
                 render_cpu::write_png(&demo_path(&path, index), &framebuffer)?;
             } else if demo_impact {
@@ -206,11 +386,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         if !demo_flight {
             render_cpu::write_png(&path, &framebuffer)?;
         }
-        println!("CPU frames={iterations} render_avg_ms={render_ms:.3}");
+        let min_ms = frame_times_ms.iter().copied().fold(f64::INFINITY, f64::min);
+        let max_ms = frame_times_ms.iter().copied().fold(0.0, f64::max);
+        println!("CPU frames={iterations} render_avg_ms={render_ms:.3} measured_min_ms={min_ms:.3} measured_max_ms={max_ms:.3}");
     } else {
         let gpu = Arc::new(GpuContext::new(Default::default())?);
         println!("ADAPTER {:?}", gpu.adapter_info());
-        let mut renderer = GpuRenderer::from_snapshot(gpu.clone(), &scene)?;
+        let mut prepared = scene.prepare(CullingConfig {
+            width,
+            height,
+            ..Default::default()
+        });
+        let mut renderer = GpuRenderer::from_prepared(gpu.clone(), &prepared)?;
         let target = OffscreenTarget::new(gpu.clone(), width, height)?;
         let start = Instant::now();
         let iterations = if demo_flight || demo_impact {
@@ -219,11 +406,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             count as usize
         };
         for index in 0..iterations {
-            if index > 0 {
+            if index > 0 && index < snapshots.len() {
                 scene.update(&snapshots[index])?;
-                renderer.sync_snapshot(&scene)?;
+                prepared = scene.prepare(CullingConfig {
+                    width,
+                    height,
+                    ..Default::default()
+                });
+                renderer.sync_prepared(&prepared)?;
             }
-            target.render_snapshot(&mut renderer, &scene)?;
+            target.render_prepared(&mut renderer, &prepared, scene.view_projection())?;
             gpu.wait()?;
             if demo_flight {
                 target.readback()?.write_png(&demo_path(&path, index))?;
@@ -254,6 +446,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let readback_ms = start.elapsed().as_secs_f64() * 1000.0;
         println!("GPU frames={iterations} submit_to_completion_avg_ms={render_ms:.3} readback_ms={readback_ms:.3}");
         if !demo_flight && !demo_impact {
+            image.write_png("target/f13-shooter-gpu-readback.png")?;
             println!(
                 "CPU/GPU comparison {:?}",
                 support::compare(&support::cpu_image(&scene, width, height), &image)
@@ -268,6 +461,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("PNG={} demo_flight={} gameplay_tick_unchanged={}", path.display(), demo_flight, tick.0);
     Ok(())
+}
+
+fn shooter_obj_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/shooter/shooter.obj")
 }
 
 fn demo_path(path: &Path, index: usize) -> PathBuf {

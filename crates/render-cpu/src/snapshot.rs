@@ -36,7 +36,57 @@ pub fn render_snapshot_scene_with_stats(
         overlay_clear_color(scene.overlay()),
         scene.overlay().game_over,
     )?;
+    compose_hud_overlay(framebuffer, &scene.overlay().hud);
     Ok((prepared_stats, pipeline_stats))
+}
+
+pub fn compose_hud_overlay(framebuffer: &mut Framebuffer, hud: &render_core::HudState) {
+    let overlay = render_core::hud_overlay(hud, framebuffer.width(), framebuffer.height());
+    for rect in std::iter::once(overlay.background).chain(overlay.glyphs) {
+        for y in rect.y..rect.y.saturating_add(rect.height) {
+            for x in rect.x..rect.x.saturating_add(rect.width) {
+                let Some(destination) = framebuffer.pixel(x, y) else { continue };
+                let alpha = f32::from(rect.color[3]) / 255.0;
+                let blend = |source: u8, target: u8| {
+                    (f32::from(source) * alpha + f32::from(target) * (1.0 - alpha)) as u8
+                };
+                framebuffer.set_pixel(x, y, Color::new(
+                    blend(rect.color[0], destination.r),
+                    blend(rect.color[1], destination.g),
+                    blend(rect.color[2], destination.b), 255,
+                ));
+            }
+        }
+    }
+}
+
+pub fn render_snapshot_scene_with_timing(
+    framebuffer: &mut Framebuffer,
+    scene: &SnapshotScene,
+    mode: RasterMode,
+) -> Result<(PreparedSceneStats, PipelineStats, u64), RasterError> {
+    let preparation_started = std::time::Instant::now();
+    let prepared = scene.prepare(render_core::CullingConfig {
+        width: framebuffer.width(),
+        height: framebuffer.height(),
+        ..Default::default()
+    });
+    let preparation_ns = preparation_started.elapsed().as_nanos() as u64;
+    let prepared_stats = prepared.stats();
+    let pipeline_stats = render_prepared_scene_with_config(
+        framebuffer,
+        &prepared,
+        scene.view_projection(),
+        mode,
+        overlay_clear_color(scene.overlay()),
+        scene.overlay().game_over,
+        PipelineConfig {
+            timing: true,
+            ..Default::default()
+        },
+    )?;
+    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    Ok((prepared_stats, pipeline_stats, preparation_ns))
 }
 
 pub fn render_snapshot_scene_with_shader_with_stats(
@@ -77,7 +127,9 @@ pub fn render_snapshot_scene_with_shader_at_time_with_stats(
         scene.overlay().game_over,
         shader,
         time,
+        PipelineConfig::default(),
     )?;
+    compose_hud_overlay(framebuffer, &scene.overlay().hud);
     Ok((prepared_stats, pipeline_stats))
 }
 
@@ -129,7 +181,10 @@ pub fn render_snapshot_scene_reference(
     for (node, mesh) in scene.draws() {
         pipeline.draw_mesh(mesh, vp * node.transform.matrix(), Topology::TriangleList)?;
     }
-    Ok(pipeline.stats)
+    let stats = pipeline.stats;
+    drop(pipeline);
+    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    Ok(stats)
 }
 
 pub fn render_prepared_scene(
@@ -156,6 +211,26 @@ fn render_prepared_scene_with_clear(
     clear: Color,
     game_over: bool,
 ) -> Result<PipelineStats, RasterError> {
+    render_prepared_scene_with_config(
+        framebuffer,
+        scene,
+        view_projection,
+        mode,
+        clear,
+        game_over,
+        PipelineConfig::default(),
+    )
+}
+
+fn render_prepared_scene_with_config(
+    framebuffer: &mut Framebuffer,
+    scene: &PreparedScene,
+    view_projection: render_core::Mat4,
+    mode: RasterMode,
+    clear: Color,
+    game_over: bool,
+    config: PipelineConfig,
+) -> Result<PipelineStats, RasterError> {
     render_prepared_scene_with_shader(
         framebuffer,
         scene,
@@ -165,6 +240,7 @@ fn render_prepared_scene_with_clear(
         game_over,
         FragmentShader::VertexColor,
         0.0,
+        config,
     )
 }
 
@@ -177,9 +253,10 @@ fn render_prepared_scene_with_shader(
     game_over: bool,
     shader: FragmentShader,
     time: f32,
+    config: PipelineConfig,
 ) -> Result<PipelineStats, RasterError> {
     let viewport = Viewport::from_size(framebuffer.width(), framebuffer.height())?;
-    let mut pipeline = CpuPipeline::new(framebuffer, viewport, PipelineConfig::default())
+    let mut pipeline = CpuPipeline::new(framebuffer, viewport, config)
         .with_fragment_shader(shader)
         .with_fragment_time(time)
         .with_tile_config(TileConfig {
