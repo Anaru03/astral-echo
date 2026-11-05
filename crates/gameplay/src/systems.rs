@@ -2648,6 +2648,65 @@ impl NavigationSystem {
         }
     }
 
+    fn confirm_free_navigation_destination(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        pilot_station: engine::EntityId,
+        destination: crate::navigation::DestinationId,
+    ) -> CommandResult {
+        if let Err(result) = self.validate_pilot_access(world, player, pilot_station) {
+            return result;
+        }
+        if !world
+            .mission(crate::types::MissionId(1))
+            .is_some_and(|mission| mission.state() == crate::domains::mission::MissionState::Completed)
+        {
+            return CommandResult::rejected(crate::commands::CommandRejection::MissionOneIncomplete);
+        }
+        let Some(ship) = world.navigation().ship_id() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        };
+        if world.ship_is_operational(ship) != Some(true) {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipDestroyed);
+        }
+        let now = world.time().elapsed;
+        let result = world
+            .navigation_mut()
+            .confirm_free_navigation_destination(destination, now);
+        match result {
+            Ok(()) => {
+                world.publish(crate::events::GameplayEvent::FreeNavigationDestinationSelected {
+                    player,
+                    pilot_station,
+                    destination,
+                });
+                CommandResult::success(true)
+            }
+            Err(crate::navigation::FreeNavigationSelectionError::TravelActive) => {
+                CommandResult::rejected(crate::commands::CommandRejection::TravelActive)
+            }
+            Err(crate::navigation::FreeNavigationSelectionError::AutopilotActive) => {
+                CommandResult::rejected(crate::commands::CommandRejection::AutopilotAlreadyPlanned)
+            }
+            Err(crate::navigation::FreeNavigationSelectionError::DestinationNotFound) => {
+                CommandResult::rejected(crate::commands::CommandRejection::DestinationNotFound)
+            }
+            Err(crate::navigation::FreeNavigationSelectionError::DestinationNotPlanet) => {
+                CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationDestinationNotPlanet)
+            }
+            Err(crate::navigation::FreeNavigationSelectionError::DestinationNotAllowed) => {
+                CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationDestinationNotAllowed)
+            }
+            Err(crate::navigation::FreeNavigationSelectionError::DestinationUnknown) => {
+                CommandResult::rejected(crate::commands::CommandRejection::DestinationUnknown)
+            }
+            Err(crate::navigation::FreeNavigationSelectionError::DestinationIsCurrentPosition) => {
+                CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationDestinationIsCurrentPosition)
+            }
+        }
+    }
+
     fn start_travel(
         &self,
         world: &mut GameplayWorld,
@@ -3031,6 +3090,11 @@ impl GameplaySystem for NavigationSystem {
                 pilot_station,
                 destination,
             } => self.select_destination(world, player, pilot_station, destination),
+            GameplayCommand::ConfirmFreeNavigationDestination {
+                player,
+                pilot_station,
+                destination,
+            } => self.confirm_free_navigation_destination(world, player, pilot_station, destination),
             GameplayCommand::StartTravel {
                 player,
                 pilot_station,

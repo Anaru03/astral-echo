@@ -810,6 +810,95 @@ fn observation_camera_stays_outside_planet_and_transition_is_deterministic() {
 }
 
 #[test]
+fn observable_planets_are_sorted_and_ignore_space_points() {
+    let mut world = support::fixture_world();
+    let tessara = gameplay::DestinationId::new(TESSARA_DESTINATION_ID);
+    world
+        .register_destination(gameplay::Destination {
+            id: tessara,
+            destination_type: gameplay::DestinationType::Planet,
+            position: engine::Vec3 { x: -49.17, y: 8.0, z: 31.17 },
+            travel_duration: engine::Duration(1_000),
+            fuel_cost: 1,
+            discovery: gameplay::DiscoveryState::Discovered,
+        })
+        .unwrap();
+    world
+        .register_destination(gameplay::Destination {
+            id: gameplay::DestinationId::new(9_999),
+            destination_type: gameplay::DestinationType::SpacePoint,
+            position: engine::Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+            travel_duration: engine::Duration(1_000),
+            fuel_cost: 1,
+            discovery: gameplay::DiscoveryState::Discovered,
+        })
+        .unwrap();
+
+    let planets = observable_planets(&world);
+    assert!(planets.windows(2).all(|pair| pair[0].value() < pair[1].value()));
+    assert!(planets.contains(&tessara));
+    assert!(!planets.contains(&gameplay::DestinationId::new(9_999)));
+}
+
+#[test]
+fn observation_camera_accepts_tessara_without_mutating_world() {
+    let mut world = support::fixture_world();
+    let tessara = gameplay::DestinationId::new(TESSARA_DESTINATION_ID);
+    let position = engine::Vec3 { x: -49.17, y: 8.0, z: 31.17 };
+    world
+        .register_destination(gameplay::Destination {
+            id: tessara,
+            destination_type: gameplay::DestinationType::Planet,
+            position,
+            travel_duration: engine::Duration(1_000),
+            fuel_cost: 1,
+            discovery: gameplay::DiscoveryState::Discovered,
+        })
+        .unwrap();
+    let before = format!("{world:?}");
+    let camera = observation_camera_for_destination(
+        &world,
+        16.0 / 9.0,
+        1.0,
+        0.4,
+        -0.2,
+        Some(tessara),
+    )
+    .unwrap();
+    assert!(camera.view_projection_matrix().is_finite());
+    assert!((camera.position() - Vec3::new(-49.17, 8.0, 31.17)).length() >= 14.0);
+    assert_eq!(before, format!("{world:?}"));
+}
+
+#[test]
+fn observation_camera_rejects_non_planet_targets_with_a_finite_veyra_fallback() {
+    let mut world = support::fixture_world();
+    let space_point = gameplay::DestinationId::new(9_999);
+    world
+        .register_destination(gameplay::Destination {
+            id: space_point,
+            destination_type: gameplay::DestinationType::SpacePoint,
+            position: engine::Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+            travel_duration: engine::Duration(1_000),
+            fuel_cost: 1,
+            discovery: gameplay::DiscoveryState::Discovered,
+        })
+        .unwrap();
+    let fallback = observation_camera(&world, 16.0 / 9.0, 1.0, 0.0, 0.0).unwrap();
+    let rejected = observation_camera_for_destination(
+        &world,
+        16.0 / 9.0,
+        1.0,
+        0.0,
+        0.0,
+        Some(space_point),
+    )
+    .unwrap();
+    assert_eq!(fallback, rejected);
+    assert!(rejected.view_projection_matrix().is_finite());
+}
+
+#[test]
 fn observation_transition_reverses_from_current_progress_without_frame_state() {
     let world = support::fixture_world();
     let before = format!("{world:?}");

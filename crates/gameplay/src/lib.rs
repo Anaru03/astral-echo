@@ -129,10 +129,12 @@ pub use mission::{Mission, MissionDefinitionError, MissionProgress, MissionRegis
 pub use mission_system::MissionSystem;
 pub use navigation::{
     AutopilotError, AutopilotState, Destination, DestinationId, DestinationType, DiscoveryState,
+    FreeNavigationSelectionError,
     NavigationInitializationError, NavigationMovementError, NavigationRegistrationError,
     NavigationRoute, NavigationRouteError, NavigationRouteState, NavigationState, ScannerError,
     PlanetFlightState, PlanetPhysics, ShipMovementParameters, ShipOrientation, SignalDetection,
     SignalKnowledge, SignalScanner, TravelProgress, TravelState, SUN_DESTINATION_ID,
+    TESSARA_DESTINATION_ID, VEYRA_DESTINATION_ID, is_free_navigation_destination,
 };
 pub use objective::{Objective, ObjectiveTrigger, ObjectiveTriggerError};
 pub use pipeline::GameplayProcessor;

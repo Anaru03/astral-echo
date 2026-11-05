@@ -5329,6 +5329,9 @@ impl GameplayWorld {
             .ship_id()
             .map(|_| self.navigation.control_active())
     }
+    pub fn free_navigation_destination(&self) -> Option<crate::navigation::DestinationId> {
+        self.navigation.free_navigation_destination()
+    }
     pub fn ship_boost_active(&self) -> Option<bool> {
         self.navigation
             .ship_id()

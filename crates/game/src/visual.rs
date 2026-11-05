@@ -195,6 +195,12 @@ impl ObservationTransition {
         self.azimuth += azimuth_delta;
         self.elevation = (self.elevation + elevation_delta).clamp(-1.2, 1.2);
     }
+
+    fn retarget(&mut self, now: u64) {
+        self.from = self.progress(now);
+        self.to = 1.0;
+        self.started_at = now;
+    }
 }
 
 struct VisualBridge {
@@ -209,6 +215,9 @@ struct VisualBridge {
     enemy: EntityId,
     feedback: String,
     observation: ObservationTransition,
+    observation_target: Option<DestinationId>,
+    navigation_selector_open: bool,
+    free_navigation_candidate: Option<DestinationId>,
     flight_keys: FlightKeys,
     gamepad: GamepadInput,
     audio: AudioManager,
@@ -664,6 +673,9 @@ impl VisualBridge {
             enemy,
             feedback: "ESCENA INICIALIZADA".to_owned(),
             observation: ObservationTransition::default(),
+            observation_target: Some(DESTINATION),
+            navigation_selector_open: false,
+            free_navigation_candidate: None,
             flight_keys: FlightKeys::default(),
             gamepad: GamepadInput::new(),
             audio,
@@ -847,6 +859,22 @@ impl VisualBridge {
         if self.controls_panel_open {
             return;
         }
+        if self.pilot_mode && state == ElementState::Pressed && key == KeyCode::KeyN {
+            self.toggle_navigation_selector();
+            return;
+        }
+        if self.navigation_selector_open {
+            if state != ElementState::Pressed {
+                return;
+            }
+            match key {
+                KeyCode::ArrowLeft => self.select_free_navigation_candidate(-1),
+                KeyCode::ArrowRight => self.select_free_navigation_candidate(1),
+                KeyCode::Enter => self.confirm_free_navigation_candidate(),
+                _ => {}
+            }
+            return;
+        }
         let player = self.player;
         let ship = self.ship;
         let enemy = self.enemy;
@@ -886,6 +914,19 @@ impl VisualBridge {
                 active: self.boost_pressed,
             }]);
             return;
+        }
+        if self.pilot_mode && self.observation_is_active() && state == ElementState::Pressed {
+            match key {
+                KeyCode::BracketLeft => {
+                    self.select_observation_planet(-1);
+                    return;
+                }
+                KeyCode::BracketRight => {
+                    self.select_observation_planet(1);
+                    return;
+                }
+                _ => {}
+            }
         }
         if key == KeyCode::KeyG && self.pilot_mode {
             if state == ElementState::Pressed {
@@ -2037,7 +2078,25 @@ impl VisualBridge {
             return "PULSA ENTER PARA COMENZAR".to_owned();
         }
         if self.pilot_mode {
-            return "PILOTAJE ACTIVO: USA F1 PARA VER CONTROLES".to_owned();
+            if self.navigation_selector_open {
+                let candidate = self
+                    .free_navigation_candidate
+                    .map(Self::navigation_destination_label)
+                    .unwrap_or("NINGUNO");
+                return format!(
+                    "SELECCIÓN DE DESTINO | CANDIDATO: {candidate} | FLECHAS CAMBIAR | ENTER CONFIRMAR | N CERRAR"
+                );
+            }
+            let confirmed = self
+                .session
+                .world()
+                .free_navigation_destination()
+                .map(Self::navigation_destination_label)
+                .unwrap_or("NINGUNO");
+            return format!(
+                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} - N SELECCIONAR - [/] OBSERVAR - USA F1",
+                self.observation_target_label(),
+            );
         }
         if let Some(prompt) = self.contextual_prompt() {
             return format!("{prompt} - ACERCATE Y USA I");
@@ -2122,6 +2181,8 @@ impl VisualBridge {
                 "G ESCUDO - PILOTAJE".to_owned(),
                 "SHIFT BOOST - PILOTAJE".to_owned(),
                 "X FRENAR - PILOTAJE".to_owned(),
+                "[/] CAMBIAR PLANETA OBSERVADO - PILOTAJE".to_owned(),
+                "N SELECCIONAR DESTINO LIBRE - PILOTAJE".to_owned(),
                 "U USAR COMBUSTIBLE - PILOTAJE".to_owned(),
                 "B EQUIPAR PLASMA - ARMAMENTO ENCONTRADO".to_owned(),
                 "P AUTOPILOTO - PILOTAJE".to_owned(),
@@ -2466,6 +2527,134 @@ impl VisualBridge {
         self.observation.toggle(now);
     }
 
+    fn observation_is_active(&self) -> bool {
+        self.observation
+            .progress(self.session.world().time().elapsed.0)
+            >= 0.5
+    }
+
+    fn observation_target_label(&self) -> &'static str {
+        match self.observation_target {
+            Some(id) if id == DESTINATION => "VEYRA",
+            Some(id) if id == TESSARA_DESTINATION => "TESSARA",
+            _ => "VEYRA",
+        }
+    }
+
+    fn navigation_destination_label(destination: DestinationId) -> &'static str {
+        match destination {
+            id if id == DESTINATION => "VEYRA",
+            id if id == TESSARA_DESTINATION => "TESSARA",
+            _ => "DESTINO",
+        }
+    }
+
+    fn free_navigation_candidates(&self) -> Vec<DestinationId> {
+        self.session
+            .world()
+            .destinations()
+            .filter(|destination| {
+                destination.destination_type == gameplay::DestinationType::Planet
+                    && destination.discovery != gameplay::DiscoveryState::Unknown
+                    && gameplay::is_free_navigation_destination(destination.id)
+            })
+            .map(|destination| destination.id)
+            .collect()
+    }
+
+    fn toggle_navigation_selector(&mut self) {
+        if self.navigation_selector_open {
+            self.navigation_selector_open = false;
+            self.free_navigation_candidate = None;
+            return;
+        }
+        let candidates = self.free_navigation_candidates();
+        let Some(first) = candidates.first().copied() else {
+            self.feedback = "ERICK: no hay planetas disponibles para navegación libre.".to_owned();
+            return;
+        };
+        let confirmed = self.session.world().free_navigation_destination();
+        self.free_navigation_candidate = Some(
+            confirmed
+                .filter(|destination| candidates.contains(destination))
+                .unwrap_or(first),
+        );
+        self.navigation_selector_open = true;
+    }
+
+    fn select_free_navigation_candidate(&mut self, direction: i32) {
+        let candidates = self.free_navigation_candidates();
+        if candidates.is_empty() {
+            return;
+        }
+        let current = self
+            .free_navigation_candidate
+            .filter(|destination| candidates.contains(destination))
+            .unwrap_or(candidates[0]);
+        let index = candidates.iter().position(|value| *value == current).unwrap_or(0) as i32;
+        let next = (index + direction).rem_euclid(candidates.len() as i32) as usize;
+        self.free_navigation_candidate = Some(candidates[next]);
+    }
+
+    fn confirm_free_navigation_candidate(&mut self) {
+        let Some(destination) = self.free_navigation_candidate else {
+            return;
+        };
+        let results = self.session.update([GameplayCommand::ConfirmFreeNavigationDestination {
+            player: self.player,
+            pilot_station: self.pilot_station,
+            destination,
+        }]);
+        let status = results.first().map(|result| result.status);
+        match status {
+            Some(gameplay::CommandStatus::Success { .. }) => {
+                self.navigation_selector_open = false;
+                self.free_navigation_candidate = None;
+                self.feedback = format!(
+                    "ERICK: destino de navegación seleccionado: {}.",
+                    Self::navigation_destination_label(destination)
+                );
+            }
+            Some(gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::MissionOneIncomplete,
+            }) => {
+                self.feedback = "ERICK: primero debemos preparar la nave para el vuelo.".to_owned();
+            }
+            Some(gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::PilotStationNotOccupiedByPlayer,
+            }) => {
+                self.feedback = "ERICK: necesito acceso a la estación de pilotaje.".to_owned();
+            }
+            Some(gameplay::CommandStatus::Rejected { .. })
+            | Some(gameplay::CommandStatus::Invalid { .. })
+            | None => {
+                self.feedback = "ERICK: no puedo aceptar ese destino.".to_owned();
+            }
+        }
+        println!("visual gameplay: {}", self.feedback);
+    }
+
+    fn select_observation_planet(&mut self, direction: i32) {
+        let planets = game::render_bridge::observable_planets(self.session.world());
+        if planets.len() <= 1 {
+            return;
+        }
+        let current = self
+            .observation_target
+            .filter(|id| planets.contains(id))
+            .unwrap_or(DESTINATION);
+        let index = planets.iter().position(|id| *id == current).unwrap_or(0) as i32;
+        let next = (index + direction).rem_euclid(planets.len() as i32) as usize;
+        let selected = planets[next];
+        if self.observation_target == Some(selected) {
+            return;
+        }
+        self.observation_target = Some(selected);
+        self.observation
+            .retarget(self.session.world().time().elapsed.0);
+        self.feedback = format!("OBSERVANDO: {}", self.observation_target_label());
+    }
+
     fn toggle_flight(&mut self, player: EntityId, pilot_station: EntityId) {
         if let Ok(guidance) = self.session.world().guidance_for_player(player) {
             if let Some(
@@ -2545,12 +2734,13 @@ impl VisualBridge {
         if self.interior_mode {
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
         }
-        game::render_bridge::observation_camera(
+        game::render_bridge::observation_camera_for_destination(
             world,
             aspect,
             self.observation.progress(world.time().elapsed.0),
             self.observation.azimuth,
             self.observation.elevation,
+            self.observation_target,
         )
     }
 }
@@ -2902,6 +3092,127 @@ mod tests {
         assert!(!bridge.controls_panel_open);
         bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
         assert!(bridge.flight_keys.forward);
+    }
+
+    #[test]
+    fn observation_target_starts_at_veyra_and_cycles_to_tessara_only_in_pilot_observation() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        assert_eq!(bridge.observation_target, Some(DESTINATION));
+
+        bridge.handle_key(KeyCode::BracketRight, ElementState::Pressed);
+        assert_eq!(bridge.observation_target, Some(DESTINATION));
+
+        let before = format!("{:?}", bridge.session.world());
+        bridge.pilot_mode = true;
+        bridge.observation.from = 1.0;
+        bridge.observation.to = 1.0;
+        bridge.handle_key(KeyCode::BracketRight, ElementState::Pressed);
+
+        assert_eq!(bridge.observation_target, Some(TESSARA_DESTINATION));
+        assert_eq!(before, format!("{:?}", bridge.session.world()));
+        assert!(bridge.feedback.contains("TESSARA"));
+
+        bridge.handle_key(KeyCode::BracketLeft, ElementState::Pressed);
+        assert_eq!(bridge.observation_target, Some(DESTINATION));
+    }
+
+    #[test]
+    fn observation_target_selection_does_not_change_navigation_or_missions() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.pilot_mode = true;
+        bridge.observation.from = 1.0;
+        bridge.observation.to = 1.0;
+        let navigation_before = format!("{:?}", bridge.session.world().travel_state());
+        let missions_before = format!("{:?}", bridge.session.world().missions().collect::<Vec<_>>());
+
+        bridge.handle_key(KeyCode::BracketRight, ElementState::Pressed);
+
+        assert_eq!(bridge.observation_target, Some(TESSARA_DESTINATION));
+        assert_eq!(navigation_before, format!("{:?}", bridge.session.world().travel_state()));
+        assert_eq!(missions_before, format!("{:?}", bridge.session.world().missions().collect::<Vec<_>>()));
+    }
+
+    #[test]
+    fn free_navigation_selector_confirms_planet_without_starting_travel() {
+        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..6 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        assert!(bridge.pilot_mode);
+
+        let position_before = bridge.session.world().ship_position();
+        let fuel_before = bridge
+            .session
+            .world()
+            .ship_fuel(bridge.ship)
+            .expect("ship fuel should exist")
+            .current();
+        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
+        assert!(bridge.navigation_selector_open);
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
+        assert_eq!(
+            bridge.free_navigation_candidate,
+            Some(TESSARA_DESTINATION)
+        );
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+
+        assert_eq!(
+            bridge.session.world().free_navigation_destination(),
+            Some(TESSARA_DESTINATION)
+        );
+        assert!(!bridge.navigation_selector_open);
+        assert_eq!(bridge.session.world().ship_position(), position_before);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .ship_fuel(bridge.ship)
+                .expect("ship fuel should remain available")
+                .current(),
+            fuel_before
+        );
+        assert_eq!(bridge.session.world().travel_state(), gameplay::TravelState::Idle);
+        assert_eq!(
+            bridge.session.world().autopilot_state(),
+            &gameplay::AutopilotState::Inactive
+        );
+        assert_eq!(bridge.observation_target, Some(DESTINATION));
+        assert!(bridge.feedback.contains("TESSARA"));
+
+        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
+        bridge.handle_key(KeyCode::ArrowLeft, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        assert_eq!(
+            bridge.session.world().free_navigation_destination(),
+            Some(DESTINATION)
+        );
+    }
+
+    #[test]
+    fn free_navigation_selector_does_not_open_outside_pilot_mode() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
+        assert!(!bridge.navigation_selector_open);
+        assert_eq!(bridge.session.world().free_navigation_destination(), None);
+    }
+
+    #[test]
+    fn free_navigation_confirmation_requires_mission_one_completion() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.pilot_mode = true;
+        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+
+        assert_eq!(bridge.session.world().free_navigation_destination(), None);
+        assert!(bridge.feedback.contains("preparar la nave"));
+        assert_eq!(bridge.session.world().travel_state(), gameplay::TravelState::Idle);
+        assert_eq!(
+            bridge.session.world().autopilot_state(),
+            &gameplay::AutopilotState::Inactive
+        );
     }
 
     #[test]

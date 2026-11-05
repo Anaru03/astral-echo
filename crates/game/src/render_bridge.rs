@@ -1021,12 +1021,40 @@ pub fn observation_camera(
     azimuth: f32,
     elevation: f32,
 ) -> Result<Camera, CameraError> {
+    observation_camera_for_destination(
+        world,
+        aspect,
+        transition,
+        azimuth,
+        elevation,
+        None,
+    )
+}
+
+pub fn observation_camera_for_destination(
+    world: &GameplayWorld,
+    aspect: f32,
+    transition: f32,
+    azimuth: f32,
+    elevation: f32,
+    target_destination: Option<gameplay::DestinationId>,
+) -> Result<Camera, CameraError> {
     let ship = visual_ship_position(world).unwrap_or(Vec3::ZERO);
     let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
-    let planet = academic_planet_id(world)
+    let target = target_destination
+        .filter(|id| is_observable_planet(world, *id))
+        .or_else(|| academic_planet_id(world));
+    let planet = target
         .and_then(|id| world.planet_position_at(id, world.time().elapsed))
         .map(from_engine)
+        .or_else(|| {
+            target
+                .and_then(|id| world.destination(id).map(|value| from_engine(value.position)))
+        })
         .unwrap_or_else(|| academic_planet_transform(elapsed_seconds).translation);
+    let observation_radius = target
+        .map(planet_visual_radius)
+        .unwrap_or(PLANET_VISUAL_RADIUS);
     let azimuth = if azimuth.is_finite() { azimuth } else { 0.0 };
     let elevation = if elevation.is_finite() {
         elevation.clamp(-1.2, 1.2)
@@ -1053,7 +1081,7 @@ pub fn observation_camera(
         elevation.sin(),
         elevation.cos() * azimuth.sin(),
     );
-    let close_position = planet + surface_direction * PLANET_OBSERVATION_RADIUS;
+    let close_position = planet + surface_direction * observation_distance(observation_radius);
     let transition = transition.clamp(0.0, 1.0);
     let mut position = space_position.lerp(close_position, transition);
     if let gameplay::PlanetFlightState::Atmospheric { intensity, .. } =
@@ -1076,6 +1104,38 @@ pub fn observation_camera(
             far: 500.0,
         },
     )
+}
+
+pub fn observable_planets(world: &GameplayWorld) -> Vec<gameplay::DestinationId> {
+    let mut planets = world
+        .destinations()
+        .filter(|destination| destination.destination_type == gameplay::DestinationType::Planet)
+        .filter(|destination| is_observable_planet(world, destination.id))
+        .map(|destination| destination.id)
+        .collect::<Vec<_>>();
+    planets.sort_unstable_by_key(|id| id.value());
+    planets
+}
+
+pub fn is_observable_planet(world: &GameplayWorld, destination: gameplay::DestinationId) -> bool {
+    world.destination(destination).is_some_and(|value| {
+        value.destination_type == gameplay::DestinationType::Planet
+            && (world.planet_position_at(destination, world.time().elapsed).is_some()
+                || (value.position.x.is_finite()
+                    && value.position.y.is_finite()
+                    && value.position.z.is_finite()))
+    })
+}
+
+fn planet_visual_radius(destination: gameplay::DestinationId) -> f32 {
+    match destination.value() {
+        ACADEMIC_PLANET_DESTINATION_ID | TESSARA_DESTINATION_ID => PLANET_VISUAL_RADIUS,
+        _ => PLANET_VISUAL_RADIUS,
+    }
+}
+
+fn observation_distance(visual_radius: f32) -> f32 {
+    (visual_radius.max(0.1) * 1.75).max(PLANET_OBSERVATION_RADIUS)
 }
 
 pub fn interior_camera(

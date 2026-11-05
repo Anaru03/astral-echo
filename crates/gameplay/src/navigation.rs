@@ -17,6 +17,12 @@ impl DestinationId {
 }
 
 pub const SUN_DESTINATION_ID: DestinationId = DestinationId::new(9_000);
+pub const VEYRA_DESTINATION_ID: DestinationId = DestinationId::new(9_002);
+pub const TESSARA_DESTINATION_ID: DestinationId = DestinationId::new(9_601);
+
+pub const fn is_free_navigation_destination(id: DestinationId) -> bool {
+    matches!(id, VEYRA_DESTINATION_ID | TESSARA_DESTINATION_ID)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DestinationType {
@@ -335,6 +341,7 @@ pub struct NavigationState {
     ship_id: Option<EntityId>,
     current_position: Vec3,
     selected_destination: Option<DestinationId>,
+    free_navigation_destination: Option<DestinationId>,
     travel_state: TravelState,
     destinations: BTreeMap<DestinationId, Destination>,
     orientation: ShipOrientation,
@@ -363,6 +370,7 @@ impl Default for NavigationState {
             ship_id: None,
             current_position: Vec3::ZERO,
             selected_destination: None,
+            free_navigation_destination: None,
             travel_state: TravelState::Idle,
             destinations: BTreeMap::new(),
             orientation: ShipOrientation::default(),
@@ -417,6 +425,7 @@ impl NavigationState {
         self.destinations = next_destinations;
         self.routes = next_routes;
         self.selected_destination = None;
+        self.free_navigation_destination = None;
         self.travel_state = TravelState::Idle;
         self.autopilot = AutopilotState::Inactive;
         Ok(())
@@ -963,6 +972,10 @@ impl NavigationState {
         self.selected_destination
     }
 
+    pub fn free_navigation_destination(&self) -> Option<DestinationId> {
+        self.free_navigation_destination
+    }
+
     pub const fn travel_state(&self) -> TravelState {
         self.travel_state
     }
@@ -1143,6 +1156,42 @@ impl NavigationState {
             return Err(NavigationSelectionError::DestinationUnknown);
         }
         self.selected_destination = Some(destination);
+        Ok(())
+    }
+
+    pub(crate) fn confirm_free_navigation_destination(
+        &mut self,
+        destination: DestinationId,
+        now: Duration,
+    ) -> Result<(), FreeNavigationSelectionError> {
+        if self.has_active_travel() {
+            return Err(FreeNavigationSelectionError::TravelActive);
+        }
+        if matches!(
+            self.autopilot,
+            AutopilotState::Planned { .. } | AutopilotState::InTransit { .. }
+        ) {
+            return Err(FreeNavigationSelectionError::AutopilotActive);
+        }
+        let Some(destination_data) = self.destinations.get(&destination) else {
+            return Err(FreeNavigationSelectionError::DestinationNotFound);
+        };
+        if destination_data.destination_type != DestinationType::Planet {
+            return Err(FreeNavigationSelectionError::DestinationNotPlanet);
+        }
+        if !is_free_navigation_destination(destination) {
+            return Err(FreeNavigationSelectionError::DestinationNotAllowed);
+        }
+        if destination_data.discovery == DiscoveryState::Unknown {
+            return Err(FreeNavigationSelectionError::DestinationUnknown);
+        }
+        let target_position = self
+            .planet_position_at(destination, now)
+            .unwrap_or(destination_data.position);
+        if target_position == self.current_position {
+            return Err(FreeNavigationSelectionError::DestinationIsCurrentPosition);
+        }
+        self.free_navigation_destination = Some(destination);
         Ok(())
     }
 
@@ -1580,6 +1629,17 @@ pub enum NavigationSelectionError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FreeNavigationSelectionError {
+    TravelActive,
+    AutopilotActive,
+    DestinationNotFound,
+    DestinationNotPlanet,
+    DestinationNotAllowed,
+    DestinationUnknown,
+    DestinationIsCurrentPosition,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NavigationStartError {
     TravelActive,
     AutopilotActive,
@@ -1988,5 +2048,62 @@ mod tests {
             .expect("landing advances without flight controls");
         assert_eq!(contact, Some((planet, false)));
         assert_eq!(navigation.planet_flight_state(), PlanetFlightState::Landed { planet });
+    }
+
+    #[test]
+    fn free_navigation_selection_is_independent_and_planet_only() {
+        let mut navigation = NavigationState::default();
+        navigation
+            .register_destination(Destination {
+                id: VEYRA_DESTINATION_ID,
+                destination_type: DestinationType::Planet,
+                position: Vec3 { x: 10.0, y: 0.0, z: 0.0 },
+                travel_duration: Duration(1),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .expect("Veyra should register");
+        navigation
+            .register_destination(Destination {
+                id: TESSARA_DESTINATION_ID,
+                destination_type: DestinationType::Planet,
+                position: Vec3 { x: 20.0, y: 0.0, z: 0.0 },
+                travel_duration: Duration(1),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .expect("Tessara should register");
+        navigation
+            .register_destination(Destination {
+                id: DestinationId::new(9_003),
+                destination_type: DestinationType::SpacePoint,
+                position: Vec3 { x: 30.0, y: 0.0, z: 0.0 },
+                travel_duration: Duration(1),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .expect("signal should register");
+        navigation
+            .restore_position(Vec3::ZERO)
+            .expect("ship position should be finite");
+
+        navigation
+            .confirm_free_navigation_destination(VEYRA_DESTINATION_ID, Duration(0))
+            .expect("Veyra should be accepted");
+        assert_eq!(navigation.free_navigation_destination(), Some(VEYRA_DESTINATION_ID));
+        assert_eq!(navigation.selected_destination(), None);
+        assert_eq!(navigation.travel_state(), TravelState::Idle);
+        assert_eq!(navigation.autopilot_state(), &AutopilotState::Inactive);
+
+        navigation
+            .confirm_free_navigation_destination(TESSARA_DESTINATION_ID, Duration(0))
+            .expect("Tessara should replace the free destination");
+        assert_eq!(navigation.free_navigation_destination(), Some(TESSARA_DESTINATION_ID));
+
+        assert_eq!(
+            navigation.confirm_free_navigation_destination(DestinationId::new(9_003), Duration(0)),
+            Err(FreeNavigationSelectionError::DestinationNotPlanet)
+        );
+        assert_eq!(navigation.free_navigation_destination(), Some(TESSARA_DESTINATION_ID));
     }
 }
