@@ -102,6 +102,14 @@ pub enum GameplayCommand {
         pilot_station: EntityId,
         destination: DestinationId,
     },
+    EvaluateFreeNavigation {
+        player: EntityId,
+        pilot_station: EntityId,
+    },
+    StartFreeNavigation {
+        player: EntityId,
+        pilot_station: EntityId,
+    },
     StartTravel {
         player: EntityId,
         pilot_station: EntityId,
@@ -425,6 +433,10 @@ pub enum CommandRejection {
     FreeNavigationDestinationNotPlanet,
     FreeNavigationDestinationNotAllowed,
     FreeNavigationDestinationIsCurrentPosition,
+    FreeNavigationDestinationNotSelected,
+    FreeNavigationProposalNotEvaluable,
+    FreeNavigationProposalStale,
+    FreeNavigationProposalNotViable,
     MissionOneIncomplete,
     TravelActive,
     DestinationNotSelected,

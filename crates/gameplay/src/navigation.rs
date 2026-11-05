@@ -24,6 +24,51 @@ pub const fn is_free_navigation_destination(id: DestinationId) -> bool {
     matches!(id, VEYRA_DESTINATION_ID | TESSARA_DESTINATION_ID)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum FreeNavigationRisk {
+    SolarCollision,
+    PlanetCollision(DestinationId),
+    InsufficientFuel { required: u32, available: u32 },
+    IncompleteBodyData(DestinationId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FreeNavigationEvaluation {
+    Viable,
+    NotViable,
+    Incomplete,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FreeNavigationProposal {
+    pub destination: DestinationId,
+    pub origin_position: Vec3,
+    pub destination_position: Vec3,
+    pub distance: f32,
+    pub duration: Duration,
+    pub fuel_required: u32,
+    pub fuel_available: u32,
+    pub evaluation: FreeNavigationEvaluation,
+    pub risks: Vec<FreeNavigationRisk>,
+    pub evaluated_at: Duration,
+}
+
+impl FreeNavigationProposal {
+    pub fn is_stale(
+        &self,
+        now: Duration,
+        current_position: Vec3,
+        current_destination_position: Vec3,
+        fuel_available: u32,
+        destination_moves: bool,
+    ) -> bool {
+        self.origin_position != current_position
+            || self.destination_position != current_destination_position
+            || self.fuel_available != fuel_available
+            || (destination_moves && self.evaluated_at != now)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DestinationType {
     Planet,
@@ -342,6 +387,7 @@ pub struct NavigationState {
     current_position: Vec3,
     selected_destination: Option<DestinationId>,
     free_navigation_destination: Option<DestinationId>,
+    free_navigation_proposal: Option<FreeNavigationProposal>,
     travel_state: TravelState,
     destinations: BTreeMap<DestinationId, Destination>,
     orientation: ShipOrientation,
@@ -371,6 +417,7 @@ impl Default for NavigationState {
             current_position: Vec3::ZERO,
             selected_destination: None,
             free_navigation_destination: None,
+            free_navigation_proposal: None,
             travel_state: TravelState::Idle,
             destinations: BTreeMap::new(),
             orientation: ShipOrientation::default(),
@@ -426,6 +473,7 @@ impl NavigationState {
         self.routes = next_routes;
         self.selected_destination = None;
         self.free_navigation_destination = None;
+        self.free_navigation_proposal = None;
         self.travel_state = TravelState::Idle;
         self.autopilot = AutopilotState::Inactive;
         Ok(())
@@ -883,6 +931,29 @@ impl NavigationState {
                 return Some((SUN_DESTINATION_ID, self.current_position, true));
             }
         }
+        for (planet_id, physics) in &self.planet_physics {
+            if *planet_id == destination {
+                continue;
+            }
+            let planet_position = physics.position_at(now);
+            if segment_intersects_sphere(
+                self.current_position,
+                proposed,
+                planet_position,
+                physics.collision_radius(),
+            ) {
+                self.current_position = impact_position(
+                    self.current_position,
+                    planet_position,
+                    physics.collision_radius(),
+                );
+                self.velocity = Vec3::ZERO;
+                self.planet_flight_state = PlanetFlightState::Impacted { planet: *planet_id };
+                self.impact_started_at = Some(now);
+                self.travel_state = TravelState::Cancelled { destination };
+                return Some((*planet_id, self.current_position, true));
+            }
+        }
         let planet = target;
         let radius = physics.collision_radius();
         if matches!(
@@ -896,6 +967,13 @@ impl NavigationState {
             self.velocity = Vec3::ZERO;
             self.planet_flight_state = PlanetFlightState::Landed { planet: destination };
             self.travel_state = TravelState::Completed { destination };
+            if matches!(
+                self.autopilot,
+                AutopilotState::InTransit { ref route, next_leg: 1, .. }
+                    if route.len() == 2
+            ) {
+                self.autopilot = AutopilotState::Completed { destination };
+            }
             return Some((destination, self.current_position, false));
         }
         if segment_intersects_sphere(self.current_position, proposed, planet, radius) {
@@ -974,6 +1052,14 @@ impl NavigationState {
 
     pub fn free_navigation_destination(&self) -> Option<DestinationId> {
         self.free_navigation_destination
+    }
+
+    pub fn free_navigation_proposal(&self) -> Option<&FreeNavigationProposal> {
+        self.free_navigation_proposal.as_ref()
+    }
+
+    pub(crate) fn set_free_navigation_proposal(&mut self, proposal: FreeNavigationProposal) {
+        self.free_navigation_proposal = Some(proposal);
     }
 
     pub const fn travel_state(&self) -> TravelState {
@@ -1192,7 +1278,113 @@ impl NavigationState {
             return Err(FreeNavigationSelectionError::DestinationIsCurrentPosition);
         }
         self.free_navigation_destination = Some(destination);
+        self.free_navigation_proposal = None;
         Ok(())
+    }
+
+    pub(crate) fn evaluate_free_navigation(
+        &self,
+        now: Duration,
+        fuel_available: u32,
+    ) -> Result<FreeNavigationProposal, FreeNavigationEvaluationError> {
+        let Some(destination) = self.free_navigation_destination else {
+            return Err(FreeNavigationEvaluationError::DestinationNotSelected);
+        };
+        let Some(destination_data) = self.destinations.get(&destination) else {
+            return Err(FreeNavigationEvaluationError::DestinationNotFound);
+        };
+        if destination_data.destination_type != DestinationType::Planet
+            || !is_free_navigation_destination(destination)
+        {
+            return Err(FreeNavigationEvaluationError::DestinationNotAllowed);
+        }
+        if destination_data.discovery == DiscoveryState::Unknown {
+            return Err(FreeNavigationEvaluationError::DestinationUnknown);
+        }
+        let origin_position = self.current_position;
+        let destination_position = self
+            .planet_position_at(destination, now)
+            .unwrap_or(destination_data.position);
+        let distance = distance(origin_position, destination_position);
+        if !distance.is_finite() || distance < 0.0 {
+            return Err(FreeNavigationEvaluationError::InvalidDistance);
+        }
+        let duration = destination_data.travel_duration;
+        if duration.0 == 0 || destination_data.fuel_cost == 0 {
+            return Err(FreeNavigationEvaluationError::InvalidTravelConfiguration);
+        }
+
+        let mut risks = Vec::new();
+        if let Some(solar) = self.solar_physics {
+            if segment_intersects_sphere(
+                origin_position,
+                destination_position,
+                solar.position_at(now),
+                solar.collision_radius(),
+            ) {
+                risks.push(FreeNavigationRisk::SolarCollision);
+            }
+        }
+        for (planet_id, physics) in &self.planet_physics {
+            if *planet_id == destination {
+                continue;
+            }
+            if segment_intersects_sphere(
+                origin_position,
+                destination_position,
+                physics.position_at(now),
+                physics.collision_radius(),
+            ) {
+                risks.push(FreeNavigationRisk::PlanetCollision(*planet_id));
+            }
+        }
+        if !self.planet_physics.contains_key(&destination) {
+            risks.push(FreeNavigationRisk::IncompleteBodyData(destination));
+        }
+        for registered in self.destinations.values() {
+            if registered.destination_type == DestinationType::Planet
+                && registered.id != destination
+                && !self.planet_physics.contains_key(&registered.id)
+            {
+                risks.push(FreeNavigationRisk::IncompleteBodyData(registered.id));
+            }
+        }
+        if fuel_available < destination_data.fuel_cost {
+            risks.push(FreeNavigationRisk::InsufficientFuel {
+                required: destination_data.fuel_cost,
+                available: fuel_available,
+            });
+        }
+        let hard_risk = risks.iter().any(|risk| {
+            matches!(
+                risk,
+                FreeNavigationRisk::SolarCollision
+                    | FreeNavigationRisk::PlanetCollision(_)
+                    | FreeNavigationRisk::InsufficientFuel { .. }
+            )
+        });
+        let incomplete = risks
+            .iter()
+            .any(|risk| matches!(risk, FreeNavigationRisk::IncompleteBodyData(_)));
+        let evaluation = if hard_risk {
+            FreeNavigationEvaluation::NotViable
+        } else if incomplete {
+            FreeNavigationEvaluation::Incomplete
+        } else {
+            FreeNavigationEvaluation::Viable
+        };
+        Ok(FreeNavigationProposal {
+            destination,
+            origin_position,
+            destination_position,
+            distance,
+            duration,
+            fuel_required: destination_data.fuel_cost,
+            fuel_available,
+            evaluation,
+            risks,
+            evaluated_at: now,
+        })
     }
 
     pub(crate) fn register_route(
@@ -1384,6 +1576,11 @@ impl NavigationState {
     }
 
     pub(crate) fn cancel_autopilot(&mut self) -> Option<DestinationId> {
+        let free_navigation = matches!(
+            self.autopilot,
+            AutopilotState::InTransit { ref route, next_leg: 1, .. }
+                if route.len() == 2 && route[0] == route[1]
+        );
         let destination = match self.autopilot {
             AutopilotState::Planned { destination, .. }
             | AutopilotState::InTransit { destination, .. } => destination,
@@ -1391,6 +1588,9 @@ impl NavigationState {
         };
         if matches!(self.autopilot, AutopilotState::InTransit { .. }) {
             self.travel_state = TravelState::Cancelled { destination };
+        }
+        if free_navigation {
+            self.planet_flight_state = PlanetFlightState::Free;
         }
         self.autopilot_continuation_authorized = false;
         self.autopilot = AutopilotState::Interrupted { destination };
@@ -1495,6 +1695,100 @@ impl NavigationState {
             started_at: now,
             duration: destination_data.travel_duration,
             fuel_cost,
+        };
+        Ok((
+            destination,
+            now,
+            destination_data.travel_duration,
+            fuel_cost,
+            fuel.current(),
+        ))
+    }
+
+    pub(crate) fn start_free_navigation(
+        &mut self,
+        now: Duration,
+        fuel: &mut FuelTank,
+        player: EntityId,
+        pilot_station: EntityId,
+        discount_percent: u32,
+    ) -> Result<(DestinationId, Duration, Duration, u32, u32), FreeNavigationStartError> {
+        if self.has_active_travel() {
+            return Err(FreeNavigationStartError::TravelActive);
+        }
+        if matches!(
+            self.autopilot,
+            AutopilotState::Planned { .. } | AutopilotState::InTransit { .. }
+        ) {
+            return Err(FreeNavigationStartError::AutopilotActive);
+        }
+        let Some(destination) = self.free_navigation_destination else {
+            return Err(FreeNavigationStartError::DestinationNotSelected);
+        };
+        let Some(proposal) = self.free_navigation_proposal.as_ref() else {
+            return Err(FreeNavigationStartError::ProposalMissing);
+        };
+        if proposal.destination != destination {
+            return Err(FreeNavigationStartError::ProposalDestinationMismatch);
+        }
+        if proposal.evaluation != FreeNavigationEvaluation::Viable {
+            return Err(FreeNavigationStartError::ProposalNotViable);
+        }
+        let Some(destination_data) = self.destinations.get(&destination) else {
+            return Err(FreeNavigationStartError::DestinationNotFound);
+        };
+        if destination_data.destination_type != DestinationType::Planet
+            || !is_free_navigation_destination(destination)
+        {
+            return Err(FreeNavigationStartError::DestinationNotAllowed);
+        }
+        if destination_data.discovery == DiscoveryState::Unknown {
+            return Err(FreeNavigationStartError::DestinationUnknown);
+        }
+        let destination_position = self
+            .planet_position_at(destination, now)
+            .unwrap_or(destination_data.position);
+        let destination_moves = self
+            .planet_physics
+            .get(&destination)
+            .is_some_and(|physics| physics.orbit_angular_speed != 0.0);
+        if proposal.is_stale(
+            now,
+            self.current_position,
+            destination_position,
+            fuel.current(),
+            destination_moves,
+        ) {
+            return Err(FreeNavigationStartError::ProposalStale);
+        }
+        let fuel_cost = effective_fuel_cost(destination_data.fuel_cost, discount_percent)
+            .ok_or(FreeNavigationStartError::InvalidConfiguration)?;
+        if !fuel.can_consume(fuel_cost) {
+            return Err(FreeNavigationStartError::InsufficientFuel);
+        }
+        if now.0.checked_add(destination_data.travel_duration.0).is_none() {
+            return Err(FreeNavigationStartError::InvalidConfiguration);
+        }
+        fuel.consume(fuel_cost)
+            .map_err(|_| FreeNavigationStartError::InsufficientFuel)?;
+        self.travel_origin = self.current_position;
+        self.planet_flight_state = PlanetFlightState::Landing { planet: destination };
+        self.travel_state = TravelState::InProgress {
+            destination,
+            started_at: now,
+            duration: destination_data.travel_duration,
+            fuel_cost,
+        };
+        self.free_navigation_proposal = None;
+        self.autopilot_continuation_authorized = false;
+        self.autopilot = AutopilotState::InTransit {
+            origin: destination,
+            destination,
+            route: vec![destination, destination],
+            next_leg: 1,
+            eta: destination_data.travel_duration,
+            player,
+            pilot_station,
         };
         Ok((
             destination,
@@ -1637,6 +1931,32 @@ pub enum FreeNavigationSelectionError {
     DestinationNotAllowed,
     DestinationUnknown,
     DestinationIsCurrentPosition,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FreeNavigationEvaluationError {
+    DestinationNotSelected,
+    DestinationNotFound,
+    DestinationNotAllowed,
+    DestinationUnknown,
+    InvalidDistance,
+    InvalidTravelConfiguration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FreeNavigationStartError {
+    TravelActive,
+    AutopilotActive,
+    DestinationNotSelected,
+    ProposalMissing,
+    ProposalDestinationMismatch,
+    ProposalStale,
+    ProposalNotViable,
+    DestinationNotFound,
+    DestinationNotAllowed,
+    DestinationUnknown,
+    InsufficientFuel,
+    InvalidConfiguration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2105,5 +2425,180 @@ mod tests {
             Err(FreeNavigationSelectionError::DestinationNotPlanet)
         );
         assert_eq!(navigation.free_navigation_destination(), Some(TESSARA_DESTINATION_ID));
+    }
+
+    #[test]
+    fn free_navigation_evaluation_uses_current_position_without_mutating_travel() {
+        let mut navigation = NavigationState::default();
+        navigation
+            .register_destination(Destination {
+                id: VEYRA_DESTINATION_ID,
+                destination_type: DestinationType::Planet,
+                position: Vec3 { x: 30.0, y: 0.0, z: 0.0 },
+                travel_duration: Duration(2_000),
+                fuel_cost: 3,
+                discovery: DiscoveryState::Discovered,
+            })
+            .expect("Veyra should register");
+        navigation
+            .restore_position(Vec3 { x: 10.0, y: 4.0, z: -2.0 })
+            .expect("arbitrary ship position should be accepted");
+        navigation
+            .confirm_free_navigation_destination(VEYRA_DESTINATION_ID, Duration(0))
+            .expect("Veyra should be confirmed");
+        assert!(navigation.configure_planet_physics(PlanetPhysics {
+            destination: VEYRA_DESTINATION_ID,
+            orbit_center: Vec3 { x: 30.0, y: 0.0, z: 0.0 },
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 5.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }));
+
+        let proposal = navigation
+            .evaluate_free_navigation(Duration(0), 7)
+            .expect("proposal should be evaluable");
+        assert_eq!(proposal.origin_position, Vec3 { x: 10.0, y: 4.0, z: -2.0 });
+        assert!((proposal.distance - (420.0_f32).sqrt()).abs() < 0.001);
+        assert_eq!(proposal.duration, Duration(2_000));
+        assert_eq!(proposal.fuel_required, 3);
+        assert_eq!(proposal.fuel_available, 7);
+        assert_eq!(proposal.evaluation, FreeNavigationEvaluation::Viable);
+        assert_eq!(navigation.travel_state(), TravelState::Idle);
+        assert_eq!(navigation.autopilot_state(), &AutopilotState::Inactive);
+        assert_eq!(navigation.free_navigation_proposal(), None);
+    }
+
+    #[test]
+    fn free_navigation_evaluation_reports_fuel_and_solar_risks_without_starting_travel() {
+        let mut navigation = NavigationState::default();
+        navigation
+            .register_destination(Destination {
+                id: VEYRA_DESTINATION_ID,
+                destination_type: DestinationType::Planet,
+                position: Vec3 { x: 30.0, y: 0.0, z: 0.0 },
+                travel_duration: Duration(2_000),
+                fuel_cost: 3,
+                discovery: DiscoveryState::Discovered,
+            })
+            .expect("Veyra should register");
+        assert!(navigation.configure_planet_physics(PlanetPhysics {
+            destination: VEYRA_DESTINATION_ID,
+            orbit_center: Vec3 { x: 30.0, y: 0.0, z: 0.0 },
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 5.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }));
+        assert!(navigation.configure_solar_physics(PlanetPhysics {
+            destination: SUN_DESTINATION_ID,
+            orbit_center: Vec3 { x: 20.0, y: 0.0, z: 0.0 },
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 2.0,
+            ship_radius: 0.0,
+            gravity_influence_radius: 20.0,
+            gravitational_parameter: 4.0,
+            atmosphere_height: 0.0,
+        }));
+        navigation
+            .restore_position(Vec3 { x: 10.0, y: 0.0, z: 0.0 })
+            .expect("arbitrary ship position should be accepted");
+        navigation
+            .confirm_free_navigation_destination(VEYRA_DESTINATION_ID, Duration(0))
+            .expect("Veyra should be confirmed");
+
+        let proposal = navigation
+            .evaluate_free_navigation(Duration(0), 2)
+            .expect("proposal should be evaluable");
+        assert_eq!(proposal.evaluation, FreeNavigationEvaluation::NotViable);
+        assert!(proposal
+            .risks
+            .contains(&FreeNavigationRisk::SolarCollision));
+        assert!(proposal.risks.contains(&FreeNavigationRisk::InsufficientFuel {
+            required: 3,
+            available: 2,
+        }));
+        assert_eq!(navigation.travel_state(), TravelState::Idle);
+        assert_eq!(navigation.autopilot_state(), &AutopilotState::Inactive);
+    }
+
+    #[test]
+    fn free_navigation_starts_once_from_current_position_and_completes_at_destination() {
+        let mut navigation = NavigationState::default();
+        let destination = VEYRA_DESTINATION_ID;
+        let target = Vec3 { x: 30.0, y: 0.0, z: 0.0 };
+        navigation
+            .register_destination(Destination {
+                id: destination,
+                destination_type: DestinationType::Planet,
+                position: target,
+                travel_duration: Duration(1_000),
+                fuel_cost: 3,
+                discovery: DiscoveryState::Discovered,
+            })
+            .expect("destination should register");
+        assert!(navigation.configure_planet_physics(PlanetPhysics {
+            destination,
+            orbit_center: target,
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 2.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }));
+        navigation
+            .restore_position(Vec3 { x: 10.0, y: 0.0, z: 0.0 })
+            .expect("origin should be valid");
+        navigation
+            .confirm_free_navigation_destination(destination, Duration(0))
+            .expect("destination should confirm");
+        let proposal = navigation
+            .evaluate_free_navigation(Duration(0), 7)
+            .expect("proposal should evaluate");
+        navigation.set_free_navigation_proposal(proposal);
+        let mut fuel = FuelTank::new(10, 7).expect("fuel should initialize");
+        let started = navigation
+            .start_free_navigation(
+                Duration(0),
+                &mut fuel,
+                EntityId::new(1),
+                EntityId::new(2),
+                0,
+            )
+            .expect("free navigation should start");
+        assert_eq!(started.3, 3);
+        assert_eq!(fuel.current(), 4);
+        assert_eq!(navigation.current_position(), Vec3 { x: 10.0, y: 0.0, z: 0.0 });
+        assert!(matches!(navigation.travel_state(), TravelState::InProgress { .. }));
+        assert!(matches!(navigation.autopilot_state(), AutopilotState::InTransit { .. }));
+        assert!(navigation.free_navigation_proposal().is_none());
+        assert_eq!(
+            navigation.start_free_navigation(
+                Duration(0),
+                &mut fuel,
+                EntityId::new(1),
+                EntityId::new(2),
+                0,
+            ),
+            Err(FreeNavigationStartError::TravelActive)
+        );
+        assert_eq!(fuel.current(), 4);
+
+        assert_eq!(navigation.advance_travel_at(Duration(500)), None);
+        assert!(navigation.current_position().x > 10.0);
+        let arrival = navigation.advance_travel_at(Duration(1_000));
+        assert_eq!(arrival.map(|value| value.0), Some(destination));
+        assert_eq!(navigation.travel_state(), TravelState::Completed { destination });
+        assert_eq!(navigation.current_position().x, 27.0);
+        assert_eq!(fuel.current(), 4);
     }
 }

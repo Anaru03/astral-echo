@@ -129,7 +129,8 @@ pub use mission::{Mission, MissionDefinitionError, MissionProgress, MissionRegis
 pub use mission_system::MissionSystem;
 pub use navigation::{
     AutopilotError, AutopilotState, Destination, DestinationId, DestinationType, DiscoveryState,
-    FreeNavigationSelectionError,
+    FreeNavigationEvaluation, FreeNavigationEvaluationError, FreeNavigationProposal,
+    FreeNavigationRisk, FreeNavigationSelectionError, FreeNavigationStartError,
     NavigationInitializationError, NavigationMovementError, NavigationRegistrationError,
     NavigationRoute, NavigationRouteError, NavigationRouteState, NavigationState, ScannerError,
     PlanetFlightState, PlanetPhysics, ShipMovementParameters, ShipOrientation, SignalDetection,

@@ -2707,6 +2707,137 @@ impl NavigationSystem {
         }
     }
 
+    fn evaluate_free_navigation(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        pilot_station: engine::EntityId,
+    ) -> CommandResult {
+        if let Err(result) = self.validate_pilot_access(world, player, pilot_station) {
+            return result;
+        }
+        if !world
+            .mission(crate::types::MissionId(1))
+            .is_some_and(|mission| mission.state() == crate::domains::mission::MissionState::Completed)
+        {
+            return CommandResult::rejected(crate::commands::CommandRejection::MissionOneIncomplete);
+        }
+        let Some(ship) = world.navigation().ship_id() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        };
+        if world.ship_is_operational(ship) != Some(true) {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipDestroyed);
+        }
+        let Some(fuel) = world.ship_fuel(ship) else {
+            return CommandResult::rejected(crate::commands::CommandRejection::ResourcesNotInitialized);
+        };
+        let now = world.time().elapsed;
+        let proposal = match world.navigation().evaluate_free_navigation(now, fuel.current()) {
+            Ok(proposal) => proposal,
+            Err(crate::navigation::FreeNavigationEvaluationError::DestinationNotSelected) => {
+                return CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationDestinationNotSelected)
+            }
+            Err(crate::navigation::FreeNavigationEvaluationError::DestinationNotFound) => {
+                return CommandResult::rejected(crate::commands::CommandRejection::DestinationNotFound)
+            }
+            Err(crate::navigation::FreeNavigationEvaluationError::DestinationNotAllowed) => {
+                return CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationDestinationNotAllowed)
+            }
+            Err(crate::navigation::FreeNavigationEvaluationError::DestinationUnknown) => {
+                return CommandResult::rejected(crate::commands::CommandRejection::DestinationUnknown)
+            }
+            Err(_) => {
+                return CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationProposalNotEvaluable)
+            }
+        };
+        world.navigation_mut().set_free_navigation_proposal(proposal);
+        CommandResult::success(true)
+    }
+
+    fn start_free_navigation(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        pilot_station: engine::EntityId,
+    ) -> CommandResult {
+        if let Err(result) = self.validate_pilot_access(world, player, pilot_station) {
+            return result;
+        }
+        if !world
+            .mission(crate::types::MissionId(1))
+            .is_some_and(|mission| mission.state() == crate::domains::mission::MissionState::Completed)
+        {
+            return CommandResult::rejected(crate::commands::CommandRejection::MissionOneIncomplete);
+        }
+        let Some(ship) = world.navigation().ship_id() else {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipNotFound);
+        };
+        if world.ship_is_operational(ship) != Some(true) {
+            return CommandResult::rejected(crate::commands::CommandRejection::ShipDestroyed);
+        }
+        let now = world.time().elapsed;
+        match world.start_free_navigation(now, player, pilot_station) {
+            Ok((destination, started_at, duration, fuel_cost, remaining)) => {
+                world.publish(crate::events::GameplayEvent::FuelConsumed {
+                    ship,
+                    destination,
+                    amount: fuel_cost,
+                    remaining,
+                });
+                world.publish(crate::events::GameplayEvent::TravelStarted {
+                    player,
+                    pilot_station,
+                    destination,
+                    started_at,
+                    duration,
+                    fuel_cost,
+                });
+                world.publish(crate::events::GameplayEvent::AutopilotStarted {
+                    destination,
+                    duration,
+                    fuel_cost,
+                });
+                CommandResult::success(true)
+            }
+            Err(crate::navigation::FreeNavigationStartError::TravelActive) => {
+                CommandResult::rejected(crate::commands::CommandRejection::TravelActive)
+            }
+            Err(crate::navigation::FreeNavigationStartError::AutopilotActive) => {
+                CommandResult::rejected(crate::commands::CommandRejection::AutopilotAlreadyPlanned)
+            }
+            Err(crate::navigation::FreeNavigationStartError::DestinationNotSelected) => {
+                CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationDestinationNotSelected)
+            }
+            Err(crate::navigation::FreeNavigationStartError::ProposalMissing) => {
+                CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationProposalNotEvaluable)
+            }
+            Err(crate::navigation::FreeNavigationStartError::ProposalDestinationMismatch) => {
+                CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationProposalStale)
+            }
+            Err(crate::navigation::FreeNavigationStartError::ProposalStale) => {
+                CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationProposalStale)
+            }
+            Err(crate::navigation::FreeNavigationStartError::ProposalNotViable) => {
+                CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationProposalNotViable)
+            }
+            Err(crate::navigation::FreeNavigationStartError::DestinationNotFound) => {
+                CommandResult::rejected(crate::commands::CommandRejection::DestinationNotFound)
+            }
+            Err(crate::navigation::FreeNavigationStartError::DestinationNotAllowed) => {
+                CommandResult::rejected(crate::commands::CommandRejection::FreeNavigationDestinationNotAllowed)
+            }
+            Err(crate::navigation::FreeNavigationStartError::DestinationUnknown) => {
+                CommandResult::rejected(crate::commands::CommandRejection::DestinationUnknown)
+            }
+            Err(crate::navigation::FreeNavigationStartError::InsufficientFuel) => {
+                CommandResult::rejected(crate::commands::CommandRejection::InsufficientFuel)
+            }
+            Err(crate::navigation::FreeNavigationStartError::InvalidConfiguration) => {
+                CommandResult::invalid(crate::commands::CommandInvalidity::InvalidNavigationConfiguration)
+            }
+        }
+    }
+
     fn start_travel(
         &self,
         world: &mut GameplayWorld,
@@ -2963,6 +3094,13 @@ impl NavigationSystem {
                         planet,
                         position,
                     });
+                    if let crate::navigation::AutopilotState::Completed { destination } =
+                        world.autopilot_state()
+                    {
+                        world.publish(crate::events::GameplayEvent::AutopilotCompleted {
+                            destination: *destination,
+                        });
+                    }
                 }
                 continue;
             }
@@ -3095,6 +3233,14 @@ impl GameplaySystem for NavigationSystem {
                 pilot_station,
                 destination,
             } => self.confirm_free_navigation_destination(world, player, pilot_station, destination),
+            GameplayCommand::EvaluateFreeNavigation {
+                player,
+                pilot_station,
+            } => self.evaluate_free_navigation(world, player, pilot_station),
+            GameplayCommand::StartFreeNavigation {
+                player,
+                pilot_station,
+            } => self.start_free_navigation(world, player, pilot_station),
             GameplayCommand::StartTravel {
                 player,
                 pilot_station,
