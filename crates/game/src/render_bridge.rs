@@ -33,6 +33,13 @@ pub const KHARVEX_ORBIT_RADIUS: f32 = 100.0004;
 pub const KHARVEX_ORBIT_PHASE_RAD: f32 = 0.0;
 pub const KHARVEX_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.08;
 pub const KHARVEX_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.18;
+pub const NARETH_DESTINATION_ID: u32 = 9_603;
+pub const NARETH_POSITION: Vec3 = Vec3::new(105.30, 18.0, -123.30);
+pub const NARETH_ORBIT_RADIUS: f32 = 150.0006;
+pub const NARETH_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.03;
+pub const NARETH_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.10;
+pub const NARETH_VISUAL_RADIUS: f32 = 16.0;
+const NARETH_PLANET_SCALE: f32 = NARETH_VISUAL_RADIUS / 3.06;
 pub const PLANET_ORBIT_RADIUS: f32 = 42.0;
 pub const PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.25;
 pub const PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.5;
@@ -49,6 +56,7 @@ const TESSARA_PLANET_MAX_DIMENSION: f32 = 14.0043;
 const TESSARA_PLANET_VISUAL_SCALE: f32 =
     (PLANET_VISUAL_RADIUS * 2.0) / TESSARA_PLANET_MAX_DIMENSION;
 pub const KHARVEX_PLANET_MESH: MeshHandle = MeshHandle::KHARVEX_PLANET;
+pub const NARETH_PLANET_MESH: MeshHandle = MeshHandle::NARETH_PLANET;
 const KHARVEX_PLANET_CENTER: Vec3 = Vec3::new(12.189077, 15.664048, 6.280951);
 pub const KHARVEX_SURFACE_RADIUS: f32 = 7.0;
 const KHARVEX_PLANET_MAX_RADIUS: f32 = 126.071908;
@@ -362,10 +370,27 @@ pub fn snapshot_from_world_with_camera_and_view(
     camera: &Camera,
     interior: bool,
 ) -> RenderSnapshot {
+    snapshot_from_world_with_camera_and_view_and_nareth(
+        world,
+        params,
+        camera,
+        interior,
+        false,
+    )
+}
+
+pub fn snapshot_from_world_with_camera_and_view_and_nareth(
+    world: &GameplayWorld,
+    params: BridgeParams<'_>,
+    camera: &Camera,
+    interior: bool,
+    nareth_mesh_ready: bool,
+) -> RenderSnapshot {
     let tick = world.time().tick;
     let academic_planet = academic_planet_id(world);
     let tessara_planet = tessara_planet_id(world);
     let kharvex_planet = kharvex_planet_id(world);
+    let nareth_planet = nareth_planet_id(world);
     let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
     let mut snapshot = RenderSnapshot::new(
         tick,
@@ -516,9 +541,11 @@ pub fn snapshot_from_world_with_camera_and_view(
                         academic_planet,
                         tessara_planet,
                         kharvex_planet,
+                        nareth_planet,
+                        nareth_mesh_ready,
                     ),
                     PLANET_MATERIAL,
-                    Vec3::splat(PLANET_VISUAL_RADIUS),
+                    Vec3::splat(planet_visual_radius(dest.id)),
                 ),
                 _ => (DESTINATION_MESH, DESTINATION_MATERIAL, Vec3::ONE),
             };
@@ -542,6 +569,16 @@ pub fn snapshot_from_world_with_camera_and_view(
                     .map(from_engine)
                     .unwrap_or_else(|| from_engine(dest.position));
                 kharvex_planet_transform(position, elapsed_seconds)
+            } else if nareth_planet == Some(dest.id) {
+                let position = world
+                    .planet_position_at(dest.id, world.time().elapsed)
+                    .map(from_engine)
+                    .unwrap_or_else(|| from_engine(dest.position));
+                if nareth_mesh_ready {
+                    nareth_planet_transform(position, elapsed_seconds)
+                } else {
+                    Transform::new(position, Quat::IDENTITY, scale)
+                }
             } else {
                 Transform::new(from_engine(dest.position), Quat::IDENTITY, scale)
             };
@@ -1157,6 +1194,7 @@ pub fn is_observable_planet(world: &GameplayWorld, destination: gameplay::Destin
 fn planet_visual_radius(destination: gameplay::DestinationId) -> f32 {
     match destination.value() {
         ACADEMIC_PLANET_DESTINATION_ID | TESSARA_DESTINATION_ID => PLANET_VISUAL_RADIUS,
+        NARETH_DESTINATION_ID => NARETH_VISUAL_RADIUS,
         _ => PLANET_VISUAL_RADIUS,
     }
 }
@@ -1231,6 +1269,13 @@ fn kharvex_planet_id(world: &GameplayWorld) -> Option<gameplay::DestinationId> {
         .map(|destination| destination.id)
 }
 
+fn nareth_planet_id(world: &GameplayWorld) -> Option<gameplay::DestinationId> {
+    world
+        .destinations()
+        .find(|destination| destination.id.value() == NARETH_DESTINATION_ID)
+        .map(|destination| destination.id)
+}
+
 pub fn academic_planet_transform(elapsed_seconds: f64) -> Transform {
     let orbit_angle = PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND as f64 * elapsed_seconds;
     let rotation_angle = PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND as f64 * elapsed_seconds;
@@ -1251,6 +1296,8 @@ fn planet_mesh_for_destination(
     academic_planet: Option<gameplay::DestinationId>,
     tessara_planet: Option<gameplay::DestinationId>,
     kharvex_planet: Option<gameplay::DestinationId>,
+    nareth_planet: Option<gameplay::DestinationId>,
+    nareth_mesh_ready: bool,
 ) -> MeshHandle {
     if academic_planet == Some(destination) {
         BUILDING_PLANET_MESH
@@ -1258,6 +1305,8 @@ fn planet_mesh_for_destination(
         TESSARA_PLANET_MESH
     } else if kharvex_planet == Some(destination) {
         KHARVEX_PLANET_MESH
+    } else if nareth_planet == Some(destination) && nareth_mesh_ready {
+        NARETH_PLANET_MESH
     } else {
         PLANET_MESH
     }
@@ -1292,6 +1341,16 @@ fn kharvex_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
     );
     transform.translation -= transform.rotation * (transform.scale * KHARVEX_PLANET_CENTER);
     transform
+}
+
+fn nareth_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
+    Transform::new(
+        position,
+        Quat::from_rotation_y(
+            NARETH_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND * elapsed_seconds as f32,
+        ),
+        Vec3::splat(NARETH_PLANET_SCALE),
+    )
 }
 
 fn sun_model_transform() -> Transform {
@@ -1639,11 +1698,11 @@ mod tests {
 
         let tessara = gameplay::DestinationId::new(super::TESSARA_DESTINATION_ID);
         let kharvex = gameplay::DestinationId::new(super::KHARVEX_DESTINATION_ID);
-        assert_eq!(planet_mesh_for_destination(academic, Some(academic), Some(tessara), Some(kharvex)), BUILDING_PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(tessara, Some(academic), Some(tessara), Some(kharvex)), TESSARA_PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(kharvex, Some(academic), Some(tessara), Some(kharvex)), KHARVEX_PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(other, Some(academic), Some(tessara), Some(kharvex)), PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(academic, None, Some(tessara), Some(kharvex)), PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(academic, Some(academic), Some(tessara), Some(kharvex), None, false), BUILDING_PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(tessara, Some(academic), Some(tessara), Some(kharvex), None, false), TESSARA_PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(kharvex, Some(academic), Some(tessara), Some(kharvex), None, false), KHARVEX_PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(other, Some(academic), Some(tessara), Some(kharvex), None, false), PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(academic, None, Some(tessara), Some(kharvex), None, false), PLANET_MESH);
     }
 
     #[test]

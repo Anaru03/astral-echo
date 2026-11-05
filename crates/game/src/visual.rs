@@ -36,6 +36,13 @@ const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
 const TESSARA_DESTINATION: DestinationId = DestinationId::new(9_601);
 const KHARVEX_DESTINATION: DestinationId = DestinationId::new(9_602);
+const NARETH_DESTINATION: DestinationId = DestinationId::new(9_603);
+const NARETH_POSITION: GameplayVec3 = GameplayVec3 {
+    x: 105.30,
+    y: 18.0,
+    z: -123.30,
+};
+const NARETH_RESOURCE_ID: &str = "planet.nareth";
 const TESSARA_POSITION: GameplayVec3 = GameplayVec3 {
     x: -49.17,
     y: 8.0,
@@ -404,6 +411,16 @@ impl VisualBridge {
             .map_err(|error| format!("registrar Kharvex: {error:?}"))?;
         session
             .register_destination(Destination {
+                id: NARETH_DESTINATION,
+                destination_type: DestinationType::Planet,
+                position: NARETH_POSITION,
+                travel_duration: Duration(1_000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .map_err(|error| format!("registrar Nareth: {error:?}"))?;
+        session
+            .register_destination(Destination {
                 id: SIGNAL,
                 destination_type: DestinationType::SpacePoint,
                 position: GameplayVec3 {
@@ -518,6 +535,30 @@ impl VisualBridge {
             atmosphere_height: 4.0,
         }) {
             return Err("configurar la fisica de Kharvex".to_owned());
+        }
+        if !session.world_mut().configure_planet_physics(PlanetPhysics {
+            destination: NARETH_DESTINATION,
+            orbit_center: GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0,
+            },
+            orbit_radius: game::render_bridge::NARETH_ORBIT_RADIUS,
+            orbit_start: NARETH_POSITION,
+            orbit_axis: GameplayVec3 {
+                x: 105.3,
+                y: 0.0,
+                z: 105.3,
+            },
+            orbit_phase: 0.0,
+            orbit_angular_speed: game::render_bridge::NARETH_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
+            surface_radius: game::render_bridge::NARETH_VISUAL_RADIUS,
+            ship_radius: 1.0,
+            gravity_influence_radius: 48.0,
+            gravitational_parameter: 160.0,
+            atmosphere_height: 8.0,
+        }) {
+            return Err("configurar la fisica de Nareth".to_owned());
         }
         if initial_ship_position != GameplayVec3::ZERO
             && !session.world_mut().configure_solar_physics(PlanetPhysics {
@@ -818,6 +859,23 @@ impl VisualBridge {
                 }
             }
         }
+    }
+
+    fn nareth_visual_asset_ready(&self) -> bool {
+        self.visual_asset_states
+            .get(NARETH_RESOURCE_ID)
+            .is_some_and(|state| *state == VisualAssetState::Ready)
+    }
+
+    fn request_nareth_visual_asset(&mut self) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/models/seraphim/Seraphim_planet.obj");
+        let _ = self.request_visual_asset(
+            NARETH_RESOURCE_ID,
+            path,
+            MeshHandle::NARETH_PLANET,
+            VisualAssets::PLANET,
+        );
     }
 
     fn start_game(&mut self) {
@@ -2706,6 +2764,7 @@ impl VisualBridge {
             Some(id) if id == DESTINATION => "VEYRA",
             Some(id) if id == TESSARA_DESTINATION => "TESSARA",
             Some(id) if id == KHARVEX_DESTINATION => "KHARVEX",
+            Some(id) if id == NARETH_DESTINATION => "NARETH",
             _ => "VEYRA",
         }
     }
@@ -2917,6 +2976,9 @@ impl VisualBridge {
         self.observation_target = Some(selected);
         self.observation
             .retarget(self.session.world().time().elapsed.0);
+        if selected == NARETH_DESTINATION {
+            self.request_nareth_visual_asset();
+        }
         self.feedback = format!("OBSERVANDO: {}", self.observation_target_label());
     }
 
@@ -3046,11 +3108,12 @@ pub fn run() -> Result<(), String> {
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
-            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
+            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth(
                 bridge.session.world(),
                 Default::default(),
                 &camera,
                 bridge.interior_mode,
+                bridge.nareth_visual_asset_ready(),
             );
             if snapshot.overlay.game_over {
                 snapshot.overlay.hud.interaction_prompt = None;
@@ -3236,6 +3299,10 @@ mod tests {
             world.destination(KHARVEX_DESTINATION).map(|value| value.position),
             Some(KHARVEX_POSITION)
         );
+        assert_eq!(
+            world.destination(NARETH_DESTINATION).map(|value| value.position),
+            Some(NARETH_POSITION)
+        );
         let tessara_physics = world
             .navigation()
             .planet_physics(TESSARA_DESTINATION)
@@ -3266,6 +3333,34 @@ mod tests {
         assert_eq!(
             kharvex_physics.orbit_center,
             GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }
+        );
+        let nareth_physics = world
+            .navigation()
+            .planet_physics(NARETH_DESTINATION)
+            .expect("Nareth should have independent planet physics");
+        assert_eq!(nareth_physics.orbit_radius, game::render_bridge::NARETH_ORBIT_RADIUS);
+        assert_eq!(
+            nareth_physics.orbit_angular_speed,
+            game::render_bridge::NARETH_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND
+        );
+        assert_eq!(nareth_physics.orbit_start, NARETH_POSITION);
+        let nareth_initial = world
+            .planet_position_at(NARETH_DESTINATION, Duration(0))
+            .expect("Nareth should have an initial orbital position");
+        let nareth_delta = GameplayVec3 {
+            x: nareth_initial.x - NARETH_POSITION.x,
+            y: nareth_initial.y - NARETH_POSITION.y,
+            z: nareth_initial.z - NARETH_POSITION.z,
+        };
+        assert!(
+            nareth_delta.x * nareth_delta.x
+                + nareth_delta.y * nareth_delta.y
+                + nareth_delta.z * nareth_delta.z
+                < 1e-8
+        );
+        assert_ne!(
+            world.planet_position_at(NARETH_DESTINATION, Duration(0)),
+            world.planet_position_at(NARETH_DESTINATION, Duration(10_000))
         );
         assert!(distance_squared(ship, GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }) > 100.0 * 100.0);
         assert!(world.destinations().filter(|value| value.id != ORIGIN).all(|value| {
@@ -3453,6 +3548,58 @@ mod tests {
 
         bridge.handle_key(KeyCode::BracketLeft, ElementState::Pressed);
         assert_eq!(bridge.observation_target, Some(DESTINATION));
+    }
+
+    #[test]
+    fn nareth_observation_requests_deferred_asset_and_keeps_fallback() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let (client, _host) = visual_asset_channel();
+        bridge.attach_visual_asset_client(client);
+        bridge.pilot_mode = true;
+        bridge.observation.from = 1.0;
+        bridge.observation.to = 1.0;
+
+        for _ in 0..3 {
+            bridge.handle_key(KeyCode::BracketRight, ElementState::Pressed);
+        }
+
+        assert_eq!(bridge.observation_target, Some(NARETH_DESTINATION));
+        assert_eq!(
+            bridge.visual_asset_states.get(NARETH_RESOURCE_ID),
+            Some(&VisualAssetState::Loading)
+        );
+        assert!(bridge.feedback.contains("NARETH"));
+
+        let snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth(
+            bridge.session.world(),
+            Default::default(),
+            &render_core::Camera::demo(),
+            false,
+            false,
+        );
+        let nareth = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value()))
+            .expect("Nareth should remain in the snapshot while loading");
+        assert_eq!(nareth.mesh, render_core::MeshHandle::PLANET_SPHERE);
+
+        bridge
+            .visual_asset_states
+            .insert(NARETH_RESOURCE_ID.to_owned(), VisualAssetState::Ready);
+        let ready_snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth(
+            bridge.session.world(),
+            Default::default(),
+            &render_core::Camera::demo(),
+            false,
+            true,
+        );
+        let ready_nareth = ready_snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value()))
+            .expect("Nareth should remain in the snapshot after loading");
+        assert_eq!(ready_nareth.mesh, render_core::MeshHandle::NARETH_PLANET);
     }
 
     #[test]

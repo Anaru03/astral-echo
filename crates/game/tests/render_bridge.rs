@@ -22,7 +22,7 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
         .nodes
         .iter()
         .any(|node| node.entity == SnapshotId::Entity(SUN_ENTITY)
-            && node.mesh == SUN_MESH
+            && node.mesh == SUN_MODEL_MESH
             && node.material == SUN_MATERIAL));
     let ship = world.navigation().ship_id().unwrap();
     assert_ne!(ship, engine::EntityId::new(0));
@@ -60,12 +60,13 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     assert!(snapshot
         .nodes
         .iter()
-        .any(|n| n.entity == SnapshotId::Destination(1) && n.mesh == PLANET_MESH));
+        .any(|n| n.entity == SnapshotId::Destination(1) && n.mesh == BUILDING_PLANET_MESH));
     assert!(snapshot.nodes.iter().any(|n| {
         n.entity == SnapshotId::Destination(1)
-            && n.mesh == PLANET_MESH
+            && n.mesh == BUILDING_PLANET_MESH
             && n.material == PLANET_MATERIAL
-            && n.transform.scale == render_core::Vec3::splat(PLANET_VISUAL_RADIUS)
+            && n.transform.scale
+                == render_core::Vec3::splat((PLANET_VISUAL_RADIUS * 2.0) / 15.45)
     }));
     let collectible = world.collectibles().next().unwrap();
     assert!(snapshot
@@ -754,9 +755,10 @@ fn seeded_surface_distribution_follows_orbit_and_rotation_as_a_local_layout() {
 #[test]
 fn only_the_selected_academic_planet_orbits() {
     let mut world = support::fixture_world();
+    let academic_id = gameplay::DestinationId::new(ACADEMIC_PLANET_DESTINATION_ID);
     world
         .register_destination(gameplay::Destination {
-            id: gameplay::DestinationId::new(ACADEMIC_PLANET_DESTINATION_ID),
+            id: academic_id,
             destination_type: gameplay::DestinationType::Planet,
             position: engine::Vec3 {
                 x: 70.0,
@@ -768,6 +770,47 @@ fn only_the_selected_academic_planet_orbits() {
             discovery: gameplay::DiscoveryState::Discovered,
         })
         .unwrap();
+    assert!(world.configure_planet_physics(gameplay::PlanetPhysics {
+        destination: academic_id,
+        orbit_center: engine::Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: -18.0,
+        },
+        orbit_radius: PLANET_ORBIT_RADIUS,
+        orbit_start: engine::Vec3::ZERO,
+        orbit_axis: engine::Vec3 {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        },
+        orbit_phase: 0.0,
+        orbit_angular_speed: PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
+        surface_radius: PLANET_SURFACE_RADIUS,
+        ship_radius: 1.0,
+        gravity_influence_radius: 24.0,
+        gravitational_parameter: 80.0,
+        atmosphere_height: 4.0,
+    }));
+
+    let expected_transform = |world: &gameplay::GameplayWorld| {
+        let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
+        let rotation = render_core::Quat::from_rotation_y(
+            PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND * elapsed_seconds as f32,
+        );
+        let scale = render_core::Vec3::splat((PLANET_VISUAL_RADIUS * 2.0) / 15.45);
+        let model_center = render_core::Vec3::new(0.022138, 0.575, -0.0159805);
+        let position = render_core::from_engine(
+            world
+                .planet_position_at(academic_id, world.time().elapsed)
+                .expect("academic planet physics should provide its position"),
+        );
+        render_core::Transform::new(
+            position - rotation * (scale * model_center),
+            rotation,
+            scale,
+        )
+    };
 
     let snapshot = snapshot_from_world(&world, Default::default());
     let selected = snapshot
@@ -780,9 +823,32 @@ fn only_the_selected_academic_planet_orbits() {
         .iter()
         .find(|node| node.entity == SnapshotId::Destination(1))
         .unwrap();
-    assert_eq!(selected.transform, academic_planet_transform(0.0));
+    assert_eq!(selected.mesh, BUILDING_PLANET_MESH);
+    assert_eq!(selected.transform, expected_transform(&world));
     assert_eq!(other.transform.translation, Vec3::new(12.0, 0.0, -22.0));
     assert_eq!(other.transform.rotation, render_core::Quat::IDENTITY);
+
+    let mut processor = gameplay::GameplayProcessor::new();
+    processor.update(
+        &mut world,
+        [gameplay::GameplayCommand::AdvanceTime {
+            delta: engine::Duration(4_000),
+        }],
+    );
+    let later_snapshot = snapshot_from_world(&world, Default::default());
+    let later_selected = later_snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Destination(ACADEMIC_PLANET_DESTINATION_ID))
+        .unwrap();
+    let later_other = later_snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Destination(1))
+        .unwrap();
+    assert_eq!(later_selected.transform, expected_transform(&world));
+    assert_ne!(later_selected.transform.translation, selected.transform.translation);
+    assert_eq!(later_other.transform, other.transform);
 }
 
 #[test]

@@ -1050,6 +1050,16 @@ impl Host {
             let gpu_error = match state.gpu.as_mut() {
                 Some(gpu) => match gpu.present_snapshot_with_stats(&state.snapshot) {
                     Ok((_, stats)) => {
+                        for event in gpu.poll_gpu_asset_events() {
+                            println!(
+                                "hot-swap gpu-asset mesh={} lod={:?} generation={} state={:?} error={:?}",
+                                event.mesh.0,
+                                event.lod,
+                                event.generation,
+                                event.state,
+                                event.error
+                            );
+                        }
                         if trace_frame {
                             println!(
                             "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",

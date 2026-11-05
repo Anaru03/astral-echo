@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 
 use render_core::{
-    Camera, Mat4, PreparedSceneStats, RasterMesh, RenderSnapshot, SnapshotScene, Transform,
+    Camera, GpuAssetEvent, Mat4, PreparedSceneStats, RasterMesh, RenderSnapshot, SnapshotScene,
+    Transform,
 };
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -312,6 +313,16 @@ impl SurfaceRenderer {
 
     pub fn ready_for_present(&self) -> bool {
         self.config.width > 0 && self.config.height > 0 && self.depth.is_some()
+    }
+
+    /// Drains GPU-resource transitions from the presentation-owned renderer.
+    /// Events are emitted only on state changes, never once per frame.
+    pub fn poll_gpu_asset_events(&mut self) -> Vec<GpuAssetEvent> {
+        let mut events = self.renderer.poll_gpu_asset_events();
+        if let Some(renderer) = &mut self.hdr_renderer {
+            events.extend(renderer.poll_gpu_asset_events());
+        }
+        events
     }
 
     /// Requests one readback of the next fully composed GPU frame.

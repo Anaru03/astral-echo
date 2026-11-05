@@ -5,7 +5,8 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use render_core::{
-    game_over_layout, hud_overlay, Camera, HudState, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh,
+    game_over_layout, hud_overlay, Camera, GpuAssetEvent, GpuAssetState, HudState, LodLevel, Mat4,
+    MaterialHandle, MeshHandle, PreparedScene, RasterMesh,
     RasterVertex, SnapshotId, SnapshotScene, Transform, Vec3, Vec4, GAME_OVER_GLYPHS,
 };
 use wgpu::util::DeviceExt;
@@ -427,6 +428,20 @@ impl GpuRenderer {
             .as_mut()
             .expect("initialized instancing")
             .sync(&self.gpu, scene)
+    }
+
+    /// Returns GPU availability transitions produced since the previous poll.
+    /// Events are emitted only when a geometry changes state.
+    pub fn poll_gpu_asset_events(&mut self) -> Vec<GpuAssetEvent> {
+        self.instanced
+            .as_mut()
+            .map_or_else(Vec::new, |scene| scene.take_gpu_asset_events())
+    }
+
+    pub fn gpu_asset_state(&self, mesh: MeshHandle, lod: LodLevel) -> GpuAssetState {
+        self.instanced.as_ref().map_or(GpuAssetState::Unavailable, |scene| {
+            scene.gpu_asset_state((mesh, lod))
+        })
     }
 
     pub fn sync_prepared_reference(&mut self, scene: &PreparedScene) -> Result<bool, GpuError> {

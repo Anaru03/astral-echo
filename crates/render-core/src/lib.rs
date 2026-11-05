@@ -38,7 +38,7 @@ pub use visual::{
     CullingConfig, LodLevel, PreparedDraw, PreparedScene, PreparedSceneStats, SceneUpdate,
     SnapshotScene, VisibilityClass, VisualAssets, VisualError,
 };
-pub use visual_asset::{VisualAssetEvent, VisualAssetRequest, VisualAssetState};
+pub use visual_asset::{GpuAssetEvent, GpuAssetState, VisualAssetEvent, VisualAssetRequest, VisualAssetState};
 
 pub use demo::{
     demo_camera, demo_scene, grid_mesh, terrain_height, GRID_SUBDIVISIONS, TERRAIN_EXTENT,
