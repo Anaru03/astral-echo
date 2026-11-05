@@ -24,6 +24,8 @@ pub const SURFACE_OBJECT_IDS: [engine::EntityId; 4] = [
 pub const ACADEMIC_PLANET_DESTINATION_ID: u32 = 9_002;
 pub const TESSARA_DESTINATION_ID: u32 = 9_601;
 pub const TESSARA_POSITION: Vec3 = Vec3::new(-49.17, 8.0, 31.17);
+pub const KHARVEX_DESTINATION_ID: u32 = 9_602;
+pub const KHARVEX_POSITION: Vec3 = Vec3::new(-70.20, -12.0, -88.20);
 pub const PLANET_ORBIT_RADIUS: f32 = 42.0;
 pub const PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.25;
 pub const PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.5;
@@ -39,6 +41,12 @@ const TESSARA_PLANET_CENTER: Vec3 = Vec3::new(0.0, -0.95, 0.0);
 const TESSARA_PLANET_MAX_DIMENSION: f32 = 14.0043;
 const TESSARA_PLANET_VISUAL_SCALE: f32 =
     (PLANET_VISUAL_RADIUS * 2.0) / TESSARA_PLANET_MAX_DIMENSION;
+pub const KHARVEX_PLANET_MESH: MeshHandle = MeshHandle::KHARVEX_PLANET;
+const KHARVEX_PLANET_CENTER: Vec3 = Vec3::new(12.189077, 15.664048, 6.280951);
+pub const KHARVEX_SURFACE_RADIUS: f32 = 7.0;
+const KHARVEX_PLANET_MAX_RADIUS: f32 = 126.071908;
+const KHARVEX_PLANET_VISUAL_SCALE: f32 =
+    KHARVEX_SURFACE_RADIUS / KHARVEX_PLANET_MAX_RADIUS;
 pub const SUN_VISUAL_RADIUS: f32 = 14.0;
 const SUN_MODEL_CENTER: Vec3 = Vec3::new(-0.2698, 0.0864, -0.1784);
 const SUN_MODEL_MAX_DIMENSION: f32 = 7.5163;
@@ -350,6 +358,7 @@ pub fn snapshot_from_world_with_camera_and_view(
     let tick = world.time().tick;
     let academic_planet = academic_planet_id(world);
     let tessara_planet = tessara_planet_id(world);
+    let kharvex_planet = kharvex_planet_id(world);
     let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
     let mut snapshot = RenderSnapshot::new(
         tick,
@@ -495,7 +504,12 @@ pub fn snapshot_from_world_with_camera_and_view(
         if params.destinations.is_empty() || params.destinations.contains(&dest.id) {
             let (mesh, material, scale) = match dest.destination_type {
                 gameplay::DestinationType::Planet => (
-                    planet_mesh_for_destination(dest.id, academic_planet, tessara_planet),
+                    planet_mesh_for_destination(
+                        dest.id,
+                        academic_planet,
+                        tessara_planet,
+                        kharvex_planet,
+                    ),
                     PLANET_MATERIAL,
                     Vec3::splat(PLANET_VISUAL_RADIUS),
                 ),
@@ -515,6 +529,8 @@ pub fn snapshot_from_world_with_camera_and_view(
                     .map(from_engine)
                     .unwrap_or_else(|| from_engine(dest.position));
                 tessara_planet_transform(position)
+            } else if kharvex_planet == Some(dest.id) {
+                kharvex_planet_transform(from_engine(dest.position))
             } else {
                 Transform::new(from_engine(dest.position), Quat::IDENTITY, scale)
             };
@@ -1197,6 +1213,13 @@ fn tessara_planet_id(world: &GameplayWorld) -> Option<gameplay::DestinationId> {
         .map(|destination| destination.id)
 }
 
+fn kharvex_planet_id(world: &GameplayWorld) -> Option<gameplay::DestinationId> {
+    world
+        .destinations()
+        .find(|destination| destination.id.value() == KHARVEX_DESTINATION_ID)
+        .map(|destination| destination.id)
+}
+
 pub fn academic_planet_transform(elapsed_seconds: f64) -> Transform {
     let orbit_angle = PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND as f64 * elapsed_seconds;
     let rotation_angle = PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND as f64 * elapsed_seconds;
@@ -1216,11 +1239,14 @@ fn planet_mesh_for_destination(
     destination: gameplay::DestinationId,
     academic_planet: Option<gameplay::DestinationId>,
     tessara_planet: Option<gameplay::DestinationId>,
+    kharvex_planet: Option<gameplay::DestinationId>,
 ) -> MeshHandle {
     if academic_planet == Some(destination) {
         BUILDING_PLANET_MESH
     } else if tessara_planet == Some(destination) {
         TESSARA_PLANET_MESH
+    } else if kharvex_planet == Some(destination) {
+        KHARVEX_PLANET_MESH
     } else {
         PLANET_MESH
     }
@@ -1240,6 +1266,16 @@ fn tessara_planet_transform(position: Vec3) -> Transform {
         Vec3::splat(TESSARA_PLANET_VISUAL_SCALE),
     );
     transform.translation -= transform.rotation * (transform.scale * TESSARA_PLANET_CENTER);
+    transform
+}
+
+fn kharvex_planet_transform(position: Vec3) -> Transform {
+    let mut transform = Transform::new(
+        position,
+        Quat::IDENTITY,
+        Vec3::splat(KHARVEX_PLANET_VISUAL_SCALE),
+    );
+    transform.translation -= transform.rotation * (transform.scale * KHARVEX_PLANET_CENTER);
     transform
 }
 
@@ -1264,9 +1300,13 @@ fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
 #[cfg(test)]
 mod tests {
     use super::{academic_planet_transform, building_planet_transform, hud_mission_state,
-        planet_mesh_for_destination, tessara_planet_transform, BUILDING_PLANET_CENTER,
-        BUILDING_PLANET_MESH, TESSARA_PLANET_CENTER, TESSARA_PLANET_MAX_DIMENSION,
-        TESSARA_PLANET_MESH, TESSARA_PLANET_VISUAL_SCALE, TESSARA_POSITION,
+        kharvex_planet_transform, planet_mesh_for_destination, tessara_planet_transform,
+        BUILDING_PLANET_CENTER, BUILDING_PLANET_MESH, KHARVEX_PLANET_CENTER,
+        KHARVEX_PLANET_MAX_RADIUS, KHARVEX_PLANET_MESH,
+        KHARVEX_PLANET_VISUAL_SCALE, KHARVEX_SURFACE_RADIUS,
+        KHARVEX_POSITION,
+        TESSARA_PLANET_CENTER, TESSARA_PLANET_MAX_DIMENSION, TESSARA_PLANET_MESH,
+        TESSARA_PLANET_VISUAL_SCALE, TESSARA_POSITION,
         ECHO7_VISUAL_SCALE, PLANET_MESH, PLANET_ORBIT_RADIUS, PLANET_SURFACE_RADIUS,
         PLANET_VISUAL_RADIUS, SUN_MODEL_CENTER, SUN_MODEL_MESH, SUN_MODEL_MAX_DIMENSION,
         SUN_MODEL_VISUAL_SCALE, SUN_POSITION, SUN_VISUAL_RADIUS};
@@ -1583,10 +1623,24 @@ mod tests {
         let other = gameplay::DestinationId::new(9_003);
 
         let tessara = gameplay::DestinationId::new(super::TESSARA_DESTINATION_ID);
-        assert_eq!(planet_mesh_for_destination(academic, Some(academic), Some(tessara)), BUILDING_PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(tessara, Some(academic), Some(tessara)), TESSARA_PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(other, Some(academic), Some(tessara)), PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(academic, None, Some(tessara)), PLANET_MESH);
+        let kharvex = gameplay::DestinationId::new(super::KHARVEX_DESTINATION_ID);
+        assert_eq!(planet_mesh_for_destination(academic, Some(academic), Some(tessara), Some(kharvex)), BUILDING_PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(tessara, Some(academic), Some(tessara), Some(kharvex)), TESSARA_PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(kharvex, Some(academic), Some(tessara), Some(kharvex)), KHARVEX_PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(other, Some(academic), Some(tessara), Some(kharvex)), PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(academic, None, Some(tessara), Some(kharvex)), PLANET_MESH);
+    }
+
+    #[test]
+    fn kharvex_planet_transform_centers_and_preserves_uniform_visual_scale() {
+        let transform = kharvex_planet_transform(KHARVEX_POSITION);
+        let centered = transform.translation
+            + transform.rotation * (transform.scale * KHARVEX_PLANET_CENTER);
+
+        assert!((centered - KHARVEX_POSITION).length() < 1e-5);
+        assert_eq!(transform.scale, Vec3::splat(KHARVEX_PLANET_VISUAL_SCALE));
+        assert!((transform.scale.x * KHARVEX_PLANET_MAX_RADIUS - KHARVEX_SURFACE_RADIUS).abs() < 1e-5);
+        assert!(transform.scale.x.is_finite() && transform.scale.x > 0.0);
     }
 
     #[test]

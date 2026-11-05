@@ -31,10 +31,16 @@ use audio::{AudioEvent, AudioManager, SoundEffect};
 const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
 const TESSARA_DESTINATION: DestinationId = DestinationId::new(9_601);
+const KHARVEX_DESTINATION: DestinationId = DestinationId::new(9_602);
 const TESSARA_POSITION: GameplayVec3 = GameplayVec3 {
     x: -49.17,
     y: 8.0,
     z: 31.17,
+};
+const KHARVEX_POSITION: GameplayVec3 = GameplayVec3 {
+    x: -70.20,
+    y: -12.0,
+    z: -88.20,
 };
 const VISUAL_INITIAL_SHIP_POSITION: GameplayVec3 = GameplayVec3 {
     x: 0.0,
@@ -382,6 +388,16 @@ impl VisualBridge {
             .map_err(|error| format!("registrar Tessara: {error:?}"))?;
         session
             .register_destination(Destination {
+                id: KHARVEX_DESTINATION,
+                destination_type: DestinationType::Planet,
+                position: KHARVEX_POSITION,
+                travel_duration: Duration(1_000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .map_err(|error| format!("registrar Kharvex: {error:?}"))?;
+        session
+            .register_destination(Destination {
                 id: SIGNAL,
                 destination_type: DestinationType::SpacePoint,
                 position: GameplayVec3 {
@@ -466,6 +482,19 @@ impl VisualBridge {
             atmosphere_height: 4.0,
         }) {
             return Err("configurar la física de Tessara".to_owned());
+        }
+        if !session.world_mut().configure_planet_physics(PlanetPhysics {
+            destination: KHARVEX_DESTINATION,
+            orbit_center: KHARVEX_POSITION,
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: game::render_bridge::KHARVEX_SURFACE_RADIUS,
+            ship_radius: 1.0,
+            gravity_influence_radius: 28.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }) {
+            return Err("configurar la fisica de Kharvex".to_owned());
         }
         if initial_ship_position != GameplayVec3::ZERO
             && !session.world_mut().configure_solar_physics(PlanetPhysics {
@@ -2328,6 +2357,27 @@ impl VisualBridge {
 
     fn exit_pilot(&mut self) {
         let mut aggregate = FeedbackAggregate::default();
+        let free_autopilot_active = matches!(
+            self.session.world().autopilot_state(),
+            gameplay::AutopilotState::InTransit { route, next_leg: 1, .. }
+                if route.len() == 2 && route[0] == route[1]
+        ) && matches!(
+            self.session.world().travel_state(),
+            gameplay::TravelState::InProgress { .. }
+        );
+        if free_autopilot_active
+            && !self.issue_into(
+                [GameplayCommand::CancelAutopilot {
+                    player: self.player,
+                    pilot_station: self.pilot_station,
+                }],
+                &mut aggregate,
+            )
+        {
+            self.feedback = "ERICK: no puedo abandonar la estación mientras el viaje siga activo.".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+            return;
+        }
         let accepted = self.issue_into(
             [GameplayCommand::SetShipControlActive {
                 player: self.player,
@@ -2342,13 +2392,23 @@ impl VisualBridge {
                 ship: self.ship,
                 active: false,
             }]);
-            self.issue_into(
+            let released = self.issue_into(
                 [GameplayCommand::ReleaseStation {
                     station: self.pilot_station,
                     player: self.player,
                 }],
                 &mut aggregate,
             );
+            if !released {
+                self.issue([GameplayCommand::SetShipControlActive {
+                    player: self.player,
+                    pilot_station: self.pilot_station,
+                    active: true,
+                }]);
+                self.feedback = "ERICK: el viaje fue cancelado, pero no puedo liberar la estación.".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+                return;
+            }
             self.pilot_mode = false;
             self.interior_mode = true;
             self.flight_keys = FlightKeys::default();
@@ -2356,7 +2416,11 @@ impl VisualBridge {
             self.fire_pressed = false;
             self.boost_pressed = false;
             self.shield_active = false;
-            self.feedback = "PILOTAJE FINALIZADO - CONTROL DE PERSONAJE RESTAURADO".to_owned();
+            self.feedback = if free_autopilot_active {
+                "ERICK: viaje cancelado por abandono de la estación. PILOTAJE FINALIZADO.".to_owned()
+            } else {
+                "PILOTAJE FINALIZADO - CONTROL DE PERSONAJE RESTAURADO".to_owned()
+            };
         } else {
             self.feedback = aggregate.message();
         }
@@ -2951,6 +3015,7 @@ pub fn run() -> Result<(), String> {
                 (assets_root.join("station/station.obj"), render_core::MeshHandle::STATION, VisualAssets::STATION),
                 (assets_root.join("building/building_planet.obj"), render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
                 (assets_root.join("clock/clock_planet.obj"), render_core::MeshHandle::TESSARA_PLANET, VisualAssets::PLANET),
+                (assets_root.join("mecanic/mecanic_planet.obj"), render_core::MeshHandle::KHARVEX_PLANET, VisualAssets::PLANET),
                 (assets_root.join("sun/sun.obj"), render_core::MeshHandle::SUN_MODEL, VisualAssets::SUN),
                 (assets_root.join("shooter/shooter.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY),
                 (assets_root.join("charger/charger.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY_CHARGER),
@@ -3086,12 +3151,23 @@ mod tests {
             world.destination(TESSARA_DESTINATION).map(|value| value.position),
             Some(TESSARA_POSITION)
         );
+        assert_eq!(
+            world.destination(KHARVEX_DESTINATION).map(|value| value.position),
+            Some(KHARVEX_POSITION)
+        );
         let tessara_physics = world
             .navigation()
             .planet_physics(TESSARA_DESTINATION)
             .expect("Tessara should have independent planet physics");
         assert_eq!(tessara_physics.orbit_radius, 0.0);
         assert_eq!(tessara_physics.orbit_center, TESSARA_POSITION);
+        let kharvex_physics = world
+            .navigation()
+            .planet_physics(KHARVEX_DESTINATION)
+            .expect("Kharvex should have independent planet physics");
+        assert_eq!(kharvex_physics.orbit_radius, 0.0);
+        assert_eq!(kharvex_physics.orbit_angular_speed, 0.0);
+        assert_eq!(kharvex_physics.orbit_center, KHARVEX_POSITION);
         assert!(distance_squared(ship, GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }) > 100.0 * 100.0);
         assert!(world.destinations().filter(|value| value.id != ORIGIN).all(|value| {
             distance_squared(ship, value.position) > 30.0 * 30.0
@@ -3141,6 +3217,14 @@ mod tests {
             )
             .expect("visual physics checkpoint should restore");
         assert!(restored_visual.session.world().solar_physics().is_some());
+    }
+
+    #[test]
+    fn kharvex_is_observable_but_not_a_free_navigation_candidate() {
+        let bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        assert!(game::render_bridge::observable_planets(bridge.session.world())
+            .contains(&KHARVEX_DESTINATION));
+        assert_eq!(bridge.free_navigation_candidates(), vec![DESTINATION, TESSARA_DESTINATION]);
     }
 
     #[test]
@@ -3390,6 +3474,60 @@ mod tests {
             delta: Duration(500),
         }]);
         assert_eq!(bridge.session.world().ship_position(), position_after_cancel);
+    }
+
+    #[test]
+    fn leaving_pilot_during_free_autopilot_cancels_before_releasing_station() {
+        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..6 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        assert!(bridge.pilot_mode);
+
+        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(500),
+        }]);
+        let position_at_exit = bridge.session.world().ship_position();
+        let fuel_at_exit = bridge
+            .session
+            .world()
+            .ship_fuel(bridge.ship)
+            .expect("ship fuel should exist")
+            .current();
+
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+
+        assert!(!bridge.pilot_mode);
+        assert!(!bridge.pilot_station_occupied_by(bridge.player));
+        assert!(matches!(
+            bridge.session.world().travel_state(),
+            gameplay::TravelState::Cancelled { destination: TESSARA_DESTINATION }
+        ));
+        assert!(matches!(
+            bridge.session.world().autopilot_state(),
+            gameplay::AutopilotState::Interrupted { destination: TESSARA_DESTINATION }
+        ));
+        assert_eq!(bridge.session.world().ship_position(), position_at_exit);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .ship_fuel(bridge.ship)
+                .expect("ship fuel should remain consumed once")
+                .current(),
+            fuel_at_exit
+        );
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(500),
+        }]);
+        assert_eq!(bridge.session.world().ship_position(), position_at_exit);
+        assert!(bridge.feedback.contains("abandono de la estación"));
     }
 
     #[test]

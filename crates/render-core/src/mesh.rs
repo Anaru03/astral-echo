@@ -153,6 +153,7 @@ impl MeshHandle {
     pub const BUILDING_PLANET: Self = Self(11);
     pub const SUN_MODEL: Self = Self(12);
     pub const TESSARA_PLANET: Self = Self(13);
+    pub const KHARVEX_PLANET: Self = Self(14);
 
     pub const fn new(value: u32) -> Self {
         Self(value)

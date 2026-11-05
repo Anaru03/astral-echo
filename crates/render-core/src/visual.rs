@@ -250,6 +250,10 @@ impl Default for VisualAssets {
                 RasterMesh::sphere(Vec3::ZERO, 1.0, Vec4::new(1.0, 0.55, 0.08, 1.0)),
             ),
             (
+                (MeshHandle::KHARVEX_PLANET, Self::PLANET),
+                RasterMesh::planet_surface(Vec3::ZERO, 1.0),
+            ),
+            (
                 (MeshHandle::STATION, Self::STATION),
                 RasterMesh::station(Vec4::new(0.2, 0.55, 0.85, 1.0)),
             ),
