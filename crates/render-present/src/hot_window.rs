@@ -24,7 +24,7 @@ use winit::window::{Window, WindowId};
 
 use crate::{
     copy_nearest_rgba, BackendKind, BackendSnapshot, HotSwapState, Preset, ScaleLayout,
-    DeferredMeshRegistry, WindowConfig,
+    DeferredMeshRegistry, VisualAssetHost, WindowConfig,
 };
 
 pub type SnapshotSource = Box<dyn FnMut(u32, u32) -> Result<RenderSnapshot, String>>;
@@ -94,6 +94,28 @@ pub fn run_hot_swap_window_with_input_and_scene_and_focus(
     configure_scene: impl FnMut(&mut SnapshotScene) + 'static,
     debug: GraphicsDebugConfig,
 ) -> Result<HotSwapReport, String> {
+    run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
+        config,
+        source,
+        start_gpu,
+        input,
+        focus,
+        configure_scene,
+        debug,
+        VisualAssetHost::default(),
+    )
+}
+
+pub fn run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
+    config: WindowConfig,
+    source: SnapshotSource,
+    start_gpu: bool,
+    input: impl FnMut(KeyCode, ElementState) + 'static,
+    focus: impl FnMut(bool) + 'static,
+    configure_scene: impl FnMut(&mut SnapshotScene) + 'static,
+    debug: GraphicsDebugConfig,
+    visual_assets: VisualAssetHost,
+) -> Result<HotSwapReport, String> {
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let wake_proxy = event_loop.create_proxy();
     let mut app = Host {
@@ -118,6 +140,7 @@ pub fn run_hot_swap_window_with_input_and_scene_and_focus(
         ),
         auto_capture_requested: false,
         wake_proxy,
+        visual_assets,
     };
     event_loop
         .run_app(&mut app)
@@ -154,6 +177,7 @@ struct Host {
     auto_capture_after_frames: Option<u64>,
     auto_capture_requested: bool,
     wake_proxy: EventLoopProxy<()>,
+    visual_assets: VisualAssetHost,
 }
 
 struct HostState {
@@ -174,6 +198,7 @@ struct HostState {
     pending_gpu_started: Option<Instant>,
     cursor_position: (f64, f64),
     deferred_meshes: DeferredMeshRegistry,
+    visual_assets: VisualAssetHost,
 }
 
 struct PendingGpu {
@@ -283,6 +308,7 @@ impl ApplicationHandler for Host {
             pending_gpu_started: None,
             cursor_position: (0.0, 0.0),
             deferred_meshes: DeferredMeshRegistry::default(),
+            visual_assets: std::mem::replace(&mut self.visual_assets, VisualAssetHost::default()),
         });
         if self.start_gpu {
             self.toggle();
@@ -978,7 +1004,9 @@ impl Host {
         };
         self.frames = self.frames.saturating_add(1);
         if let Some(scene) = Rc::get_mut(&mut state.snapshot) {
-            let _ = state.deferred_meshes.poll(scene);
+            let _ = state
+                .visual_assets
+                .poll(&mut state.deferred_meshes, Some(scene));
         }
         let frame_id = self.frames;
         let trace_frame = frame_id <= 3 || frame_id % 60 == 0 || state.pending_gpu.is_some();

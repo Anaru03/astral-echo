@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use render_core::{
     CpuModelLoadManager, CpuModelLoadState, MaterialHandle, MeshHandle, SnapshotScene,
+    VisualAssetEvent, VisualAssetRequest, VisualAssetState,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -16,6 +18,198 @@ pub enum DeferredMeshStatus {
 pub enum DeferredMeshRequestError {
     AlreadyRequested(PathBuf, MeshHandle, MaterialHandle),
     ConflictingHandles(PathBuf, MeshHandle, MaterialHandle),
+}
+
+#[derive(Debug)]
+pub struct VisualAssetClient {
+    request_tx: Sender<VisualAssetRequest>,
+    event_rx: Receiver<VisualAssetEvent>,
+    closed: bool,
+}
+
+impl VisualAssetClient {
+    pub fn request(&self, request: VisualAssetRequest) -> Result<(), VisualAssetRequest> {
+        self.request_tx.send(request).map_err(|error| error.0)
+    }
+
+    pub fn poll_events(&mut self) -> Vec<VisualAssetEvent> {
+        let mut events = Vec::new();
+        loop {
+            match self.event_rx.try_recv() {
+                Ok(event) => events.push(event),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.closed = true;
+                    break;
+                }
+            }
+        }
+        events
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+}
+
+pub struct VisualAssetHost {
+    request_rx: Receiver<VisualAssetRequest>,
+    event_tx: Sender<VisualAssetEvent>,
+    associations: BTreeMap<String, VisualAssetRequest>,
+}
+
+pub fn visual_asset_channel() -> (VisualAssetClient, VisualAssetHost) {
+    let (request_tx, request_rx) = mpsc::channel();
+    let (event_tx, event_rx) = mpsc::channel();
+    (
+        VisualAssetClient {
+            request_tx,
+            event_rx,
+            closed: false,
+        },
+        VisualAssetHost {
+            request_rx,
+            event_tx,
+            associations: BTreeMap::new(),
+        },
+    )
+}
+
+impl Default for VisualAssetHost {
+    fn default() -> Self {
+        let (_client, host) = visual_asset_channel();
+        host
+    }
+}
+
+impl VisualAssetHost {
+    pub fn poll(
+        &mut self,
+        registry: &mut DeferredMeshRegistry,
+        scene: Option<&mut SnapshotScene>,
+    ) -> Vec<VisualAssetEvent> {
+        let mut emitted = Vec::new();
+        loop {
+            let request = match self.request_rx.try_recv() {
+                Ok(request) => request,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            };
+            emitted.extend(self.accept_request(registry, request));
+        }
+        if let Some(scene) = scene {
+            for (path, status) in registry.poll(scene) {
+                if let Some(request) = self
+                    .associations
+                    .values()
+                    .find(|request| request.path == path)
+                {
+                    let event = status_event(&request.resource_id, status);
+                    let _ = self.event_tx.send(event.clone());
+                    emitted.push(event);
+                }
+            }
+        }
+        emitted
+    }
+
+    fn accept_request(
+        &mut self,
+        registry: &mut DeferredMeshRegistry,
+        request: VisualAssetRequest,
+    ) -> Vec<VisualAssetEvent> {
+        if request.resource_id.is_empty()
+            || request.path.as_os_str().is_empty()
+            || !request.mesh.is_valid()
+            || !request.material.is_valid()
+        {
+            return vec![self.emit_failure(&request, "invalid visual asset request")];
+        }
+        if let Some(previous) = self.associations.get(&request.resource_id) {
+            if previous != &request {
+                return vec![self.emit_failure(&request, "visual asset identity already assigned")];
+            }
+            return self.current_status(registry, previous);
+        }
+        if self
+            .associations
+            .values()
+            .any(|previous| previous.path == request.path)
+        {
+            return vec![self.emit_failure(&request, "visual asset path already assigned")];
+        }
+        match registry.request(request.path.clone(), request.mesh, request.material) {
+            Ok(_) => {
+                self.associations
+                    .insert(request.resource_id.clone(), request.clone());
+                vec![self.emit(&request, VisualAssetState::Loading, None)]
+            }
+            Err(DeferredMeshRequestError::AlreadyRequested(_, _, _)) => {
+                self.associations
+                    .insert(request.resource_id.clone(), request.clone());
+                self.current_status(registry, &request)
+            }
+            Err(error) => vec![self.emit_failure(&request, &format!("{error:?}"))],
+        }
+    }
+
+    fn current_status(
+        &self,
+        registry: &mut DeferredMeshRegistry,
+        request: &VisualAssetRequest,
+    ) -> Vec<VisualAssetEvent> {
+        match registry.status(&request.path) {
+            Some(DeferredMeshStatus::Registered) => {
+                vec![self.emit(request, VisualAssetState::Ready, None)]
+            }
+            Some(DeferredMeshStatus::Failed(error)) => {
+                vec![self.emit(request, VisualAssetState::Failed, Some(error))]
+            }
+            _ => vec![self.emit(request, VisualAssetState::Loading, None)],
+        }
+    }
+
+    fn emit_failure(&self, request: &VisualAssetRequest, error: &str) -> VisualAssetEvent {
+        self.emit(
+            request,
+            VisualAssetState::Failed,
+            Some(error.to_owned()),
+        )
+    }
+
+    fn emit(
+        &self,
+        request: &VisualAssetRequest,
+        state: VisualAssetState,
+        error: Option<String>,
+    ) -> VisualAssetEvent {
+        let event = VisualAssetEvent {
+            resource_id: request.resource_id.clone(),
+            state,
+            error,
+        };
+        let _ = self.event_tx.send(event.clone());
+        event
+    }
+}
+
+fn status_event(resource_id: &str, status: DeferredMeshStatus) -> VisualAssetEvent {
+    match status {
+        DeferredMeshStatus::Registered => VisualAssetEvent {
+            resource_id: resource_id.to_owned(),
+            state: VisualAssetState::Ready,
+            error: None,
+        },
+        DeferredMeshStatus::Failed(error) => VisualAssetEvent {
+            resource_id: resource_id.to_owned(),
+            state: VisualAssetState::Failed,
+            error: Some(error),
+        },
+        DeferredMeshStatus::LoadingCpu => VisualAssetEvent {
+            resource_id: resource_id.to_owned(),
+            state: VisualAssetState::Loading,
+            error: None,
+        },
+    }
 }
 
 struct Request {
@@ -326,5 +520,92 @@ mod tests {
         registry.poll(&mut scene);
         assert!(started.elapsed() < Duration::from_millis(10));
         fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn typed_channel_transports_requests_events_and_handles_without_blocking() {
+        let (mut client, mut host) = visual_asset_channel();
+        let path = fixture_path("channel");
+        write_triangle(&path);
+        let request = VisualAssetRequest {
+            resource_id: "fixture.channel".into(),
+            path: path.clone(),
+            mesh: MeshHandle::new(30_010),
+            material: MaterialHandle::new(30_010),
+        };
+        client.request(request.clone()).expect("request should send");
+        let mut registry = DeferredMeshRegistry::new();
+        let mut scene = SnapshotScene::default();
+        let loading = host.poll(&mut registry, Some(&mut scene));
+        assert_eq!(loading.len(), 1);
+        assert_eq!(loading[0].resource_id, request.resource_id);
+        assert_eq!(loading[0].state, VisualAssetState::Loading);
+        assert_eq!(client.poll_events(), loading);
+
+        for _ in 0..10_000 {
+            host.poll(&mut registry, Some(&mut scene));
+            let events = client.poll_events();
+            if events.iter().any(|event| event.state == VisualAssetState::Ready) {
+                assert!(scene
+                    .shared_mesh(request.mesh, request.material)
+                    .is_ok());
+                fs::remove_file(path).expect("remove fixture");
+                return;
+            }
+            std::thread::yield_now();
+        }
+        panic!("typed channel did not deliver Ready");
+    }
+
+    #[test]
+    fn typed_channel_reports_failures_and_deduplicates_identity() {
+        let (mut client, mut host) = visual_asset_channel();
+        let path = fixture_path("channel_invalid");
+        fs::write(&path, "v 0 0 0\nf 1 2 3\n").expect("write invalid fixture");
+        let request = VisualAssetRequest {
+            resource_id: "fixture.invalid".into(),
+            path: path.clone(),
+            mesh: MeshHandle::new(30_011),
+            material: MaterialHandle::new(30_011),
+        };
+        client.request(request.clone()).unwrap();
+        let mut registry = DeferredMeshRegistry::new();
+        let mut scene = SnapshotScene::default();
+        host.poll(&mut registry, Some(&mut scene));
+        assert_eq!(client.poll_events().len(), 1);
+        client.request(request).unwrap();
+        let duplicate = host.poll(&mut registry, Some(&mut scene));
+        assert_eq!(duplicate.len(), 1);
+        assert_eq!(duplicate[0].state, VisualAssetState::Loading);
+        let mut failed = false;
+        for _ in 0..10_000 {
+            host.poll(&mut registry, Some(&mut scene));
+            failed |= client
+                .poll_events()
+                .iter()
+                .any(|event| event.state == VisualAssetState::Failed);
+            if failed {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(failed);
+        fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn typed_channel_closes_without_panicking_or_blocking() {
+        let (mut client, host) = visual_asset_channel();
+        drop(host);
+        assert!(client
+            .request(VisualAssetRequest {
+                resource_id: "closed".into(),
+                path: PathBuf::from("fixture.obj"),
+                mesh: MeshHandle::new(30_012),
+                material: MaterialHandle::new(30_012),
+            })
+            .is_err());
+        assert!(client.poll_events().is_empty());
+        assert!(client.is_closed());
     }
 }

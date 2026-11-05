@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
@@ -15,10 +16,13 @@ use gameplay::{
     Derelict, DerelictId, DerelictReward, InteractionBehavior, RewardDistributionPolicy,
     StationType, WeaponAmmunition, WeaponConfiguration,
 };
-use render_core::{LightingMode, MaterialInfo, VisualAssets};
+use render_core::{
+    LightingMode, MaterialHandle, MaterialInfo, MeshHandle, VisualAssetRequest, VisualAssetState,
+    VisualAssets,
+};
 use render_present::{
-    run_hot_swap_window_with_input_and_scene_and_focus, ElementState, GraphicsDebugConfig,
-    KeyCode, Preset, WindowConfig,
+    run_hot_swap_window_with_input_and_scene_and_focus_and_assets, visual_asset_channel,
+    ElementState, GraphicsDebugConfig, KeyCode, Preset, VisualAssetClient, WindowConfig,
 };
 
 #[path = "gamepad.rs"]
@@ -250,6 +254,8 @@ struct VisualBridge {
     look_down: bool,
     last_interior_update: Instant,
     last_world_update: Instant,
+    visual_asset_client: Option<VisualAssetClient>,
+    visual_asset_states: BTreeMap<String, VisualAssetState>,
 }
 
 impl VisualBridge {
@@ -751,6 +757,8 @@ impl VisualBridge {
             look_down: false,
             last_interior_update: Instant::now(),
             last_world_update: Instant::now(),
+            visual_asset_client: None,
+            visual_asset_states: BTreeMap::new(),
         })
     }
 
@@ -763,6 +771,53 @@ impl VisualBridge {
         bridge.started = false;
         bridge.feedback = "ASTRAL ECHO - PULSA ENTER PARA COMENZAR".to_owned();
         Ok(bridge)
+    }
+
+    fn attach_visual_asset_client(&mut self, client: VisualAssetClient) {
+        self.visual_asset_client = Some(client);
+    }
+
+    fn request_visual_asset(
+        &mut self,
+        resource_id: impl Into<String>,
+        path: impl Into<std::path::PathBuf>,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+    ) -> bool {
+        let resource_id = resource_id.into();
+        if self.visual_asset_states.contains_key(&resource_id) {
+            return false;
+        }
+        let request = VisualAssetRequest {
+            resource_id: resource_id.clone(),
+            path: path.into(),
+            mesh,
+            material,
+        };
+        let Some(client) = self.visual_asset_client.as_ref() else {
+            return false;
+        };
+        if client.request(request).is_err() {
+            return false;
+        }
+        self.visual_asset_states
+            .insert(resource_id, VisualAssetState::Loading);
+        true
+    }
+
+    fn poll_visual_asset_events(&mut self) {
+        let Some(client) = self.visual_asset_client.as_mut() else {
+            return;
+        };
+        for event in client.poll_events() {
+            self.visual_asset_states
+                .insert(event.resource_id, event.state.clone());
+            if let VisualAssetState::Failed = event.state {
+                if let Some(error) = event.error {
+                    self.feedback = format!("RECURSO VISUAL NO DISPONIBLE: {error}");
+                }
+            }
+        }
     }
 
     fn start_game(&mut self) {
@@ -2968,6 +3023,8 @@ impl VisualBridge {
 
 pub fn run() -> Result<(), String> {
     let runtime = Rc::new(RefCell::new(VisualBridge::new_visual_runtime()?));
+    let (asset_client, asset_host) = visual_asset_channel();
+    runtime.borrow_mut().attach_visual_asset_client(asset_client);
     let snapshot_runtime = Rc::clone(&runtime);
     let input_runtime = Rc::clone(&runtime);
     let focus_runtime = Rc::clone(&runtime);
@@ -2977,10 +3034,11 @@ pub fn run() -> Result<(), String> {
         raster_controls: false,
         ..Default::default()
     };
-    run_hot_swap_window_with_input_and_scene_and_focus(
+    run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
         config,
         Box::new(move |width, height| {
             let mut bridge = snapshot_runtime.borrow_mut();
+            bridge.poll_visual_asset_events();
             bridge.advance_visual_time();
             bridge.update_interior_motion();
             bridge.update_pilot_motion();
@@ -3067,6 +3125,7 @@ pub fn run() -> Result<(), String> {
                 Ok("1") | Ok("true") | Ok("TRUE")
             ),
         },
+        asset_host,
     )
     .map(|report| {
         println!(
@@ -3124,6 +3183,7 @@ fn guidance_requirement_label(requirement: gameplay::GuidanceRequirement) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use render_present::DeferredMeshRegistry;
 
     #[test]
     fn visual_runtime_requires_explicit_start_and_preserves_initial_campaign_state() {
@@ -5748,5 +5808,56 @@ mod tests {
         }]);
         assert!(matches!(rejected.first().map(|value| value.status), Some(gameplay::CommandStatus::Rejected { .. })));
         assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 0);
+    }
+
+    #[test]
+    fn visual_bridge_sends_one_test_asset_request_and_receives_ready() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let (client, mut host) = visual_asset_channel();
+        bridge.attach_visual_asset_client(client);
+        let path = std::env::temp_dir().join(format!(
+            "astral_echo_visual_asset_test_{}.obj",
+            std::process::id()
+        ));
+        std::fs::write(&path, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
+            .expect("write test OBJ");
+        let before_tick = bridge.session.world().time().tick;
+        assert!(bridge.request_visual_asset(
+            "fixture.visual_bridge",
+            &path,
+            MeshHandle::new(30_020),
+            MaterialHandle::new(30_020),
+        ));
+        assert!(!bridge.request_visual_asset(
+            "fixture.visual_bridge",
+            &path,
+            MeshHandle::new(30_020),
+            MaterialHandle::new(30_020),
+        ));
+        assert_eq!(
+            bridge.visual_asset_states.get("fixture.visual_bridge"),
+            Some(&VisualAssetState::Loading)
+        );
+        let mut registry = DeferredMeshRegistry::new();
+        let mut scene = render_core::SnapshotScene::default();
+        host.poll(&mut registry, Some(&mut scene));
+        bridge.poll_visual_asset_events();
+        for _ in 0..10_000 {
+            host.poll(&mut registry, Some(&mut scene));
+            bridge.poll_visual_asset_events();
+            if bridge.visual_asset_states.get("fixture.visual_bridge")
+                == Some(&VisualAssetState::Ready)
+            {
+                assert_eq!(bridge.session.world().time().tick, before_tick);
+                assert!(scene
+                    .shared_mesh(MeshHandle::new(30_020), MaterialHandle::new(30_020))
+                    .is_ok());
+                std::fs::remove_file(path).expect("remove test OBJ");
+                return;
+            }
+            std::thread::yield_now();
+        }
+        std::fs::remove_file(path).expect("remove test OBJ");
+        panic!("VisualBridge did not receive Ready");
     }
 }

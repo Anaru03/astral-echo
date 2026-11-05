@@ -15,6 +15,7 @@ pub mod shadows;
 pub mod snapshot;
 pub mod transform;
 pub mod visual;
+pub mod visual_asset;
 
 pub use bounds::{Aabb, AabbError, Frustum, Plane};
 pub use camera::{Camera, CameraError, Projection};
@@ -37,6 +38,7 @@ pub use visual::{
     CullingConfig, LodLevel, PreparedDraw, PreparedScene, PreparedSceneStats, SceneUpdate,
     SnapshotScene, VisibilityClass, VisualAssets, VisualError,
 };
+pub use visual_asset::{VisualAssetEvent, VisualAssetRequest, VisualAssetState};
 
 pub use demo::{
     demo_camera, demo_scene, grid_mesh, terrain_height, GRID_SUBDIVISIONS, TERRAIN_EXTENT,
