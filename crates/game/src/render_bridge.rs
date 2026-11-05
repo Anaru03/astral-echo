@@ -27,6 +27,11 @@ pub const PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.25;
 pub const PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.5;
 pub const PLANET_SURFACE_RADIUS: f32 = 5.0;
 pub const PLANET_VISUAL_RADIUS: f32 = 8.0;
+pub const BUILDING_PLANET_MESH: MeshHandle = MeshHandle::BUILDING_PLANET;
+const BUILDING_PLANET_CENTER: Vec3 = Vec3::new(0.022138, 0.575, -0.0159805);
+const BUILDING_PLANET_MAX_DIMENSION: f32 = 15.45;
+const BUILDING_PLANET_VISUAL_SCALE: f32 =
+    (PLANET_VISUAL_RADIUS * 2.0) / BUILDING_PLANET_MAX_DIMENSION;
 pub const SUN_VISUAL_RADIUS: f32 = 14.0;
 pub const SURFACE_OBJECT_RADIAL_OFFSET: f32 = PLANET_VISUAL_RADIUS + 0.4;
 pub const ACADEMIC_SURFACE_OBJECT_SEED: u64 = 0xA57A_1E5D;
@@ -482,16 +487,18 @@ pub fn snapshot_from_world_with_camera_and_view(
         if params.destinations.is_empty() || params.destinations.contains(&dest.id) {
             let (mesh, material, scale) = match dest.destination_type {
                 gameplay::DestinationType::Planet => (
-                    PLANET_MESH,
+                    planet_mesh_for_destination(dest.id, academic_planet),
                     PLANET_MATERIAL,
                     Vec3::splat(PLANET_VISUAL_RADIUS),
                 ),
                 _ => (DESTINATION_MESH, DESTINATION_MATERIAL, Vec3::ONE),
             };
             let transform = if academic_planet == Some(dest.id) {
-                let mut transform = academic_planet_transform(elapsed_seconds);
+                let mut transform = building_planet_transform(elapsed_seconds);
                 if let Some(position) = world.planet_position_at(dest.id, world.time().elapsed) {
                     transform.translation = from_engine(position);
+                    transform.translation -=
+                        transform.rotation * (transform.scale * BUILDING_PLANET_CENTER);
                 }
                 transform
             } else {
@@ -1124,6 +1131,24 @@ pub fn academic_planet_transform(elapsed_seconds: f64) -> Transform {
     )
 }
 
+fn planet_mesh_for_destination(
+    destination: gameplay::DestinationId,
+    academic_planet: Option<gameplay::DestinationId>,
+) -> MeshHandle {
+    if academic_planet == Some(destination) {
+        BUILDING_PLANET_MESH
+    } else {
+        PLANET_MESH
+    }
+}
+
+fn building_planet_transform(elapsed_seconds: f64) -> Transform {
+    let mut transform = academic_planet_transform(elapsed_seconds);
+    transform.scale = Vec3::splat(BUILDING_PLANET_VISUAL_SCALE);
+    transform.translation -= transform.rotation * (transform.scale * BUILDING_PLANET_CENTER);
+    transform
+}
+
 fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
     Transform::new(
         from_engine(position),
@@ -1134,8 +1159,10 @@ fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
 
 #[cfg(test)]
 mod tests {
-    use super::{academic_planet_transform, hud_mission_state, ECHO7_VISUAL_SCALE,
-        PLANET_ORBIT_RADIUS, PLANET_SURFACE_RADIUS, PLANET_VISUAL_RADIUS, SUN_VISUAL_RADIUS};
+    use super::{academic_planet_transform, building_planet_transform, hud_mission_state,
+        planet_mesh_for_destination, BUILDING_PLANET_CENTER, BUILDING_PLANET_MESH,
+        ECHO7_VISUAL_SCALE, PLANET_MESH, PLANET_ORBIT_RADIUS, PLANET_SURFACE_RADIUS,
+        PLANET_VISUAL_RADIUS, SUN_VISUAL_RADIUS};
     use gameplay::{
         commands::GameplayCommand,
         domains::mission::MissionState,
@@ -1440,5 +1467,26 @@ mod tests {
         assert_eq!(PLANET_SURFACE_RADIUS, 5.0);
         assert!(PLANET_ORBIT_RADIUS > PLANET_VISUAL_RADIUS * 4.0);
         assert_eq!(academic_planet_transform(0.0).scale, Vec3::splat(PLANET_VISUAL_RADIUS));
+    }
+
+    #[test]
+    fn building_planet_mesh_is_limited_to_the_academic_planet() {
+        let academic = gameplay::DestinationId::new(super::ACADEMIC_PLANET_DESTINATION_ID);
+        let other = gameplay::DestinationId::new(9_003);
+
+        assert_eq!(planet_mesh_for_destination(academic, Some(academic)), BUILDING_PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(other, Some(academic)), PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(academic, None), PLANET_MESH);
+    }
+
+    #[test]
+    fn building_planet_transform_centers_and_preserves_visual_diameter() {
+        let transform = building_planet_transform(0.0);
+        let centered = transform.translation
+            + transform.rotation * (transform.scale * BUILDING_PLANET_CENTER);
+        let academic_position = academic_planet_transform(0.0).translation;
+
+        assert!((centered - academic_position).length() < 1e-5);
+        assert!((transform.scale.x * 15.45 - PLANET_VISUAL_RADIUS * 2.0).abs() < 1e-5);
     }
 }

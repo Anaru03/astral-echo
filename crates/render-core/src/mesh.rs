@@ -150,6 +150,7 @@ impl MeshHandle {
     pub const STATION: Self = Self(8);
     pub const DERELICT: Self = Self(9);
     pub const ASTEROID_FIELD: Self = Self(10);
+    pub const BUILDING_PLANET: Self = Self(11);
 
     pub const fn new(value: u32) -> Self {
         Self(value)

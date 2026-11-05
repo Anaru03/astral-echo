@@ -2579,6 +2579,7 @@ pub fn run() -> Result<(), String> {
             let assets_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");
             for (path, mesh, material) in [
                 (assets_root.join("station/station.obj"), render_core::MeshHandle::STATION, VisualAssets::STATION),
+                (assets_root.join("building/building_planet.obj"), render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
                 (assets_root.join("shooter/shooter.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY),
                 (assets_root.join("charger/charger.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY_CHARGER),
                 (assets_root.join("shielded/shielded.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY_SHIELDED),

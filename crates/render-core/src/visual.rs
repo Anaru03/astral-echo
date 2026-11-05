@@ -242,6 +242,10 @@ impl Default for VisualAssets {
                 RasterMesh::planet_surface(Vec3::ZERO, 1.0),
             ),
             (
+                (MeshHandle::BUILDING_PLANET, Self::PLANET),
+                RasterMesh::planet_surface(Vec3::ZERO, 1.0),
+            ),
+            (
                 (MeshHandle::STATION, Self::STATION),
                 RasterMesh::station(Vec4::new(0.2, 0.55, 0.85, 1.0)),
             ),
@@ -314,6 +318,17 @@ mod tests {
         }
         assert_ne!(VisualAssets::ENEMY, VisualAssets::ENEMY_CHARGER);
         assert_ne!(VisualAssets::ENEMY, VisualAssets::ENEMY_SHIELDED);
+    }
+
+    #[test]
+    fn building_planet_has_a_procedural_fallback() {
+        let assets = VisualAssets::default();
+        let fallback = assets
+            .mesh(MeshHandle::BUILDING_PLANET, VisualAssets::PLANET)
+            .expect("building planet fallback should be registered");
+        assert!(!fallback.vertices.is_empty());
+        assert!(!fallback.indices.is_empty());
+        assert_eq!(fallback.indices.len() % 3, 0);
     }
 }
 

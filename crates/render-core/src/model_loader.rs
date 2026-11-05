@@ -269,4 +269,22 @@ mod tests {
             assert!(mesh.resolved_normals().iter().all(|normal| normal.is_finite()));
         }
     }
+
+    #[test]
+    fn loads_repository_building_planet_obj() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/models/building/building_planet.obj");
+        let mesh = load_obj(path).expect("repository building planet OBJ should load");
+        assert!(!mesh.vertices.is_empty());
+        assert!(!mesh.indices.is_empty());
+        assert_eq!(mesh.indices.len() % 3, 0);
+        assert!(mesh
+            .vertices
+            .iter()
+            .all(|vertex| vertex.position.is_finite() && vertex.normal.is_finite()));
+        assert!(mesh
+            .indices
+            .iter()
+            .all(|index| (*index as usize) < mesh.vertices.len()));
+    }
 }
