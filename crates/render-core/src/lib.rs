@@ -1,5 +1,6 @@
 pub mod bounds;
 pub mod camera;
+pub mod cpu_model_loader;
 pub mod demo;
 pub mod geometry;
 pub mod hud;
@@ -44,6 +45,7 @@ pub use demo::{
 pub use geometry::{RasterMesh, RasterVertex};
 pub use hud::{hud_contextual_button_hit, hud_controls_button_hit, hud_controls_panel_hit, hud_overlay, HudOverlay, HudOverlayRect};
 pub use model_loader::{load_obj, load_obj_reader, ObjLoadError};
+pub use cpu_model_loader::{CpuModelLoadManager, CpuModelLoadState};
 
 pub use lighting::{
     material_fixture, shade_surface, shade_surface_profiled, shade_surface_profiled_sanitized,

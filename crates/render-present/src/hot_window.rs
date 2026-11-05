@@ -24,7 +24,7 @@ use winit::window::{Window, WindowId};
 
 use crate::{
     copy_nearest_rgba, BackendKind, BackendSnapshot, HotSwapState, Preset, ScaleLayout,
-    WindowConfig,
+    DeferredMeshRegistry, WindowConfig,
 };
 
 pub type SnapshotSource = Box<dyn FnMut(u32, u32) -> Result<RenderSnapshot, String>>;
@@ -173,6 +173,7 @@ struct HostState {
     pending_gpu: Option<PendingGpu>,
     pending_gpu_started: Option<Instant>,
     cursor_position: (f64, f64),
+    deferred_meshes: DeferredMeshRegistry,
 }
 
 struct PendingGpu {
@@ -281,6 +282,7 @@ impl ApplicationHandler for Host {
             pending_gpu: None,
             pending_gpu_started: None,
             cursor_position: (0.0, 0.0),
+            deferred_meshes: DeferredMeshRegistry::default(),
         });
         if self.start_gpu {
             self.toggle();
@@ -975,6 +977,9 @@ impl Host {
             return;
         };
         self.frames = self.frames.saturating_add(1);
+        if let Some(scene) = Rc::get_mut(&mut state.snapshot) {
+            let _ = state.deferred_meshes.poll(scene);
+        }
         let frame_id = self.frames;
         let trace_frame = frame_id <= 3 || frame_id % 60 == 0 || state.pending_gpu.is_some();
         let frame_started = Instant::now();

@@ -120,6 +120,7 @@ impl PreparedScene {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VisualError {
     UnknownAsset(MeshHandle, MaterialHandle),
+    MeshAlreadyRegistered(MeshHandle, MaterialHandle),
     DuplicateIdentity,
     NonFinite,
 }
@@ -174,6 +175,26 @@ impl VisualAssets {
             .insert((mesh, material), mesh_bounds(&raster_mesh));
         self.meshes.insert((mesh, material), raster_mesh.clone());
         self.low.insert((mesh, material), raster_mesh);
+    }
+
+    pub fn register_shared_mesh(
+        &mut self,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+        raster_mesh: Arc<RasterMesh>,
+    ) -> Result<(), VisualError> {
+        let key = (mesh, material);
+        if self.meshes.contains_key(&key)
+            || self.low.contains_key(&key)
+            || self.bounds.contains_key(&key)
+        {
+            return Err(VisualError::MeshAlreadyRegistered(mesh, material));
+        }
+        let bounds = mesh_bounds(&raster_mesh);
+        self.bounds.insert(key, bounds);
+        self.meshes.insert(key, Arc::clone(&raster_mesh));
+        self.low.insert(key, raster_mesh);
+        Ok(())
     }
 }
 
@@ -292,6 +313,36 @@ impl Default for VisualAssets {
 mod tests {
     use super::*;
 
+    fn shared_triangle() -> Arc<RasterMesh> {
+        Arc::new(RasterMesh::triangle(
+            RasterVertex::new(Vec3::new(-1.0, -2.0, -3.0), Vec4::ONE),
+            RasterVertex::new(Vec3::new(4.0, 5.0, 6.0), Vec4::ONE),
+            RasterVertex::new(Vec3::new(0.0, 1.0, 2.0), Vec4::ONE),
+        ))
+    }
+
+    fn shared_mesh_handles() -> (MeshHandle, MaterialHandle) {
+        (MeshHandle::new(10_000), MaterialHandle::new(10_000))
+    }
+
+    fn snapshot_for(mesh: MeshHandle, material: MaterialHandle) -> RenderSnapshot {
+        let camera = Camera::demo();
+        let mut snapshot = RenderSnapshot::new(
+            engine::Tick(0),
+            camera.position(),
+            camera.view_matrix(),
+            camera.projection_matrix(),
+        );
+        snapshot.push_node(SnapshotNode::destination(
+            10_000,
+            Transform::default(),
+            mesh,
+            material,
+            true,
+        ));
+        snapshot
+    }
+
     #[test]
     fn default_assets_register_cube_with_destination_material() {
         let assets = VisualAssets::default();
@@ -337,6 +388,138 @@ mod tests {
         assert!(!fallback.vertices.is_empty());
         assert!(!fallback.indices.is_empty());
         assert_eq!(fallback.indices.len() % 3, 0);
+    }
+
+    #[test]
+    fn shared_mesh_registration_preserves_arc_identity_and_bounds() {
+        let mut assets = VisualAssets::default();
+        let shared = shared_triangle();
+        let (mesh, material) = shared_mesh_handles();
+        assets
+            .register_shared_mesh(mesh, material, Arc::clone(&shared))
+            .expect("shared mesh should register");
+
+        assert!(Arc::ptr_eq(
+            assets.meshes.get(&(mesh, material)).expect("high mesh"),
+            &shared
+        ));
+        assert!(Arc::ptr_eq(
+            assets.low.get(&(mesh, material)).expect("low mesh"),
+            &shared
+        ));
+        assert_eq!(
+            assets.bounds.get(&(mesh, material)),
+            Some(&Aabb {
+                min: Vec3::new(-1.0, -2.0, -3.0),
+                max: Vec3::new(4.0, 5.0, 6.0),
+            })
+        );
+    }
+
+    #[test]
+    fn shared_mesh_is_resolved_and_prepared_by_snapshot_scene() {
+        let mut scene = SnapshotScene::default();
+        let shared = shared_triangle();
+        let (mesh, material) = shared_mesh_handles();
+        scene
+            .assets
+            .register_shared_mesh(mesh, material, Arc::clone(&shared))
+            .expect("shared mesh should register");
+
+        scene
+            .update(&snapshot_for(mesh, material))
+            .expect("snapshot should resolve shared mesh");
+        let prepared = scene.prepare(CullingConfig::default());
+        let draw = prepared.draws().next().expect("prepared draw");
+        assert!(Arc::ptr_eq(&draw.mesh, &shared));
+    }
+
+    #[test]
+    fn shared_mesh_registration_rejects_collision_without_mutation() {
+        let mut assets = VisualAssets::default();
+        let (mesh, material) = shared_mesh_handles();
+        let original = shared_triangle();
+        let replacement = Arc::new(RasterMesh::triangle(
+            RasterVertex::new(Vec3::ZERO, Vec4::ONE),
+            RasterVertex::new(Vec3::X, Vec4::ONE),
+            RasterVertex::new(Vec3::Y, Vec4::ONE),
+        ));
+        assets
+            .register_shared_mesh(mesh, material, Arc::clone(&original))
+            .expect("original mesh should register");
+        let original_bounds = *assets.bounds.get(&(mesh, material)).expect("bounds");
+
+        assert_eq!(
+            assets.register_shared_mesh(mesh, material, replacement),
+            Err(VisualError::MeshAlreadyRegistered(mesh, material))
+        );
+        assert!(Arc::ptr_eq(
+            assets.meshes.get(&(mesh, material)).expect("original high mesh"),
+            &original
+        ));
+        assert_eq!(
+            *assets.bounds.get(&(mesh, material)).expect("original bounds"),
+            original_bounds
+        );
+    }
+
+    #[test]
+    fn different_shared_handle_registers_without_affecting_existing_mesh() {
+        let mut assets = VisualAssets::default();
+        let first = shared_triangle();
+        let second = Arc::new(RasterMesh::triangle(
+            RasterVertex::new(Vec3::ZERO, Vec4::ONE),
+            RasterVertex::new(Vec3::X, Vec4::ONE),
+            RasterVertex::new(Vec3::Y, Vec4::ONE),
+        ));
+        let first_key = shared_mesh_handles();
+        let second_key = (MeshHandle::new(10_001), MaterialHandle::new(10_001));
+        assets
+            .register_shared_mesh(first_key.0, first_key.1, Arc::clone(&first))
+            .expect("first mesh should register");
+        assets
+            .register_shared_mesh(second_key.0, second_key.1, Arc::clone(&second))
+            .expect("second mesh should register");
+        assert!(Arc::ptr_eq(
+            assets.meshes.get(&first_key).expect("first mesh"),
+            &first
+        ));
+        assert!(Arc::ptr_eq(
+            assets.meshes.get(&second_key).expect("second mesh"),
+            &second
+        ));
+    }
+
+    #[test]
+    fn old_prepared_scene_keeps_its_arc_after_new_registration() {
+        let mut scene = SnapshotScene::default();
+        let first = shared_triangle();
+        let first_key = shared_mesh_handles();
+        scene
+            .assets
+            .register_shared_mesh(first_key.0, first_key.1, Arc::clone(&first))
+            .expect("first mesh should register");
+        scene
+            .update(&snapshot_for(first_key.0, first_key.1))
+            .expect("first snapshot should resolve");
+        let prepared = scene.prepare(CullingConfig::default());
+
+        let second_key = (MeshHandle::new(10_002), MaterialHandle::new(10_002));
+        scene
+            .assets
+            .register_shared_mesh(second_key.0, second_key.1, shared_triangle())
+            .expect("second mesh should register");
+
+        let draw = prepared.draws().next().expect("old prepared draw");
+        assert!(Arc::ptr_eq(&draw.mesh, &first));
+    }
+
+    #[test]
+    fn legacy_register_mesh_remains_available() {
+        let mut assets = VisualAssets::default();
+        let (mesh, material) = shared_mesh_handles();
+        assets.register_mesh(mesh, material, (*shared_triangle()).clone());
+        assert!(assets.mesh(mesh, material).is_ok());
     }
 }
 
@@ -405,6 +588,16 @@ impl SnapshotScene {
         raster_mesh: RasterMesh,
     ) {
         self.assets.register_mesh(mesh, material, raster_mesh);
+    }
+
+    pub fn register_shared_mesh(
+        &mut self,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+        raster_mesh: Arc<RasterMesh>,
+    ) -> Result<(), VisualError> {
+        self.assets
+            .register_shared_mesh(mesh, material, raster_mesh)
     }
 
     pub fn set_lighting_mode(&mut self, mode: crate::LightingMode) {
@@ -488,6 +681,18 @@ impl SnapshotScene {
 
     pub fn mesh(&self, node: &SnapshotNode) -> Result<&RasterMesh, VisualError> {
         self.assets.mesh(node.mesh, node.material)
+    }
+
+    pub fn shared_mesh(
+        &self,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+    ) -> Result<Arc<RasterMesh>, VisualError> {
+        self.assets
+            .meshes
+            .get(&(mesh, material))
+            .cloned()
+            .ok_or(VisualError::UnknownAsset(mesh, material))
     }
 
     pub fn owned_draws(&self) -> Vec<(RasterMesh, Transform)> {
