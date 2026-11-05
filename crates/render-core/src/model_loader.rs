@@ -287,4 +287,22 @@ mod tests {
             .iter()
             .all(|index| (*index as usize) < mesh.vertices.len()));
     }
+
+    #[test]
+    fn loads_repository_sun_obj_with_valid_geometry() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/models/sun/sun.obj");
+        let mesh = load_obj(path).expect("repository sun OBJ should load");
+        assert!(!mesh.vertices.is_empty());
+        assert!(!mesh.indices.is_empty());
+        assert_eq!(mesh.indices.len() % 3, 0);
+        assert!(mesh
+            .vertices
+            .iter()
+            .all(|vertex| vertex.position.is_finite() && vertex.normal.is_finite()));
+        assert!(mesh
+            .indices
+            .iter()
+            .all(|index| (*index as usize) < mesh.vertices.len()));
+    }
 }

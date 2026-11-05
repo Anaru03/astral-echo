@@ -1182,6 +1182,7 @@ mod tests {
         types::MissionId,
         GameplayWorld,
     };
+    use render_core::MeshHandle;
     use render_core::{HudMissionState, Vec3};
 
     fn world_with_missions() -> (GameplayWorld, engine::EntityId) {
