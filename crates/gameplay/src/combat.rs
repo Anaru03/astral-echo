@@ -8,6 +8,35 @@ pub enum AttackType {
     Plasma,
 }
 
+pub const ENERGY_WEAPON_ITEM: ItemId = ItemId(90);
+pub const PLASMA_WEAPON_ITEM: ItemId = ItemId(91);
+
+pub fn weapon_for_item(item: ItemId) -> Option<WeaponConfiguration> {
+    match item {
+        ENERGY_WEAPON_ITEM => Some(WeaponConfiguration::with_ammunition(
+            AttackType::Energy,
+            28,
+            30,
+            Duration(1_200),
+            WeaponAmmunition {
+                item: ItemId(3),
+                amount_per_attack: 1,
+            },
+        )),
+        PLASMA_WEAPON_ITEM => Some(WeaponConfiguration::with_ammunition(
+            AttackType::Plasma,
+            45,
+            14,
+            Duration(2_000),
+            WeaponAmmunition {
+                item: ItemId(2),
+                amount_per_attack: 2,
+            },
+        )),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WeaponAmmunition {
     pub item: ItemId,
