@@ -2580,6 +2580,7 @@ pub fn run() -> Result<(), String> {
             for (path, mesh, material) in [
                 (assets_root.join("station/station.obj"), render_core::MeshHandle::STATION, VisualAssets::STATION),
                 (assets_root.join("building/building_planet.obj"), render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
+                (assets_root.join("sun/sun.obj"), render_core::MeshHandle::SUN_MODEL, VisualAssets::SUN),
                 (assets_root.join("shooter/shooter.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY),
                 (assets_root.join("charger/charger.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY_CHARGER),
                 (assets_root.join("shielded/shielded.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY_SHIELDED),
@@ -2602,7 +2603,13 @@ pub fn run() -> Result<(), String> {
             scene.set_material(VisualAssets::DERELICT, MaterialInfo::derelict());
             scene.set_material(VisualAssets::ASTEROID, MaterialInfo::asteroid());
         },
-        GraphicsDebugConfig::default(),
+        GraphicsDebugConfig {
+            directory: std::env::var_os("ASTRAL_ECHO_CAPTURE_DIR").map(std::path::PathBuf::from),
+            dual_capture: matches!(
+                std::env::var("ASTRAL_ECHO_DUAL_CAPTURE").as_deref(),
+                Ok("1") | Ok("true") | Ok("TRUE")
+            ),
+        },
     )
     .map(|report| {
         println!(

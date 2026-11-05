@@ -1,5 +1,6 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
@@ -31,6 +32,7 @@ pub type SnapshotSource = Box<dyn FnMut(u32, u32) -> Result<RenderSnapshot, Stri
 #[derive(Clone, Debug, Default)]
 pub struct GraphicsDebugConfig {
     pub directory: Option<std::path::PathBuf>,
+    pub dual_capture: bool,
 }
 
 pub fn run_hot_swap_window(
@@ -780,7 +782,7 @@ impl Host {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let _ = std::fs::create_dir_all(directory);
+        let _ = std::fs::create_dir_all(&directory);
         let path = directory.join(format!("frame-{:04}-{}.log", self.debug_frame, reason));
         self.debug_frame += 1;
         let size = state.window.inner_size();
@@ -811,13 +813,37 @@ impl Host {
     }
 
     fn capture_images(&mut self) {
-        let Some(directory) = self.debug.directory.as_ref() else {
+        let Some(directory) = self.debug.directory.clone() else {
             return;
         };
         let Some(state) = self.state.as_mut() else {
             return;
         };
         if state.backend.backend() != BackendKind::Cpu {
+            let frame = self.debug_frame;
+            self.debug_frame += 1;
+            match state.gpu.as_mut() {
+                Some(gpu) if self.debug.dual_capture => {
+                    let (scene_only, composite) =
+                        Self::unique_dual_capture_paths(&directory, frame);
+                    match gpu.request_dual_capture(scene_only.clone(), composite.clone()) {
+                        Ok(()) => println!(
+                            "graphics-debug gpu-dual-capture-requested scene_only={} composite={}",
+                            scene_only.display(),
+                            composite.display()
+                        ),
+                        Err(error) => println!("graphics-debug gpu-capture-error={error}"),
+                    }
+                }
+                Some(gpu) => {
+                    let path = Self::unique_capture_path(&directory, frame, "gpu");
+                    match gpu.request_capture(path.clone()) {
+                        Ok(()) => println!("graphics-debug gpu-capture-requested={}", path.display()),
+                        Err(error) => println!("graphics-debug gpu-capture-error={error}"),
+                    }
+                }
+                None => println!("graphics-debug gpu-capture-error=GPU backend unavailable"),
+            }
             return;
         }
         let size = state.window.inner_size();
@@ -833,7 +859,7 @@ impl Host {
         ) {
             return;
         }
-        let _ = std::fs::create_dir_all(directory);
+        let _ = std::fs::create_dir_all(&directory);
         let internal_path =
             directory.join(format!("frame-{:04}-cpu-internal.png", self.debug_frame));
         let scaled_path = directory.join(format!("frame-{:04}-cpu-scaled.png", self.debug_frame));
@@ -869,6 +895,46 @@ impl Host {
             internal_path.display(),
             scaled_path.display()
         );
+    }
+
+    fn unique_capture_path(directory: &std::path::Path, frame: u64, backend: &str) -> PathBuf {
+        let mut index = 0_u32;
+        loop {
+            let suffix = if index == 0 {
+                String::new()
+            } else {
+                format!("-{index}")
+            };
+            let path = directory.join(format!("frame-{frame:04}-{backend}{suffix}.png"));
+            if !path.exists() {
+                return path;
+            }
+            index = index.saturating_add(1);
+        }
+    }
+
+    fn unique_dual_capture_paths(
+        directory: &std::path::Path,
+        frame: u64,
+    ) -> (PathBuf, PathBuf) {
+        let mut index = 0_u32;
+        loop {
+            let suffix = if index == 0 {
+                String::new()
+            } else {
+                format!("-{index}")
+            };
+            let scene_only = directory.join(format!(
+                "building_planet_scene_only_frame-{frame:04}{suffix}.png"
+            ));
+            let composite = directory.join(format!(
+                "building_planet_composite_frame-{frame:04}{suffix}.png"
+            ));
+            if !scene_only.exists() && !composite.exists() {
+                return (scene_only, composite);
+            }
+            index = index.saturating_add(1);
+        }
     }
 
     fn new_cpu_surface(state: &HostState) -> Option<Surface<Arc<Window>, Arc<Window>>> {

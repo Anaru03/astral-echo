@@ -246,6 +246,10 @@ impl Default for VisualAssets {
                 RasterMesh::planet_surface(Vec3::ZERO, 1.0),
             ),
             (
+                (MeshHandle::SUN_MODEL, Self::SUN),
+                RasterMesh::sphere(Vec3::ZERO, 1.0, Vec4::new(1.0, 0.55, 0.08, 1.0)),
+            ),
+            (
                 (MeshHandle::STATION, Self::STATION),
                 RasterMesh::station(Vec4::new(0.2, 0.55, 0.85, 1.0)),
             ),

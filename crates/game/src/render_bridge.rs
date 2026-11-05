@@ -33,6 +33,9 @@ const BUILDING_PLANET_MAX_DIMENSION: f32 = 15.45;
 const BUILDING_PLANET_VISUAL_SCALE: f32 =
     (PLANET_VISUAL_RADIUS * 2.0) / BUILDING_PLANET_MAX_DIMENSION;
 pub const SUN_VISUAL_RADIUS: f32 = 14.0;
+const SUN_MODEL_CENTER: Vec3 = Vec3::new(-0.2698, 0.0864, -0.1784);
+const SUN_MODEL_MAX_DIMENSION: f32 = 7.5163;
+const SUN_MODEL_VISUAL_SCALE: f32 = (SUN_VISUAL_RADIUS * 2.0) / SUN_MODEL_MAX_DIMENSION;
 pub const SURFACE_OBJECT_RADIAL_OFFSET: f32 = PLANET_VISUAL_RADIUS + 0.4;
 pub const ACADEMIC_SURFACE_OBJECT_SEED: u64 = 0xA57A_1E5D;
 pub const MAX_ACADEMIC_SURFACE_OBJECTS: usize = 64;
@@ -48,6 +51,7 @@ pub const PLACEHOLDER_MESH: MeshHandle = MeshHandle::CUBE;
 pub const DESTINATION_MESH: MeshHandle = MeshHandle::DESTINATION_PLACEHOLDER;
 pub const PLANET_MESH: MeshHandle = MeshHandle::PLANET_SPHERE;
 pub const SUN_MESH: MeshHandle = MeshHandle::SUN_SPHERE;
+pub const SUN_MODEL_MESH: MeshHandle = MeshHandle::SUN_MODEL;
 pub const COLLECTIBLE_MESH: MeshHandle = MeshHandle::COLLECTIBLE_PLACEHOLDER;
 pub const STATION_MESH: MeshHandle = MeshHandle::STATION;
 pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
@@ -397,12 +401,8 @@ pub fn snapshot_from_world_with_camera_and_view(
     if world.navigation().ship_id().is_some() {
         snapshot.push_node(SnapshotNode::new(
             SUN_ENTITY,
-            Transform::new(
-                SUN_POSITION,
-                Quat::IDENTITY,
-                Vec3::splat(SUN_VISUAL_RADIUS),
-            ),
-            SUN_MESH,
+            sun_model_transform(),
+            SUN_MODEL_MESH,
             SUN_MATERIAL,
             true,
         ));
@@ -1149,6 +1149,16 @@ fn building_planet_transform(elapsed_seconds: f64) -> Transform {
     transform
 }
 
+fn sun_model_transform() -> Transform {
+    let mut transform = Transform::new(
+        SUN_POSITION,
+        Quat::IDENTITY,
+        Vec3::splat(SUN_MODEL_VISUAL_SCALE),
+    );
+    transform.translation -= transform.rotation * (transform.scale * SUN_MODEL_CENTER);
+    transform
+}
+
 fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
     Transform::new(
         from_engine(position),
@@ -1162,7 +1172,8 @@ mod tests {
     use super::{academic_planet_transform, building_planet_transform, hud_mission_state,
         planet_mesh_for_destination, BUILDING_PLANET_CENTER, BUILDING_PLANET_MESH,
         ECHO7_VISUAL_SCALE, PLANET_MESH, PLANET_ORBIT_RADIUS, PLANET_SURFACE_RADIUS,
-        PLANET_VISUAL_RADIUS, SUN_VISUAL_RADIUS};
+        PLANET_VISUAL_RADIUS, SUN_MODEL_CENTER, SUN_MODEL_MESH, SUN_MODEL_MAX_DIMENSION,
+        SUN_MODEL_VISUAL_SCALE, SUN_POSITION, SUN_VISUAL_RADIUS};
     use gameplay::{
         commands::GameplayCommand,
         domains::mission::MissionState,
@@ -1488,5 +1499,17 @@ mod tests {
 
         assert!((centered - academic_position).length() < 1e-5);
         assert!((transform.scale.x * 15.45 - PLANET_VISUAL_RADIUS * 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn sun_model_is_exclusive_and_centered_at_the_physical_sun_position() {
+        let transform = super::sun_model_transform();
+        let centered = transform.translation
+            + transform.rotation * (transform.scale * SUN_MODEL_CENTER);
+
+        assert_eq!(SUN_MODEL_MESH, MeshHandle::SUN_MODEL);
+        assert!((centered - SUN_POSITION).length() < 1e-5);
+        assert!((transform.scale.x * SUN_MODEL_MAX_DIMENSION - SUN_VISUAL_RADIUS * 2.0).abs() < 1e-5);
+        assert_eq!(transform.scale, Vec3::splat(SUN_MODEL_VISUAL_SCALE));
     }
 }
