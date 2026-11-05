@@ -461,6 +461,8 @@ impl VisualBridge {
                 z: -18.0,
             },
             orbit_radius: game::render_bridge::PLANET_ORBIT_RADIUS,
+            orbit_start: GameplayVec3::ZERO,
+            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: game::render_bridge::PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
@@ -473,10 +475,16 @@ impl VisualBridge {
         }
         if !session.world_mut().configure_planet_physics(PlanetPhysics {
             destination: TESSARA_DESTINATION,
-            orbit_center: TESSARA_POSITION,
-            orbit_radius: 0.0,
+            orbit_center: GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0,
+            },
+            orbit_radius: game::render_bridge::TESSARA_ORBIT_RADIUS,
+            orbit_start: TESSARA_POSITION,
+            orbit_axis: GameplayVec3 { x: 49.17, y: 0.0, z: 49.17 },
             orbit_phase: 0.0,
-            orbit_angular_speed: 0.0,
+            orbit_angular_speed: game::render_bridge::TESSARA_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 24.0,
@@ -493,6 +501,8 @@ impl VisualBridge {
                 z: -18.0,
             },
             orbit_radius: game::render_bridge::KHARVEX_ORBIT_RADIUS,
+            orbit_start: KHARVEX_POSITION,
+            orbit_axis: GameplayVec3 { x: 70.2, y: 0.0, z: -70.2 },
             orbit_phase: game::render_bridge::KHARVEX_ORBIT_PHASE_RAD,
             orbit_angular_speed: game::render_bridge::KHARVEX_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
             surface_radius: game::render_bridge::KHARVEX_SURFACE_RADIUS,
@@ -512,6 +522,8 @@ impl VisualBridge {
                 z: -18.0,
             },
             orbit_radius: 0.0,
+            orbit_start: GameplayVec3::ZERO,
+            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 12.0,
@@ -3168,15 +3180,33 @@ mod tests {
             .navigation()
             .planet_physics(TESSARA_DESTINATION)
             .expect("Tessara should have independent planet physics");
-        assert_eq!(tessara_physics.orbit_radius, 0.0);
-        assert_eq!(tessara_physics.orbit_center, TESSARA_POSITION);
+        assert_eq!(tessara_physics.orbit_radius, game::render_bridge::TESSARA_ORBIT_RADIUS);
+        assert_eq!(
+            tessara_physics.orbit_angular_speed,
+            game::render_bridge::TESSARA_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND
+        );
+        assert_eq!(
+            tessara_physics.orbit_center,
+            GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }
+        );
+        assert_eq!(tessara_physics.orbit_start, TESSARA_POSITION);
         let kharvex_physics = world
             .navigation()
             .planet_physics(KHARVEX_DESTINATION)
             .expect("Kharvex should have independent planet physics");
-        assert_eq!(kharvex_physics.orbit_radius, 0.0);
-        assert_eq!(kharvex_physics.orbit_angular_speed, 0.0);
-        assert_eq!(kharvex_physics.orbit_center, KHARVEX_POSITION);
+        assert_eq!(kharvex_physics.orbit_radius, game::render_bridge::KHARVEX_ORBIT_RADIUS);
+        assert_eq!(
+            kharvex_physics.orbit_angular_speed,
+            game::render_bridge::KHARVEX_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND
+        );
+        assert_eq!(
+            kharvex_physics.orbit_phase,
+            game::render_bridge::KHARVEX_ORBIT_PHASE_RAD
+        );
+        assert_eq!(
+            kharvex_physics.orbit_center,
+            GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }
+        );
         assert!(distance_squared(ship, GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }) > 100.0 * 100.0);
         assert!(world.destinations().filter(|value| value.id != ORIGIN).all(|value| {
             distance_squared(ship, value.position) > 30.0 * 30.0
@@ -3260,6 +3290,8 @@ mod tests {
             destination: gameplay::SUN_DESTINATION_ID,
             orbit_center: GameplayVec3::ZERO,
             orbit_radius: 0.0,
+            orbit_start: GameplayVec3::ZERO,
+            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 12.0,
@@ -4370,6 +4402,8 @@ mod tests {
             destination: DESTINATION,
             orbit_center: GameplayVec3::ZERO,
             orbit_radius: 5.0,
+            orbit_start: GameplayVec3::ZERO,
+            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,

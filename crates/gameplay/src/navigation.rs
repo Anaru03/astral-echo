@@ -221,6 +221,8 @@ pub struct PlanetPhysics {
     pub destination: DestinationId,
     pub orbit_center: Vec3,
     pub orbit_radius: f32,
+    pub orbit_start: Vec3,
+    pub orbit_axis: Vec3,
     pub orbit_phase: f32,
     pub orbit_angular_speed: f32,
     pub surface_radius: f32,
@@ -235,6 +237,9 @@ impl PlanetPhysics {
         finite_position(self.orbit_center)
             && self.orbit_radius.is_finite()
             && self.orbit_radius >= 0.0
+            && finite_position(self.orbit_start)
+            && finite_position(self.orbit_axis)
+            && length_squared(self.orbit_axis) > 0.0
             && self.orbit_phase.is_finite()
             && self.orbit_angular_speed.is_finite()
             && self.surface_radius.is_finite()
@@ -254,6 +259,21 @@ impl PlanetPhysics {
             return self.orbit_center;
         }
         let angle = self.orbit_phase + self.orbit_angular_speed * elapsed.0 as f32 / 1_000.0;
+        if self.orbit_start != Vec3::ZERO {
+            let radial = sub_vec(self.orbit_start, self.orbit_center);
+            let initial = scale_vec(normalize_vec(radial), self.orbit_radius);
+            let tangent = scale_vec(
+                normalize_vec(cross_vec(self.orbit_axis, initial)),
+                self.orbit_radius,
+            );
+            return add_vec(
+                self.orbit_center,
+                add_vec(
+                    scale_vec(initial, angle.cos()),
+                    scale_vec(tangent, angle.sin()),
+                ),
+            );
+        }
         add_vec(
             self.orbit_center,
             Vec3 {
@@ -2036,6 +2056,26 @@ fn scale_vec(value: Vec3, scale: f32) -> Vec3 {
     }
 }
 
+fn length_squared(value: Vec3) -> f32 {
+    dot(value, value)
+}
+
+fn cross_vec(left: Vec3, right: Vec3) -> Vec3 {
+    Vec3 {
+        x: left.y * right.z - left.z * right.y,
+        y: left.z * right.x - left.x * right.z,
+        z: left.x * right.y - left.y * right.x,
+    }
+}
+
+fn normalize_vec(value: Vec3) -> Vec3 {
+    let length = magnitude(value);
+    if !length.is_finite() || length <= f32::EPSILON {
+        return Vec3::ZERO;
+    }
+    scale_vec(value, 1.0 / length)
+}
+
 fn finite_vec3(value: Vec3) -> bool {
     value.x.is_finite() && value.y.is_finite() && value.z.is_finite()
 }
@@ -2095,6 +2135,8 @@ mod tests {
             destination,
             orbit_center: Vec3 { x: -1.0, y: 0.0, z: 0.0 },
             orbit_radius: 1.0,
+            orbit_start: Vec3::ZERO,
+            orbit_axis: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 2.0,
@@ -2110,6 +2152,8 @@ mod tests {
             destination: SUN_DESTINATION_ID,
             orbit_center: Vec3::ZERO,
             orbit_radius: 0.0,
+            orbit_start: Vec3::ZERO,
+            orbit_axis: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 2.0,
@@ -2155,6 +2199,66 @@ mod tests {
     }
 
     #[test]
+    fn orbital_phase_preserves_initial_angle_and_orbit_radius() {
+        let physics = PlanetPhysics {
+            destination: DestinationId::new(9_602),
+            orbit_center: Vec3 { x: 0.0, y: 0.0, z: -18.0 },
+            orbit_radius: 100.0004,
+            orbit_start: Vec3 { x: -70.2, y: -12.0, z: -88.2 },
+            orbit_axis: Vec3 { x: 70.2, y: 0.0, z: -70.2 },
+            orbit_phase: 0.0,
+            orbit_angular_speed: 0.08,
+            surface_radius: 7.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 28.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        };
+        let start = physics.position_at(Duration(0));
+        let later = physics.position_at(Duration(1_000));
+        let radius = |position: Vec3| {
+            let dx = position.x - physics.orbit_center.x;
+            let dy = position.y - physics.orbit_center.y;
+            let dz = position.z - physics.orbit_center.z;
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        };
+
+        assert!((start.x + 70.2).abs() < 1e-3);
+        assert!((start.z + 88.2).abs() < 1e-3);
+        assert!((radius(start) - physics.orbit_radius).abs() < 1e-2);
+        assert!((radius(later) - physics.orbit_radius).abs() < 1e-2);
+        assert_ne!(start, later);
+        assert_eq!(physics.position_at(Duration(1_000)), later);
+    }
+
+    #[test]
+    fn tessara_orbit_preserves_initial_position_and_radius() {
+        let physics = PlanetPhysics {
+            destination: DestinationId::new(9_601),
+            orbit_center: Vec3 { x: 0.0, y: 0.0, z: -18.0 },
+            orbit_radius: 69.99556,
+            orbit_start: Vec3 { x: -49.17, y: 8.0, z: 31.17 },
+            orbit_axis: Vec3 { x: 49.17, y: 0.0, z: 49.17 },
+            orbit_phase: 0.0,
+            orbit_angular_speed: 0.12,
+            surface_radius: 5.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        };
+        let start = physics.position_at(Duration(0));
+        let later = physics.position_at(Duration(10_000));
+        let radius = |position: Vec3| distance(position, physics.orbit_center);
+
+        assert!(distance(start, physics.orbit_start) < 1e-2);
+        assert!((radius(start) - physics.orbit_radius).abs() < 1e-2);
+        assert!((radius(later) - physics.orbit_radius).abs() < 1e-2);
+        assert_ne!(start, later);
+        assert_eq!(physics.position_at(Duration(10_000)), later);
+    }
+
+    #[test]
     fn static_planet_physics_can_anchor_a_destination_without_orbit_animation() {
         let mut navigation = NavigationState::default();
         let destination = DestinationId::new(9_601);
@@ -2173,6 +2277,8 @@ mod tests {
             destination,
             orbit_center: position,
             orbit_radius: 0.0,
+            orbit_start: Vec3::ZERO,
+            orbit_axis: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 5.0,
@@ -2455,6 +2561,8 @@ mod tests {
             destination: VEYRA_DESTINATION_ID,
             orbit_center: Vec3 { x: 30.0, y: 0.0, z: 0.0 },
             orbit_radius: 0.0,
+            orbit_start: Vec3::ZERO,
+            orbit_axis: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 5.0,
@@ -2495,6 +2603,8 @@ mod tests {
             destination: VEYRA_DESTINATION_ID,
             orbit_center: Vec3 { x: 30.0, y: 0.0, z: 0.0 },
             orbit_radius: 0.0,
+            orbit_start: Vec3::ZERO,
+            orbit_axis: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 5.0,
@@ -2507,6 +2617,8 @@ mod tests {
             destination: SUN_DESTINATION_ID,
             orbit_center: Vec3 { x: 20.0, y: 0.0, z: 0.0 },
             orbit_radius: 0.0,
+            orbit_start: Vec3::ZERO,
+            orbit_axis: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 2.0,
@@ -2556,6 +2668,8 @@ mod tests {
             destination,
             orbit_center: target,
             orbit_radius: 0.0,
+            orbit_start: Vec3::ZERO,
+            orbit_axis: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 2.0,

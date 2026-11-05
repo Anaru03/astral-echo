@@ -24,10 +24,13 @@ pub const SURFACE_OBJECT_IDS: [engine::EntityId; 4] = [
 pub const ACADEMIC_PLANET_DESTINATION_ID: u32 = 9_002;
 pub const TESSARA_DESTINATION_ID: u32 = 9_601;
 pub const TESSARA_POSITION: Vec3 = Vec3::new(-49.17, 8.0, 31.17);
+pub const TESSARA_ORBIT_RADIUS: f32 = 69.99556;
+pub const TESSARA_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.12;
+pub const TESSARA_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.30;
 pub const KHARVEX_DESTINATION_ID: u32 = 9_602;
 pub const KHARVEX_POSITION: Vec3 = Vec3::new(-70.20, -12.0, -88.20);
-pub const KHARVEX_ORBIT_RADIUS: f32 = 70.2 * std::f32::consts::SQRT_2;
-pub const KHARVEX_ORBIT_PHASE_RAD: f32 = -3.0 * std::f32::consts::PI / 4.0;
+pub const KHARVEX_ORBIT_RADIUS: f32 = 100.0004;
+pub const KHARVEX_ORBIT_PHASE_RAD: f32 = 0.0;
 pub const KHARVEX_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.08;
 pub const KHARVEX_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.18;
 pub const PLANET_ORBIT_RADIUS: f32 = 42.0;
@@ -532,7 +535,7 @@ pub fn snapshot_from_world_with_camera_and_view(
                     .planet_position_at(dest.id, world.time().elapsed)
                     .map(from_engine)
                     .unwrap_or_else(|| from_engine(dest.position));
-                tessara_planet_transform(position)
+                tessara_planet_transform(position, elapsed_seconds)
             } else if kharvex_planet == Some(dest.id) {
                 let position = world
                     .planet_position_at(dest.id, world.time().elapsed)
@@ -1267,10 +1270,12 @@ fn building_planet_transform(elapsed_seconds: f64) -> Transform {
     transform
 }
 
-fn tessara_planet_transform(position: Vec3) -> Transform {
+fn tessara_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
     let mut transform = Transform::new(
         position,
-        Quat::IDENTITY,
+        Quat::from_rotation_y(
+            TESSARA_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND * elapsed_seconds as f32,
+        ),
         Vec3::splat(TESSARA_PLANET_VISUAL_SCALE),
     );
     transform.translation -= transform.rotation * (transform.scale * TESSARA_PLANET_CENTER);
@@ -1654,6 +1659,21 @@ mod tests {
     }
 
     #[test]
+    fn kharvex_planet_transform_rotates_without_changing_center_or_scale() {
+        let initial = kharvex_planet_transform(KHARVEX_POSITION, 0.0);
+        let later = kharvex_planet_transform(KHARVEX_POSITION, 10.0);
+        let initial_center = initial.translation
+            + initial.rotation * (initial.scale * KHARVEX_PLANET_CENTER);
+        let later_center = later.translation
+            + later.rotation * (later.scale * KHARVEX_PLANET_CENTER);
+
+        assert_ne!(initial.rotation, later.rotation);
+        assert!((initial_center - KHARVEX_POSITION).length() < 1e-5);
+        assert!((later_center - KHARVEX_POSITION).length() < 1e-5);
+        assert_eq!(initial.scale, later.scale);
+    }
+
+    #[test]
     fn building_planet_transform_centers_and_preserves_visual_diameter() {
         let transform = building_planet_transform(0.0);
         let centered = transform.translation
@@ -1666,7 +1686,7 @@ mod tests {
 
     #[test]
     fn tessara_transform_centers_at_its_static_position_and_preserves_visual_diameter() {
-        let transform = tessara_planet_transform(TESSARA_POSITION);
+        let transform = tessara_planet_transform(TESSARA_POSITION, 0.0);
         let centered = transform.translation
             + transform.rotation * (transform.scale * TESSARA_PLANET_CENTER);
 
@@ -1676,6 +1696,21 @@ mod tests {
             .abs()
             < 1e-5);
         assert_eq!(transform.scale, Vec3::splat(TESSARA_PLANET_VISUAL_SCALE));
+    }
+
+    #[test]
+    fn tessara_planet_transform_rotates_without_changing_center_or_scale() {
+        let initial = tessara_planet_transform(TESSARA_POSITION, 0.0);
+        let later = tessara_planet_transform(TESSARA_POSITION, 10.0);
+        let initial_center = initial.translation
+            + initial.rotation * (initial.scale * TESSARA_PLANET_CENTER);
+        let later_center = later.translation
+            + later.rotation * (later.scale * TESSARA_PLANET_CENTER);
+
+        assert_ne!(initial.rotation, later.rotation);
+        assert!((initial_center - TESSARA_POSITION).length() < 1e-5);
+        assert!((later_center - TESSARA_POSITION).length() < 1e-5);
+        assert_eq!(initial.scale, later.scale);
     }
 
     #[test]
