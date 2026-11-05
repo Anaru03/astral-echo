@@ -22,6 +22,8 @@ pub const SURFACE_OBJECT_IDS: [engine::EntityId; 4] = [
     engine::EntityId::new(9_204),
 ];
 pub const ACADEMIC_PLANET_DESTINATION_ID: u32 = 9_002;
+pub const TESSARA_DESTINATION_ID: u32 = 9_601;
+pub const TESSARA_POSITION: Vec3 = Vec3::new(-49.17, 8.0, 31.17);
 pub const PLANET_ORBIT_RADIUS: f32 = 42.0;
 pub const PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.25;
 pub const PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.5;
@@ -32,6 +34,11 @@ const BUILDING_PLANET_CENTER: Vec3 = Vec3::new(0.022138, 0.575, -0.0159805);
 const BUILDING_PLANET_MAX_DIMENSION: f32 = 15.45;
 const BUILDING_PLANET_VISUAL_SCALE: f32 =
     (PLANET_VISUAL_RADIUS * 2.0) / BUILDING_PLANET_MAX_DIMENSION;
+pub const TESSARA_PLANET_MESH: MeshHandle = MeshHandle::TESSARA_PLANET;
+const TESSARA_PLANET_CENTER: Vec3 = Vec3::new(0.0, -0.95, 0.0);
+const TESSARA_PLANET_MAX_DIMENSION: f32 = 14.0043;
+const TESSARA_PLANET_VISUAL_SCALE: f32 =
+    (PLANET_VISUAL_RADIUS * 2.0) / TESSARA_PLANET_MAX_DIMENSION;
 pub const SUN_VISUAL_RADIUS: f32 = 14.0;
 const SUN_MODEL_CENTER: Vec3 = Vec3::new(-0.2698, 0.0864, -0.1784);
 const SUN_MODEL_MAX_DIMENSION: f32 = 7.5163;
@@ -342,6 +349,7 @@ pub fn snapshot_from_world_with_camera_and_view(
 ) -> RenderSnapshot {
     let tick = world.time().tick;
     let academic_planet = academic_planet_id(world);
+    let tessara_planet = tessara_planet_id(world);
     let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
     let mut snapshot = RenderSnapshot::new(
         tick,
@@ -487,7 +495,7 @@ pub fn snapshot_from_world_with_camera_and_view(
         if params.destinations.is_empty() || params.destinations.contains(&dest.id) {
             let (mesh, material, scale) = match dest.destination_type {
                 gameplay::DestinationType::Planet => (
-                    planet_mesh_for_destination(dest.id, academic_planet),
+                    planet_mesh_for_destination(dest.id, academic_planet, tessara_planet),
                     PLANET_MATERIAL,
                     Vec3::splat(PLANET_VISUAL_RADIUS),
                 ),
@@ -501,6 +509,12 @@ pub fn snapshot_from_world_with_camera_and_view(
                         transform.rotation * (transform.scale * BUILDING_PLANET_CENTER);
                 }
                 transform
+            } else if tessara_planet == Some(dest.id) {
+                let position = world
+                    .planet_position_at(dest.id, world.time().elapsed)
+                    .map(from_engine)
+                    .unwrap_or_else(|| from_engine(dest.position));
+                tessara_planet_transform(position)
             } else {
                 Transform::new(from_engine(dest.position), Quat::IDENTITY, scale)
             };
@@ -1116,6 +1130,13 @@ fn academic_planet_id(world: &GameplayWorld) -> Option<gameplay::DestinationId> 
         })
 }
 
+fn tessara_planet_id(world: &GameplayWorld) -> Option<gameplay::DestinationId> {
+    world
+        .destinations()
+        .find(|destination| destination.id.value() == TESSARA_DESTINATION_ID)
+        .map(|destination| destination.id)
+}
+
 pub fn academic_planet_transform(elapsed_seconds: f64) -> Transform {
     let orbit_angle = PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND as f64 * elapsed_seconds;
     let rotation_angle = PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND as f64 * elapsed_seconds;
@@ -1134,9 +1155,12 @@ pub fn academic_planet_transform(elapsed_seconds: f64) -> Transform {
 fn planet_mesh_for_destination(
     destination: gameplay::DestinationId,
     academic_planet: Option<gameplay::DestinationId>,
+    tessara_planet: Option<gameplay::DestinationId>,
 ) -> MeshHandle {
     if academic_planet == Some(destination) {
         BUILDING_PLANET_MESH
+    } else if tessara_planet == Some(destination) {
+        TESSARA_PLANET_MESH
     } else {
         PLANET_MESH
     }
@@ -1146,6 +1170,16 @@ fn building_planet_transform(elapsed_seconds: f64) -> Transform {
     let mut transform = academic_planet_transform(elapsed_seconds);
     transform.scale = Vec3::splat(BUILDING_PLANET_VISUAL_SCALE);
     transform.translation -= transform.rotation * (transform.scale * BUILDING_PLANET_CENTER);
+    transform
+}
+
+fn tessara_planet_transform(position: Vec3) -> Transform {
+    let mut transform = Transform::new(
+        position,
+        Quat::IDENTITY,
+        Vec3::splat(TESSARA_PLANET_VISUAL_SCALE),
+    );
+    transform.translation -= transform.rotation * (transform.scale * TESSARA_PLANET_CENTER);
     transform
 }
 
@@ -1170,7 +1204,9 @@ fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
 #[cfg(test)]
 mod tests {
     use super::{academic_planet_transform, building_planet_transform, hud_mission_state,
-        planet_mesh_for_destination, BUILDING_PLANET_CENTER, BUILDING_PLANET_MESH,
+        planet_mesh_for_destination, tessara_planet_transform, BUILDING_PLANET_CENTER,
+        BUILDING_PLANET_MESH, TESSARA_PLANET_CENTER, TESSARA_PLANET_MAX_DIMENSION,
+        TESSARA_PLANET_MESH, TESSARA_PLANET_VISUAL_SCALE, TESSARA_POSITION,
         ECHO7_VISUAL_SCALE, PLANET_MESH, PLANET_ORBIT_RADIUS, PLANET_SURFACE_RADIUS,
         PLANET_VISUAL_RADIUS, SUN_MODEL_CENTER, SUN_MODEL_MESH, SUN_MODEL_MAX_DIMENSION,
         SUN_MODEL_VISUAL_SCALE, SUN_POSITION, SUN_VISUAL_RADIUS};
@@ -1486,9 +1522,11 @@ mod tests {
         let academic = gameplay::DestinationId::new(super::ACADEMIC_PLANET_DESTINATION_ID);
         let other = gameplay::DestinationId::new(9_003);
 
-        assert_eq!(planet_mesh_for_destination(academic, Some(academic)), BUILDING_PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(other, Some(academic)), PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(academic, None), PLANET_MESH);
+        let tessara = gameplay::DestinationId::new(super::TESSARA_DESTINATION_ID);
+        assert_eq!(planet_mesh_for_destination(academic, Some(academic), Some(tessara)), BUILDING_PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(tessara, Some(academic), Some(tessara)), TESSARA_PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(other, Some(academic), Some(tessara)), PLANET_MESH);
+        assert_eq!(planet_mesh_for_destination(academic, None, Some(tessara)), PLANET_MESH);
     }
 
     #[test]
@@ -1500,6 +1538,20 @@ mod tests {
 
         assert!((centered - academic_position).length() < 1e-5);
         assert!((transform.scale.x * 15.45 - PLANET_VISUAL_RADIUS * 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn tessara_transform_centers_at_its_static_position_and_preserves_visual_diameter() {
+        let transform = tessara_planet_transform(TESSARA_POSITION);
+        let centered = transform.translation
+            + transform.rotation * (transform.scale * TESSARA_PLANET_CENTER);
+
+        assert!((centered - TESSARA_POSITION).length() < 1e-5);
+        assert!((transform.scale.x * TESSARA_PLANET_MAX_DIMENSION
+            - PLANET_VISUAL_RADIUS * 2.0)
+            .abs()
+            < 1e-5);
+        assert_eq!(transform.scale, Vec3::splat(TESSARA_PLANET_VISUAL_SCALE));
     }
 
     #[test]

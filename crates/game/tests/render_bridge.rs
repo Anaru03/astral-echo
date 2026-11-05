@@ -91,6 +91,50 @@ fn snapshot_hud_reflects_flight_target_and_encounter_state() {
 }
 
 #[test]
+fn snapshot_assigns_tessara_mesh_only_to_destination_9601() {
+    let mut world = support::fixture_world();
+    let tessara = gameplay::DestinationId::new(TESSARA_DESTINATION_ID);
+    let position = engine::Vec3 {
+        x: -49.17,
+        y: 8.0,
+        z: 31.17,
+    };
+    world
+        .register_destination(gameplay::Destination {
+            id: tessara,
+            destination_type: gameplay::DestinationType::Planet,
+            position,
+            travel_duration: engine::Duration(1_000),
+            fuel_cost: 1,
+            discovery: gameplay::DiscoveryState::Discovered,
+        })
+        .unwrap();
+    assert!(world.configure_planet_physics(gameplay::PlanetPhysics {
+        destination: tessara,
+        orbit_center: position,
+        orbit_radius: 0.0,
+        orbit_angular_speed: 0.0,
+        surface_radius: PLANET_SURFACE_RADIUS,
+        ship_radius: 1.0,
+        gravity_influence_radius: 24.0,
+        gravitational_parameter: 80.0,
+        atmosphere_height: 4.0,
+    }));
+
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let tessara_node = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Destination(TESSARA_DESTINATION_ID))
+        .unwrap();
+    assert_eq!(tessara_node.mesh, TESSARA_PLANET_MESH);
+    assert_eq!(tessara_node.material, PLANET_MATERIAL);
+    assert!(snapshot.nodes.iter().any(|node| {
+        node.entity == SnapshotId::Destination(1) && node.mesh == PLANET_MESH
+    }));
+}
+
+#[test]
 fn station_nodes_use_stable_ids_positions_and_registered_assets() {
     let mut world = support::fixture_world();
     let position = engine::Vec3 {

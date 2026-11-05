@@ -30,6 +30,12 @@ use audio::{AudioEvent, AudioManager, SoundEffect};
 
 const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
+const TESSARA_DESTINATION: DestinationId = DestinationId::new(9_601);
+const TESSARA_POSITION: GameplayVec3 = GameplayVec3 {
+    x: -49.17,
+    y: 8.0,
+    z: 31.17,
+};
 const VISUAL_INITIAL_SHIP_POSITION: GameplayVec3 = GameplayVec3 {
     x: 0.0,
     y: 0.0,
@@ -357,6 +363,16 @@ impl VisualBridge {
             .map_err(|error| format!("registrar destino visual: {error:?}"))?;
         session
             .register_destination(Destination {
+                id: TESSARA_DESTINATION,
+                destination_type: DestinationType::Planet,
+                position: TESSARA_POSITION,
+                travel_duration: Duration(1_000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .map_err(|error| format!("registrar Tessara: {error:?}"))?;
+        session
+            .register_destination(Destination {
                 id: SIGNAL,
                 destination_type: DestinationType::SpacePoint,
                 position: GameplayVec3 {
@@ -397,6 +413,21 @@ impl VisualBridge {
                 state: NavigationRouteState::Available,
             },
         }]);
+        for (from, to, distance) in [
+            (ORIGIN, TESSARA_DESTINATION, 101.85),
+            (TESSARA_DESTINATION, ORIGIN, 101.85),
+        ] {
+            session.update([GameplayCommand::RegisterNavigationRoute {
+                route: NavigationRoute {
+                    from,
+                    to,
+                    distance,
+                    duration: Duration(1_000),
+                    fuel_cost: 1,
+                    state: NavigationRouteState::Available,
+                },
+            }]);
+        }
         if !session.world_mut().configure_planet_physics(PlanetPhysics {
             destination: DESTINATION,
             orbit_center: GameplayVec3 {
@@ -413,6 +444,19 @@ impl VisualBridge {
             atmosphere_height: 4.0,
         }) {
             return Err("configurar la fÃ­sica planetaria visual".to_owned());
+        }
+        if !session.world_mut().configure_planet_physics(PlanetPhysics {
+            destination: TESSARA_DESTINATION,
+            orbit_center: TESSARA_POSITION,
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }) {
+            return Err("configurar la física de Tessara".to_owned());
         }
         if initial_ship_position != GameplayVec3::ZERO
             && !session.world_mut().configure_solar_physics(PlanetPhysics {
@@ -2580,6 +2624,7 @@ pub fn run() -> Result<(), String> {
             for (path, mesh, material) in [
                 (assets_root.join("station/station.obj"), render_core::MeshHandle::STATION, VisualAssets::STATION),
                 (assets_root.join("building/building_planet.obj"), render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
+                (assets_root.join("clock/clock_planet.obj"), render_core::MeshHandle::TESSARA_PLANET, VisualAssets::PLANET),
                 (assets_root.join("sun/sun.obj"), render_core::MeshHandle::SUN_MODEL, VisualAssets::SUN),
                 (assets_root.join("shooter/shooter.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY),
                 (assets_root.join("charger/charger.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY_CHARGER),
@@ -2711,6 +2756,16 @@ mod tests {
 
         assert_eq!(ship, VISUAL_INITIAL_SHIP_POSITION);
         assert_eq!(world.destination(ORIGIN).map(|value| value.position), Some(ship));
+        assert_eq!(
+            world.destination(TESSARA_DESTINATION).map(|value| value.position),
+            Some(TESSARA_POSITION)
+        );
+        let tessara_physics = world
+            .navigation()
+            .planet_physics(TESSARA_DESTINATION)
+            .expect("Tessara should have independent planet physics");
+        assert_eq!(tessara_physics.orbit_radius, 0.0);
+        assert_eq!(tessara_physics.orbit_center, TESSARA_POSITION);
         assert!(distance_squared(ship, GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }) > 100.0 * 100.0);
         assert!(world.destinations().filter(|value| value.id != ORIGIN).all(|value| {
             distance_squared(ship, value.position) > 30.0 * 30.0

@@ -477,7 +477,7 @@ impl NavigationState {
     }
 
     pub fn configure_planet_physics(&mut self, physics: PlanetPhysics) -> bool {
-        if !physics.validate() || physics.orbit_radius <= 0.0 || self.destination(physics.destination).is_none() {
+        if !physics.validate() || physics.orbit_radius < 0.0 || self.destination(physics.destination).is_none() {
             return false;
         }
         self.planet_physics.insert(physics.destination, physics);
@@ -1768,6 +1768,36 @@ mod tests {
         let mut moving = physics;
         moving.orbit_angular_speed = 1.0;
         assert_ne!(moving.position_at(Duration(0)), moving.position_at(Duration(1_000)));
+    }
+
+    #[test]
+    fn static_planet_physics_can_anchor_a_destination_without_orbit_animation() {
+        let mut navigation = NavigationState::default();
+        let destination = DestinationId::new(9_601);
+        let position = Vec3 { x: -49.17, y: 8.0, z: 31.17 };
+        navigation
+            .register_destination(Destination {
+                id: destination,
+                destination_type: DestinationType::Planet,
+                position,
+                travel_duration: Duration(1),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .expect("static planet destination should be valid");
+        assert!(navigation.configure_planet_physics(PlanetPhysics {
+            destination,
+            orbit_center: position,
+            orbit_radius: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 5.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }));
+        assert_eq!(navigation.planet_position_at(destination, Duration(0)), Some(position));
+        assert_eq!(navigation.planet_position_at(destination, Duration(10_000)), Some(position));
     }
 
     #[test]

@@ -35,6 +35,13 @@ pub struct GraphicsDebugConfig {
     pub dual_capture: bool,
 }
 
+fn parse_auto_capture_after_frames(value: Option<std::ffi::OsString>) -> Option<u64> {
+    value
+        .and_then(|value| value.into_string().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+}
+
 pub fn run_hot_swap_window(
     config: WindowConfig,
     source: SnapshotSource,
@@ -106,6 +113,10 @@ pub fn run_hot_swap_window_with_input_and_scene_and_focus(
         debug,
         debug_frame: 0,
         frames: 0,
+        auto_capture_after_frames: parse_auto_capture_after_frames(
+            std::env::var_os("ASTRAL_ECHO_DUAL_CAPTURE_AFTER_FRAMES"),
+        ),
+        auto_capture_requested: false,
         wake_proxy,
     };
     event_loop
@@ -140,6 +151,8 @@ struct Host {
     debug: GraphicsDebugConfig,
     debug_frame: u64,
     frames: u64,
+    auto_capture_after_frames: Option<u64>,
+    auto_capture_requested: bool,
     wake_proxy: EventLoopProxy<()>,
 }
 
@@ -997,6 +1010,10 @@ impl Host {
             }
         }
         if state.backend.backend() == BackendKind::Gpu {
+            let auto_capture_due = self
+                .auto_capture_after_frames
+                .is_some_and(|threshold| frame_id >= threshold)
+                && !self.auto_capture_requested;
             let gpu_error = match state.gpu.as_mut() {
                 Some(gpu) => match gpu.present_snapshot_with_stats(&state.snapshot) {
                     Ok((_, stats)) => {
@@ -1016,6 +1033,30 @@ impl Host {
                                 frame_id,
                                 frame_started.elapsed().as_secs_f64() * 1000.0
                             );
+                        }
+                        if auto_capture_due {
+                            if let Some(directory) = self.debug.directory.clone() {
+                                if self.debug.dual_capture {
+                                    let capture_frame = self.debug_frame;
+                                    let (scene_only, composite) =
+                                        Self::unique_dual_capture_paths(&directory, capture_frame);
+                                    match gpu.request_dual_capture(scene_only.clone(), composite.clone()) {
+                                        Ok(()) => {
+                                            self.auto_capture_requested = true;
+                                            self.debug_frame = self.debug_frame.saturating_add(1);
+                                            println!(
+                                                "graphics-debug gpu-auto-dual-capture-requested frame={} scene_only={} composite={}",
+                                                frame_id,
+                                                scene_only.display(),
+                                                composite.display()
+                                            );
+                                        }
+                                        Err(error) => println!(
+                                            "graphics-debug gpu-auto-capture-error={error}"
+                                        ),
+                                    }
+                                }
+                            }
                         }
                         None
                     }
@@ -1232,6 +1273,16 @@ fn resize_is_needed(current: Option<(u32, u32)>, requested: (u32, u32)) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_capture_frame_configuration_requires_a_positive_integer() {
+        assert_eq!(parse_auto_capture_after_frames(None), None);
+        assert_eq!(parse_auto_capture_after_frames(Some("".into())), None);
+        assert_eq!(parse_auto_capture_after_frames(Some("invalid".into())), None);
+        assert_eq!(parse_auto_capture_after_frames(Some("0".into())), None);
+        assert_eq!(parse_auto_capture_after_frames(Some("-1".into())), None);
+        assert_eq!(parse_auto_capture_after_frames(Some("12".into())), Some(12));
+    }
 
     #[test]
     fn updates_reuse_the_same_scene_instance() {
