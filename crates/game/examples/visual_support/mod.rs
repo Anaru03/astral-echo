@@ -119,6 +119,7 @@ pub fn deterministic_flight_session() -> (ProjectEchoSession, DestinationId) {
             z: -20.0,
         },
         orbit_radius: 10.0,
+        orbit_phase: 0.0,
         orbit_angular_speed: 0.1,
         surface_radius: 2.0,
         ship_radius: 1.0,

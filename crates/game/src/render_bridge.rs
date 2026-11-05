@@ -26,6 +26,10 @@ pub const TESSARA_DESTINATION_ID: u32 = 9_601;
 pub const TESSARA_POSITION: Vec3 = Vec3::new(-49.17, 8.0, 31.17);
 pub const KHARVEX_DESTINATION_ID: u32 = 9_602;
 pub const KHARVEX_POSITION: Vec3 = Vec3::new(-70.20, -12.0, -88.20);
+pub const KHARVEX_ORBIT_RADIUS: f32 = 70.2 * std::f32::consts::SQRT_2;
+pub const KHARVEX_ORBIT_PHASE_RAD: f32 = -3.0 * std::f32::consts::PI / 4.0;
+pub const KHARVEX_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.08;
+pub const KHARVEX_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.18;
 pub const PLANET_ORBIT_RADIUS: f32 = 42.0;
 pub const PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.25;
 pub const PLANET_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.5;
@@ -530,7 +534,11 @@ pub fn snapshot_from_world_with_camera_and_view(
                     .unwrap_or_else(|| from_engine(dest.position));
                 tessara_planet_transform(position)
             } else if kharvex_planet == Some(dest.id) {
-                kharvex_planet_transform(from_engine(dest.position))
+                let position = world
+                    .planet_position_at(dest.id, world.time().elapsed)
+                    .map(from_engine)
+                    .unwrap_or_else(|| from_engine(dest.position));
+                kharvex_planet_transform(position, elapsed_seconds)
             } else {
                 Transform::new(from_engine(dest.position), Quat::IDENTITY, scale)
             };
@@ -1269,10 +1277,12 @@ fn tessara_planet_transform(position: Vec3) -> Transform {
     transform
 }
 
-fn kharvex_planet_transform(position: Vec3) -> Transform {
+fn kharvex_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
     let mut transform = Transform::new(
         position,
-        Quat::IDENTITY,
+        Quat::from_rotation_y(
+            KHARVEX_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND * elapsed_seconds as f32,
+        ),
         Vec3::splat(KHARVEX_PLANET_VISUAL_SCALE),
     );
     transform.translation -= transform.rotation * (transform.scale * KHARVEX_PLANET_CENTER);
@@ -1633,7 +1643,7 @@ mod tests {
 
     #[test]
     fn kharvex_planet_transform_centers_and_preserves_uniform_visual_scale() {
-        let transform = kharvex_planet_transform(KHARVEX_POSITION);
+        let transform = kharvex_planet_transform(KHARVEX_POSITION, 0.0);
         let centered = transform.translation
             + transform.rotation * (transform.scale * KHARVEX_PLANET_CENTER);
 

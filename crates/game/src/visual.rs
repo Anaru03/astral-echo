@@ -461,6 +461,7 @@ impl VisualBridge {
                 z: -18.0,
             },
             orbit_radius: game::render_bridge::PLANET_ORBIT_RADIUS,
+            orbit_phase: 0.0,
             orbit_angular_speed: game::render_bridge::PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
             ship_radius: 1.0,
@@ -474,6 +475,7 @@ impl VisualBridge {
             destination: TESSARA_DESTINATION,
             orbit_center: TESSARA_POSITION,
             orbit_radius: 0.0,
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
             ship_radius: 1.0,
@@ -485,9 +487,14 @@ impl VisualBridge {
         }
         if !session.world_mut().configure_planet_physics(PlanetPhysics {
             destination: KHARVEX_DESTINATION,
-            orbit_center: KHARVEX_POSITION,
-            orbit_radius: 0.0,
-            orbit_angular_speed: 0.0,
+            orbit_center: GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0,
+            },
+            orbit_radius: game::render_bridge::KHARVEX_ORBIT_RADIUS,
+            orbit_phase: game::render_bridge::KHARVEX_ORBIT_PHASE_RAD,
+            orbit_angular_speed: game::render_bridge::KHARVEX_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
             surface_radius: game::render_bridge::KHARVEX_SURFACE_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 28.0,
@@ -505,6 +512,7 @@ impl VisualBridge {
                 z: -18.0,
             },
             orbit_radius: 0.0,
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 12.0,
             ship_radius: 1.0,
@@ -2630,6 +2638,7 @@ impl VisualBridge {
         match self.observation_target {
             Some(id) if id == DESTINATION => "VEYRA",
             Some(id) if id == TESSARA_DESTINATION => "TESSARA",
+            Some(id) if id == KHARVEX_DESTINATION => "KHARVEX",
             _ => "VEYRA",
         }
     }
@@ -3228,12 +3237,30 @@ mod tests {
     }
 
     #[test]
+    fn observation_target_labels_cover_registered_planets_and_unknown_fallback() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+
+        bridge.observation_target = Some(DESTINATION);
+        assert_eq!(bridge.observation_target_label(), "VEYRA");
+
+        bridge.observation_target = Some(TESSARA_DESTINATION);
+        assert_eq!(bridge.observation_target_label(), "TESSARA");
+
+        bridge.observation_target = Some(KHARVEX_DESTINATION);
+        assert_eq!(bridge.observation_target_label(), "KHARVEX");
+
+        bridge.observation_target = Some(DestinationId::new(999_999));
+        assert_eq!(bridge.observation_target_label(), "VEYRA");
+    }
+
+    #[test]
     fn solar_impact_defeats_the_player_and_stops_visual_gameplay() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         assert!(bridge.session.world_mut().configure_solar_physics(PlanetPhysics {
             destination: gameplay::SUN_DESTINATION_ID,
             orbit_center: GameplayVec3::ZERO,
             orbit_radius: 0.0,
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 12.0,
             ship_radius: 1.0,
@@ -4343,6 +4370,7 @@ mod tests {
             destination: DESTINATION,
             orbit_center: GameplayVec3::ZERO,
             orbit_radius: 5.0,
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
             ship_radius: 1.0,

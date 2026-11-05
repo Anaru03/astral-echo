@@ -221,6 +221,7 @@ pub struct PlanetPhysics {
     pub destination: DestinationId,
     pub orbit_center: Vec3,
     pub orbit_radius: f32,
+    pub orbit_phase: f32,
     pub orbit_angular_speed: f32,
     pub surface_radius: f32,
     pub ship_radius: f32,
@@ -234,6 +235,7 @@ impl PlanetPhysics {
         finite_position(self.orbit_center)
             && self.orbit_radius.is_finite()
             && self.orbit_radius >= 0.0
+            && self.orbit_phase.is_finite()
             && self.orbit_angular_speed.is_finite()
             && self.surface_radius.is_finite()
             && self.surface_radius > 0.0
@@ -251,7 +253,7 @@ impl PlanetPhysics {
         if self.orbit_radius == 0.0 {
             return self.orbit_center;
         }
-        let angle = self.orbit_angular_speed * elapsed.0 as f32 / 1_000.0;
+        let angle = self.orbit_phase + self.orbit_angular_speed * elapsed.0 as f32 / 1_000.0;
         add_vec(
             self.orbit_center,
             Vec3 {
@@ -2093,6 +2095,7 @@ mod tests {
             destination,
             orbit_center: Vec3 { x: -1.0, y: 0.0, z: 0.0 },
             orbit_radius: 1.0,
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 2.0,
             ship_radius: 0.0,
@@ -2107,6 +2110,7 @@ mod tests {
             destination: SUN_DESTINATION_ID,
             orbit_center: Vec3::ZERO,
             orbit_radius: 0.0,
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 2.0,
             ship_radius: 0.0,
@@ -2169,6 +2173,7 @@ mod tests {
             destination,
             orbit_center: position,
             orbit_radius: 0.0,
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 5.0,
             ship_radius: 1.0,
@@ -2450,6 +2455,7 @@ mod tests {
             destination: VEYRA_DESTINATION_ID,
             orbit_center: Vec3 { x: 30.0, y: 0.0, z: 0.0 },
             orbit_radius: 0.0,
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 5.0,
             ship_radius: 1.0,
@@ -2489,6 +2495,7 @@ mod tests {
             destination: VEYRA_DESTINATION_ID,
             orbit_center: Vec3 { x: 30.0, y: 0.0, z: 0.0 },
             orbit_radius: 0.0,
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 5.0,
             ship_radius: 1.0,
@@ -2500,6 +2507,7 @@ mod tests {
             destination: SUN_DESTINATION_ID,
             orbit_center: Vec3 { x: 20.0, y: 0.0, z: 0.0 },
             orbit_radius: 0.0,
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 2.0,
             ship_radius: 0.0,
@@ -2548,6 +2556,7 @@ mod tests {
             destination,
             orbit_center: target,
             orbit_radius: 0.0,
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 2.0,
             ship_radius: 1.0,
