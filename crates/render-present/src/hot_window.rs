@@ -677,7 +677,10 @@ impl Host {
                     state.pending_gpu_started = Some(Instant::now());
                     println!("hot-swap gpu-requested");
                     let window = state.window.clone();
-                    let scene = state.snapshot.owned_draws();
+                    // The new renderer starts empty. Shared meshes are
+                    // prepared from SnapshotScene after the backend is live,
+                    // avoiding a full RasterMesh clone during reconstruction.
+                    let scene = Vec::new();
                     let high_preset = state.config_preset() != Preset::Low;
                     let window_surface = match SurfaceRenderer::create_window_surface(
                         window.clone(),
@@ -780,7 +783,9 @@ impl Host {
                     });
                 }
             }
-            previous_gpu
+            // A successful CPU switch deliberately drops the old GPU
+            // renderer. A failed device must never be reused later.
+            None
         };
         let result = state.backend.confirm_switch(target);
         if result.is_ok() {
@@ -1126,7 +1131,12 @@ impl Host {
                 None => Some("GPU backend active without GPU resources".into()),
             };
             if let Some(error) = gpu_error {
-                let _ = state;
+                // A failed GPU renderer is not reusable. Drop it before the
+                // controlled CPU transition; the registered CPU mesh remains
+                // owned by SnapshotScene/VisualAssets.
+                if let Some(state) = self.state.as_mut() {
+                    state.gpu = None;
+                }
                 self.report_gpu_error(error);
                 self.toggle();
             }

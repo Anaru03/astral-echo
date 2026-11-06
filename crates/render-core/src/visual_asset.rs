@@ -41,6 +41,7 @@ pub enum GpuAssetState {
 pub struct GpuAssetEvent {
     pub mesh: MeshHandle,
     pub lod: LodLevel,
+    pub renderer_epoch: u64,
     pub generation: u64,
     pub state: GpuAssetState,
     pub error: Option<String>,

@@ -44,6 +44,7 @@ const NARETH_POSITION: GameplayVec3 = GameplayVec3 {
     z: -123.30,
 };
 const NARETH_RESOURCE_ID: &str = "planet.nareth";
+const NARETH_MODEL_RELATIVE_PATH: &str = "../../assets/models/seraphim/Seraphim_planet.obj";
 const TESSARA_POSITION: GameplayVec3 = GameplayVec3 {
     x: -49.17,
     y: 8.0,
@@ -264,7 +265,7 @@ struct VisualBridge {
     last_world_update: Instant,
     visual_asset_client: Option<VisualAssetClient>,
     visual_asset_states: BTreeMap<String, VisualAssetState>,
-    gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, GpuAssetState)>,
+    gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, u64, GpuAssetState)>,
 }
 
 impl VisualBridge {
@@ -867,11 +868,13 @@ impl VisualBridge {
             let is_newer = self
                 .gpu_asset_states
                 .get(&key)
-                .is_none_or(|(generation, _)| event.generation >= *generation);
+                .is_none_or(|(epoch, generation, _)| {
+                    (event.renderer_epoch, event.generation) >= (*epoch, *generation)
+                });
             if is_newer {
                 let state = event.state.clone();
                 self.gpu_asset_states
-                    .insert(key, (event.generation, state.clone()));
+                    .insert(key, (event.renderer_epoch, event.generation, state.clone()));
                 if event.mesh == MeshHandle::NARETH_PLANET
                     && matches!(state, GpuAssetState::GpuFailed)
                 {
@@ -890,17 +893,16 @@ impl VisualBridge {
             && self
                 .gpu_asset_states
                 .get(&(MeshHandle::NARETH_PLANET, LodLevel::High))
-                .is_some_and(|(_, state)| *state == GpuAssetState::GpuReady)
+                .is_some_and(|(_, _, state)| *state == GpuAssetState::GpuReady)
     }
 
     fn request_nareth_visual_asset(&mut self) {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/models/seraphim/Seraphim_planet.obj");
+        let request = nareth_visual_asset_request();
         let _ = self.request_visual_asset(
-            NARETH_RESOURCE_ID,
-            path,
-            MeshHandle::NARETH_PLANET,
-            VisualAssets::PLANET,
+            request.resource_id,
+            request.path,
+            request.mesh,
+            request.material,
         );
     }
 
@@ -3109,6 +3111,15 @@ impl VisualBridge {
     }
 }
 
+fn nareth_visual_asset_request() -> VisualAssetRequest {
+    VisualAssetRequest {
+        resource_id: NARETH_RESOURCE_ID.to_owned(),
+        path: Path::new(env!("CARGO_MANIFEST_DIR")).join(NARETH_MODEL_RELATIVE_PATH),
+        mesh: MeshHandle::NARETH_PLANET,
+        material: VisualAssets::PLANET,
+    }
+}
+
 pub fn run() -> Result<(), String> {
     let runtime = Rc::new(RefCell::new(VisualBridge::new_visual_runtime()?));
     let (asset_client, asset_host) = visual_asset_channel();
@@ -3629,6 +3640,18 @@ mod tests {
     }
 
     #[test]
+    fn nareth_visual_request_has_canonical_model_identity() {
+        let request = nareth_visual_asset_request();
+        assert_eq!(request.resource_id, NARETH_RESOURCE_ID);
+        assert_eq!(request.mesh, MeshHandle::NARETH_PLANET);
+        assert_eq!(request.material, VisualAssets::PLANET);
+        assert!(request
+            .path
+            .ends_with(Path::new("assets/models/seraphim/Seraphim_planet.obj")));
+        assert!(request.path.is_file());
+    }
+
+    #[test]
     fn nareth_mesh_requires_gpu_ready_and_ignores_older_generations() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         let (client, mut host) = visual_asset_channel();
@@ -3641,6 +3664,7 @@ mod tests {
         host.publish_gpu_events([render_core::GpuAssetEvent {
             mesh: MeshHandle::NARETH_PLANET,
             lod: LodLevel::High,
+            renderer_epoch: 3,
             generation: 4,
             state: GpuAssetState::UploadingGpu,
             error: None,
@@ -3651,6 +3675,7 @@ mod tests {
         host.publish_gpu_events([render_core::GpuAssetEvent {
             mesh: MeshHandle::NARETH_PLANET,
             lod: LodLevel::High,
+            renderer_epoch: 3,
             generation: 4,
             state: GpuAssetState::GpuReady,
             error: None,
@@ -3661,6 +3686,7 @@ mod tests {
         host.publish_gpu_events([render_core::GpuAssetEvent {
             mesh: MeshHandle::NARETH_PLANET,
             lod: LodLevel::High,
+            renderer_epoch: 3,
             generation: 5,
             state: GpuAssetState::GpuFailed,
             error: Some("test GPU failure".into()),
@@ -3671,12 +3697,35 @@ mod tests {
         host.publish_gpu_events([render_core::GpuAssetEvent {
             mesh: MeshHandle::NARETH_PLANET,
             lod: LodLevel::High,
+            renderer_epoch: 3,
             generation: 4,
             state: GpuAssetState::GpuReady,
             error: None,
         }]);
         bridge.poll_visual_asset_events();
         assert!(!bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            renderer_epoch: 4,
+            generation: 0,
+            state: GpuAssetState::GpuReady,
+            error: None,
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            renderer_epoch: 3,
+            generation: 99,
+            state: GpuAssetState::GpuFailed,
+            error: Some("old renderer".into()),
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(bridge.nareth_visual_asset_ready());
     }
 
     #[test]

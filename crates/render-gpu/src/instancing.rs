@@ -40,6 +40,7 @@ struct Batch {
 }
 
 pub(crate) struct InstancedScene {
+    renderer_epoch: u64,
     pipeline: wgpu::RenderPipeline,
     lighting: Option<crate::lighting::LightingPass>,
     shadows: Option<crate::shadows::ShadowPass>,
@@ -72,8 +73,10 @@ impl InstancedScene {
         format: wgpu::TextureFormat,
         layout: &wgpu::PipelineLayout,
         shader: &wgpu::ShaderModule,
+        renderer_epoch: u64,
     ) -> Self {
         Self {
+            renderer_epoch,
             pipeline: color_pipeline(gpu, format, layout, shader, true),
             lighting: None,
             shadows: None,
@@ -111,6 +114,7 @@ impl InstancedScene {
         self.gpu_asset_events.push(GpuAssetEvent {
             mesh: key.0,
             lod: key.1,
+            renderer_epoch: self.renderer_epoch,
             generation,
             state: GpuAssetState::UploadingGpu,
             error: None,
@@ -129,6 +133,7 @@ impl InstancedScene {
         self.gpu_asset_events.push(GpuAssetEvent {
             mesh: key.0,
             lod: key.1,
+            renderer_epoch: self.renderer_epoch,
             generation,
             state,
             error,
@@ -256,8 +261,99 @@ impl InstancedScene {
         let index = self.geometries.len();
         self.geometries.push(geometry);
         self.cache.entry(key).or_default().push(index);
-        self.finish_gpu_asset(key, generation, GpuAssetState::GpuReady, None);
         Ok(index)
+    }
+
+    fn ensure_normals_for_geometry(
+        &mut self,
+        gpu: &GpuContext,
+        index: usize,
+    ) -> Result<(), GpuError> {
+        if self.geometries[index].normals.is_some() {
+            return Ok(());
+        }
+        let source = Arc::clone(&self.geometries[index].source);
+        let normals: Vec<_> = source
+            .resolved_normals()
+            .into_iter()
+            .map(|normal| normal.to_array())
+            .collect();
+        let normal_bytes = (normals.len() as u64 * 12).max(4);
+        let Some(key) = self
+            .cache
+            .iter()
+            .find_map(|(key, indices)| indices.contains(&index).then_some(*key))
+        else {
+            return Err(GpuError::InvalidInput(
+                "cached geometry has no asset identity".into(),
+            ));
+        };
+        if normal_bytes > gpu.device.limits().max_buffer_size {
+            let message = "normal buffer exceeds device limit".to_owned();
+            if let Some((generation, _)) = self.gpu_asset_states.get(&key).cloned() {
+                self.finish_gpu_asset(
+                    key,
+                    generation,
+                    GpuAssetState::GpuFailed,
+                    Some(message.clone()),
+                );
+            }
+            return Err(GpuError::InvalidInput(message));
+        }
+        let buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cached mesh normals"),
+            contents: if normals.is_empty() {
+                &[0; 4]
+            } else {
+                bytemuck::cast_slice(&normals)
+            },
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        if let Err(error) = gpu.check() {
+            let message = error.to_string();
+            if let Some((generation, _)) = self.gpu_asset_states.get(&key).cloned() {
+                self.finish_gpu_asset(
+                    key,
+                    generation,
+                    GpuAssetState::GpuFailed,
+                    Some(message),
+                );
+            }
+            return Err(error);
+        }
+        self.geometries[index].normal_bytes = normal_bytes;
+        self.geometries[index].normals = Some(buffer);
+        Ok(())
+    }
+
+    fn complete_gpu_asset(
+        &mut self,
+        gpu: &GpuContext,
+        key: (MeshHandle, LodLevel),
+        index: usize,
+        normals_required: bool,
+    ) -> Result<(), GpuError> {
+        if normals_required {
+            self.ensure_normals_for_geometry(gpu, index)?;
+        }
+        if let Err(error) = gpu.check() {
+            let message = error.to_string();
+            if let Some((generation, _)) = self.gpu_asset_states.get(&key).cloned() {
+                self.finish_gpu_asset(
+                    key,
+                    generation,
+                    GpuAssetState::GpuFailed,
+                    Some(message),
+                );
+            }
+            return Err(error);
+        }
+        if let Some((generation, state)) = self.gpu_asset_states.get(&key).cloned() {
+            if matches!(state, GpuAssetState::UploadingGpu) {
+                self.finish_gpu_asset(key, generation, GpuAssetState::GpuReady, None);
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn ensure_geometry(
@@ -267,7 +363,9 @@ impl InstancedScene {
         lod: LodLevel,
         source: &Arc<RasterMesh>,
     ) -> Result<(), GpuError> {
-        self.geometry(gpu, (mesh, lod), source).map(|_| ())
+        let key = (mesh, lod);
+        let index = self.geometry(gpu, key, source)?;
+        self.complete_gpu_asset(gpu, key, index, true)
     }
 
     pub(crate) fn sync(
@@ -343,37 +441,18 @@ impl InstancedScene {
             self.force_write = true;
             self.reallocations += 1;
         }
-        if scene.lighting.mode != render_core::LightingMode::Unlit {
+        let normals_required = scene.lighting.mode != render_core::LightingMode::Unlit;
+        let asset_geometries = self
+            .next_sources
+            .iter()
+            .map(|source| (source.key, source.geometry))
+            .collect::<Vec<_>>();
+        for source in asset_geometries {
+            self.complete_gpu_asset(gpu, source.0, source.1, normals_required)?;
+        }
+        if normals_required {
             if self.lighting.is_none() {
                 self.lighting = Some(crate::lighting::LightingPass::new(gpu, self.format)?);
-            }
-            for source in &self.next_sources {
-                let geometry = &mut self.geometries[source.geometry];
-                if geometry.normals.is_none() {
-                    let normals: Vec<_> = geometry
-                        .source
-                        .resolved_normals()
-                        .into_iter()
-                        .map(|n| n.to_array())
-                        .collect();
-                    geometry.normal_bytes = (normals.len() as u64 * 12).max(4);
-                    if geometry.normal_bytes > gpu.device.limits().max_buffer_size {
-                        return Err(GpuError::InvalidInput(
-                            "normal buffer exceeds device limit".into(),
-                        ));
-                    }
-                    geometry.normals = Some(gpu.device.create_buffer_init(
-                        &wgpu::util::BufferInitDescriptor {
-                            label: Some("cached mesh normals"),
-                            contents: if normals.is_empty() {
-                                &[0; 4]
-                            } else {
-                                bytemuck::cast_slice(&normals)
-                            },
-                            usage: wgpu::BufferUsages::VERTEX,
-                        },
-                    ));
-                }
             }
             self.lighting
                 .as_mut()
