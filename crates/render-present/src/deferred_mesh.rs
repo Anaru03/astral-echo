@@ -138,6 +138,7 @@ impl VisualAssetHost {
                 .map(|event| GpuAssetEvent {
                     mesh: event.mesh,
                     lod: event.lod,
+                    renderer_epoch: event.renderer_epoch,
                     generation: event.generation.wrapping_add(1),
                     state: GpuAssetState::Unavailable,
                     error: None,
@@ -437,6 +438,7 @@ mod tests {
         let ready = GpuAssetEvent {
             mesh: MeshHandle::NARETH_PLANET,
             lod: render_core::LodLevel::High,
+            renderer_epoch: 1,
             generation: 1,
             state: GpuAssetState::GpuReady,
             error: None,

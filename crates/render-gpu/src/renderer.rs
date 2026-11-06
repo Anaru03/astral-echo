@@ -1,6 +1,7 @@
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
@@ -12,6 +13,12 @@ use render_core::{
 use wgpu::util::DeviceExt;
 
 use crate::{block_on, GpuContext, GpuError};
+
+static NEXT_RENDERER_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+fn next_renderer_epoch() -> u64 {
+    NEXT_RENDERER_EPOCH.fetch_add(1, Ordering::Relaxed)
+}
 
 pub const CLEAR_RGBA: [u8; 4] = [8, 10, 18, 255];
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -179,6 +186,7 @@ pub struct ResourceStats {
 }
 
 pub struct GpuRenderer {
+    renderer_epoch: u64,
     pub(crate) gpu: Arc<GpuContext>,
     pipeline: wgpu::RenderPipeline,
     pipeline_layout: wgpu::PipelineLayout,
@@ -205,6 +213,10 @@ pub struct GpuRenderer {
 }
 
 impl GpuRenderer {
+    pub fn renderer_epoch(&self) -> u64 {
+        self.renderer_epoch
+    }
+
     pub fn new(
         gpu: Arc<GpuContext>,
         format: wgpu::TextureFormat,
@@ -337,6 +349,7 @@ impl GpuRenderer {
         gpu.check()?;
         let result = Self {
             gpu,
+            renderer_epoch: next_renderer_epoch(),
             pipeline,
             pipeline_layout,
             shader,
@@ -422,6 +435,7 @@ impl GpuRenderer {
                 self.format,
                 &self.pipeline_layout,
                 &self.shader,
+                self.renderer_epoch,
             ));
         }
         self.instanced
@@ -456,6 +470,7 @@ impl GpuRenderer {
                 self.format,
                 &self.pipeline_layout,
                 &self.shader,
+                self.renderer_epoch,
             ));
         }
         self.instanced

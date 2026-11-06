@@ -264,7 +264,7 @@ struct VisualBridge {
     last_world_update: Instant,
     visual_asset_client: Option<VisualAssetClient>,
     visual_asset_states: BTreeMap<String, VisualAssetState>,
-    gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, GpuAssetState)>,
+    gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, u64, GpuAssetState)>,
 }
 
 impl VisualBridge {
@@ -867,11 +867,13 @@ impl VisualBridge {
             let is_newer = self
                 .gpu_asset_states
                 .get(&key)
-                .is_none_or(|(generation, _)| event.generation >= *generation);
+                .is_none_or(|(epoch, generation, _)| {
+                    (event.renderer_epoch, event.generation) >= (*epoch, *generation)
+                });
             if is_newer {
                 let state = event.state.clone();
                 self.gpu_asset_states
-                    .insert(key, (event.generation, state.clone()));
+                    .insert(key, (event.renderer_epoch, event.generation, state.clone()));
                 if event.mesh == MeshHandle::NARETH_PLANET
                     && matches!(state, GpuAssetState::GpuFailed)
                 {
@@ -890,7 +892,7 @@ impl VisualBridge {
             && self
                 .gpu_asset_states
                 .get(&(MeshHandle::NARETH_PLANET, LodLevel::High))
-                .is_some_and(|(_, state)| *state == GpuAssetState::GpuReady)
+                .is_some_and(|(_, _, state)| *state == GpuAssetState::GpuReady)
     }
 
     fn request_nareth_visual_asset(&mut self) {
@@ -3641,6 +3643,7 @@ mod tests {
         host.publish_gpu_events([render_core::GpuAssetEvent {
             mesh: MeshHandle::NARETH_PLANET,
             lod: LodLevel::High,
+            renderer_epoch: 3,
             generation: 4,
             state: GpuAssetState::UploadingGpu,
             error: None,
@@ -3651,6 +3654,7 @@ mod tests {
         host.publish_gpu_events([render_core::GpuAssetEvent {
             mesh: MeshHandle::NARETH_PLANET,
             lod: LodLevel::High,
+            renderer_epoch: 3,
             generation: 4,
             state: GpuAssetState::GpuReady,
             error: None,
@@ -3661,6 +3665,7 @@ mod tests {
         host.publish_gpu_events([render_core::GpuAssetEvent {
             mesh: MeshHandle::NARETH_PLANET,
             lod: LodLevel::High,
+            renderer_epoch: 3,
             generation: 5,
             state: GpuAssetState::GpuFailed,
             error: Some("test GPU failure".into()),
@@ -3671,6 +3676,7 @@ mod tests {
         host.publish_gpu_events([render_core::GpuAssetEvent {
             mesh: MeshHandle::NARETH_PLANET,
             lod: LodLevel::High,
+            renderer_epoch: 3,
             generation: 4,
             state: GpuAssetState::GpuReady,
             error: None,

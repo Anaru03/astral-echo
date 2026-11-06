@@ -284,6 +284,16 @@ fn gpu_asset_state_is_independent_and_emits_only_transitions() {
 }
 
 #[test]
+fn separate_renderers_have_distinct_epochs() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let first = GpuRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm, &[]).unwrap();
+    let second = GpuRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm, &[]).unwrap();
+    assert_ne!(first.renderer_epoch(), second.renderer_epoch());
+}
+
+#[test]
 fn invalid_geometry_emits_gpu_failed_without_cpu_state_changes() {
     let Some(gpu) = gpu() else {
         return;
