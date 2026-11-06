@@ -17,7 +17,8 @@ use gameplay::{
     StationType, WeaponAmmunition, WeaponConfiguration,
 };
 use render_core::{
-    LightingMode, MaterialHandle, MaterialInfo, MeshHandle, VisualAssetRequest, VisualAssetState,
+    GpuAssetState, LightingMode, LodLevel, MaterialHandle, MaterialInfo, MeshHandle,
+    VisualAssetRequest, VisualAssetState,
     VisualAssets,
 };
 use render_present::{
@@ -263,6 +264,7 @@ struct VisualBridge {
     last_world_update: Instant,
     visual_asset_client: Option<VisualAssetClient>,
     visual_asset_states: BTreeMap<String, VisualAssetState>,
+    gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, GpuAssetState)>,
 }
 
 impl VisualBridge {
@@ -800,6 +802,7 @@ impl VisualBridge {
             last_world_update: Instant::now(),
             visual_asset_client: None,
             visual_asset_states: BTreeMap::new(),
+            gpu_asset_states: BTreeMap::new(),
         })
     }
 
@@ -859,12 +862,35 @@ impl VisualBridge {
                 }
             }
         }
+        for event in client.poll_gpu_events() {
+            let key = (event.mesh, event.lod);
+            let is_newer = self
+                .gpu_asset_states
+                .get(&key)
+                .is_none_or(|(generation, _)| event.generation >= *generation);
+            if is_newer {
+                let state = event.state.clone();
+                self.gpu_asset_states
+                    .insert(key, (event.generation, state.clone()));
+                if event.mesh == MeshHandle::NARETH_PLANET
+                    && matches!(state, GpuAssetState::GpuFailed)
+                {
+                    if let Some(error) = event.error {
+                        self.feedback = format!("RECURSO GPU NO DISPONIBLE: {error}");
+                    }
+                }
+            }
+        }
     }
 
     fn nareth_visual_asset_ready(&self) -> bool {
         self.visual_asset_states
             .get(NARETH_RESOURCE_ID)
             .is_some_and(|state| *state == VisualAssetState::Ready)
+            && self
+                .gpu_asset_states
+                .get(&(MeshHandle::NARETH_PLANET, LodLevel::High))
+                .is_some_and(|(_, state)| *state == GpuAssetState::GpuReady)
     }
 
     fn request_nareth_visual_asset(&mut self) {
@@ -3600,6 +3626,57 @@ mod tests {
             .find(|node| node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value()))
             .expect("Nareth should remain in the snapshot after loading");
         assert_eq!(ready_nareth.mesh, render_core::MeshHandle::NARETH_PLANET);
+    }
+
+    #[test]
+    fn nareth_mesh_requires_gpu_ready_and_ignores_older_generations() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let (client, mut host) = visual_asset_channel();
+        bridge.attach_visual_asset_client(client);
+        bridge
+            .visual_asset_states
+            .insert(NARETH_RESOURCE_ID.to_owned(), VisualAssetState::Ready);
+        assert!(!bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            generation: 4,
+            state: GpuAssetState::UploadingGpu,
+            error: None,
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(!bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            generation: 4,
+            state: GpuAssetState::GpuReady,
+            error: None,
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            generation: 5,
+            state: GpuAssetState::GpuFailed,
+            error: Some("test GPU failure".into()),
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(!bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            generation: 4,
+            state: GpuAssetState::GpuReady,
+            error: None,
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(!bridge.nareth_visual_asset_ready());
     }
 
     #[test]

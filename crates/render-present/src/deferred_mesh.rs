@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use render_core::{
-    CpuModelLoadManager, CpuModelLoadState, MaterialHandle, MeshHandle, SnapshotScene,
+    CpuModelLoadManager, CpuModelLoadState, GpuAssetEvent, GpuAssetState, MaterialHandle,
+    MeshHandle, SnapshotScene,
     VisualAssetEvent, VisualAssetRequest, VisualAssetState,
 };
 
@@ -24,7 +25,9 @@ pub enum DeferredMeshRequestError {
 pub struct VisualAssetClient {
     request_tx: Sender<VisualAssetRequest>,
     event_rx: Receiver<VisualAssetEvent>,
+    gpu_event_rx: Receiver<GpuAssetEvent>,
     closed: bool,
+    gpu_closed: bool,
 }
 
 impl VisualAssetClient {
@@ -50,27 +53,55 @@ impl VisualAssetClient {
     pub fn is_closed(&self) -> bool {
         self.closed
     }
+
+    pub fn poll_gpu_events(&mut self) -> Vec<GpuAssetEvent> {
+        let mut events = Vec::new();
+        loop {
+            match self.gpu_event_rx.try_recv() {
+                Ok(event) => events.push(event),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.gpu_closed = true;
+                    break;
+                }
+            }
+        }
+        events
+    }
+
+    pub fn gpu_channel_closed(&self) -> bool {
+        self.gpu_closed
+    }
 }
 
 pub struct VisualAssetHost {
     request_rx: Receiver<VisualAssetRequest>,
     event_tx: Sender<VisualAssetEvent>,
+    gpu_event_tx: Sender<GpuAssetEvent>,
     associations: BTreeMap<String, VisualAssetRequest>,
+    gpu_states: BTreeMap<(MeshHandle, render_core::LodLevel), GpuAssetEvent>,
+    gpu_backend_active: bool,
 }
 
 pub fn visual_asset_channel() -> (VisualAssetClient, VisualAssetHost) {
     let (request_tx, request_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
+    let (gpu_event_tx, gpu_event_rx) = mpsc::channel();
     (
         VisualAssetClient {
             request_tx,
             event_rx,
+            gpu_event_rx,
             closed: false,
+            gpu_closed: false,
         },
         VisualAssetHost {
             request_rx,
             event_tx,
+            gpu_event_tx,
             associations: BTreeMap::new(),
+            gpu_states: BTreeMap::new(),
+            gpu_backend_active: false,
         },
     )
 }
@@ -83,6 +114,39 @@ impl Default for VisualAssetHost {
 }
 
 impl VisualAssetHost {
+    pub fn publish_gpu_events(&mut self, events: impl IntoIterator<Item = GpuAssetEvent>) {
+        for event in events {
+            let key = (event.mesh, event.lod);
+            self.gpu_states.insert(key, event.clone());
+            let _ = self.gpu_event_tx.send(event);
+        }
+    }
+
+    /// Publishes one Unavailable transition when presentation is no longer on
+    /// the GPU backend. This prevents an old GpuReady event from remaining
+    /// authoritative after a backend switch.
+    pub fn set_gpu_backend_active(&mut self, active: bool) {
+        if self.gpu_backend_active == active {
+            return;
+        }
+        self.gpu_backend_active = active;
+        if !active {
+            let events = self
+                .gpu_states
+                .values()
+                .filter(|event| !matches!(event.state, GpuAssetState::Unavailable))
+                .map(|event| GpuAssetEvent {
+                    mesh: event.mesh,
+                    lod: event.lod,
+                    generation: event.generation.wrapping_add(1),
+                    state: GpuAssetState::Unavailable,
+                    error: None,
+                })
+                .collect::<Vec<_>>();
+            self.publish_gpu_events(events);
+        }
+    }
+
     pub fn poll(
         &mut self,
         registry: &mut DeferredMeshRegistry,
@@ -365,6 +429,28 @@ mod tests {
     fn write_triangle(path: &Path) {
         fs::write(path, "v -1 -1 0\nv 1 -1 0\nv 0 1 0\nf 1 2 3\n")
             .expect("write fixture OBJ");
+    }
+
+    #[test]
+    fn gpu_events_are_forwarded_once_and_cpu_backend_invalidates_ready() {
+        let (mut client, mut host) = visual_asset_channel();
+        let ready = GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: render_core::LodLevel::High,
+            generation: 1,
+            state: GpuAssetState::GpuReady,
+            error: None,
+        };
+        host.publish_gpu_events([ready.clone()]);
+        assert_eq!(client.poll_gpu_events(), vec![ready]);
+        assert!(client.poll_gpu_events().is_empty());
+
+        host.set_gpu_backend_active(true);
+        host.set_gpu_backend_active(false);
+        let events = client.poll_gpu_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].state, GpuAssetState::Unavailable);
+        assert!(client.poll_gpu_events().is_empty());
     }
 
     fn snapshot(mesh: MeshHandle, material: MaterialHandle) -> RenderSnapshot {

@@ -444,6 +444,26 @@ impl GpuRenderer {
         })
     }
 
+    pub fn ensure_shared_mesh(
+        &mut self,
+        mesh: MeshHandle,
+        lod: LodLevel,
+        source: Arc<RasterMesh>,
+    ) -> Result<(), GpuError> {
+        if self.instanced.is_none() {
+            self.instanced = Some(crate::instancing::InstancedScene::new(
+                &self.gpu,
+                self.format,
+                &self.pipeline_layout,
+                &self.shader,
+            ));
+        }
+        self.instanced
+            .as_mut()
+            .expect("initialized instancing")
+            .ensure_geometry(&self.gpu, mesh, lod, &source)
+    }
+
     pub fn sync_prepared_reference(&mut self, scene: &PreparedScene) -> Result<bool, GpuError> {
         let keys: Vec<_> = scene
             .draws()

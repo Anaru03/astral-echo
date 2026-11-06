@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use render_core::{
     hud_contextual_button_hit, hud_controls_button_hit, hud_controls_panel_hit,
-    InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene,
+    InterpolationConfig, LodLevel, MeshHandle, RenderSnapshot, SnapshotBuffer, SnapshotScene,
+    VisualAssets,
 };
 use render_cpu::{
     render_snapshot_scene_with_stats, render_snapshot_scene_with_shader, write_png, Framebuffer,
@@ -1008,6 +1009,9 @@ impl Host {
                 .visual_assets
                 .poll(&mut state.deferred_meshes, Some(scene));
         }
+        state
+            .visual_assets
+            .set_gpu_backend_active(state.backend.backend() == BackendKind::Gpu);
         let frame_id = self.frames;
         let trace_frame = frame_id <= 3 || frame_id % 60 == 0 || state.pending_gpu.is_some();
         let frame_started = Instant::now();
@@ -1048,9 +1052,22 @@ impl Host {
                 .is_some_and(|threshold| frame_id >= threshold)
                 && !self.auto_capture_requested;
             let gpu_error = match state.gpu.as_mut() {
-                Some(gpu) => match gpu.present_snapshot_with_stats(&state.snapshot) {
+                Some(gpu) => {
+                    if let Ok(nareth) = state
+                        .snapshot
+                        .shared_mesh(MeshHandle::NARETH_PLANET, VisualAssets::PLANET)
+                    {
+                        let _ = gpu.ensure_shared_mesh(
+                            MeshHandle::NARETH_PLANET,
+                            LodLevel::High,
+                            nareth,
+                        );
+                    }
+                    match gpu.present_snapshot_with_stats(&state.snapshot) {
                     Ok((_, stats)) => {
-                        for event in gpu.poll_gpu_asset_events() {
+                        let gpu_events = gpu.poll_gpu_asset_events();
+                        state.visual_assets.publish_gpu_events(gpu_events.iter().cloned());
+                        for event in gpu_events {
                             println!(
                                 "hot-swap gpu-asset mesh={} lod={:?} generation={} state={:?} error={:?}",
                                 event.mesh.0,
@@ -1104,6 +1121,7 @@ impl Host {
                         None
                     }
                     Err(error) => Some(error.to_string()),
+                    }
                 },
                 None => Some("GPU backend active without GPU resources".into()),
             };

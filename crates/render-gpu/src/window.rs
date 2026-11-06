@@ -315,8 +315,6 @@ impl SurfaceRenderer {
         self.config.width > 0 && self.config.height > 0 && self.depth.is_some()
     }
 
-    /// Drains GPU-resource transitions from the presentation-owned renderer.
-    /// Events are emitted only on state changes, never once per frame.
     pub fn poll_gpu_asset_events(&mut self) -> Vec<GpuAssetEvent> {
         let mut events = self.renderer.poll_gpu_asset_events();
         if let Some(renderer) = &mut self.hdr_renderer {
@@ -325,11 +323,15 @@ impl SurfaceRenderer {
         events
     }
 
-    /// Requests one readback of the next fully composed GPU frame.
-    ///
-    /// The request is intentionally one-shot and has no effect unless the
-    /// caller explicitly supplies a path. The capture includes the scene and
-    /// HUD because it is performed immediately before surface presentation.
+    pub fn ensure_shared_mesh(
+        &mut self,
+        mesh: render_core::MeshHandle,
+        lod: render_core::LodLevel,
+        source: Arc<render_core::RasterMesh>,
+    ) -> Result<(), GpuError> {
+        self.renderer.ensure_shared_mesh(mesh, lod, source)
+    }
+
     pub fn request_capture(&mut self, path: PathBuf) -> Result<(), GpuError> {
         if !self.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
             return Err(GpuError::Unavailable(

@@ -260,6 +260,16 @@ impl InstancedScene {
         Ok(index)
     }
 
+    pub(crate) fn ensure_geometry(
+        &mut self,
+        gpu: &GpuContext,
+        mesh: MeshHandle,
+        lod: LodLevel,
+        source: &Arc<RasterMesh>,
+    ) -> Result<(), GpuError> {
+        self.geometry(gpu, (mesh, lod), source).map(|_| ())
+    }
+
     pub(crate) fn sync(
         &mut self,
         gpu: &GpuContext,
