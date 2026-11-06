@@ -202,6 +202,16 @@ impl VisualAssetHost {
         {
             return vec![self.emit_failure(&request, "visual asset path already assigned")];
         }
+        if self.associations.values().any(|previous| {
+            previous.mesh == request.mesh
+                && previous.material == request.material
+                && previous.path != request.path
+        }) {
+            return vec![self.emit_failure(
+                &request,
+                "visual asset handles already assigned to another path",
+            )];
+        }
         match registry.request(request.path.clone(), request.mesh, request.material) {
             Ok(_) => {
                 self.associations
@@ -331,6 +341,17 @@ impl DeferredMeshRegistry {
                     material,
                 ));
             }
+            return Err(DeferredMeshRequestError::ConflictingHandles(
+                path,
+                mesh,
+                material,
+            ));
+        }
+        if self.requests.iter().any(|(existing_path, request)| {
+            request.mesh == mesh
+                && request.material == material
+                && *existing_path != path
+        }) {
             return Err(DeferredMeshRequestError::ConflictingHandles(
                 path,
                 mesh,
@@ -679,6 +700,84 @@ mod tests {
         }
         assert!(failed);
         fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn typed_channel_rejects_a_different_path_for_an_existing_identity() {
+        let (mut client, mut host) = visual_asset_channel();
+        let first_path = fixture_path("identity_first");
+        let second_path = fixture_path("identity_second");
+        write_triangle(&first_path);
+        write_triangle(&second_path);
+        let first = VisualAssetRequest {
+            resource_id: "planet.nareth".into(),
+            path: first_path.clone(),
+            mesh: MeshHandle::NARETH_PLANET,
+            material: render_core::VisualAssets::PLANET,
+        };
+        client.request(first.clone()).unwrap();
+        let mut registry = DeferredMeshRegistry::new();
+        let mut scene = SnapshotScene::default();
+        host.poll(&mut registry, Some(&mut scene));
+        let _ = client.poll_events();
+
+        client
+            .request(VisualAssetRequest {
+                resource_id: first.resource_id.clone(),
+                path: second_path.clone(),
+                mesh: first.mesh,
+                material: first.material,
+            })
+            .unwrap();
+        let events = host.poll(&mut registry, Some(&mut scene));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].state, VisualAssetState::Failed);
+        assert!(events[0]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("identity already assigned")));
+
+        fs::remove_file(first_path).expect("remove first fixture");
+        fs::remove_file(second_path).expect("remove second fixture");
+    }
+
+    #[test]
+    fn typed_channel_rejects_another_resource_from_claiming_nareth_handles() {
+        let (mut client, mut host) = visual_asset_channel();
+        let nareth_path = fixture_path("nareth_handles");
+        let test_path = fixture_path("test_handles");
+        write_triangle(&nareth_path);
+        write_triangle(&test_path);
+        let nareth = VisualAssetRequest {
+            resource_id: "planet.nareth".into(),
+            path: nareth_path.clone(),
+            mesh: MeshHandle::NARETH_PLANET,
+            material: render_core::VisualAssets::PLANET,
+        };
+        client.request(nareth.clone()).unwrap();
+        let mut registry = DeferredMeshRegistry::new();
+        let mut scene = SnapshotScene::default();
+        host.poll(&mut registry, Some(&mut scene));
+        let _ = client.poll_events();
+
+        client
+            .request(VisualAssetRequest {
+                resource_id: "fixture.earth".into(),
+                path: test_path.clone(),
+                mesh: nareth.mesh,
+                material: nareth.material,
+            })
+            .unwrap();
+        let events = host.poll(&mut registry, Some(&mut scene));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].state, VisualAssetState::Failed);
+        assert!(events[0]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("handles already assigned")));
+
+        fs::remove_file(nareth_path).expect("remove Nareth fixture");
+        fs::remove_file(test_path).expect("remove test fixture");
     }
 
     #[test]
