@@ -5329,6 +5329,12 @@ impl GameplayWorld {
             .ship_id()
             .map(|_| self.navigation.control_active())
     }
+    pub fn free_navigation_destination(&self) -> Option<crate::navigation::DestinationId> {
+        self.navigation.free_navigation_destination()
+    }
+    pub fn free_navigation_proposal(&self) -> Option<&crate::navigation::FreeNavigationProposal> {
+        self.navigation.free_navigation_proposal()
+    }
     pub fn ship_boost_active(&self) -> Option<bool> {
         self.navigation
             .ship_id()
@@ -7291,6 +7297,30 @@ impl GameplayWorld {
             return Err(crate::navigation::NavigationStartError::ResourcesNotInitialized);
         };
         self.navigation.start_travel(now, resources.fuel_mut(), discount_percent)
+    }
+    pub(crate) fn start_free_navigation(
+        &mut self,
+        now: engine::Duration,
+        player: EntityId,
+        pilot_station: EntityId,
+    ) -> Result<
+        (DestinationId, engine::Duration, engine::Duration, u32, u32),
+        crate::navigation::FreeNavigationStartError,
+    > {
+        let Some(ship) = self.navigation.ship_id() else {
+            return Err(crate::navigation::FreeNavigationStartError::DestinationNotFound);
+        };
+        let discount_percent = self.ship_fuel_discount_percent();
+        let Some(resources) = self.ship_resources.get_mut(&ship) else {
+            return Err(crate::navigation::FreeNavigationStartError::InsufficientFuel);
+        };
+        self.navigation.start_free_navigation(
+            now,
+            resources.fuel_mut(),
+            player,
+            pilot_station,
+            discount_percent,
+        )
     }
     pub(crate) fn plan_autopilot(
         &mut self,

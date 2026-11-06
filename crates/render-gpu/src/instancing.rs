@@ -3,7 +3,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use render_core::{
-    LodLevel, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh, SnapshotId, Transform,
+    GpuAssetEvent, GpuAssetState, LodLevel, Mat4, MaterialHandle, MeshHandle, PreparedScene,
+    RasterMesh, SnapshotId, Transform,
 };
 use wgpu::util::DeviceExt;
 
@@ -61,6 +62,8 @@ pub(crate) struct InstancedScene {
     last_vp: Option<Mat4>,
     reallocations: u64,
     bytes_written: u64,
+    gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, GpuAssetState)>,
+    gpu_asset_events: Vec<GpuAssetEvent>,
 }
 
 impl InstancedScene {
@@ -93,7 +96,56 @@ impl InstancedScene {
             last_vp: None,
             reallocations: 1,
             bytes_written: 0,
+            gpu_asset_states: BTreeMap::new(),
+            gpu_asset_events: Vec::new(),
         }
+    }
+
+    fn begin_gpu_asset(&mut self, key: (MeshHandle, LodLevel)) -> u64 {
+        let generation = self
+            .gpu_asset_states
+            .get(&key)
+            .map_or(0, |(generation, _)| generation.wrapping_add(1));
+        self.gpu_asset_states
+            .insert(key, (generation, GpuAssetState::UploadingGpu));
+        self.gpu_asset_events.push(GpuAssetEvent {
+            mesh: key.0,
+            lod: key.1,
+            generation,
+            state: GpuAssetState::UploadingGpu,
+            error: None,
+        });
+        generation
+    }
+
+    fn finish_gpu_asset(
+        &mut self,
+        key: (MeshHandle, LodLevel),
+        generation: u64,
+        state: GpuAssetState,
+        error: Option<String>,
+    ) {
+        self.gpu_asset_states.insert(key, (generation, state.clone()));
+        self.gpu_asset_events.push(GpuAssetEvent {
+            mesh: key.0,
+            lod: key.1,
+            generation,
+            state,
+            error,
+        });
+    }
+
+    pub(crate) fn take_gpu_asset_events(&mut self) -> Vec<GpuAssetEvent> {
+        std::mem::take(&mut self.gpu_asset_events)
+    }
+
+    pub(crate) fn gpu_asset_state(
+        &self,
+        key: (MeshHandle, LodLevel),
+    ) -> GpuAssetState {
+        self.gpu_asset_states
+            .get(&key)
+            .map_or(GpuAssetState::Unavailable, |(_, state)| state.clone())
     }
 
     fn geometry(
@@ -116,10 +168,32 @@ impl InstancedScene {
             self.cache.entry(key).or_default().push(index);
             return Ok(index);
         }
+        let generation = self.begin_gpu_asset(key);
         let index_count =
-            u32::try_from(mesh.indices.len()).map_err(|e| GpuError::InvalidInput(e.to_string()))?;
-        let vertex_bytes = (mesh.vertices.len() as u64 * 28).max(4);
-        let index_bytes = (mesh.indices.len() as u64 * 4).max(4);
+            match u32::try_from(mesh.indices.len()) {
+                Ok(value) => value,
+                Err(error) => {
+                    let message = error.to_string();
+                    self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
+                    return Err(GpuError::InvalidInput(message));
+                }
+            };
+        let vertex_bytes = match (mesh.vertices.len() as u64).checked_mul(28) {
+            Some(value) => value.max(4),
+            None => {
+                let message = "vertex buffer size overflow".to_owned();
+                self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
+                return Err(GpuError::InvalidInput(message));
+            }
+        };
+        let index_bytes = match (mesh.indices.len() as u64).checked_mul(4) {
+            Some(value) => value.max(4),
+            None => {
+                let message = "index buffer size overflow".to_owned();
+                self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
+                return Err(GpuError::InvalidInput(message));
+            }
+        };
         if !mesh.indices.len().is_multiple_of(3)
             || mesh
                 .vertices
@@ -131,7 +205,9 @@ impl InstancedScene {
                 .any(|&i| i as usize >= mesh.vertices.len())
             || vertex_bytes.max(index_bytes) > gpu.device.limits().max_buffer_size
         {
-            return Err(GpuError::InvalidInput("invalid cached geometry".into()));
+            let message = "invalid cached geometry".to_owned();
+            self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
+            return Err(GpuError::InvalidInput(message));
         }
         let vertices: Vec<_> = mesh
             .vertices
@@ -172,10 +248,26 @@ impl InstancedScene {
             vertex_bytes,
             index_bytes,
         };
+        if let Err(error) = gpu.check() {
+            let message = error.to_string();
+            self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message));
+            return Err(error);
+        }
         let index = self.geometries.len();
         self.geometries.push(geometry);
         self.cache.entry(key).or_default().push(index);
+        self.finish_gpu_asset(key, generation, GpuAssetState::GpuReady, None);
         Ok(index)
+    }
+
+    pub(crate) fn ensure_geometry(
+        &mut self,
+        gpu: &GpuContext,
+        mesh: MeshHandle,
+        lod: LodLevel,
+        source: &Arc<RasterMesh>,
+    ) -> Result<(), GpuError> {
+        self.geometry(gpu, (mesh, lod), source).map(|_| ())
     }
 
     pub(crate) fn sync(

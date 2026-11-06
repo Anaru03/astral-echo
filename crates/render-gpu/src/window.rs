@@ -2,9 +2,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::future::Future;
 use std::pin::Pin;
+use std::path::PathBuf;
+use std::sync::mpsc;
 
 use render_core::{
-    Camera, Mat4, PreparedSceneStats, RasterMesh, RenderSnapshot, SnapshotScene, Transform,
+    Camera, GpuAssetEvent, Mat4, PreparedSceneStats, RasterMesh, RenderSnapshot, SnapshotScene,
+    Transform,
 };
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -15,7 +18,7 @@ use crate::postprocess::PostProcessPass;
 use crate::renderer::DepthTarget;
 use crate::{
     block_on, game_over_overlay_scene, hud_overlay_scene, GpuContext, GpuError, GpuOptions, GpuRenderer, PostProcessConfig,
-    PostProcessPreset,
+    PostProcessPreset, GpuImage, ReadbackLayout,
 };
 
 pub struct SurfaceRenderer {
@@ -30,6 +33,15 @@ pub struct SurfaceRenderer {
     postprocess: Option<PostProcessPass>,
     hdr_texture: Option<wgpu::Texture>,
     hdr_view: Option<wgpu::TextureView>,
+    capture_request: Option<CaptureRequest>,
+}
+
+enum CaptureRequest {
+    Composite(PathBuf),
+    Dual {
+        scene_only: PathBuf,
+        composite: PathBuf,
+    },
 }
 
 pub struct WindowSurface {
@@ -100,7 +112,8 @@ impl SurfaceRenderer {
             "hot-swap gpu-surface-configured elapsed_ms={:.3}",
             started.elapsed().as_secs_f64() * 1000.0
         );
-        let formats = surface.get_capabilities(&gpu.adapter).formats;
+        let capabilities = surface.get_capabilities(&gpu.adapter);
+        let formats = capabilities.formats;
         config.format = formats
             .iter()
             .copied()
@@ -120,6 +133,9 @@ impl SurfaceRenderer {
             })
             .ok_or_else(|| GpuError::Unavailable("no supported surface color format".into()))?;
         config.present_mode = wgpu::PresentMode::Fifo;
+        if capabilities.usages.contains(wgpu::TextureUsages::COPY_SRC) {
+            config.usage |= wgpu::TextureUsages::COPY_SRC;
+        }
         let renderer = GpuRenderer::new_async(gpu.clone(), config.format, scene).await?;
         println!(
             "GPU window: {:?}, format={:?}",
@@ -138,6 +154,7 @@ impl SurfaceRenderer {
             postprocess: None,
             hdr_texture: None,
             hdr_view: None,
+            capture_request: None,
         };
         result.resize_without_wait(size.width, size.height)?;
         println!(
@@ -298,6 +315,62 @@ impl SurfaceRenderer {
         self.config.width > 0 && self.config.height > 0 && self.depth.is_some()
     }
 
+    pub fn poll_gpu_asset_events(&mut self) -> Vec<GpuAssetEvent> {
+        let mut events = self.renderer.poll_gpu_asset_events();
+        if let Some(renderer) = &mut self.hdr_renderer {
+            events.extend(renderer.poll_gpu_asset_events());
+        }
+        events
+    }
+
+    pub fn ensure_shared_mesh(
+        &mut self,
+        mesh: render_core::MeshHandle,
+        lod: render_core::LodLevel,
+        source: Arc<render_core::RasterMesh>,
+    ) -> Result<(), GpuError> {
+        self.renderer.ensure_shared_mesh(mesh, lod, source)
+    }
+
+    pub fn request_capture(&mut self, path: PathBuf) -> Result<(), GpuError> {
+        if !self.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
+            return Err(GpuError::Unavailable(
+                "GPU surface does not support COPY_SRC readback".into(),
+            ));
+        }
+        if self.capture_request.is_some() {
+            return Err(GpuError::InvalidInput(
+                "a GPU capture is already pending".into(),
+            ));
+        }
+        self.capture_request = Some(CaptureRequest::Composite(path));
+        Ok(())
+    }
+
+    /// Requests one readback pair from the same composed frame: the scene
+    /// after postprocessing and the final image after the HUD.
+    pub fn request_dual_capture(
+        &mut self,
+        scene_only: PathBuf,
+        composite: PathBuf,
+    ) -> Result<(), GpuError> {
+        if !self.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
+            return Err(GpuError::Unavailable(
+                "GPU surface does not support COPY_SRC readback".into(),
+            ));
+        }
+        if self.capture_request.is_some() {
+            return Err(GpuError::InvalidInput(
+                "a GPU capture is already pending".into(),
+            ));
+        }
+        self.capture_request = Some(CaptureRequest::Dual {
+            scene_only,
+            composite,
+        });
+        Ok(())
+    }
+
     pub fn present(&mut self, camera: &Camera) -> Result<bool, GpuError> {
         self.present_matrix(camera.view_projection_matrix(), Default::default())
     }
@@ -368,6 +441,15 @@ impl SurfaceRenderer {
             }
         };
         let view = texture.texture.create_view(&Default::default());
+        let capture = self.capture_request.take();
+        let (scene_capture, composite_capture) = match capture {
+            Some(CaptureRequest::Composite(path)) => (None, Some(path)),
+            Some(CaptureRequest::Dual {
+                scene_only,
+                composite,
+            }) => (Some(scene_only), Some(composite)),
+            None => (None, None),
+        };
         if overlay.game_over {
             let overlay_scene = game_over_overlay_scene(self.config.width, self.config.height);
             let mut overlay_renderer =
@@ -383,6 +465,12 @@ impl SurfaceRenderer {
                 let mut hud_renderer = GpuRenderer::new(self.gpu.clone(), self.config.format, &hud_scene)?;
                 let hud_depth = DepthTarget::new(&self.gpu, self.config.width, self.config.height)?;
                 hud_renderer.render_to_view_matrix_over(&view, &hud_depth.view, Mat4::IDENTITY)?;
+            }
+            if let Some(path) = scene_capture {
+                self.capture_surface_texture(&texture.texture, &path)?;
+            }
+            if let Some(path) = composite_capture {
+                self.capture_surface_texture(&texture.texture, &path)?;
             }
             self.window.pre_present_notify();
             texture.present();
@@ -409,11 +497,17 @@ impl SurfaceRenderer {
                 overlay_clear_color(&overlay),
             )?;
         }
+        if let Some(path) = scene_capture {
+            self.capture_surface_texture(&texture.texture, &path)?;
+        }
         let hud_scene = hud_overlay_scene(&overlay.hud, self.config.width, self.config.height);
         if !hud_scene.is_empty() {
             let mut hud_renderer = GpuRenderer::new(self.gpu.clone(), self.config.format, &hud_scene)?;
             let hud_depth = DepthTarget::new(&self.gpu, self.config.width, self.config.height)?;
             hud_renderer.render_to_view_matrix_over(&view, &hud_depth.view, Mat4::IDENTITY)?;
+        }
+        if let Some(path) = composite_capture {
+            self.capture_surface_texture(&texture.texture, &path)?;
         }
         self.window.pre_present_notify();
         texture.present();
@@ -422,6 +516,76 @@ impl SurfaceRenderer {
         }
         self.gpu.check()?;
         Ok(true)
+    }
+
+    fn capture_surface_texture(
+        &self,
+        texture: &wgpu::Texture,
+        path: &PathBuf,
+    ) -> Result<(), GpuError> {
+        if path.exists() {
+            return Err(GpuError::Readback(format!(
+                "capture output already exists: {}",
+                path.display()
+            )));
+        }
+        let layout = ReadbackLayout::new(self.config.width, self.config.height)?;
+        let buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("one-shot surface readback"),
+            size: layout.buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(layout.bytes_per_row),
+                    rows_per_image: Some(self.config.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.config.width,
+                height: self.config.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.gpu.queue.submit([encoder.finish()]);
+        self.gpu.wait()?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        self.gpu.wait()?;
+        receiver
+            .recv_timeout(Duration::from_secs(20))
+            .map_err(|error| GpuError::Readback(error.to_string()))?
+            .map_err(|error| GpuError::Readback(error.to_string()))?;
+        let mapped = buffer.slice(..).get_mapped_range();
+        let mut rgba = layout.unpack(&mapped)?;
+        drop(mapped);
+        buffer.unmap();
+        if matches!(self.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+            for pixel in rgba.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+        }
+        GpuImage {
+            width: self.config.width,
+            height: self.config.height,
+            rgba,
+            depth: Vec::new(),
+        }
+        .write_png(path)
+        .map_err(|error| GpuError::Readback(error.to_string()))
     }
 }
 

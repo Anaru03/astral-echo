@@ -104,6 +104,11 @@ pub enum GameplayEvent {
         pilot_station: EntityId,
         destination: crate::navigation::DestinationId,
     },
+    FreeNavigationDestinationSelected {
+        player: EntityId,
+        pilot_station: EntityId,
+        destination: crate::navigation::DestinationId,
+    },
     TravelStarted {
         player: EntityId,
         pilot_station: EntityId,

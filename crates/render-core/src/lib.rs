@@ -1,5 +1,6 @@
 pub mod bounds;
 pub mod camera;
+pub mod cpu_model_loader;
 pub mod demo;
 pub mod geometry;
 pub mod hud;
@@ -14,6 +15,7 @@ pub mod shadows;
 pub mod snapshot;
 pub mod transform;
 pub mod visual;
+pub mod visual_asset;
 
 pub use bounds::{Aabb, AabbError, Frustum, Plane};
 pub use camera::{Camera, CameraError, Projection};
@@ -36,6 +38,7 @@ pub use visual::{
     CullingConfig, LodLevel, PreparedDraw, PreparedScene, PreparedSceneStats, SceneUpdate,
     SnapshotScene, VisibilityClass, VisualAssets, VisualError,
 };
+pub use visual_asset::{GpuAssetEvent, GpuAssetState, VisualAssetEvent, VisualAssetRequest, VisualAssetState};
 
 pub use demo::{
     demo_camera, demo_scene, grid_mesh, terrain_height, GRID_SUBDIVISIONS, TERRAIN_EXTENT,
@@ -44,6 +47,7 @@ pub use demo::{
 pub use geometry::{RasterMesh, RasterVertex};
 pub use hud::{hud_contextual_button_hit, hud_controls_button_hit, hud_controls_panel_hit, hud_overlay, HudOverlay, HudOverlayRect};
 pub use model_loader::{load_obj, load_obj_reader, ObjLoadError};
+pub use cpu_model_loader::{CpuModelLoadManager, CpuModelLoadState};
 
 pub use lighting::{
     material_fixture, shade_surface, shade_surface_profiled, shade_surface_profiled_sanitized,
