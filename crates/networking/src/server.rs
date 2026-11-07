@@ -1125,6 +1125,41 @@ fn handle_client(
                     }
                 }
 
+                ClientMessage::Interact { request_id, target } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerInteracted {
+                            player_id: id,
+                            request_id,
+                            target,
+                        });
+                    }
+                }
+
+                ClientMessage::AttackEnemy { request_id, enemy } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerAttacked {
+                            player_id: id,
+                            request_id,
+                            enemy,
+                        });
+                    }
+                }
+
+                ClientMessage::CollectItem {
+                    request_id,
+                    collectible,
+                    amount,
+                } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerCollected {
+                            player_id: id,
+                            request_id,
+                            collectible,
+                            amount,
+                        });
+                    }
+                }
+
                 ClientMessage::RequestMissionRecovery { request_id } => {
                     if let (Some(id), Some(events)) = (player_id, &events) {
                         events.push(ServerEvent::MissionRecoveryRequested {

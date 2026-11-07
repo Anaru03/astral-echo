@@ -11,7 +11,8 @@ use networking::{
     Mission5ContentProjection, Mission5DestinationProjection, Mission5ObjectiveProjection,
     Mission5DestinationTypeProjection, Mission5DiscoveryProjection, Mission5ShooterProjection,
     MissionRecoveryOutcome, MissionStateProjection, ObjectiveStateProjection, PlayerTransform,
-    ServerEvent, ServerEventQueue, ServerMessage,
+    EnemyProjection, ServerEvent, ServerEventQueue, ServerMessage, InventoryItemProjection,
+    SharedInventoryProjection,
 };
 
 use crate::ProjectEchoSession;
@@ -152,6 +153,23 @@ impl MultiplayerSession {
                     collectible,
                     amount,
                 } => self.apply_collect(player_id, request_id, collectible, amount),
+                ServerEvent::PlayerEquippedWeapon {
+                    player_id,
+                    request_id,
+                    item,
+                } => self.apply_equip_weapon(player_id, request_id, item),
+                ServerEvent::PlayerUsedHealingItem {
+                    player_id,
+                    request_id,
+                    item,
+                    amount,
+                } => self.apply_healing_item(player_id, request_id, item, amount),
+                ServerEvent::PlayerRequestedTravel {
+                    player_id,
+                    request_id,
+                    pilot_station,
+                    destination,
+                } => self.apply_travel(player_id, request_id, pilot_station, destination),
                 ServerEvent::MissionRecoveryRequested {
                     player_id,
                     request_id,
@@ -306,7 +324,111 @@ impl MultiplayerSession {
             self.server.broadcast(&ServerMessage::MissionContentUpdated {
                 content: self.mission5_content_projection(),
             });
+            self.broadcast_shared_inventory();
+            self.broadcast_enemy_state();
         }
+    }
+
+    fn shared_inventory_projection(&self) -> SharedInventoryProjection {
+        let inventory = self
+            .gameplay
+            .world()
+            .players()
+            .next()
+            .and_then(|player| self.gameplay.world().inventory(player.entity_id));
+        SharedInventoryProjection {
+            capacity: inventory.map_or(0, |value| value.capacity()),
+            entries: inventory
+                .into_iter()
+                .flat_map(|value| value.entries())
+                .filter(|(_, amount)| *amount > 0)
+                .map(|(item, amount)| InventoryItemProjection {
+                    item: item.0,
+                    amount,
+                })
+                .collect(),
+        }
+    }
+
+    fn broadcast_shared_inventory(&self) {
+        self.server.broadcast(&ServerMessage::SharedInventoryUpdated {
+            inventory: self.shared_inventory_projection(),
+        });
+    }
+
+    fn enemy_state_projection(&self) -> Vec<EnemyProjection> {
+        self.gameplay
+            .world()
+            .enemies()
+            .map(|enemy| EnemyProjection {
+                entity_id: enemy.entity.value(),
+                active: enemy.active,
+                current_health: enemy.current_health,
+                maximum_health: enemy.maximum_health,
+                position: [enemy.position.x, enemy.position.y, enemy.position.z],
+            })
+            .collect()
+    }
+
+    fn broadcast_enemy_state(&self) {
+        self.server.broadcast(&ServerMessage::EnemyStateUpdated {
+            enemies: self.enemy_state_projection(),
+        });
+    }
+
+    fn apply_equip_weapon(&mut self, player_id: NetworkPlayerId, request_id: u64, item: u32) {
+        let result = self.players.get(&player_id).copied().map(|player| {
+            self.gameplay.update([GameplayCommand::EquipPlayerWeaponItem {
+                player,
+                item: gameplay::types::ItemId(item),
+            }])
+        });
+        self.publish_action_result(player_id, request_id, result.and_then(|results| results.into_iter().next()));
+    }
+
+    fn apply_healing_item(
+        &mut self,
+        player_id: NetworkPlayerId,
+        request_id: u64,
+        item: u32,
+        amount: u32,
+    ) {
+        let result = self.players.get(&player_id).copied().map(|player| {
+            self.gameplay.update([GameplayCommand::UseHealingConsumable {
+                player,
+                item: gameplay::types::ItemId(item),
+                amount,
+            }])
+        });
+        self.publish_action_result(player_id, request_id, result.and_then(|results| results.into_iter().next()));
+    }
+
+    fn apply_travel(
+        &mut self,
+        player_id: NetworkPlayerId,
+        request_id: u64,
+        pilot_station: u64,
+        destination: u32,
+    ) {
+        let result = self.players.get(&player_id).copied().map(|player| {
+            let results = self.gameplay.update([
+                GameplayCommand::SelectDestination {
+                    player,
+                    pilot_station: EntityId::new(pilot_station),
+                    destination: gameplay::DestinationId::new(destination),
+                },
+                GameplayCommand::StartTravel {
+                    player,
+                    pilot_station: EntityId::new(pilot_station),
+                },
+            ]);
+            results
+                .iter()
+                .find(|result| !matches!(result.status, CommandStatus::Success { .. }))
+                .copied()
+                .or_else(|| results.last().copied())
+        });
+        self.publish_action_result(player_id, request_id, result.flatten());
     }
 
     fn unregister_player(&mut self, player_id: NetworkPlayerId) {
@@ -551,6 +673,7 @@ impl MultiplayerSession {
             },
             Some(player_id),
         );
+        self.broadcast_enemy_state();
         Ok(())
     }
 }

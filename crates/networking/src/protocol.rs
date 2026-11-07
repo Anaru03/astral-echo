@@ -19,6 +19,19 @@ pub enum ClientMessage {
         sequence: u64,
         transform: crate::sync::PlayerTransform,
     },
+    Interact {
+        request_id: u64,
+        target: u64,
+    },
+    AttackEnemy {
+        request_id: u64,
+        enemy: u64,
+    },
+    CollectItem {
+        request_id: u64,
+        collectible: u64,
+        amount: u32,
+    },
     RequestMissionRecovery {
         request_id: u64,
     },
@@ -131,6 +144,11 @@ pub enum ServerMessage {
     MissionRecoveryResult {
         request_id: u64,
         outcome: MissionRecoveryOutcome,
+    },
+    GameplayActionResult {
+        request_id: u64,
+        accepted: bool,
+        reason: Option<String>,
     },
     MissionContentUpdated {
         content: Mission5ContentProjection,

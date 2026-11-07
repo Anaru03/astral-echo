@@ -68,6 +68,27 @@ impl GameClient {
         self.send(&ClientMessage::RequestMissionRecovery { request_id })
     }
 
+    pub fn interact(&mut self, request_id: u64, target: u64) -> io::Result<()> {
+        self.send(&ClientMessage::Interact { request_id, target })
+    }
+
+    pub fn attack_enemy(&mut self, request_id: u64, enemy: u64) -> io::Result<()> {
+        self.send(&ClientMessage::AttackEnemy { request_id, enemy })
+    }
+
+    pub fn collect_item(
+        &mut self,
+        request_id: u64,
+        collectible: u64,
+        amount: u32,
+    ) -> io::Result<()> {
+        self.send(&ClientMessage::CollectItem {
+            request_id,
+            collectible,
+            amount,
+        })
+    }
+
     pub fn mission5_content(&self) -> Option<&Mission5ContentProjection> {
         self.mission5_content.as_ref()
     }

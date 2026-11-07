@@ -18,6 +18,22 @@ pub enum ServerEvent {
         sequence: u64,
         transform: PlayerTransform,
     },
+    PlayerInteracted {
+        player_id: NetworkPlayerId,
+        request_id: u64,
+        target: u64,
+    },
+    PlayerAttacked {
+        player_id: NetworkPlayerId,
+        request_id: u64,
+        enemy: u64,
+    },
+    PlayerCollected {
+        player_id: NetworkPlayerId,
+        request_id: u64,
+        collectible: u64,
+        amount: u32,
+    },
     PlayerLeft {
         player_id: NetworkPlayerId,
     },
