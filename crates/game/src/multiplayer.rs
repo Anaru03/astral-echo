@@ -90,8 +90,13 @@ impl MultiplayerSession {
         let server_thread =
             thread::spawn(move || server.run_until_with_events(&signal, Some(server_events)));
 
+        let mut gameplay = ProjectEchoSession::new();
+        gameplay
+            .world_mut()
+            .enable_shared_inventory()
+            .map_err(|_| MultiplayerError::GameplayRejected(0))?;
         Ok(Self {
-            gameplay: ProjectEchoSession::new(),
+            gameplay,
             server: server_handle,
             address: local_address,
             events,
@@ -131,6 +136,22 @@ impl MultiplayerSession {
                     sequence,
                     transform,
                 } => self.apply_movement(player_id, sequence, transform)?,
+                ServerEvent::PlayerInteracted {
+                    player_id,
+                    request_id,
+                    target,
+                } => self.apply_interaction(player_id, request_id, target),
+                ServerEvent::PlayerAttacked {
+                    player_id,
+                    request_id,
+                    enemy,
+                } => self.apply_attack(player_id, request_id, enemy),
+                ServerEvent::PlayerCollected {
+                    player_id,
+                    request_id,
+                    collectible,
+                    amount,
+                } => self.apply_collect(player_id, request_id, collectible, amount),
                 ServerEvent::MissionRecoveryRequested {
                     player_id,
                     request_id,
@@ -199,6 +220,12 @@ impl MultiplayerSession {
                 .map_err(MultiplayerError::PlayerCreation)?
         };
 
+        if self.gameplay.world().inventory(entity).is_none() {
+            self.gameplay
+                .world_mut()
+                .initialize_inventory(entity, 20)
+                .map_err(|_| MultiplayerError::GameplayRejected(player_id))?;
+        }
         self.players.insert(player_id, entity);
 
         let _ = self.server.send_to(
@@ -209,6 +236,77 @@ impl MultiplayerSession {
         );
 
         Ok(())
+    }
+
+    fn apply_interaction(
+        &mut self,
+        player_id: NetworkPlayerId,
+        request_id: u64,
+        target: u64,
+    ) {
+        let result = self.players.get(&player_id).copied().map(|player| {
+            self.gameplay.update([GameplayCommand::Interact {
+                player,
+                target: EntityId::new(target),
+            }])
+        });
+        self.publish_action_result(player_id, request_id, result.and_then(|results| results.into_iter().next()));
+    }
+
+    fn apply_attack(&mut self, player_id: NetworkPlayerId, request_id: u64, enemy: u64) {
+        let result = self.players.get(&player_id).copied().map(|player| {
+            self.gameplay.update([GameplayCommand::AttackEnemy {
+                player,
+                enemy: EntityId::new(enemy),
+            }])
+        });
+        self.publish_action_result(player_id, request_id, result.and_then(|results| results.into_iter().next()));
+    }
+
+    fn apply_collect(
+        &mut self,
+        player_id: NetworkPlayerId,
+        request_id: u64,
+        collectible: u64,
+        amount: u32,
+    ) {
+        let result = self.players.get(&player_id).copied().map(|player| {
+            self.gameplay.update([GameplayCommand::CollectItem {
+                player,
+                collectible: EntityId::new(collectible),
+                amount,
+            }])
+        });
+        self.publish_action_result(player_id, request_id, result.and_then(|results| results.into_iter().next()));
+    }
+
+    fn publish_action_result(
+        &mut self,
+        player_id: NetworkPlayerId,
+        request_id: u64,
+        result: Option<gameplay::CommandResult>,
+    ) {
+        let (accepted, reason) = match result {
+            Some(result) => match result.status {
+                CommandStatus::Success { .. } => (true, None),
+                CommandStatus::Rejected { reason } => (false, Some(format!("{reason:?}"))),
+                CommandStatus::Invalid { reason } => (false, Some(format!("{reason:?}"))),
+            },
+            None => (false, Some("UnknownPlayer".to_owned())),
+        };
+        let _ = self.server.send_to(
+            player_id,
+            &ServerMessage::GameplayActionResult {
+                request_id,
+                accepted,
+                reason,
+            },
+        );
+        if accepted {
+            self.server.broadcast(&ServerMessage::MissionContentUpdated {
+                content: self.mission5_content_projection(),
+            });
+        }
     }
 
     fn unregister_player(&mut self, player_id: NetworkPlayerId) {
@@ -577,6 +675,27 @@ mod tests {
         }));
 
         client.disconnect().unwrap();
+    }
+
+    #[test]
+    fn los_tres_jugadores_reciben_inventario_al_conectarse() {
+        let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
+        let address = session.local_addr().unwrap();
+        let mut clients = Vec::new();
+        for name in ["Jugador 1", "Jugador 2", "Jugador 3"] {
+            let client = GameClient::connect(address, name).unwrap();
+            wait_for_update(&mut session);
+            clients.push(client);
+        }
+
+        for client in &clients {
+            let entity = session.network_player(client.player_id()).unwrap().entity;
+            assert_eq!(session.gameplay().world().inventory(entity).map(|value| value.capacity()), Some(20));
+        }
+
+        for mut client in clients {
+            client.disconnect().unwrap();
+        }
     }
 
     #[test]

@@ -150,6 +150,21 @@ fn process_event(
             );
         }
 
+        ServerMessage::GameplayActionResult {
+            request_id,
+            accepted,
+            reason,
+        } => {
+            println!(
+                "[Gameplay] solicitud {}: {}{}",
+                request_id,
+                if *accepted { "aceptada" } else { "rechazada" },
+                reason
+                    .as_deref()
+                    .map_or(String::new(), |value| format!(" ({value})"))
+            );
+        }
+
         ServerMessage::MissionContentUpdated { content } => {
             println!(
                 "[Mission5] estado {:?}, progreso {}/{}",

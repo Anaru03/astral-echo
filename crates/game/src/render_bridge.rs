@@ -1497,13 +1497,16 @@ mod tests {
         let interior = super::station_nodes_for_view(&world, true);
         let exterior = super::station_nodes_for_view(&world, false);
         assert_eq!(interior.len(), 1);
-        assert_eq!(exterior.len(), 1);
+        assert_eq!(exterior.len(), 1 + super::EXTERIOR_STATION_IDS.len());
         assert_eq!(interior[0].entity, render_core::SnapshotId::Entity(station));
         assert_eq!(exterior[0].entity, render_core::SnapshotId::Entity(station));
         assert_eq!(interior[0].mesh, super::PLACEHOLDER_MESH);
         assert_eq!(interior[0].material, super::DESTINATION_MATERIAL);
         assert_eq!(exterior[0].mesh, super::STATION_MESH);
         assert_eq!(exterior[0].material, super::STATION_MATERIAL);
+        assert!(exterior[1..].iter().all(|node| {
+            node.mesh == super::STATION_MESH && node.material == super::STATION_MATERIAL
+        }));
     }
 
     #[test]
