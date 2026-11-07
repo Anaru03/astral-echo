@@ -3306,6 +3306,8 @@ pub fn run() -> Result<(), String> {
             scene.set_lighting_mode(LightingMode::Pbr);
             let assets_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");
             for (path, mesh, material) in [
+                (assets_root.join("echo_7/echo-7.obj"), render_core::MeshHandle::SHIP_PLACEHOLDER, VisualAssets::SHIP),
+                (assets_root.join("stars/stars.obj"), render_core::MeshHandle::STARS, VisualAssets::STARS),
                 (assets_root.join("station/station.obj"), render_core::MeshHandle::STATION, VisualAssets::STATION),
                 (assets_root.join("building/building_planet.obj"), render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
                 (assets_root.join("clock/clock_planet.obj"), render_core::MeshHandle::TESSARA_PLANET, VisualAssets::PLANET),
@@ -3329,6 +3331,7 @@ pub fn run() -> Result<(), String> {
             scene.set_material(VisualAssets::COLLECTIBLE, MaterialInfo::new(render_core::Vec4::new(1.0, 0.62, 0.04, 1.0), 0.38, 0.25).with_emissive(render_core::Vec3::new(0.16, 0.035, 0.002)));
             scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
             scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
+            scene.set_material(VisualAssets::STARS, MaterialInfo::stars());
             scene.set_material(VisualAssets::STATION, MaterialInfo::station());
             scene.set_material(VisualAssets::DERELICT, MaterialInfo::derelict());
             scene.set_material(VisualAssets::ASTEROID, MaterialInfo::asteroid());

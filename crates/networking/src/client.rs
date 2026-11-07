@@ -1,6 +1,6 @@
 use crate::protocol::{
     decode_server, encode, ClientMessage, Mission5ContentProjection, NetworkPlayerId,
-    ServerMessage, PROTOCOL_VERSION,
+    EnemyProjection, ServerMessage, SharedInventoryProjection, PROTOCOL_VERSION,
 };
 
 use std::collections::VecDeque;
@@ -17,6 +17,8 @@ pub struct GameClient {
     player_id: NetworkPlayerId,
     pending_events: VecDeque<ServerMessage>,
     mission5_content: Option<Mission5ContentProjection>,
+    shared_inventory: Option<SharedInventoryProjection>,
+    enemies: Vec<EnemyProjection>,
     read_buffer: Vec<u8>,
     disconnected: bool,
 }
@@ -34,6 +36,8 @@ impl GameClient {
             player_id: 0,
             pending_events: VecDeque::new(),
             mission5_content: None,
+            shared_inventory: None,
+            enemies: Vec::new(),
             read_buffer: Vec::new(),
             disconnected: false,
         };
@@ -89,8 +93,46 @@ impl GameClient {
         })
     }
 
+    pub fn equip_weapon(&mut self, request_id: u64, item: u32) -> io::Result<()> {
+        self.send(&ClientMessage::EquipWeapon { request_id, item })
+    }
+
+    pub fn use_healing_item(
+        &mut self,
+        request_id: u64,
+        item: u32,
+        amount: u32,
+    ) -> io::Result<()> {
+        self.send(&ClientMessage::UseHealingItem {
+            request_id,
+            item,
+            amount,
+        })
+    }
+
+    pub fn travel_to(
+        &mut self,
+        request_id: u64,
+        pilot_station: u64,
+        destination: u32,
+    ) -> io::Result<()> {
+        self.send(&ClientMessage::TravelTo {
+            request_id,
+            pilot_station,
+            destination,
+        })
+    }
+
     pub fn mission5_content(&self) -> Option<&Mission5ContentProjection> {
         self.mission5_content.as_ref()
+    }
+
+    pub fn shared_inventory(&self) -> Option<&SharedInventoryProjection> {
+        self.shared_inventory.as_ref()
+    }
+
+    pub fn enemies(&self) -> &[EnemyProjection] {
+        &self.enemies
     }
 
     fn record_mission5_content(&mut self, message: &ServerMessage) {
@@ -98,6 +140,12 @@ impl GameClient {
             ServerMessage::Mission5ContentState { content }
             | ServerMessage::MissionContentUpdated { content } => {
                 self.mission5_content = Some(content.clone());
+            }
+            ServerMessage::SharedInventoryUpdated { inventory } => {
+                self.shared_inventory = Some(inventory.clone());
+            }
+            ServerMessage::EnemyStateUpdated { enemies } => {
+                self.enemies = enemies.clone();
             }
             _ => {}
         }
@@ -363,6 +411,8 @@ mod tests {
             player_id: 1,
             pending_events: VecDeque::new(),
             mission5_content: None,
+            shared_inventory: None,
+            enemies: Vec::new(),
             read_buffer: Vec::new(),
             disconnected: false,
         }

@@ -32,6 +32,20 @@ pub enum ClientMessage {
         collectible: u64,
         amount: u32,
     },
+    EquipWeapon {
+        request_id: u64,
+        item: u32,
+    },
+    UseHealingItem {
+        request_id: u64,
+        item: u32,
+        amount: u32,
+    },
+    TravelTo {
+        request_id: u64,
+        pilot_station: u64,
+        destination: u32,
+    },
     RequestMissionRecovery {
         request_id: u64,
     },
@@ -119,6 +133,27 @@ pub struct Mission5ContentProjection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InventoryItemProjection {
+    pub item: u32,
+    pub amount: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedInventoryProjection {
+    pub capacity: u32,
+    pub entries: Vec<InventoryItemProjection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EnemyProjection {
+    pub entity_id: u64,
+    pub active: bool,
+    pub current_health: u32,
+    pub maximum_health: u32,
+    pub position: [f32; 3],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerMessage {
     Welcome {
@@ -149,6 +184,12 @@ pub enum ServerMessage {
         request_id: u64,
         accepted: bool,
         reason: Option<String>,
+    },
+    SharedInventoryUpdated {
+        inventory: SharedInventoryProjection,
+    },
+    EnemyStateUpdated {
+        enemies: Vec<EnemyProjection>,
     },
     MissionContentUpdated {
         content: Mission5ContentProjection,

@@ -12,6 +12,7 @@ use render_core::{
 };
 
 pub const SUN_ENTITY: engine::EntityId = engine::EntityId::new(9_100);
+pub const STARS_ENTITY: engine::EntityId = engine::EntityId::new(9_101);
 pub const LANDING_INDICATOR_ENTITY: engine::EntityId = engine::EntityId::new(9_205);
 pub const ATMOSPHERE_EFFECT_ENTITY: engine::EntityId = engine::EntityId::new(9_206);
 pub const IMPACT_FLASH_ENTITY: engine::EntityId = engine::EntityId::new(9_207);
@@ -82,13 +83,16 @@ pub const DESTINATION_MESH: MeshHandle = MeshHandle::DESTINATION_PLACEHOLDER;
 pub const PLANET_MESH: MeshHandle = MeshHandle::PLANET_SPHERE;
 pub const SUN_MESH: MeshHandle = MeshHandle::SUN_SPHERE;
 pub const SUN_MODEL_MESH: MeshHandle = MeshHandle::SUN_MODEL;
+pub const STARS_MESH: MeshHandle = MeshHandle::STARS;
 pub const COLLECTIBLE_MESH: MeshHandle = MeshHandle::COLLECTIBLE_PLACEHOLDER;
 pub const STATION_MESH: MeshHandle = MeshHandle::STATION;
 pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
 pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
 pub const ECHO7_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
 pub const ECHO7_MATERIAL: MaterialHandle = VisualAssets::SHIP;
-pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::new(2.0, 3.0, 1.0);
+pub const STARS_MATERIAL: MaterialHandle = VisualAssets::STARS;
+pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::splat(0.2);
+const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(0.5759995, 0.8370645, 0.0);
 pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
 pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
 pub const PLAYER_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
@@ -422,6 +426,13 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth(
         camera.projection_matrix(),
     );
     snapshot.simulation_time = world.time().elapsed;
+    snapshot.push_node(SnapshotNode::new(
+        STARS_ENTITY,
+        Transform::new(Vec3::ZERO, Quat::IDENTITY, Vec3::splat(1.0)),
+        STARS_MESH,
+        STARS_MATERIAL,
+        true,
+    ));
     snapshot
         .nodes
         .reserve(expected_snapshot_node_count(world, params, academic_planet));
@@ -482,14 +493,17 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth(
 
     if let (Some(ship), Some(pos)) = (world.navigation().ship_id(), visual_ship_position(world)) {
         let orientation = world.ship_orientation().unwrap_or_default();
+        let rotation = Quat::from_rotation_y(orientation.yaw_degrees.to_radians())
+            * Quat::from_rotation_x(orientation.pitch_degrees.to_radians());
+        let mut transform = Transform::new(
+            pos,
+            rotation,
+            ECHO7_VISUAL_SCALE,
+        );
+        transform.translation -= rotation * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER);
         snapshot.push_node(SnapshotNode::new(
             ship,
-            Transform::new(
-                pos,
-                Quat::from_rotation_y(orientation.yaw_degrees.to_radians())
-                    * Quat::from_rotation_x(orientation.pitch_degrees.to_radians()),
-                ECHO7_VISUAL_SCALE,
-            ),
+            transform,
             ECHO7_MESH,
             ECHO7_MATERIAL,
             world.entities().contains(ship),

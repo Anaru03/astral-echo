@@ -152,6 +152,7 @@ impl VisualAssets {
     pub const STATION: MaterialHandle = MaterialHandle::new(7);
     pub const DERELICT: MaterialHandle = MaterialHandle::new(8);
     pub const ASTEROID: MaterialHandle = MaterialHandle::new(9);
+    pub const STARS: MaterialHandle = MaterialHandle::new(10);
 
     pub fn mesh(
         &self,
@@ -285,6 +286,10 @@ impl Default for VisualAssets {
             (
                 (MeshHandle::ASTEROID_FIELD, Self::ASTEROID),
                 RasterMesh::asteroid_field(Vec4::new(0.34, 0.31, 0.27, 1.0), 1.0, 0xA57E_001D),
+            ),
+            (
+                (MeshHandle::STARS, Self::STARS),
+                RasterMesh::sphere(Vec3::ZERO, 110.0, Vec4::new(0.72, 0.82, 1.0, 1.0)),
             ),
         ])
         .into_iter()

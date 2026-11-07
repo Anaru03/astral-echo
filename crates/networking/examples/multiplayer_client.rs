@@ -165,6 +165,18 @@ fn process_event(
             );
         }
 
+        ServerMessage::SharedInventoryUpdated { inventory } => {
+            println!(
+                "[Inventario compartido] capacidad {} | {} tipos",
+                inventory.capacity,
+                inventory.entries.len()
+            );
+        }
+
+        ServerMessage::EnemyStateUpdated { enemies } => {
+            println!("[Enemigos] estado sincronizado: {} entidades", enemies.len());
+        }
+
         ServerMessage::MissionContentUpdated { content } => {
             println!(
                 "[Mission5] estado {:?}, progreso {}/{}",
