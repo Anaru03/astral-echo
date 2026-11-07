@@ -59,7 +59,7 @@ const KHARVEX_POSITION: GameplayVec3 = GameplayVec3 {
 const VISUAL_INITIAL_SHIP_POSITION: GameplayVec3 = GameplayVec3 {
     x: 0.0,
     y: 0.0,
-    z: 120.0,
+    z: 220.0,
 };
 const SIGNAL: DestinationId = DestinationId::new(9_003);
 const ENCOUNTER: EncounterId = EncounterId::new(9_004);
@@ -253,6 +253,8 @@ struct VisualBridge {
     interior_mode: bool,
     introductory_threat_pending: bool,
     controls_panel_open: bool,
+    hud_visible: bool,
+    inventory_open: bool,
     pilot_mode: bool,
     fire_pressed: bool,
     boost_pressed: bool,
@@ -792,6 +794,8 @@ impl VisualBridge {
             interior_mode,
             introductory_threat_pending,
             controls_panel_open: false,
+            hud_visible: true,
+            inventory_open: false,
             pilot_mode: false,
             fire_pressed: false,
             boost_pressed: false,
@@ -1116,6 +1120,15 @@ impl VisualBridge {
                 self.look_up = false;
                 self.look_down = false;
             }
+            return;
+        }
+        if state == ElementState::Pressed && key == KeyCode::F2 {
+            self.hud_visible = !self.hud_visible;
+            self.controls_panel_open = false;
+            return;
+        }
+        if state == ElementState::Pressed && key == KeyCode::F3 {
+            self.inventory_open = !self.inventory_open;
             return;
         }
         if self.controls_panel_open {
@@ -2385,7 +2398,7 @@ impl VisualBridge {
                 _ => "INACTIVO",
             };
             return format!(
-                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - USA F1",
+                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - F1 CONTROLES - F2 HUD - F3 INVENTARIO",
                 self.observation_target_label(),
             );
         }
@@ -2399,9 +2412,9 @@ impl VisualBridge {
             {
                 return "PULSA M PARA INICIAR LA MISION DISPONIBLE".to_owned();
             }
-            return "EXPLORACION: USA F1 PARA VER CONTROLES".to_owned();
+            return "EXPLORACION: F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned();
         }
-        "EXTERIOR: SIGUE LA GUIA Y USA F1 PARA VER CONTROLES".to_owned()
+        "EXTERIOR: SIGUE LA GUIA - F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned()
     }
 
     fn guidance_prompt(&self) -> Option<String> {
@@ -2463,7 +2476,11 @@ impl VisualBridge {
     }
 
     fn controls_panel_entries(&self) -> Vec<String> {
-        let mut entries = vec!["F1 ABRIR O CERRAR PANEL".to_owned()];
+        let mut entries = vec![
+            "F1 ABRIR O CERRAR PANEL".to_owned(),
+            "F2 OCULTAR O MOSTRAR HUD".to_owned(),
+            "F3 ABRIR O CERRAR INVENTARIO".to_owned(),
+        ];
         if self.pilot_mode {
             entries.extend([
                 "WASD VOLAR - PILOTAJE".to_owned(),
@@ -3224,6 +3241,27 @@ pub fn run() -> Result<(), String> {
                 bridge.interior_mode,
                 bridge.nareth_visual_asset_ready(),
             );
+            if bridge.hud_visible {
+                snapshot.overlay.hud.inventory_open = bridge.inventory_open;
+                if bridge.inventory_open {
+                    snapshot.overlay.hud.inventory_items = bridge
+                        .session
+                        .world()
+                        .players()
+                        .next()
+                        .and_then(|player| bridge.session.world().inventory(player.entity_id))
+                        .map(|inventory| {
+                            inventory
+                                .entries()
+                                .filter(|(_, amount)| *amount > 0)
+                                .map(|(item, amount)| format!("ITEM {}  CANTIDAD {}", item.0, amount))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                }
+            } else {
+                snapshot.overlay.hud = Default::default();
+            }
             if let Some(node) = snapshot.nodes.iter().find(|node| {
                 node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value())
             }) {

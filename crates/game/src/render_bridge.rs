@@ -103,6 +103,18 @@ pub const INTERIOR_LEFT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_
 pub const INTERIOR_RIGHT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_404);
 pub const INTERIOR_CEILING_ENTITY: engine::EntityId = engine::EntityId::new(9_405);
 pub const INTERIOR_LIGHT_ENTITY: engine::EntityId = engine::EntityId::new(9_406);
+pub const EXTERIOR_STATION_IDS: [engine::EntityId; 4] = [
+    engine::EntityId::new(9_500),
+    engine::EntityId::new(9_501),
+    engine::EntityId::new(9_502),
+    engine::EntityId::new(9_503),
+];
+const EXTERIOR_STATION_POSITIONS: [Vec3; 4] = [
+    Vec3::new(180.0, 16.0, 140.0),
+    Vec3::new(-210.0, -18.0, 80.0),
+    Vec3::new(90.0, 42.0, 230.0),
+    Vec3::new(-150.0, 24.0, -220.0),
+];
 
 pub const SHIP_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const ENEMY_MATERIAL: MaterialHandle = VisualAssets::ENEMY;
@@ -152,6 +164,17 @@ fn station_nodes_for_view(world: &GameplayWorld, interior: bool) -> Vec<Snapshot
             if interior { PLACEHOLDER_MESH } else { STATION_MESH },
             if interior { DESTINATION_MATERIAL } else { STATION_MATERIAL },
             interactable.enabled,
+        ));
+    }
+    if !interior {
+        nodes.extend(EXTERIOR_STATION_IDS.into_iter().zip(EXTERIOR_STATION_POSITIONS).map(
+            |(entity, position)| SnapshotNode::new(
+                entity,
+                Transform::new(position, Quat::IDENTITY, STATION_VISUAL_SCALE),
+                STATION_MESH,
+                STATION_MATERIAL,
+                true,
+            ),
         ));
     }
     nodes
@@ -948,6 +971,8 @@ fn hud_state(
         controls: None,
         instructions: None,
         feedback: None,
+        inventory_open: false,
+        inventory_items: Vec::new(),
     }
 }
 
