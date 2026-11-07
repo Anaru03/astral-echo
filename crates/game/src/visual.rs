@@ -3308,6 +3308,7 @@ pub fn run() -> Result<(), String> {
             for (path, mesh, material) in [
                 (assets_root.join("echo_7/echo-7.obj"), render_core::MeshHandle::SHIP_PLACEHOLDER, VisualAssets::SHIP),
                 (assets_root.join("stars/stars.obj"), render_core::MeshHandle::STARS, VisualAssets::STARS),
+                (assets_root.join("moon/moon.obj"), render_core::MeshHandle::MOON, VisualAssets::PLANET),
                 (assets_root.join("station/station.obj"), render_core::MeshHandle::STATION, VisualAssets::STATION),
                 (assets_root.join("building/building_planet.obj"), render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
                 (assets_root.join("clock/clock_planet.obj"), render_core::MeshHandle::TESSARA_PLANET, VisualAssets::PLANET),

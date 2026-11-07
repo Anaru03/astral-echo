@@ -1160,6 +1160,46 @@ fn handle_client(
                     }
                 }
 
+                ClientMessage::EquipWeapon { request_id, item } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerEquippedWeapon {
+                            player_id: id,
+                            request_id,
+                            item,
+                        });
+                    }
+                }
+
+                ClientMessage::UseHealingItem {
+                    request_id,
+                    item,
+                    amount,
+                } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerUsedHealingItem {
+                            player_id: id,
+                            request_id,
+                            item,
+                            amount,
+                        });
+                    }
+                }
+
+                ClientMessage::TravelTo {
+                    request_id,
+                    pilot_station,
+                    destination,
+                } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerRequestedTravel {
+                            player_id: id,
+                            request_id,
+                            pilot_station,
+                            destination,
+                        });
+                    }
+                }
+
                 ClientMessage::RequestMissionRecovery { request_id } => {
                     if let (Some(id), Some(events)) = (player_id, &events) {
                         events.push(ServerEvent::MissionRecoveryRequested {

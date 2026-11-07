@@ -34,6 +34,23 @@ pub enum ServerEvent {
         collectible: u64,
         amount: u32,
     },
+    PlayerEquippedWeapon {
+        player_id: NetworkPlayerId,
+        request_id: u64,
+        item: u32,
+    },
+    PlayerUsedHealingItem {
+        player_id: NetworkPlayerId,
+        request_id: u64,
+        item: u32,
+        amount: u32,
+    },
+    PlayerRequestedTravel {
+        player_id: NetworkPlayerId,
+        request_id: u64,
+        pilot_station: u64,
+        destination: u32,
+    },
     PlayerLeft {
         player_id: NetworkPlayerId,
     },
@@ -71,6 +88,7 @@ pub use protocol::{
     Mission5ContentProjection, Mission5DestinationProjection, Mission5ObjectiveProjection,
     Mission5DiscoveryProjection, Mission5ShooterProjection, Mission5DestinationTypeProjection,
     MissionRecoveryOutcome, MissionStateProjection, ObjectiveStateProjection, ServerMessage,
+    EnemyProjection, InventoryItemProjection, SharedInventoryProjection,
     MAX_PLAYERS, PROTOCOL_VERSION,
 };
 

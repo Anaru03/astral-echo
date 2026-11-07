@@ -122,6 +122,11 @@ impl MaterialInfo {
         Self::new(Vec4::new(0.78, 0.84, 0.94, 1.0), 0.72, 0.04)
     }
 
+    pub fn stars() -> Self {
+        Self::new(Vec4::new(0.72, 0.82, 1.0, 1.0), 1.0, 0.0)
+            .with_emissive(Vec3::new(0.5, 0.65, 1.0))
+    }
+
     pub fn station() -> Self {
         Self::new(Vec4::new(0.2, 0.55, 0.85, 1.0), 0.55, 0.65)
             .with_emissive(Vec3::new(0.02, 0.08, 0.14))
