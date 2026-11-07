@@ -366,6 +366,12 @@ impl DeferredMeshRegistry {
                 "CPU model request did not enter a loading state".into(),
             ),
         };
+        if mesh == MeshHandle::NARETH_PLANET {
+            eprintln!(
+                "nareth-diag state=FALLBACK_LOADING_CPU destination=9603 mesh={} material={} path={} registry_status={:?}",
+                mesh.0, material.0, path.display(), status
+            );
+        }
         self.requests.insert(
             path,
             Request {
@@ -398,6 +404,12 @@ impl DeferredMeshRegistry {
             match self.manager.state(&path) {
                 CpuModelLoadState::LoadingCpu | CpuModelLoadState::Unloaded => {}
                 CpuModelLoadState::Failed(error) => {
+                    if request.mesh == MeshHandle::NARETH_PLANET {
+                        eprintln!(
+                            "nareth-diag state=FALLBACK_CPU_FAILED destination=9603 path={} error={}",
+                            path.display(), error
+                        );
+                    }
                     request.status = DeferredMeshStatus::Failed(error);
                     completed.push((path, request.status.clone()));
                 }
@@ -409,10 +421,35 @@ impl DeferredMeshRegistry {
                         completed.push((path, request.status.clone()));
                         continue;
                     };
+                    let diagnostic = if request.mesh == MeshHandle::NARETH_PLANET {
+                        Some((
+                            std::sync::Arc::as_ptr(&mesh),
+                            mesh.vertices.len(),
+                            mesh.indices.len(),
+                        ))
+                    } else {
+                        None
+                    };
                     let result = scene.register_shared_mesh(request.mesh, request.material, mesh);
                     request.status = match result {
-                        Ok(()) => DeferredMeshStatus::Registered,
-                        Err(error) => DeferredMeshStatus::Failed(error.to_string()),
+                        Ok(()) => {
+                            if let Some((arc_ptr, vertices, indices)) = diagnostic {
+                                eprintln!(
+                                    "nareth-diag state=FALLBACK_CPU_REGISTERED_GPU_PENDING destination=9603 path={} arc_ptr={:p} vertices={} indices={} triangles={}",
+                                    path.display(), arc_ptr, vertices, indices, indices / 3
+                                );
+                            }
+                            DeferredMeshStatus::Registered
+                        }
+                        Err(error) => {
+                            if request.mesh == MeshHandle::NARETH_PLANET {
+                                eprintln!(
+                                    "nareth-diag state=FALLBACK_CPU_FAILED destination=9603 path={} error=registration:{}",
+                                    path.display(), error
+                                );
+                            }
+                            DeferredMeshStatus::Failed(error.to_string())
+                        }
                     };
                     completed.push((path, request.status.clone()));
                 }

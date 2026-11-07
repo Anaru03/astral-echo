@@ -150,6 +150,33 @@ fn process_event(
             );
         }
 
+        ServerMessage::GameplayActionResult {
+            request_id,
+            accepted,
+            reason,
+        } => {
+            println!(
+                "[Gameplay] solicitud {}: {}{}",
+                request_id,
+                if *accepted { "aceptada" } else { "rechazada" },
+                reason
+                    .as_deref()
+                    .map_or(String::new(), |value| format!(" ({value})"))
+            );
+        }
+
+        ServerMessage::SharedInventoryUpdated { inventory } => {
+            println!(
+                "[Inventario compartido] capacidad {} | {} tipos",
+                inventory.capacity,
+                inventory.entries.len()
+            );
+        }
+
+        ServerMessage::EnemyStateUpdated { enemies } => {
+            println!("[Enemigos] estado sincronizado: {} entidades", enemies.len());
+        }
+
         ServerMessage::MissionContentUpdated { content } => {
             println!(
                 "[Mission5] estado {:?}, progreso {}/{}",

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;
@@ -65,6 +66,7 @@ pub(crate) struct InstancedScene {
     bytes_written: u64,
     gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, GpuAssetState)>,
     gpu_asset_events: Vec<GpuAssetEvent>,
+    nareth_draw_logged: Cell<bool>,
 }
 
 impl InstancedScene {
@@ -101,6 +103,7 @@ impl InstancedScene {
             bytes_written: 0,
             gpu_asset_states: BTreeMap::new(),
             gpu_asset_events: Vec::new(),
+            nareth_draw_logged: Cell::new(false),
         }
     }
 
@@ -350,6 +353,15 @@ impl InstancedScene {
         }
         if let Some((generation, state)) = self.gpu_asset_states.get(&key).cloned() {
             if matches!(state, GpuAssetState::UploadingGpu) {
+                if key.0 == MeshHandle::NARETH_PLANET {
+                    let source = &self.geometries[index].source;
+                    eprintln!(
+                        "nareth-diag state=REAL_MODEL_PREPARED destination=9603 mesh={} lod={:?} renderer_epoch={} generation={} geometry_index={} arc_ptr={:p} vertices={} indices={} normals_bytes={}",
+                        key.0.0, key.1, self.renderer_epoch, generation, index,
+                        std::sync::Arc::as_ptr(source), source.vertices.len(),
+                        source.indices.len(), self.geometries[index].normal_bytes
+                    );
+                }
                 self.finish_gpu_asset(key, generation, GpuAssetState::GpuReady, None);
             }
         }
@@ -627,6 +639,17 @@ impl InstancedScene {
         }
         for batch in &self.batches {
             let geometry = &self.geometries[batch.geometry];
+            if batch.key.0 == MeshHandle::NARETH_PLANET
+                && !self.nareth_draw_logged.get()
+            {
+                self.nareth_draw_logged.set(true);
+                eprintln!(
+                    "nareth-diag state=REAL_MODEL_PREPARED destination=9603 draw_mesh={} draw_lod={:?} renderer_epoch={} geometry_index={} arc_ptr={:p} index_count={} instances={:?}",
+                    batch.key.0.0, batch.key.1, self.renderer_epoch, batch.geometry,
+                    std::sync::Arc::as_ptr(&geometry.source), geometry.index_count,
+                    batch.instances
+                );
+            }
             pass.set_vertex_buffer(0, geometry.vertices.slice(..));
             if lighting.is_some() {
                 pass.set_vertex_buffer(

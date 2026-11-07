@@ -12,6 +12,8 @@ use render_core::{
 };
 
 pub const SUN_ENTITY: engine::EntityId = engine::EntityId::new(9_100);
+pub const STARS_ENTITY: engine::EntityId = engine::EntityId::new(9_101);
+pub const TESSARA_MOON_ENTITY: engine::EntityId = engine::EntityId::new(9_102);
 pub const LANDING_INDICATOR_ENTITY: engine::EntityId = engine::EntityId::new(9_205);
 pub const ATMOSPHERE_EFFECT_ENTITY: engine::EntityId = engine::EntityId::new(9_206);
 pub const IMPACT_FLASH_ENTITY: engine::EntityId = engine::EntityId::new(9_207);
@@ -27,6 +29,10 @@ pub const TESSARA_POSITION: Vec3 = Vec3::new(-49.17, 8.0, 31.17);
 pub const TESSARA_ORBIT_RADIUS: f32 = 69.99556;
 pub const TESSARA_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.12;
 pub const TESSARA_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.30;
+pub const TESSARA_MOON_ORBIT_RADIUS: f32 = 12.0;
+pub const TESSARA_MOON_ORBIT_HEIGHT: f32 = 2.0;
+pub const TESSARA_MOON_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.55;
+pub const TESSARA_MOON_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND: f32 = 0.70;
 pub const KHARVEX_DESTINATION_ID: u32 = 9_602;
 pub const KHARVEX_POSITION: Vec3 = Vec3::new(-70.20, -12.0, -88.20);
 pub const KHARVEX_ORBIT_RADIUS: f32 = 100.0004;
@@ -55,6 +61,9 @@ const TESSARA_PLANET_CENTER: Vec3 = Vec3::new(0.0, -0.95, 0.0);
 const TESSARA_PLANET_MAX_DIMENSION: f32 = 14.0043;
 const TESSARA_PLANET_VISUAL_SCALE: f32 =
     (PLANET_VISUAL_RADIUS * 2.0) / TESSARA_PLANET_MAX_DIMENSION;
+pub const TESSARA_MOON_MESH: MeshHandle = MeshHandle::MOON;
+const TESSARA_MOON_CENTER: Vec3 = Vec3::new(-0.001604, 0.011636, -0.0036585);
+const TESSARA_MOON_VISUAL_SCALE: f32 = 1.0;
 pub const KHARVEX_PLANET_MESH: MeshHandle = MeshHandle::KHARVEX_PLANET;
 pub const NARETH_PLANET_MESH: MeshHandle = MeshHandle::NARETH_PLANET;
 const KHARVEX_PLANET_CENTER: Vec3 = Vec3::new(12.189077, 15.664048, 6.280951);
@@ -82,13 +91,16 @@ pub const DESTINATION_MESH: MeshHandle = MeshHandle::DESTINATION_PLACEHOLDER;
 pub const PLANET_MESH: MeshHandle = MeshHandle::PLANET_SPHERE;
 pub const SUN_MESH: MeshHandle = MeshHandle::SUN_SPHERE;
 pub const SUN_MODEL_MESH: MeshHandle = MeshHandle::SUN_MODEL;
+pub const STARS_MESH: MeshHandle = MeshHandle::STARS;
 pub const COLLECTIBLE_MESH: MeshHandle = MeshHandle::COLLECTIBLE_PLACEHOLDER;
 pub const STATION_MESH: MeshHandle = MeshHandle::STATION;
 pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
 pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
 pub const ECHO7_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
 pub const ECHO7_MATERIAL: MaterialHandle = VisualAssets::SHIP;
-pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::new(2.0, 3.0, 1.0);
+pub const STARS_MATERIAL: MaterialHandle = VisualAssets::STARS;
+pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::splat(0.2);
+const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(0.5759995, 0.8370645, 0.0);
 pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
 pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
 pub const PLAYER_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
@@ -103,6 +115,18 @@ pub const INTERIOR_LEFT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_
 pub const INTERIOR_RIGHT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_404);
 pub const INTERIOR_CEILING_ENTITY: engine::EntityId = engine::EntityId::new(9_405);
 pub const INTERIOR_LIGHT_ENTITY: engine::EntityId = engine::EntityId::new(9_406);
+pub const EXTERIOR_STATION_IDS: [engine::EntityId; 4] = [
+    engine::EntityId::new(9_500),
+    engine::EntityId::new(9_501),
+    engine::EntityId::new(9_502),
+    engine::EntityId::new(9_503),
+];
+const EXTERIOR_STATION_POSITIONS: [Vec3; 4] = [
+    Vec3::new(180.0, 16.0, 140.0),
+    Vec3::new(-210.0, -18.0, 80.0),
+    Vec3::new(90.0, 42.0, 230.0),
+    Vec3::new(-150.0, 24.0, -220.0),
+];
 
 pub const SHIP_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const ENEMY_MATERIAL: MaterialHandle = VisualAssets::ENEMY;
@@ -152,6 +176,17 @@ fn station_nodes_for_view(world: &GameplayWorld, interior: bool) -> Vec<Snapshot
             if interior { PLACEHOLDER_MESH } else { STATION_MESH },
             if interior { DESTINATION_MATERIAL } else { STATION_MATERIAL },
             interactable.enabled,
+        ));
+    }
+    if !interior {
+        nodes.extend(EXTERIOR_STATION_IDS.into_iter().zip(EXTERIOR_STATION_POSITIONS).map(
+            |(entity, position)| SnapshotNode::new(
+                entity,
+                Transform::new(position, Quat::IDENTITY, STATION_VISUAL_SCALE),
+                STATION_MESH,
+                STATION_MATERIAL,
+                true,
+            ),
         ));
     }
     nodes
@@ -399,6 +434,13 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth(
         camera.projection_matrix(),
     );
     snapshot.simulation_time = world.time().elapsed;
+    snapshot.push_node(SnapshotNode::new(
+        STARS_ENTITY,
+        Transform::new(Vec3::ZERO, Quat::IDENTITY, Vec3::splat(1.0)),
+        STARS_MESH,
+        STARS_MATERIAL,
+        true,
+    ));
     snapshot
         .nodes
         .reserve(expected_snapshot_node_count(world, params, academic_planet));
@@ -459,14 +501,17 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth(
 
     if let (Some(ship), Some(pos)) = (world.navigation().ship_id(), visual_ship_position(world)) {
         let orientation = world.ship_orientation().unwrap_or_default();
+        let rotation = Quat::from_rotation_y(orientation.yaw_degrees.to_radians())
+            * Quat::from_rotation_x(orientation.pitch_degrees.to_radians());
+        let mut transform = Transform::new(
+            pos,
+            rotation,
+            ECHO7_VISUAL_SCALE,
+        );
+        transform.translation -= rotation * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER);
         snapshot.push_node(SnapshotNode::new(
             ship,
-            Transform::new(
-                pos,
-                Quat::from_rotation_y(orientation.yaw_degrees.to_radians())
-                    * Quat::from_rotation_x(orientation.pitch_degrees.to_radians()),
-                ECHO7_VISUAL_SCALE,
-            ),
+            transform,
             ECHO7_MESH,
             ECHO7_MATERIAL,
             world.entities().contains(ship),
@@ -588,6 +633,31 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth(
                 mesh,
                 material,
                 dest.discovery != gameplay::DiscoveryState::Unknown,
+            ));
+        }
+    }
+
+    if let Some(tessara_id) = tessara_planet {
+        let tessara_visible = world
+            .destination(tessara_id)
+            .is_some_and(|destination| destination.discovery != gameplay::DiscoveryState::Unknown);
+        if tessara_visible {
+            let tessara_position = world
+                .planet_position_at(tessara_id, world.time().elapsed)
+                .map(from_engine)
+                .unwrap_or_else(|| {
+                    world
+                        .destination(tessara_id)
+                        .map(|destination| from_engine(destination.position))
+                        .unwrap_or(TESSARA_POSITION)
+                });
+            let moon_transform = tessara_moon_transform(tessara_position, elapsed_seconds);
+            snapshot.push_node(SnapshotNode::new(
+                TESSARA_MOON_ENTITY,
+                moon_transform,
+                TESSARA_MOON_MESH,
+                PLANET_MATERIAL,
+                true,
             ));
         }
     }
@@ -948,6 +1018,8 @@ fn hud_state(
         controls: None,
         instructions: None,
         feedback: None,
+        inventory_open: false,
+        inventory_items: Vec::new(),
     }
 }
 
@@ -1331,6 +1403,26 @@ fn tessara_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
     transform
 }
 
+fn tessara_moon_transform(tessara_position: Vec3, elapsed_seconds: f64) -> Transform {
+    let elapsed = elapsed_seconds as f32;
+    let angle = TESSARA_MOON_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND * elapsed;
+    let offset = Vec3::new(
+        TESSARA_MOON_ORBIT_RADIUS * angle.cos(),
+        TESSARA_MOON_ORBIT_HEIGHT,
+        TESSARA_MOON_ORBIT_RADIUS * angle.sin(),
+    );
+    let rotation = Quat::from_rotation_y(
+        TESSARA_MOON_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND * elapsed,
+    );
+    let mut transform = Transform::new(
+        tessara_position + offset,
+        rotation,
+        Vec3::splat(TESSARA_MOON_VISUAL_SCALE),
+    );
+    transform.translation -= rotation * (transform.scale * TESSARA_MOON_CENTER);
+    transform
+}
+
 fn kharvex_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
     let mut transform = Transform::new(
         position,
@@ -1374,12 +1466,15 @@ fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
 #[cfg(test)]
 mod tests {
     use super::{academic_planet_transform, building_planet_transform, hud_mission_state,
-        kharvex_planet_transform, planet_mesh_for_destination, tessara_planet_transform,
+        kharvex_planet_transform, planet_mesh_for_destination, tessara_moon_transform,
+        tessara_planet_transform,
         BUILDING_PLANET_CENTER, BUILDING_PLANET_MESH, KHARVEX_PLANET_CENTER,
         KHARVEX_PLANET_MAX_RADIUS, KHARVEX_PLANET_MESH,
         KHARVEX_PLANET_VISUAL_SCALE, KHARVEX_SURFACE_RADIUS,
         KHARVEX_POSITION,
         TESSARA_PLANET_CENTER, TESSARA_PLANET_MAX_DIMENSION, TESSARA_PLANET_MESH,
+        TESSARA_MOON_CENTER, TESSARA_MOON_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
+        TESSARA_MOON_ORBIT_HEIGHT, TESSARA_MOON_ORBIT_RADIUS, TESSARA_MOON_VISUAL_SCALE,
         TESSARA_PLANET_VISUAL_SCALE, TESSARA_POSITION,
         ECHO7_VISUAL_SCALE, PLANET_MESH, PLANET_ORBIT_RADIUS, PLANET_SURFACE_RADIUS,
         PLANET_VISUAL_RADIUS, SUN_MODEL_CENTER, SUN_MODEL_MESH, SUN_MODEL_MAX_DIMENSION,
@@ -1472,13 +1567,16 @@ mod tests {
         let interior = super::station_nodes_for_view(&world, true);
         let exterior = super::station_nodes_for_view(&world, false);
         assert_eq!(interior.len(), 1);
-        assert_eq!(exterior.len(), 1);
+        assert_eq!(exterior.len(), 1 + super::EXTERIOR_STATION_IDS.len());
         assert_eq!(interior[0].entity, render_core::SnapshotId::Entity(station));
         assert_eq!(exterior[0].entity, render_core::SnapshotId::Entity(station));
         assert_eq!(interior[0].mesh, super::PLACEHOLDER_MESH);
         assert_eq!(interior[0].material, super::DESTINATION_MATERIAL);
         assert_eq!(exterior[0].mesh, super::STATION_MESH);
         assert_eq!(exterior[0].material, super::STATION_MATERIAL);
+        assert!(exterior[1..].iter().all(|node| {
+            node.mesh == super::STATION_MESH && node.material == super::STATION_MATERIAL
+        }));
     }
 
     #[test]
@@ -1770,6 +1868,42 @@ mod tests {
         assert!((initial_center - TESSARA_POSITION).length() < 1e-5);
         assert!((later_center - TESSARA_POSITION).length() < 1e-5);
         assert_eq!(initial.scale, later.scale);
+    }
+
+    #[test]
+    fn tessara_moon_orbits_the_current_tessara_position() {
+        let initial = tessara_moon_transform(TESSARA_POSITION, 0.0);
+        let later = tessara_moon_transform(TESSARA_POSITION, 10.0);
+        let initial_center = initial.translation
+            + initial.rotation * (initial.scale * TESSARA_MOON_CENTER);
+        let later_center = later.translation
+            + later.rotation * (later.scale * TESSARA_MOON_CENTER);
+
+        assert_ne!(initial_center, later_center);
+        assert!((initial_center - (TESSARA_POSITION + Vec3::new(
+            TESSARA_MOON_ORBIT_RADIUS,
+            TESSARA_MOON_ORBIT_HEIGHT,
+            0.0,
+        ))).length() < 1e-5);
+        assert!(((later_center - TESSARA_POSITION).length() -
+            (TESSARA_MOON_ORBIT_RADIUS.powi(2) + TESSARA_MOON_ORBIT_HEIGHT.powi(2)).sqrt())
+            .abs() < 1e-4);
+    }
+
+    #[test]
+    fn tessara_moon_rotation_is_deterministic_and_centered() {
+        let first = tessara_moon_transform(TESSARA_POSITION, 10.0);
+        let second = tessara_moon_transform(TESSARA_POSITION, 10.0);
+        let centered = first.translation
+            + first.rotation * (first.scale * TESSARA_MOON_CENTER);
+
+        assert_eq!(first, second);
+        assert!((centered - (TESSARA_POSITION + Vec3::new(
+            TESSARA_MOON_ORBIT_RADIUS * (TESSARA_MOON_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND * 10.0).cos(),
+            TESSARA_MOON_ORBIT_HEIGHT,
+            TESSARA_MOON_ORBIT_RADIUS * (TESSARA_MOON_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND * 10.0).sin(),
+        ))).length() < 1e-4);
+        assert_eq!(first.scale, Vec3::splat(TESSARA_MOON_VISUAL_SCALE));
     }
 
     #[test]

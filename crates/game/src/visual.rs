@@ -45,6 +45,7 @@ const NARETH_POSITION: GameplayVec3 = GameplayVec3 {
 };
 const NARETH_RESOURCE_ID: &str = "planet.nareth";
 const NARETH_MODEL_RELATIVE_PATH: &str = "../../assets/models/seraphim/Seraphim_planet.obj";
+const NARETH_MODEL_SHA256: &str = "E7CF257E50AE7A51DA3D09E2D69F3313F780616AA23F5026D1649C0783486B93";
 const TESSARA_POSITION: GameplayVec3 = GameplayVec3 {
     x: -49.17,
     y: 8.0,
@@ -58,7 +59,7 @@ const KHARVEX_POSITION: GameplayVec3 = GameplayVec3 {
 const VISUAL_INITIAL_SHIP_POSITION: GameplayVec3 = GameplayVec3 {
     x: 0.0,
     y: 0.0,
-    z: 120.0,
+    z: 220.0,
 };
 const SIGNAL: DestinationId = DestinationId::new(9_003);
 const ENCOUNTER: EncounterId = EncounterId::new(9_004);
@@ -252,6 +253,8 @@ struct VisualBridge {
     interior_mode: bool,
     introductory_threat_pending: bool,
     controls_panel_open: bool,
+    hud_visible: bool,
+    inventory_open: bool,
     pilot_mode: bool,
     fire_pressed: bool,
     boost_pressed: bool,
@@ -266,6 +269,7 @@ struct VisualBridge {
     visual_asset_client: Option<VisualAssetClient>,
     visual_asset_states: BTreeMap<String, VisualAssetState>,
     gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, u64, GpuAssetState)>,
+    nareth_diag_snapshot_mesh: Option<MeshHandle>,
 }
 
 impl VisualBridge {
@@ -790,6 +794,8 @@ impl VisualBridge {
             interior_mode,
             introductory_threat_pending,
             controls_panel_open: false,
+            hud_visible: true,
+            inventory_open: false,
             pilot_mode: false,
             fire_pressed: false,
             boost_pressed: false,
@@ -804,6 +810,7 @@ impl VisualBridge {
             visual_asset_client: None,
             visual_asset_states: BTreeMap::new(),
             gpu_asset_states: BTreeMap::new(),
+            nareth_diag_snapshot_mesh: None,
         })
     }
 
@@ -855,6 +862,17 @@ impl VisualBridge {
             return;
         };
         for event in client.poll_events() {
+            if event.resource_id == NARETH_RESOURCE_ID {
+                let label = match event.state {
+                    VisualAssetState::Loading => "FALLBACK_LOADING_CPU",
+                    VisualAssetState::Ready => "FALLBACK_CPU_REGISTERED_GPU_PENDING",
+                    VisualAssetState::Failed => "FALLBACK_CPU_FAILED",
+                };
+                eprintln!(
+                    "nareth-diag state={} destination=9603 resource={} error={:?}",
+                    label, event.resource_id, event.error
+                );
+            }
             self.visual_asset_states
                 .insert(event.resource_id, event.state.clone());
             if let VisualAssetState::Failed = event.state {
@@ -873,6 +891,19 @@ impl VisualBridge {
                 });
             if is_newer {
                 let state = event.state.clone();
+                if event.mesh == MeshHandle::NARETH_PLANET {
+                    let label = match state {
+                        GpuAssetState::Unavailable => "FALLBACK_GPU_FAILED",
+                        GpuAssetState::UploadingGpu => "FALLBACK_CPU_REGISTERED_GPU_PENDING",
+                        GpuAssetState::GpuReady => "REAL_MODEL_SELECTED",
+                        GpuAssetState::GpuFailed => "FALLBACK_GPU_FAILED",
+                    };
+                    eprintln!(
+                        "nareth-diag state={} destination=9603 resource={} mesh={} lod={:?} renderer_epoch={} generation={} error={:?}",
+                        label, NARETH_RESOURCE_ID, event.mesh.0, event.lod,
+                        event.renderer_epoch, event.generation, event.error
+                    );
+                }
                 self.gpu_asset_states
                     .insert(key, (event.renderer_epoch, event.generation, state.clone()));
                 if event.mesh == MeshHandle::NARETH_PLANET
@@ -882,8 +913,44 @@ impl VisualBridge {
                         self.feedback = format!("RECURSO GPU NO DISPONIBLE: {error}");
                     }
                 }
+            } else if event.mesh == MeshHandle::NARETH_PLANET {
+                eprintln!(
+                    "nareth-diag state=FALLBACK_STALE_GENERATION destination=9603 resource={} mesh={} lod={:?} renderer_epoch={} generation={}",
+                    NARETH_RESOURCE_ID, event.mesh.0, event.lod,
+                    event.renderer_epoch, event.generation
+                );
             }
         }
+    }
+
+    fn log_nareth_snapshot_mesh(&mut self, mesh: MeshHandle) {
+        if self.nareth_diag_snapshot_mesh == Some(mesh) {
+            return;
+        }
+        self.nareth_diag_snapshot_mesh = Some(mesh);
+        let label = if mesh == MeshHandle::NARETH_PLANET {
+            "REAL_MODEL_SELECTED"
+        } else {
+            match self.visual_asset_states.get(NARETH_RESOURCE_ID) {
+                None => "FALLBACK_NOT_REQUESTED",
+                Some(VisualAssetState::Loading) => "FALLBACK_LOADING_CPU",
+                Some(VisualAssetState::Failed) => "FALLBACK_CPU_FAILED",
+                Some(VisualAssetState::Ready) => match self
+                    .gpu_asset_states
+                    .get(&(MeshHandle::NARETH_PLANET, LodLevel::High))
+                    .map(|(_, _, state)| state)
+                {
+                    Some(GpuAssetState::GpuFailed | GpuAssetState::Unavailable) => {
+                        "FALLBACK_GPU_FAILED"
+                    }
+                    _ => "FALLBACK_CPU_REGISTERED_GPU_PENDING",
+                },
+            }
+        };
+        eprintln!(
+            "nareth-diag state={} destination=9603 resource={} snapshot_mesh={} snapshot_material={}",
+            label, NARETH_RESOURCE_ID, mesh.0, VisualAssets::PLANET.0
+        );
     }
 
     fn nareth_visual_asset_ready(&self) -> bool {
@@ -898,11 +965,20 @@ impl VisualBridge {
 
     fn request_nareth_visual_asset(&mut self) {
         let request = nareth_visual_asset_request();
-        let _ = self.request_visual_asset(
+        let size = std::fs::metadata(&request.path).map(|metadata| metadata.len()).ok();
+        let resource_id = request.resource_id.clone();
+        let path = request.path.clone();
+        let requested = self.request_visual_asset(
             request.resource_id,
             request.path,
             request.mesh,
             request.material,
+        );
+        eprintln!(
+            "nareth-diag state={} destination=9603 resource={} mesh={} material={} path={} bytes={:?} sha256_verified={} sha256_source=preflight request_accepted={}",
+            if requested { "FALLBACK_LOADING_CPU" } else { "FALLBACK_CPU_FAILED" },
+            resource_id, request.mesh.0, request.material.0,
+            path.display(), size, NARETH_MODEL_SHA256, requested
         );
     }
 
@@ -1044,6 +1120,15 @@ impl VisualBridge {
                 self.look_up = false;
                 self.look_down = false;
             }
+            return;
+        }
+        if state == ElementState::Pressed && key == KeyCode::F2 {
+            self.hud_visible = !self.hud_visible;
+            self.controls_panel_open = false;
+            return;
+        }
+        if state == ElementState::Pressed && key == KeyCode::F3 {
+            self.inventory_open = !self.inventory_open;
             return;
         }
         if self.controls_panel_open {
@@ -2313,7 +2398,7 @@ impl VisualBridge {
                 _ => "INACTIVO",
             };
             return format!(
-                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - USA F1",
+                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - F1 CONTROLES - F2 HUD - F3 INVENTARIO",
                 self.observation_target_label(),
             );
         }
@@ -2327,9 +2412,9 @@ impl VisualBridge {
             {
                 return "PULSA M PARA INICIAR LA MISION DISPONIBLE".to_owned();
             }
-            return "EXPLORACION: USA F1 PARA VER CONTROLES".to_owned();
+            return "EXPLORACION: F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned();
         }
-        "EXTERIOR: SIGUE LA GUIA Y USA F1 PARA VER CONTROLES".to_owned()
+        "EXTERIOR: SIGUE LA GUIA - F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned()
     }
 
     fn guidance_prompt(&self) -> Option<String> {
@@ -2391,7 +2476,11 @@ impl VisualBridge {
     }
 
     fn controls_panel_entries(&self) -> Vec<String> {
-        let mut entries = vec!["F1 ABRIR O CERRAR PANEL".to_owned()];
+        let mut entries = vec![
+            "F1 ABRIR O CERRAR PANEL".to_owned(),
+            "F2 OCULTAR O MOSTRAR HUD".to_owned(),
+            "F3 ABRIR O CERRAR INVENTARIO".to_owned(),
+        ];
         if self.pilot_mode {
             entries.extend([
                 "WASD VOLAR - PILOTAJE".to_owned(),
@@ -3152,6 +3241,32 @@ pub fn run() -> Result<(), String> {
                 bridge.interior_mode,
                 bridge.nareth_visual_asset_ready(),
             );
+            if bridge.hud_visible {
+                snapshot.overlay.hud.inventory_open = bridge.inventory_open;
+                if bridge.inventory_open {
+                    snapshot.overlay.hud.inventory_items = bridge
+                        .session
+                        .world()
+                        .players()
+                        .next()
+                        .and_then(|player| bridge.session.world().inventory(player.entity_id))
+                        .map(|inventory| {
+                            inventory
+                                .entries()
+                                .filter(|(_, amount)| *amount > 0)
+                                .map(|(item, amount)| format!("ITEM {}  CANTIDAD {}", item.0, amount))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                }
+            } else {
+                snapshot.overlay.hud = Default::default();
+            }
+            if let Some(node) = snapshot.nodes.iter().find(|node| {
+                node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value())
+            }) {
+                bridge.log_nareth_snapshot_mesh(node.mesh);
+            }
             if snapshot.overlay.game_over {
                 snapshot.overlay.hud.interaction_prompt = None;
                 snapshot.overlay.hud.contextual_action = None;
@@ -3191,6 +3306,9 @@ pub fn run() -> Result<(), String> {
             scene.set_lighting_mode(LightingMode::Pbr);
             let assets_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");
             for (path, mesh, material) in [
+                (assets_root.join("echo_7/echo-7.obj"), render_core::MeshHandle::SHIP_PLACEHOLDER, VisualAssets::SHIP),
+                (assets_root.join("stars/stars.obj"), render_core::MeshHandle::STARS, VisualAssets::STARS),
+                (assets_root.join("moon/moon.obj"), render_core::MeshHandle::MOON, VisualAssets::PLANET),
                 (assets_root.join("station/station.obj"), render_core::MeshHandle::STATION, VisualAssets::STATION),
                 (assets_root.join("building/building_planet.obj"), render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
                 (assets_root.join("clock/clock_planet.obj"), render_core::MeshHandle::TESSARA_PLANET, VisualAssets::PLANET),
@@ -3214,6 +3332,7 @@ pub fn run() -> Result<(), String> {
             scene.set_material(VisualAssets::COLLECTIBLE, MaterialInfo::new(render_core::Vec4::new(1.0, 0.62, 0.04, 1.0), 0.38, 0.25).with_emissive(render_core::Vec3::new(0.16, 0.035, 0.002)));
             scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
             scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
+            scene.set_material(VisualAssets::STARS, MaterialInfo::stars());
             scene.set_material(VisualAssets::STATION, MaterialInfo::station());
             scene.set_material(VisualAssets::DERELICT, MaterialInfo::derelict());
             scene.set_material(VisualAssets::ASTEROID, MaterialInfo::asteroid());

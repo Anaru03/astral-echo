@@ -1125,6 +1125,81 @@ fn handle_client(
                     }
                 }
 
+                ClientMessage::Interact { request_id, target } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerInteracted {
+                            player_id: id,
+                            request_id,
+                            target,
+                        });
+                    }
+                }
+
+                ClientMessage::AttackEnemy { request_id, enemy } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerAttacked {
+                            player_id: id,
+                            request_id,
+                            enemy,
+                        });
+                    }
+                }
+
+                ClientMessage::CollectItem {
+                    request_id,
+                    collectible,
+                    amount,
+                } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerCollected {
+                            player_id: id,
+                            request_id,
+                            collectible,
+                            amount,
+                        });
+                    }
+                }
+
+                ClientMessage::EquipWeapon { request_id, item } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerEquippedWeapon {
+                            player_id: id,
+                            request_id,
+                            item,
+                        });
+                    }
+                }
+
+                ClientMessage::UseHealingItem {
+                    request_id,
+                    item,
+                    amount,
+                } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerUsedHealingItem {
+                            player_id: id,
+                            request_id,
+                            item,
+                            amount,
+                        });
+                    }
+                }
+
+                ClientMessage::TravelTo {
+                    request_id,
+                    pilot_station,
+                    destination,
+                } => {
+                    if let (Some(id), Some(events)) = (player_id, &events) {
+                        events.push(ServerEvent::PlayerRequestedTravel {
+                            player_id: id,
+                            request_id,
+                            pilot_station,
+                            destination,
+                        });
+                    }
+                }
+
                 ClientMessage::RequestMissionRecovery { request_id } => {
                     if let (Some(id), Some(events)) = (player_id, &events) {
                         events.push(ServerEvent::MissionRecoveryRequested {
