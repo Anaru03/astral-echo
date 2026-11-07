@@ -82,6 +82,9 @@ pub const PLANET_OBSERVATION_RADIUS: f32 = 14.0;
 pub const OBSERVATION_TRANSITION_DURATION_MS: u64 = 1_000;
 const SUN_POSITION: Vec3 = Vec3::new(0.0, 0.0, -18.0);
 const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 28.0, 46.0);
+pub const PILOT_CAMERA_DEFAULT_DISTANCE: f32 = 14.0;
+pub const PILOT_CAMERA_MIN_DISTANCE: f32 = 6.0;
+pub const PILOT_CAMERA_MAX_DISTANCE: f32 = 48.0;
 pub const SHIP_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
 pub const ENEMY_MESH: MeshHandle = MeshHandle::ENEMY_PLACEHOLDER;
 pub const PLAYER_MESH: MeshHandle = MeshHandle::CUBE;
@@ -93,6 +96,7 @@ pub const SUN_MESH: MeshHandle = MeshHandle::SUN_SPHERE;
 pub const SUN_MODEL_MESH: MeshHandle = MeshHandle::SUN_MODEL;
 pub const STARS_MESH: MeshHandle = MeshHandle::STARS;
 pub const COLLECTIBLE_MESH: MeshHandle = MeshHandle::COLLECTIBLE_PLACEHOLDER;
+const STAR_SHELL_SCALE: f32 = 6.0;
 pub const STATION_MESH: MeshHandle = MeshHandle::STATION;
 pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
 pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
@@ -434,12 +438,13 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth(
         camera.projection_matrix(),
     );
     snapshot.simulation_time = world.time().elapsed;
+    let star_center = visual_ship_position(world).unwrap_or(Vec3::ZERO);
     snapshot.push_node(SnapshotNode::new(
         STARS_ENTITY,
-        Transform::new(Vec3::ZERO, Quat::IDENTITY, Vec3::splat(1.0)),
+        Transform::new(star_center, Quat::IDENTITY, Vec3::splat(STAR_SHELL_SCALE)),
         STARS_MESH,
         STARS_MATERIAL,
-        true,
+        !interior,
     ));
     snapshot
         .nodes
@@ -484,7 +489,11 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth(
     }
 
     if interior {
-        for node in interior_nodes() {
+        let interior_origin = world
+            .ship_position()
+            .map(from_engine)
+            .unwrap_or(Vec3::ZERO);
+        for node in interior_nodes(interior_origin) {
             snapshot.push_node(node);
         }
     }
@@ -745,12 +754,13 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth(
     snapshot
 }
 
-fn interior_nodes() -> [SnapshotNode; 6] {
+fn interior_nodes(origin: Vec3) -> [SnapshotNode; 6] {
+    let at = |local: Vec3| origin + local;
     [
         SnapshotNode::new(
             INTERIOR_FLOOR_ENTITY,
             Transform::new(
-                Vec3::new(0.0, ECHO7_INTERIOR_FLOOR_Y, 0.0),
+                at(Vec3::new(0.0, ECHO7_INTERIOR_FLOOR_Y, 0.0)),
                 Quat::IDENTITY,
                 Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 0.15, ECHO7_INTERIOR_HALF_DEPTH),
             ),
@@ -761,7 +771,7 @@ fn interior_nodes() -> [SnapshotNode; 6] {
         SnapshotNode::new(
             INTERIOR_BACK_WALL_ENTITY,
             Transform::new(
-                Vec3::new(0.0, 2.6, -ECHO7_INTERIOR_HALF_DEPTH),
+                at(Vec3::new(0.0, 2.6, -ECHO7_INTERIOR_HALF_DEPTH)),
                 Quat::IDENTITY,
                 Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 3.8, 0.15),
             ),
@@ -772,7 +782,7 @@ fn interior_nodes() -> [SnapshotNode; 6] {
         SnapshotNode::new(
             INTERIOR_LEFT_WALL_ENTITY,
             Transform::new(
-                Vec3::new(-ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0),
+                at(Vec3::new(-ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0)),
                 Quat::IDENTITY,
                 Vec3::new(0.15, 3.8, ECHO7_INTERIOR_HALF_DEPTH),
             ),
@@ -783,7 +793,7 @@ fn interior_nodes() -> [SnapshotNode; 6] {
         SnapshotNode::new(
             INTERIOR_RIGHT_WALL_ENTITY,
             Transform::new(
-                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0),
+                at(Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0)),
                 Quat::IDENTITY,
                 Vec3::new(0.15, 3.8, ECHO7_INTERIOR_HALF_DEPTH),
             ),
@@ -794,7 +804,7 @@ fn interior_nodes() -> [SnapshotNode; 6] {
         SnapshotNode::new(
             INTERIOR_CEILING_ENTITY,
             Transform::new(
-                Vec3::new(0.0, ECHO7_INTERIOR_CEILING_Y, 0.0),
+                at(Vec3::new(0.0, ECHO7_INTERIOR_CEILING_Y, 0.0)),
                 Quat::IDENTITY,
                 Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 0.15, ECHO7_INTERIOR_HALF_DEPTH),
             ),
@@ -805,7 +815,7 @@ fn interior_nodes() -> [SnapshotNode; 6] {
         SnapshotNode::new(
             INTERIOR_LIGHT_ENTITY,
             Transform::new(
-                Vec3::new(0.0, 5.8, 0.0),
+                at(Vec3::new(0.0, 5.8, 0.0)),
                 Quat::IDENTITY,
                 Vec3::new(0.8, 0.15, 0.8),
             ),
@@ -1148,6 +1158,34 @@ pub fn interpolate_visual_ship_position(current: Vec3, target: Vec3, progress: f
 
 pub fn flight_camera(world: &GameplayWorld, aspect: f32) -> Result<Camera, CameraError> {
     observation_camera(world, aspect, 0.0, 0.0, 0.0)
+}
+
+pub fn pilot_camera(
+    world: &GameplayWorld,
+    aspect: f32,
+    distance: f32,
+) -> Result<Camera, CameraError> {
+    let ship = visual_ship_position(world).ok_or(CameraError::InvalidAspect)?;
+    let orientation = world.ship_orientation().unwrap_or_default();
+    let yaw = orientation.yaw_degrees.to_radians();
+    let pitch = orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);
+    let horizontal = pitch.cos();
+    let direction = Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal)
+        .normalize_or_zero();
+    let distance = distance.clamp(PILOT_CAMERA_MIN_DISTANCE, PILOT_CAMERA_MAX_DISTANCE);
+    let position = ship - direction * distance + Vec3::new(0.0, 3.0, 0.0);
+    let target = ship + direction * 3.5 + Vec3::new(0.0, 1.0, 0.0);
+    Camera::new(
+        position,
+        target,
+        Vec3::Y,
+        Projection::Perspective {
+            fov_y_rad: 65.0_f32.to_radians(),
+            aspect,
+            near: 0.1,
+            far: 2_000.0,
+        },
+    )
 }
 
 pub fn observation_camera(

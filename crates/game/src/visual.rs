@@ -72,6 +72,8 @@ struct FlightKeys {
     backward: bool,
     left: bool,
     right: bool,
+    ascend: bool,
+    descend: bool,
 }
 
 impl FlightKeys {
@@ -81,6 +83,8 @@ impl FlightKeys {
             KeyCode::KeyS => &mut self.backward,
             KeyCode::KeyA => &mut self.left,
             KeyCode::KeyD => &mut self.right,
+            KeyCode::Space => &mut self.ascend,
+            KeyCode::ControlLeft | KeyCode::ControlRight => &mut self.descend,
             _ => return false,
         };
         *slot = active;
@@ -90,7 +94,7 @@ impl FlightKeys {
     fn input(self) -> GameplayVec3 {
         GameplayVec3 {
             x: if self.right { 1.0 } else { 0.0 } - if self.left { 1.0 } else { 0.0 },
-            y: 0.0,
+            y: if self.ascend { 1.0 } else { 0.0 } - if self.descend { 1.0 } else { 0.0 },
             z: if self.backward { 1.0 } else { 0.0 } - if self.forward { 1.0 } else { 0.0 },
         }
     }
@@ -256,6 +260,7 @@ struct VisualBridge {
     hud_visible: bool,
     inventory_open: bool,
     pilot_mode: bool,
+    pilot_camera_distance: f32,
     fire_pressed: bool,
     boost_pressed: bool,
     shield_active: bool,
@@ -372,6 +377,12 @@ impl VisualBridge {
             .world_mut()
             .initialize_ship_position(initial_ship_position)
             .map_err(|error| format!("inicializar posición visual de ECHO-7: {error:?}"))?;
+        if !session
+            .world_mut()
+            .initialize_player_position(player, initial_ship_position)
+        {
+            return Err("inicializar posición del protagonista dentro de ECHO-7".to_owned());
+        }
         session
             .register_destination(Destination {
                 id: ORIGIN,
@@ -589,37 +600,42 @@ impl VisualBridge {
         {
             return Err("configurar la física solar visual".to_owned());
         }
+        let interior_position = |local: GameplayVec3| GameplayVec3 {
+            x: initial_ship_position.x + local.x,
+            y: initial_ship_position.y + local.y,
+            z: initial_ship_position.z + local.z,
+        };
         let pilot_station = session
             .create_station(
-                GameplayVec3 { x: 0.0, y: 0.0, z: 1.5 },
+                interior_position(GameplayVec3 { x: 0.0, y: 0.0, z: 1.5 }),
                 3.0,
                 StationType::Piloting,
             )
             .map_err(|error| format!("crear estación visual: {error:?}"))?;
         let engineering_station = session
             .create_station(
-                GameplayVec3 { x: 2.5, y: 0.0, z: 0.0 },
+                interior_position(GameplayVec3 { x: 2.5, y: 0.0, z: 0.0 }),
                 3.0,
                 StationType::Engineering,
             )
             .map_err(|error| format!("engineering station: {error:?}"))?;
         let _status_console = session
             .create_ship_status_console(
-                GameplayVec3 {
+                interior_position(GameplayVec3 {
                     x: -2.0,
                     y: 0.0,
                     z: 0.0,
-                },
+                }),
                 3.0,
             )
             .map_err(|error| format!("crear consola de estado visual: {error:?}"))?;
         let electrical_panel = session
             .create_electrical_panel(
-                GameplayVec3 {
+                interior_position(GameplayVec3 {
                     x: 0.0,
                     y: 0.0,
                     z: -2.0,
-                },
+                }),
                 3.0,
                 ElectricalPanelConfiguration::new(vec![ElectricalBreakerConfiguration {
                     id: BreakerId::new(1),
@@ -630,11 +646,11 @@ impl VisualBridge {
             .map_err(|error| format!("crear panel electrico visual: {error:?}"))?;
         let life_support_panel = session
             .create_life_support_panel(
-                GameplayVec3 {
+                interior_position(GameplayVec3 {
                     x: 2.0,
                     y: 0.0,
                     z: 0.0,
-                },
+                }),
                 3.0,
                 LifeSupportConfiguration::new(
                     5,
@@ -657,21 +673,21 @@ impl VisualBridge {
             .map_err(|error| format!("crear panel de soporte visual: {error:?}"))?;
         let bridge_door = session
             .create_bridge_door(
-                GameplayVec3 {
+                interior_position(GameplayVec3 {
                     x: 0.0,
                     y: 0.0,
                     z: 2.0,
-                },
+                }),
                 3.0,
             )
             .map_err(|error| format!("crear puerta del puente visual: {error:?}"))?;
         
             let enemy_position = if interior_mode && safe_interior_enemy_start {
-            GameplayVec3 {
+            interior_position(GameplayVec3 {
                 x: 24.0,
                 y: 0.0,
                 z: 120.0,
-            }
+            })
         } else {
             GameplayVec3 {
                 x: 18.0,
@@ -797,6 +813,7 @@ impl VisualBridge {
             hud_visible: true,
             inventory_open: false,
             pilot_mode: false,
+            pilot_camera_distance: game::render_bridge::PILOT_CAMERA_DEFAULT_DISTANCE,
             fire_pressed: false,
             boost_pressed: false,
             shield_active: false,
@@ -827,6 +844,9 @@ impl VisualBridge {
 
     fn attach_visual_asset_client(&mut self, client: VisualAssetClient) {
         self.visual_asset_client = Some(client);
+        // Start the deferred load during runtime initialization so Nareth is
+        // ready before the player first selects it for observation.
+        self.request_nareth_visual_asset();
     }
 
     fn request_visual_asset(
@@ -1133,6 +1153,23 @@ impl VisualBridge {
         }
         if self.controls_panel_open {
             return;
+        }
+        if self.pilot_mode && state == ElementState::Pressed {
+            match key {
+                KeyCode::PageUp | KeyCode::Equal => {
+                    self.pilot_camera_distance =
+                        (self.pilot_camera_distance - 2.0)
+                            .max(game::render_bridge::PILOT_CAMERA_MIN_DISTANCE);
+                    return;
+                }
+                KeyCode::PageDown | KeyCode::Minus => {
+                    self.pilot_camera_distance =
+                        (self.pilot_camera_distance + 2.0)
+                            .min(game::render_bridge::PILOT_CAMERA_MAX_DISTANCE);
+                    return;
+                }
+                _ => {}
+            }
         }
         if self.pilot_mode && state == ElementState::Pressed && key == KeyCode::KeyN {
             self.toggle_navigation_selector();
@@ -2084,6 +2121,11 @@ impl VisualBridge {
         self.last_interior_update = now;
         let seconds = delta_ms as f32 / 1_000.0;
         let local = self.current_flight_input();
+        let interior_origin = self
+            .session
+            .world()
+            .ship_position()
+            .unwrap_or(GameplayVec3::ZERO);
         let yaw = player.orientation.yaw_degrees.to_radians();
         let (sin_yaw, cos_yaw) = yaw.sin_cos();
         let mut direction = GameplayVec3 {
@@ -2100,16 +2142,16 @@ impl VisualBridge {
             );
         }
         let collision_buffer = 0.75;
-        let min_x = -game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+        let min_x = interior_origin.x - game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
             + game::render_bridge::ECHO7_PLAYER_RADIUS
             + collision_buffer;
-        let max_x = game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+        let max_x = interior_origin.x + game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
             - game::render_bridge::ECHO7_PLAYER_RADIUS
             - collision_buffer;
-        let min_z = -game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
+        let min_z = interior_origin.z - game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
             + game::render_bridge::ECHO7_PLAYER_RADIUS
             + collision_buffer;
-        let max_z = game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
+        let max_z = interior_origin.z + game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
             - game::render_bridge::ECHO7_PLAYER_RADIUS
             - collision_buffer;
         let braking_distance_x = player.velocity.x.abs().powi(2)
@@ -2461,7 +2503,7 @@ impl VisualBridge {
                 gameplay::AutopilotState::Interrupted { .. } => "INTERRUMPIDO",
                 gameplay::AutopilotState::Failed { .. } => "FALLIDO",
             };
-            format!("MODO PILOTAJE ECHO-7 | WASD VOLAR | FLECHAS RUMBO | P AUTOPILOTO | I SALIR | AUTO: {autopilot}")
+            format!("MODO PILOTAJE ECHO-7 | WASD VOLAR | ESPACIO SUBIR | CTRL BAJAR | PGUP/PGDN CAMARA | FLECHAS RUMBO | P AUTOPILOTO | I SALIR | AUTO: {autopilot}")
         } else if self.interior_mode {
             "WASD MOVER | FLECHAS MIRAR | I USAR | M INICIAR".to_owned()
         } else if self
@@ -2483,7 +2525,7 @@ impl VisualBridge {
         ];
         if self.pilot_mode {
             entries.extend([
-                "WASD VOLAR - PILOTAJE".to_owned(),
+                "WASD VOLAR | ESPACIO SUBIR | CTRL BAJAR | PGUP/PGDN CAMARA - PILOTAJE".to_owned(),
                 "FLECHAS CAMBIAR RUMBO - PILOTAJE".to_owned(),
                 "F DISPARAR - PILOTAJE".to_owned(),
                 "G ESCUDO - PILOTAJE".to_owned(),
@@ -2658,6 +2700,11 @@ impl VisualBridge {
                 self.feedback = "ERICK: el viaje fue cancelado, pero no puedo liberar la estación.".to_owned();
                 println!("visual gameplay: {}", self.feedback);
                 return;
+            }
+            if let Some(ship_position) = self.session.world().ship_position() {
+                self.session
+                    .world_mut()
+                    .initialize_player_position(self.player, ship_position);
             }
             self.pilot_mode = false;
             self.interior_mode = true;
@@ -3186,6 +3233,13 @@ impl VisualBridge {
 
     fn camera(&self, aspect: f32) -> Result<render_core::Camera, render_core::CameraError> {
         let world = self.session.world();
+        if self.pilot_mode {
+            return game::render_bridge::pilot_camera(
+                world,
+                aspect,
+                self.pilot_camera_distance,
+            );
+        }
         if self.interior_mode {
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
         }
