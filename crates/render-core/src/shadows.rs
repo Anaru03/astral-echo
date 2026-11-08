@@ -126,6 +126,7 @@ pub fn shadow_fixture() -> crate::PreparedScene {
             position,
             color: Vec4::ONE,
             normal: Vec3::Y,
+            uv: glam::Vec2::ZERO,
         })
         .collect(),
         indices: vec![0, 2, 1, 0, 3, 2],
