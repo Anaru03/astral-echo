@@ -1,0 +1,7 @@
+newmtl Wings
+Kd 1.0 1.0 1.0
+map_Kd textures/wings.png
+
+newmtl Core
+Kd 1.0 1.0 1.0
+map_Kd textures/core.png
