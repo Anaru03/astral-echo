@@ -29,6 +29,11 @@ pub fn registered_models() -> Vec<ModelDefinition> {
             material: VisualAssets::ENEMY_CHARGER,
         },
         ModelDefinition {
+            path: "sun/sun.obj",
+            mesh: MeshHandle::SUN_MODEL,
+            material: VisualAssets::SUN,
+        },
+        ModelDefinition {
             path: "shielded/shielded.obj",
             mesh: MeshHandle::ENEMY_PLACEHOLDER,
             material: VisualAssets::ENEMY_SHIELDED,
