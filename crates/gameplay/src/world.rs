@@ -671,6 +671,17 @@ impl GameplayWorld {
     pub fn player(&self, entity: EntityId) -> Option<&Player> {
         self.players.get(&entity)
     }
+    pub fn initialize_player_position(
+        &mut self,
+        player: EntityId,
+        position: engine::Vec3,
+    ) -> bool {
+        let Some(value) = self.players.get_mut(&player) else {
+            return false;
+        };
+        value.position = position;
+        true
+    }
     pub fn companions(&self) -> impl Iterator<Item = &Companion> {
         self.companions.values()
     }
