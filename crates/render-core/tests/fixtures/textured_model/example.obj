@@ -1,0 +1,20 @@
+mtllib example.mtl
+o Wings
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+usemtl Wings
+f 1/1 2/2 3/3
+
+o Core
+v 2 0 0
+v 3 0 0
+v 2 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+usemtl Core
+f 4/4 5/5 6/6

@@ -33,6 +33,8 @@ struct EnvironmentData {
 pub(crate) struct LightingPass {
     pub active: bool,
     pipeline: wgpu::RenderPipeline,
+    textured_pipeline: wgpu::RenderPipeline,
+    pub(crate) texture_layout: wgpu::BindGroupLayout,
     pub layout: wgpu::BindGroupLayout,
     pub cold_setup: [f64; 3],
     bind_group: wgpu::BindGroup,
@@ -103,6 +105,25 @@ impl LightingPass {
         let pipeline_start = std::time::Instant::now();
         let pipeline = lighting_pipeline(gpu, format, &pipeline_layout, &shader, false);
         let pipeline_ms = pipeline_start.elapsed().as_secs_f64() * 1000.0;
+        let texture_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("PBR material texture and UV layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ],
+        });
+        let textured_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("textured PBR layout"), bind_group_layouts: &[Some(&layout), Some(&texture_layout)], immediate_size: 0,
+        });
+        let textured_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("textured PBR shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("lighting_textured.wgsl").into()),
+        });
+        let textured_pipeline = lighting_pipeline(gpu, format, &textured_layout, &textured_shader, false);
         let validation_start = std::time::Instant::now();
         if let Some(error) = block_on(scope.pop()) {
             return Err(GpuError::Backend(error.to_string()));
@@ -116,6 +137,8 @@ impl LightingPass {
                 validation_start.elapsed().as_secs_f64() * 1000.0,
             ],
             pipeline,
+            textured_pipeline,
+            texture_layout,
             bind_group,
             uniform,
             instances: instance_buffer(gpu, 1),
@@ -258,6 +281,12 @@ impl LightingPass {
 
     pub fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_vertex_buffer(1, self.instances.slice(..));
+    }
+
+    pub(crate) fn bind_textured(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_pipeline(&self.textured_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(1, self.instances.slice(..));
     }
