@@ -102,6 +102,10 @@ pub enum SnapshotId {
     Derelict(u32),
     Hazard(u32),
     VisualEvent(u64),
+    ModelPart {
+        parent: u64,
+        part: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -249,6 +253,8 @@ pub struct HudState {
     pub controls: Option<String>,
     pub instructions: Option<String>,
     pub feedback: Option<String>,
+    pub inventory_open: bool,
+    pub inventory_items: Vec<String>,
 }
 
 pub const GAME_OVER_GLYPHS: [[u8; 7]; 8] = [

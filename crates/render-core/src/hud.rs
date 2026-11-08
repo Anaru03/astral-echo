@@ -81,6 +81,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         && hud.controls.is_none()
         && hud.instructions.is_none()
         && hud.feedback.as_deref().is_none_or(str::is_empty)
+        && !hud.inventory_open
     {
         return HudOverlay {
             background: HudOverlayRect { x: 0, y: 0, width: 0, height: 0, color: [0; 4] },
@@ -100,7 +101,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         Some(format!("ESTADO: {}  PROGRESO: {}", status(hud), progress.as_deref().unwrap_or("-"))),
         hud.mission_description.as_deref().map(|v| format!("CONTEXTO: {v}")),
         hud.objective_name.as_deref().map(|v| format!("OBJETIVO: {v}")),
-        hud.mission_notification.as_deref().map(|v| format!("AVISO: {v}")),
+        None,
         Some(format!("ESCUDO: {}", if hud.ship_shield_active { "ACTIVO" } else { "INACTIVO" }))
             .filter(|_| hud.ship_speed.is_some() || hud.ship_shield_active),
         hud.ship_speed.map(|(speed, limit)| format!("VELOCIDAD: {speed}/{limit}")),
@@ -121,6 +122,11 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         hud.instructions.as_deref().map(|v| format!("INSTRUCCIONES: {v}")),
         hud.feedback.as_deref().filter(|v| !v.is_empty()).map(|v| format!("FEEDBACK: {v}")),
     ].into_iter().flatten().collect::<Vec<_>>();
+    let inventory_lines = hud.inventory_open.then(|| {
+        std::iter::once("INVENTARIO".to_owned())
+            .chain(hud.inventory_items.iter().cloned())
+            .collect::<Vec<_>>()
+    });
     if !hud.mission_objectives.is_empty() {
         let objective_lines = hud.mission_objectives.iter().enumerate().map(|(index, objective)| {
             let optional = if objective.required { "" } else { " OPCIONAL" };
@@ -155,6 +161,75 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
                 for glyph_column in 0..5u32 {
                     if bits & (1 << (4 - glyph_column)) != 0 {
                         glyphs.push(HudOverlayRect { x: margin + column as u32 * char_width + glyph_column * scale, y: margin + row as u32 * 8 * scale + glyph_row as u32 * scale, width: scale, height: scale, color });
+                    }
+                }
+            }
+        }
+    }
+    if let Some(notification) = hud.mission_notification.as_deref() {
+        let text = format!("AVISO: {notification}");
+        let notification_width = (text.chars().count() as u32 * char_width + margin * 2)
+            .min(width.saturating_sub(margin * 2));
+        let notification_height = margin + 8 * scale + margin;
+        let notification_x = width.saturating_sub(notification_width) / 2;
+        let notification_y = height.saturating_sub(notification_height + margin);
+        glyphs.push(HudOverlayRect {
+            x: notification_x,
+            y: notification_y,
+            width: notification_width,
+            height: notification_height,
+            color: [8, 18, 32, 235],
+        });
+        for (column, ch) in text.chars().enumerate() {
+            let Some(pattern) = glyph(normalize(ch)) else { continue };
+            for (glyph_row, bits) in pattern.iter().copied().enumerate() {
+                for glyph_column in 0..5u32 {
+                    if bits & (1 << (4 - glyph_column)) != 0 {
+                        glyphs.push(HudOverlayRect {
+                            x: notification_x + margin + column as u32 * char_width + glyph_column * scale,
+                            y: notification_y + margin + glyph_row as u32 * scale,
+                            width: scale,
+                            height: scale,
+                            color,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if let Some(inventory_lines) = inventory_lines {
+        let inventory_width = (inventory_lines
+            .iter()
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(12) as u32
+            * char_width
+            + margin * 2)
+            .min(width.saturating_sub(margin * 2));
+        let inventory_height = (margin + inventory_lines.len() as u32 * 8 * scale + margin)
+            .min(height.saturating_sub(margin * 2));
+        let inventory_x = width.saturating_sub(margin + inventory_width);
+        glyphs.push(HudOverlayRect {
+            x: inventory_x,
+            y: margin,
+            width: inventory_width,
+            height: inventory_height,
+            color: [12, 24, 44, 245],
+        });
+        for (row, text) in inventory_lines.iter().enumerate() {
+            for (column, ch) in text.chars().enumerate() {
+                let Some(pattern) = glyph(normalize(ch)) else { continue };
+                for (glyph_row, bits) in pattern.iter().copied().enumerate() {
+                    for glyph_column in 0..5u32 {
+                        if bits & (1 << (4 - glyph_column)) != 0 {
+                            glyphs.push(HudOverlayRect {
+                                x: inventory_x + margin / 2 + column as u32 * char_width + glyph_column * scale,
+                                y: margin + margin / 2 + row as u32 * 8 * scale + glyph_row as u32 * scale,
+                                width: scale,
+                                height: scale,
+                                color: [245, 250, 255, 255],
+                            });
+                        }
                     }
                 }
             }

@@ -1,9 +1,12 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use render_core::{
-    LodLevel, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh, SnapshotId, Transform,
+    GpuAssetEvent, GpuAssetState, LodLevel, Mat4, MaterialHandle, MeshHandle, PreparedScene,
+    RasterMesh, SnapshotId, Transform,
 };
 use wgpu::util::DeviceExt;
 
@@ -20,6 +23,8 @@ struct Geometry {
     opaque: bool,
     vertex_bytes: u64,
     index_bytes: u64,
+    uvs: Option<wgpu::Buffer>,
+    uv_bytes: u64,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -39,7 +44,10 @@ struct Batch {
 }
 
 pub(crate) struct InstancedScene {
+    renderer_epoch: u64,
     pipeline: wgpu::RenderPipeline,
+    material_textures: BTreeMap<MaterialHandle, (PathBuf, crate::GpuTexture)>,
+    texture_bind_groups: BTreeMap<(MaterialHandle, usize), wgpu::BindGroup>,
     lighting: Option<crate::lighting::LightingPass>,
     shadows: Option<crate::shadows::ShadowPass>,
     shadow_sources: Vec<InstanceSource>,
@@ -61,6 +69,9 @@ pub(crate) struct InstancedScene {
     last_vp: Option<Mat4>,
     reallocations: u64,
     bytes_written: u64,
+    gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, GpuAssetState)>,
+    gpu_asset_events: Vec<GpuAssetEvent>,
+    nareth_draw_logged: Cell<bool>,
 }
 
 impl InstancedScene {
@@ -69,9 +80,13 @@ impl InstancedScene {
         format: wgpu::TextureFormat,
         layout: &wgpu::PipelineLayout,
         shader: &wgpu::ShaderModule,
+        renderer_epoch: u64,
     ) -> Self {
         Self {
+            renderer_epoch,
             pipeline: color_pipeline(gpu, format, layout, shader, true),
+            material_textures: BTreeMap::new(),
+            texture_bind_groups: BTreeMap::new(),
             lighting: None,
             shadows: None,
             shadow_sources: Vec::new(),
@@ -93,7 +108,59 @@ impl InstancedScene {
             last_vp: None,
             reallocations: 1,
             bytes_written: 0,
+            gpu_asset_states: BTreeMap::new(),
+            gpu_asset_events: Vec::new(),
+            nareth_draw_logged: Cell::new(false),
         }
+    }
+
+    fn begin_gpu_asset(&mut self, key: (MeshHandle, LodLevel)) -> u64 {
+        let generation = self
+            .gpu_asset_states
+            .get(&key)
+            .map_or(0, |(generation, _)| generation.wrapping_add(1));
+        self.gpu_asset_states
+            .insert(key, (generation, GpuAssetState::UploadingGpu));
+        self.gpu_asset_events.push(GpuAssetEvent {
+            mesh: key.0,
+            lod: key.1,
+            renderer_epoch: self.renderer_epoch,
+            generation,
+            state: GpuAssetState::UploadingGpu,
+            error: None,
+        });
+        generation
+    }
+
+    fn finish_gpu_asset(
+        &mut self,
+        key: (MeshHandle, LodLevel),
+        generation: u64,
+        state: GpuAssetState,
+        error: Option<String>,
+    ) {
+        self.gpu_asset_states.insert(key, (generation, state.clone()));
+        self.gpu_asset_events.push(GpuAssetEvent {
+            mesh: key.0,
+            lod: key.1,
+            renderer_epoch: self.renderer_epoch,
+            generation,
+            state,
+            error,
+        });
+    }
+
+    pub(crate) fn take_gpu_asset_events(&mut self) -> Vec<GpuAssetEvent> {
+        std::mem::take(&mut self.gpu_asset_events)
+    }
+
+    pub(crate) fn gpu_asset_state(
+        &self,
+        key: (MeshHandle, LodLevel),
+    ) -> GpuAssetState {
+        self.gpu_asset_states
+            .get(&key)
+            .map_or(GpuAssetState::Unavailable, |(_, state)| state.clone())
     }
 
     fn geometry(
@@ -116,22 +183,46 @@ impl InstancedScene {
             self.cache.entry(key).or_default().push(index);
             return Ok(index);
         }
+        let generation = self.begin_gpu_asset(key);
         let index_count =
-            u32::try_from(mesh.indices.len()).map_err(|e| GpuError::InvalidInput(e.to_string()))?;
-        let vertex_bytes = (mesh.vertices.len() as u64 * 28).max(4);
-        let index_bytes = (mesh.indices.len() as u64 * 4).max(4);
+            match u32::try_from(mesh.indices.len()) {
+                Ok(value) => value,
+                Err(error) => {
+                    let message = error.to_string();
+                    self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
+                    return Err(GpuError::InvalidInput(message));
+                }
+            };
+        let vertex_bytes = match (mesh.vertices.len() as u64).checked_mul(28) {
+            Some(value) => value.max(4),
+            None => {
+                let message = "vertex buffer size overflow".to_owned();
+                self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
+                return Err(GpuError::InvalidInput(message));
+            }
+        };
+        let index_bytes = match (mesh.indices.len() as u64).checked_mul(4) {
+            Some(value) => value.max(4),
+            None => {
+                let message = "index buffer size overflow".to_owned();
+                self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
+                return Err(GpuError::InvalidInput(message));
+            }
+        };
         if !mesh.indices.len().is_multiple_of(3)
             || mesh
                 .vertices
                 .iter()
-                .any(|v| !v.position.is_finite() || !v.color.is_finite())
+                .any(|v| !v.position.is_finite() || !v.color.is_finite() || !v.uv.is_finite())
             || mesh
                 .indices
                 .iter()
                 .any(|&i| i as usize >= mesh.vertices.len())
             || vertex_bytes.max(index_bytes) > gpu.device.limits().max_buffer_size
         {
-            return Err(GpuError::InvalidInput("invalid cached geometry".into()));
+            let message = "invalid cached geometry".to_owned();
+            self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
+            return Err(GpuError::InvalidInput(message));
         }
         let vertices: Vec<_> = mesh
             .vertices
@@ -171,11 +262,131 @@ impl InstancedScene {
             opaque: mesh.vertices.iter().all(|v| v.color.w == 1.0),
             vertex_bytes,
             index_bytes,
+            uvs: None,
+            uv_bytes: 0,
         };
+        if let Err(error) = gpu.check() {
+            let message = error.to_string();
+            self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message));
+            return Err(error);
+        }
         let index = self.geometries.len();
         self.geometries.push(geometry);
         self.cache.entry(key).or_default().push(index);
         Ok(index)
+    }
+
+    fn ensure_normals_for_geometry(
+        &mut self,
+        gpu: &GpuContext,
+        index: usize,
+    ) -> Result<(), GpuError> {
+        if self.geometries[index].normals.is_some() {
+            return Ok(());
+        }
+        let source = Arc::clone(&self.geometries[index].source);
+        let normals: Vec<_> = source
+            .resolved_normals()
+            .into_iter()
+            .map(|normal| normal.to_array())
+            .collect();
+        let normal_bytes = (normals.len() as u64 * 12).max(4);
+        let Some(key) = self
+            .cache
+            .iter()
+            .find_map(|(key, indices)| indices.contains(&index).then_some(*key))
+        else {
+            return Err(GpuError::InvalidInput(
+                "cached geometry has no asset identity".into(),
+            ));
+        };
+        if normal_bytes > gpu.device.limits().max_buffer_size {
+            let message = "normal buffer exceeds device limit".to_owned();
+            if let Some((generation, _)) = self.gpu_asset_states.get(&key).cloned() {
+                self.finish_gpu_asset(
+                    key,
+                    generation,
+                    GpuAssetState::GpuFailed,
+                    Some(message.clone()),
+                );
+            }
+            return Err(GpuError::InvalidInput(message));
+        }
+        let buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cached mesh normals"),
+            contents: if normals.is_empty() {
+                &[0; 4]
+            } else {
+                bytemuck::cast_slice(&normals)
+            },
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        if let Err(error) = gpu.check() {
+            let message = error.to_string();
+            if let Some((generation, _)) = self.gpu_asset_states.get(&key).cloned() {
+                self.finish_gpu_asset(
+                    key,
+                    generation,
+                    GpuAssetState::GpuFailed,
+                    Some(message),
+                );
+            }
+            return Err(error);
+        }
+        self.geometries[index].normal_bytes = normal_bytes;
+        self.geometries[index].normals = Some(buffer);
+        Ok(())
+    }
+
+    fn complete_gpu_asset(
+        &mut self,
+        gpu: &GpuContext,
+        key: (MeshHandle, LodLevel),
+        index: usize,
+        normals_required: bool,
+    ) -> Result<(), GpuError> {
+        if normals_required {
+            self.ensure_normals_for_geometry(gpu, index)?;
+        }
+        if let Err(error) = gpu.check() {
+            let message = error.to_string();
+            if let Some((generation, _)) = self.gpu_asset_states.get(&key).cloned() {
+                self.finish_gpu_asset(
+                    key,
+                    generation,
+                    GpuAssetState::GpuFailed,
+                    Some(message),
+                );
+            }
+            return Err(error);
+        }
+        if let Some((generation, state)) = self.gpu_asset_states.get(&key).cloned() {
+            if matches!(state, GpuAssetState::UploadingGpu) {
+                if key.0 == MeshHandle::NARETH_PLANET {
+                    let source = &self.geometries[index].source;
+                    eprintln!(
+                        "nareth-diag state=REAL_MODEL_PREPARED destination=9603 mesh={} lod={:?} renderer_epoch={} generation={} geometry_index={} arc_ptr={:p} vertices={} indices={} normals_bytes={}",
+                        key.0.0, key.1, self.renderer_epoch, generation, index,
+                        std::sync::Arc::as_ptr(source), source.vertices.len(),
+                        source.indices.len(), self.geometries[index].normal_bytes
+                    );
+                }
+                self.finish_gpu_asset(key, generation, GpuAssetState::GpuReady, None);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_geometry(
+        &mut self,
+        gpu: &GpuContext,
+        mesh: MeshHandle,
+        lod: LodLevel,
+        source: &Arc<RasterMesh>,
+    ) -> Result<(), GpuError> {
+        let key = (mesh, lod);
+        let index = self.geometry(gpu, key, source)?;
+        self.complete_gpu_asset(gpu, key, index, true)
     }
 
     pub(crate) fn sync(
@@ -251,12 +462,44 @@ impl InstancedScene {
             self.force_write = true;
             self.reallocations += 1;
         }
-        if scene.lighting.mode != render_core::LightingMode::Unlit {
+        let normals_required = scene.lighting.mode != render_core::LightingMode::Unlit;
+        let asset_geometries = self
+            .next_sources
+            .iter()
+            .map(|source| (source.key, source.geometry))
+            .collect::<Vec<_>>();
+        for source in asset_geometries {
+            self.complete_gpu_asset(gpu, source.0, source.1, normals_required)?;
+        }
+        if normals_required {
             if self.lighting.is_none() {
                 self.lighting = Some(crate::lighting::LightingPass::new(gpu, self.format)?);
             }
             for source in &self.next_sources {
                 let geometry = &mut self.geometries[source.geometry];
+                if geometry.uvs.is_none() {
+                    let uvs: Vec<[f32; 2]> = geometry
+                        .source
+                        .vertices
+                        .iter()
+                        .map(|vertex| vertex.uv.to_array())
+                        .collect();
+                    let bytes = bytemuck::cast_slice(&uvs);
+                    let uv_bytes = bytes.len() as u64;
+                    if uv_bytes > gpu.device.limits().max_buffer_size {
+                        return Err(GpuError::InvalidInput(
+                            "UV buffer exceeds device limit".into(),
+                        ));
+                    }
+                    geometry.uvs = Some(gpu.device.create_buffer_init(
+                        &wgpu::util::BufferInitDescriptor {
+                            label: Some("cached mesh UVs"),
+                            contents: if bytes.is_empty() { &[0; 4] } else { bytes },
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+                        },
+                    ));
+                    geometry.uv_bytes = uv_bytes.max(4);
+                }
                 if geometry.normals.is_none() {
                     let normals: Vec<_> = geometry
                         .source
@@ -287,6 +530,43 @@ impl InstancedScene {
                 .as_mut()
                 .expect("initialized lighting")
                 .sync(gpu, scene)?;
+            let mut needed = BTreeMap::new();
+            for batch in &self.batches {
+                if let Some(path) = scene.texture_path(batch.material) {
+                    needed.insert(batch.material, path.to_path_buf());
+                }
+            }
+            self.material_textures.retain(|material, _| needed.contains_key(material));
+            self.texture_bind_groups.retain(|(material, _), _| needed.contains_key(material));
+            for (material, path) in needed {
+                let reload = self.material_textures.get(&material).is_none_or(|(old, _)| old != &path);
+                if reload {
+                    let image = crate::texture_loader::TextureImage::load_png(&path)
+                        .map_err(|e| GpuError::InvalidInput(format!("texture {}: {e}", path.display())))?;
+                    let texture = crate::GpuTexture::from_image(gpu, &image)?;
+                    self.material_textures.insert(material, (path, texture));
+                    self.texture_bind_groups.retain(|(m, _), _| *m != material);
+                }
+            }
+            let lighting = self.lighting.as_ref().expect("lighting initialized");
+            for batch in &self.batches {
+                if let Some((_, texture)) = self.material_textures.get(&batch.material) {
+                    let key = (batch.material, batch.geometry);
+                    if !self.texture_bind_groups.contains_key(&key) {
+                        let uv = self.geometries[batch.geometry].uvs.as_ref().expect("UV buffer");
+                        let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("material texture and geometry UVs"),
+                            layout: &lighting.texture_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&texture.view) },
+                                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&texture.sampler) },
+                                wgpu::BindGroupEntry { binding: 2, resource: uv.as_entire_binding() },
+                            ],
+                        });
+                        self.texture_bind_groups.insert(key, group);
+                    }
+                }
+            }
         } else if let Some(lighting) = &mut self.lighting {
             lighting.active = false;
         }
@@ -455,7 +735,29 @@ impl InstancedScene {
             pass.set_vertex_buffer(1, self.instances.slice(..));
         }
         for batch in &self.batches {
+            if let Some(lighting) = lighting {
+                if let Some(group) = self.texture_bind_groups.get(&(batch.material, batch.geometry)) {
+                    lighting.bind_textured(pass);
+                    pass.set_bind_group(1, group, &[]);
+                } else {
+                    lighting.bind(pass);
+                    if let Some(shadows) = self.shadows.as_ref().filter(|s| s.active) {
+                        shadows.bind_color(pass);
+                    }
+                }
+            }
             let geometry = &self.geometries[batch.geometry];
+            if batch.key.0 == MeshHandle::NARETH_PLANET
+                && !self.nareth_draw_logged.get()
+            {
+                self.nareth_draw_logged.set(true);
+                eprintln!(
+                    "nareth-diag state=REAL_MODEL_PREPARED destination=9603 draw_mesh={} draw_lod={:?} renderer_epoch={} geometry_index={} arc_ptr={:p} index_count={} instances={:?}",
+                    batch.key.0.0, batch.key.1, self.renderer_epoch, batch.geometry,
+                    std::sync::Arc::as_ptr(&geometry.source), geometry.index_count,
+                    batch.instances
+                );
+            }
             pass.set_vertex_buffer(0, geometry.vertices.slice(..));
             if lighting.is_some() {
                 pass.set_vertex_buffer(
@@ -514,7 +816,7 @@ impl InstancedScene {
                 + self
                     .geometries
                     .iter()
-                    .map(|g| g.vertex_bytes + g.normal_bytes)
+                    .map(|g| g.vertex_bytes + g.normal_bytes + g.uv_bytes)
                     .sum::<u64>(),
             index_bytes: base.index_bytes
                 + self.geometries.iter().map(|g| g.index_bytes).sum::<u64>(),
@@ -537,6 +839,11 @@ impl InstancedScene {
                     .geometries
                     .iter()
                     .filter(|geometry| geometry.normals.is_some())
+                    .count() as u64
+                + self
+                    .geometries
+                    .iter()
+                    .filter(|geometry| geometry.uvs.is_some())
                     .count() as u64
                 + self
                     .lighting

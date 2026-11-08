@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use render_core::{
-    CullingConfig, LodLevel, Mat4, MaterialHandle, MeshHandle, PreparedDraw, PreparedScene,
+    CullingConfig, GpuAssetState, LodLevel, Mat4, MaterialHandle, MeshHandle, PreparedDraw, PreparedScene,
     RasterMesh, RenderSnapshot, SnapshotNode, SnapshotScene, Transform, Vec3, Vec4,
     VisibilityClass,
 };
@@ -248,6 +248,72 @@ fn geometry_and_instance_buffers_survive_visibility_lod_and_transform_changes() 
         assert_eq!(stats.index_bytes, warmed.index_bytes);
         assert_eq!(stats.instance_bytes, warmed.instance_bytes);
     }
+}
+
+#[test]
+fn gpu_asset_state_is_independent_and_emits_only_transitions() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let mut renderer = GpuRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm, &[]).unwrap();
+    assert_eq!(
+        renderer.gpu_asset_state(MeshHandle::CUBE, LodLevel::High),
+        GpuAssetState::Unavailable
+    );
+
+    let mesh = Arc::new(RasterMesh::triangle(
+        render_core::RasterVertex::new(Vec3::new(-0.5, -0.5, 0.0), Vec4::ONE),
+        render_core::RasterVertex::new(Vec3::new(0.5, -0.5, 0.0), Vec4::ONE),
+        render_core::RasterVertex::new(Vec3::new(0.0, 0.5, 0.0), Vec4::ONE),
+    ));
+    let prepared = PreparedScene::from_draws(vec![draw(1, mesh, 0)]);
+    renderer.sync_prepared(&prepared).unwrap();
+    let events = renderer.poll_gpu_asset_events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].state, GpuAssetState::UploadingGpu);
+    assert_eq!(events[1].state, GpuAssetState::GpuReady);
+    assert_eq!(events[0].generation, events[1].generation);
+    assert!(renderer.poll_gpu_asset_events().is_empty());
+    assert_eq!(
+        renderer.gpu_asset_state(MeshHandle::CUBE, LodLevel::High),
+        GpuAssetState::GpuReady
+    );
+
+    renderer.sync_prepared(&prepared).unwrap();
+    assert!(renderer.poll_gpu_asset_events().is_empty());
+}
+
+#[test]
+fn separate_renderers_have_distinct_epochs() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let first = GpuRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm, &[]).unwrap();
+    let second = GpuRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm, &[]).unwrap();
+    assert_ne!(first.renderer_epoch(), second.renderer_epoch());
+}
+
+#[test]
+fn invalid_geometry_emits_gpu_failed_without_cpu_state_changes() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let mut renderer = GpuRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm, &[]).unwrap();
+    let mesh = Arc::new(RasterMesh::new(
+        vec![render_core::RasterVertex::new(Vec3::ZERO, Vec4::ONE)],
+        vec![0, 1, 2],
+    ));
+    let prepared = PreparedScene::from_draws(vec![draw(2, mesh, 0)]);
+    assert!(renderer.sync_prepared(&prepared).is_err());
+    let events = renderer.poll_gpu_asset_events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].state, GpuAssetState::UploadingGpu);
+    assert_eq!(events[1].state, GpuAssetState::GpuFailed);
+    assert!(events[1].error.is_some());
+    assert_eq!(
+        renderer.gpu_asset_state(MeshHandle::CUBE, LodLevel::High),
+        GpuAssetState::GpuFailed
+    );
 }
 
 #[test]
