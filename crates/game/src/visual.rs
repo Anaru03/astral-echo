@@ -1,4 +1,6 @@
 use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
@@ -2516,6 +2518,12 @@ pub fn run() -> Result<(), String> {
     let snapshot_runtime = Rc::clone(&runtime);
     let input_runtime = Rc::clone(&runtime);
     let focus_runtime = Rc::clone(&runtime);
+    // ASTRAL_MODEL_PARTS_INTEGRATION
+    type ModelKey = (render_core::MeshHandle, render_core::MaterialHandle);
+    let model_parts: Rc<RefCell<BTreeMap<ModelKey, Vec<render_core::RegisteredModelPart>>>> =
+        Rc::new(RefCell::new(BTreeMap::new()));
+    let parts_for_snapshot = Rc::clone(&model_parts);
+    let parts_for_setup = Rc::clone(&model_parts);
     let config = WindowConfig {
         title: "Astral Echo — CPU propio".into(),
         preset: Preset::Low,
@@ -2539,6 +2547,25 @@ pub fn run() -> Result<(), String> {
                 &camera,
                 bridge.interior_mode,
             );
+            // Sustituir cada nodo por sus submallas sin alterar el mundo de juego.
+            // El hash de SnapshotId es estable dentro de una ejecucion y distingue
+            // instancias del mismo tipo de modelo.
+            let parts_by_model = parts_for_snapshot.borrow();
+            if !parts_by_model.is_empty() {
+                let mut expanded = Vec::with_capacity(snapshot.nodes.len());
+                for node in snapshot.nodes.drain(..) {
+                    if let Some(parts) = parts_by_model.get(&(node.mesh, node.material)) {
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        node.entity.hash(&mut hasher);
+                        let parent = hasher.finish();
+                        expanded.extend(render_core::expand_model_parts(&node, parts, parent));
+                    } else {
+                        expanded.push(node);
+                    }
+                }
+                snapshot.nodes = expanded;
+            }
+            drop(parts_by_model);
             if snapshot.overlay.game_over {
                 snapshot.overlay.hud.interaction_prompt = None;
                 snapshot.overlay.hud.contextual_action = None;
@@ -2574,18 +2601,27 @@ pub fn run() -> Result<(), String> {
                 bridge.neutralize_gamepad();
             }
         },
-        |scene| {
+        move |scene| {
             scene.set_lighting_mode(LightingMode::Pbr);
             let assets_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");
-            for (path, mesh, material) in [
-                (assets_root.join("station/station.obj"), render_core::MeshHandle::STATION, VisualAssets::STATION),
-                (assets_root.join("shooter/shooter.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY),
-                (assets_root.join("charger/charger.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY_CHARGER),
-                (assets_root.join("shielded/shielded.obj"), render_core::MeshHandle::ENEMY_PLACEHOLDER, VisualAssets::ENEMY_SHIELDED),
-            ] {
-                match render_core::load_obj(&path) {
-                    Ok(mesh_data) => scene.register_mesh(mesh, material, mesh_data),
-                    Err(error) => eprintln!("modelo no cargado {}: {error}", path.display()),
+            // Registra modelos completos, incluyendo todas sus submallas y texturas.
+            // Si falta un archivo, conserva los modelos procedurales existentes.
+            for (model_index, definition) in
+                crate::model_registry::registered_models().into_iter().enumerate()
+            {
+                let relative_path = definition.path;
+                let mesh = definition.mesh;
+                let material = definition.material;
+                let path = assets_root.join(relative_path);
+                // Reservar rangos diferentes por modelo y separados de handles del motor.
+                let first_id = 100_000u32 + (model_index as u32) * 20_000;
+                match render_core::register_textured_model(scene, &path, first_id, first_id) {
+                    Ok(parts) if !parts.is_empty() => {
+                        println!("modelo cargado: {} ({} submallas)", path.display(), parts.len());
+                        parts_for_setup.borrow_mut().insert((mesh, material), parts);
+                    }
+                    Ok(_) => eprintln!("modelo sin submallas: {}", path.display()),
+                    Err(error) => eprintln!("modelo no cargado {}: {error}; se usa respaldo", path.display()),
                 }
             }
             scene.set_material(VisualAssets::SHIP, MaterialInfo::ship());
