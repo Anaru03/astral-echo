@@ -46,7 +46,7 @@ struct Batch {
 pub(crate) struct InstancedScene {
     renderer_epoch: u64,
     pipeline: wgpu::RenderPipeline,
-    material_textures: BTreeMap<MaterialHandle, (PathBuf, crate::GpuTexture)>,
+    material_textures: BTreeMap<MaterialHandle, (PathBuf, std::sync::Arc<crate::GpuTexture>)>,
     texture_bind_groups: BTreeMap<(MaterialHandle, usize), wgpu::BindGroup>,
     lighting: Option<crate::lighting::LightingPass>,
     shadows: Option<crate::shadows::ShadowPass>,
@@ -543,7 +543,15 @@ impl InstancedScene {
                 if reload {
                     let image = crate::texture_loader::TextureImage::load_png(&path)
                         .map_err(|e| GpuError::InvalidInput(format!("texture {}: {e}", path.display())))?;
-                    let texture = crate::GpuTexture::from_image(gpu, &image)?;
+                    let texture = if let Some(existing) = self.material_textures
+                        .values()
+                        .find(|(existing_path, _)| existing_path == &path)
+                        .map(|(_, texture)| std::sync::Arc::clone(texture))
+                    {
+                        existing
+                    } else {
+                        std::sync::Arc::new(crate::GpuTexture::from_image(gpu, &image)?)
+                    };
                     self.material_textures.insert(material, (path, texture));
                     self.texture_bind_groups.retain(|(m, _), _| *m != material);
                 }
