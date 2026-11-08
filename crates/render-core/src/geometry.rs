@@ -1,10 +1,11 @@
-use glam::{Vec3, Vec4};
+use glam::{Vec2, Vec3, Vec4};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RasterVertex {
     pub position: Vec3,
     pub color: Vec4,
     pub normal: Vec3,
+    pub uv: Vec2,
 }
 
 impl RasterVertex {
@@ -13,11 +14,17 @@ impl RasterVertex {
             position,
             color,
             normal: Vec3::ZERO,
+            uv: Vec2::ZERO,
         }
     }
 
     pub fn with_normal(mut self, normal: Vec3) -> Self {
         self.normal = normal.normalize_or_zero();
+        self
+    }
+
+    pub fn with_uv(mut self, uv: Vec2) -> Self {
+        self.uv = uv;
         self
     }
 }

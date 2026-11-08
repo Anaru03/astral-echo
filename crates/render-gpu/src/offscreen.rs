@@ -83,6 +83,14 @@ impl OffscreenTarget {
         (self.layout.width, self.layout.height)
     }
 
+    pub fn color_view(&self) -> &wgpu::TextureView {
+        &self.color_view
+    }
+
+    pub fn depth_view(&self) -> &wgpu::TextureView {
+        &self.depth.view
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
         if self.size() != (width, height) {
             let config = self.postprocess.as_ref().map(|pass| pass.config());
@@ -134,7 +142,18 @@ impl OffscreenTarget {
         scene: &SnapshotScene,
     ) -> Result<(), GpuError> {
         self.validate_renderer(renderer)?;
-        renderer.sync_snapshot(scene)?;
+        let prepared = scene.prepare(render_core::CullingConfig {
+            width: self.layout.width,
+            height: self.layout.height,
+            ..Default::default()
+        });
+        if prepared.draws().any(|draw| {
+            prepared.texture_path(draw.node.material).is_some()
+        }) {
+            renderer.sync_prepared(&prepared)?;
+        } else {
+            renderer.sync_snapshot(scene)?;
+        }
         self.render_snapshot_matrix(renderer, scene)
     }
 

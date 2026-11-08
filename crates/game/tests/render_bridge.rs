@@ -9,7 +9,7 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     let world = support::fixture_world();
     let before = format!("{world:?}");
     let snapshot = snapshot_from_world(&world, Default::default());
-    assert_eq!(snapshot.nodes.len(), 10);
+    assert_eq!(snapshot.nodes.len(), 15);
     assert_eq!(
         snapshot
             .nodes
@@ -250,7 +250,7 @@ fn station_visibility_and_identity_are_preserved_across_snapshots() {
     let stations: Vec<_> = snapshot
         .nodes
         .iter()
-        .filter(|node| node.mesh == STATION_MESH)
+        .filter(|node| node.mesh == STATION_MESH && matches!(node.entity, SnapshotId::Entity(id) if id == first || id == second))
         .collect();
     assert_eq!(stations.len(), 2);
     assert_eq!(stations.iter().filter(|node| !node.visible).count(), 1);
@@ -462,7 +462,7 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
     scene
         .update(&snapshot_from_world(&world, Default::default()))
         .unwrap();
-    assert_eq!(scene.visible_nodes().count(), 7);
+    assert_eq!(scene.visible_nodes().count(), 12);
     assert!(scene.snapshot().nodes.iter().filter(|n| matches!(n.entity,SnapshotId::Entity(id) if id==enemy || id==collectible || id==new_player)).all(|n| !n.visible));
     let empty = gameplay::GameplayWorld::new();
     assert_eq!(
@@ -472,7 +472,21 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
             .removed,
         11
     );
-    assert!(scene.snapshot().nodes.is_empty());
+    // Un mundo sin entidades de gameplay puede conservar
+    // objetos visuales estaticos de la escena exterior.
+    let empty_snapshot = snapshot_from_world(&empty, Default::default());
+
+    assert_eq!(scene.snapshot(), &empty_snapshot);
+
+    for node in &scene.snapshot().nodes {
+        assert!(!matches!(
+            node.entity,
+            SnapshotId::Entity(id)
+                if id == new_player
+                    || id == enemy
+                    || id == collectible
+        ));
+    }
 }
 
 #[test]
@@ -662,7 +676,10 @@ fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
             SnapshotId::Destination(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Derelict(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Hazard(_) => panic!("surface object must have a stable entity id"),
-            SnapshotId::VisualEvent(_) => panic!("surface object must have a stable entity id"),
+            SnapshotId::VisualEvent(_)
+            | SnapshotId::ModelPart { .. } => {
+                panic!("surface object must have a stable entity id")
+            },
         };
         assert!(ids.insert(id), "duplicate surface object id {id:?}");
 

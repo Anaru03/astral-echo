@@ -1,6 +1,6 @@
 # Blender 5.2.0 LTS
 # www.blender.org
-mtllib estructure_abandonada.mtl
+mtllib station.mtl
 o Nucleo_central_octagonal
 v 0.000000 -1.325000 -1.480517
 v -0.016630 -1.307000 -1.493112

@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::{
-    Aabb, Camera, Frustum, Mat4, MaterialHandle, MeshHandle, RasterMesh, RasterVertex,
+    Aabb, Camera, Frustum, Mat4, MaterialHandle, MaterialTextureRegistry, MeshHandle, RasterMesh, RasterVertex,
     RenderSnapshot, SnapshotId, SnapshotNode, Transform, Vec3, Vec4,
 };
 
@@ -51,6 +51,7 @@ pub struct PreparedDraw {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PreparedScene {
+    textures: MaterialTextureRegistry,
     draws: Vec<PreparedDraw>,
     shadow_draws: Option<Vec<PreparedDraw>>,
     pub lighting: crate::LightingEnvironment,
@@ -71,6 +72,13 @@ pub struct PreparedSceneStats {
 }
 
 impl PreparedScene {
+    pub fn texture_path(
+        &self,
+        material: MaterialHandle,
+    ) -> Option<&std::path::Path> {
+        self.textures.get(material)
+    }
+
     pub fn from_draws(draws: Vec<PreparedDraw>) -> Self {
         Self {
             considered: draws.len(),
@@ -78,6 +86,7 @@ impl PreparedScene {
             discarded: 0,
             triangles: draws.iter().map(|draw| draw.mesh.indices.len() / 3).sum(),
             draws,
+            textures: MaterialTextureRegistry::default(),
             shadow_draws: None,
             lighting: crate::LightingEnvironment::default(),
             materials: BTreeMap::new(),
@@ -558,6 +567,7 @@ pub struct SceneUpdate {
 }
 
 pub struct SnapshotScene {
+    textures: MaterialTextureRegistry,
     assets: VisualAssets,
     snapshot: RenderSnapshot,
     lighting_mode: crate::LightingMode,
@@ -570,6 +580,7 @@ impl Default for SnapshotScene {
     fn default() -> Self {
         let camera = Camera::demo();
         Self {
+            textures: MaterialTextureRegistry::default(),
             assets: VisualAssets::default(),
             lod_history: RefCell::default(),
             lighting_mode: crate::LightingMode::Unlit,
@@ -586,6 +597,14 @@ impl Default for SnapshotScene {
 }
 
 impl SnapshotScene {
+    pub fn register_material_texture(
+        &mut self,
+        material: MaterialHandle,
+        path: impl Into<std::path::PathBuf>,
+    ) {
+        self.textures.register(material, path);
+    }
+
     pub fn register_mesh(
         &mut self,
         mesh: MeshHandle,
@@ -720,6 +739,7 @@ impl SnapshotScene {
             considered: self.snapshot.nodes.len(),
             lighting: crate::LightingEnvironment::from_snapshot(&self.snapshot, self.lighting_mode),
             materials: self.materials.clone(),
+            textures: self.textures.clone(),
             ..Default::default()
         };
         prepared.lighting.shadows = self.shadow_config;

@@ -4,6 +4,7 @@ use std::time::Duration as StdDuration;
 use std::sync::mpsc;
 use engine::{Duration, EntityId, Vec3};
 mod visual;
+mod model_registry;
 mod scenario_groups;
 mod runtime_types;
 mod runtime_mode;
