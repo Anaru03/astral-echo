@@ -170,6 +170,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let start_gpu = matches!(decision, BackendDecision::Gpu);
         let debug = render_present::GraphicsDebugConfig {
             directory: graphics_debug.then(|| PathBuf::from("target/graphics-debug")),
+            dual_capture: false,
         };
         let mut shooter_mesh = Some(shooter_mesh);
         let report = render_present::run_hot_swap_window_with_input_and_scene(

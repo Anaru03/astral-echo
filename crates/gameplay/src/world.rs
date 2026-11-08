@@ -132,6 +132,7 @@ pub struct GameplayWorld {
     events: EventLog,
     visual_events: Vec<GameplayVisualEvent>,
     next_visual_event_id: u64,
+    shared_inventory_mode: bool,
 }
 
 impl GameplayWorld {
@@ -171,6 +172,10 @@ impl GameplayWorld {
             inventories: self
                 .inventories
                 .iter()
+                .filter(|(owner, _)| {
+                    !self.shared_inventory_mode
+                        || self.shared_inventory_owner() == Some(**owner)
+                })
                 .map(|(owner, inventory)| InventorySaveState {
                     owner: *owner,
                     capacity: inventory.capacity(),
@@ -665,6 +670,17 @@ impl GameplayWorld {
     }
     pub fn player(&self, entity: EntityId) -> Option<&Player> {
         self.players.get(&entity)
+    }
+    pub fn initialize_player_position(
+        &mut self,
+        player: EntityId,
+        position: engine::Vec3,
+    ) -> bool {
+        let Some(value) = self.players.get_mut(&player) else {
+            return false;
+        };
+        value.position = position;
+        true
     }
     pub fn companions(&self) -> impl Iterator<Item = &Companion> {
         self.companions.values()
@@ -5032,7 +5048,54 @@ impl GameplayWorld {
         ))
     }
     pub fn inventory(&self, player: EntityId) -> Option<&Inventory> {
-        self.inventories.get(&player)
+        let owner = self
+            .shared_inventory_owner()
+            .filter(|_| self.shared_inventory_mode)
+            .unwrap_or(player);
+        self.inventories.get(&owner)
+    }
+    fn shared_inventory_owner(&self) -> Option<EntityId> {
+        self.players.keys().next().copied()
+    }
+    pub fn enable_shared_inventory(&mut self) -> Result<(), InventoryError> {
+        let Some(owner) = self.shared_inventory_owner() else {
+            return Err(InventoryError::PlayerNotFound);
+        };
+        let capacity = self
+            .inventories
+            .values()
+            .map(Inventory::capacity)
+            .fold(0, u32::saturating_add)
+            .max(1);
+        let mut shared = Inventory::new(capacity)?;
+        for (player, inventory) in &self.inventories {
+            if *player == owner {
+                continue;
+            }
+            for (item, quantity) in inventory.entries() {
+                shared
+                    .try_add(item, quantity)
+                    .map_err(|_| InventoryError::CapacityExceeded)?;
+            }
+        }
+        if let Some(inventory) = self.inventories.get(&owner) {
+            for (item, quantity) in inventory.entries() {
+                shared
+                    .try_add(item, quantity)
+                    .map_err(|_| InventoryError::CapacityExceeded)?;
+            }
+        }
+        self.inventories.clear();
+        self.inventories.insert(owner, shared);
+        self.shared_inventory_mode = true;
+        Ok(())
+    }
+    fn replace_inventory(&mut self, player: EntityId, inventory: Inventory) {
+        let owner = self
+            .shared_inventory_owner()
+            .filter(|_| self.shared_inventory_mode)
+            .unwrap_or(player);
+        self.inventories.insert(owner, inventory);
     }
     pub fn item_definition(&self, item: crate::types::ItemId) -> Option<&ItemDefinition> {
         self.item_definitions.get(&item)
@@ -5175,8 +5238,7 @@ impl GameplayWorld {
             && amount > 0
             && amount <= item.amount
             && self
-                .inventories
-                .get(&player)
+                .inventory(player)
                 .is_some_and(|inventory| inventory.can_add(amount))
     }
     pub fn interactable(&self, entity: EntityId) -> Option<&Interactable> {
@@ -5328,6 +5390,12 @@ impl GameplayWorld {
         self.navigation
             .ship_id()
             .map(|_| self.navigation.control_active())
+    }
+    pub fn free_navigation_destination(&self) -> Option<crate::navigation::DestinationId> {
+        self.navigation.free_navigation_destination()
+    }
+    pub fn free_navigation_proposal(&self) -> Option<&crate::navigation::FreeNavigationProposal> {
+        self.navigation.free_navigation_proposal()
     }
     pub fn ship_boost_active(&self) -> Option<bool> {
         self.navigation
@@ -6021,10 +6089,14 @@ impl GameplayWorld {
         if !self.players.contains_key(&player) {
             return Err(InventoryError::PlayerNotFound);
         }
-        if self.inventories.contains_key(&player) {
+        let owner = self
+            .shared_inventory_owner()
+            .filter(|_| self.shared_inventory_mode)
+            .unwrap_or(player);
+        if self.inventories.contains_key(&owner) {
             return Err(InventoryError::AlreadyInitialized);
         }
-        self.inventories.insert(player, Inventory::new(capacity)?);
+        self.inventories.insert(owner, Inventory::new(capacity)?);
         self.events
             .push(crate::events::GameplayEvent::InventoryInitialized { player, capacity });
         Ok(())
@@ -6036,6 +6108,12 @@ impl GameplayWorld {
         item: crate::types::ItemId,
         amount: u32,
     ) -> Result<(), InventoryTransferError> {
+        if self.shared_inventory_mode {
+            if self.player(from).is_none() || self.player(to).is_none() {
+                return Err(InventoryTransferError::PlayerNotFound);
+            }
+            return Ok(());
+        }
         let sender = self.player(from).ok_or(InventoryTransferError::PlayerNotFound)?;
         let receiver = self.player(to).ok_or(InventoryTransferError::PlayerNotFound)?;
         if from == to {
@@ -6058,13 +6136,11 @@ impl GameplayWorld {
             return Err(InventoryTransferError::InvalidQuantity);
         }
         let source = self
-            .inventories
-            .get(&from)
+            .inventory(from)
             .cloned()
             .ok_or(InventoryTransferError::InventoryNotInitialized)?;
         let target = self
-            .inventories
-            .get(&to)
+            .inventory(to)
             .cloned()
             .ok_or(InventoryTransferError::InventoryNotInitialized)?;
         if source.quantity(item) < amount {
@@ -6100,8 +6176,8 @@ impl GameplayWorld {
                 | InventoryError::AlreadyInitialized
                 | InventoryError::InvalidCapacity => InventoryTransferError::ArithmeticOverflow,
             })?;
-        self.inventories.insert(from, updated_source);
-        self.inventories.insert(to, updated_target);
+        self.replace_inventory(from, updated_source);
+        self.replace_inventory(to, updated_target);
         self.publish(crate::events::GameplayEvent::ItemRemoved {
             player: from,
             item,
@@ -6345,7 +6421,11 @@ impl GameplayWorld {
         self.combatants.get_mut(&entity)
     }
     pub(crate) fn inventory_mut(&mut self, player: EntityId) -> Option<&mut Inventory> {
-        self.inventories.get_mut(&player)
+        let owner = self
+            .shared_inventory_owner()
+            .filter(|_| self.shared_inventory_mode)
+            .unwrap_or(player);
+        self.inventories.get_mut(&owner)
     }
     pub(crate) fn use_healing_consumable(
         &mut self,
@@ -6412,7 +6492,7 @@ impl GameplayWorld {
         if combatant_after.current_health > combatant_after.maximum_health {
             return Err(HealingError::InvalidHealth);
         }
-        self.inventories.insert(player, inventory_after);
+        self.replace_inventory(player, inventory_after);
         self.combatants.insert(player, combatant_after);
         self.publish(crate::events::GameplayEvent::ItemRemoved {
             player,
@@ -6514,7 +6594,7 @@ impl GameplayWorld {
         let mut target_player_after = *target_player;
         target_player_after.is_active = true;
 
-        self.inventories.insert(helper, inventory_after);
+        self.replace_inventory(helper, inventory_after);
         self.combatants.insert(target, target_after);
         self.players.insert(target, target_player_after);
         self.entities.activate(target);
@@ -6809,7 +6889,7 @@ impl GameplayWorld {
             return Err(WorldActivityError::ActivityNotFound);
         };
         offer_mut.stock -= amount;
-        self.inventories.insert(player, inventory_after);
+        self.replace_inventory(player, inventory_after);
         self.currencies.insert(player, balance - total);
         self.publish(crate::events::GameplayEvent::WorldPurchaseCompleted {
             player,
@@ -6848,7 +6928,7 @@ impl GameplayWorld {
             .try_remove(upgrade.material(), upgrade.material_cost())
             .map_err(|_| WorldActivityError::InventoryInsufficient)?;
         self.ship_upgrades.entry(ship).or_default().insert(upgrade);
-        self.inventories.insert(player, inventory_after);
+        self.replace_inventory(player, inventory_after);
         self.currencies.insert(player, balance - upgrade.credit_cost());
         self.publish(crate::events::GameplayEvent::ShipUpgradeInstalled {
             player,
@@ -6897,7 +6977,7 @@ impl GameplayWorld {
         let balance_after = balance
             .checked_add(total)
             .ok_or(WorldActivityError::PriceOverflow)?;
-        self.inventories.insert(player, inventory_after);
+        self.replace_inventory(player, inventory_after);
         self.currencies.insert(player, balance_after);
         self.publish(crate::events::GameplayEvent::WorldSaleCompleted {
             player,
@@ -6951,7 +7031,7 @@ impl GameplayWorld {
             return Err(WorldActivityError::ActivityNotFound);
         };
         site_mut.available -= amount;
-        self.inventories.insert(player, inventory_after);
+        self.replace_inventory(player, inventory_after);
         self.publish(crate::events::GameplayEvent::WorldResourceExtracted {
             player,
             destination,
@@ -7185,8 +7265,7 @@ impl GameplayWorld {
             return Err(ShipRepairError::RepairMaterialNotFound);
         }
         let inventory = self
-            .inventories
-            .get(&player)
+            .inventory(player)
             .ok_or(ShipRepairError::InventoryNotInitialized)?;
         if inventory.quantity(configuration.material) < configuration.material_cost {
             return Err(ShipRepairError::InsufficientMaterial);
@@ -7206,7 +7285,7 @@ impl GameplayWorld {
             .repair(amount)
             .map_err(|_| ShipRepairError::InvalidConfiguration)?;
 
-        self.inventories.insert(player, inventory_after);
+        self.replace_inventory(player, inventory_after);
         self.ship_integrity.insert(ship, integrity_after);
         self.publish(crate::events::GameplayEvent::ItemRemoved {
             player,
@@ -7291,6 +7370,30 @@ impl GameplayWorld {
             return Err(crate::navigation::NavigationStartError::ResourcesNotInitialized);
         };
         self.navigation.start_travel(now, resources.fuel_mut(), discount_percent)
+    }
+    pub(crate) fn start_free_navigation(
+        &mut self,
+        now: engine::Duration,
+        player: EntityId,
+        pilot_station: EntityId,
+    ) -> Result<
+        (DestinationId, engine::Duration, engine::Duration, u32, u32),
+        crate::navigation::FreeNavigationStartError,
+    > {
+        let Some(ship) = self.navigation.ship_id() else {
+            return Err(crate::navigation::FreeNavigationStartError::DestinationNotFound);
+        };
+        let discount_percent = self.ship_fuel_discount_percent();
+        let Some(resources) = self.ship_resources.get_mut(&ship) else {
+            return Err(crate::navigation::FreeNavigationStartError::InsufficientFuel);
+        };
+        self.navigation.start_free_navigation(
+            now,
+            resources.fuel_mut(),
+            player,
+            pilot_station,
+            discount_percent,
+        )
     }
     pub(crate) fn plan_autopilot(
         &mut self,
@@ -7712,4 +7815,27 @@ fn validate_interactable_geometry(
         return Err(InteractionRegistrationError::InvalidRange);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod shared_inventory_tests {
+    use super::GameplayWorld;
+    use crate::types::ItemId;
+
+    #[test]
+    fn shared_inventory_is_canonical_for_all_players() {
+        let mut world = GameplayWorld::new();
+        let first = world.create_player().unwrap();
+        let second = world.create_player().unwrap();
+        world.initialize_inventory(first, 20).unwrap();
+        world.initialize_inventory(second, 20).unwrap();
+        world.enable_shared_inventory().unwrap();
+
+        assert!(std::ptr::eq(
+            world.inventory(first).unwrap(),
+            world.inventory(second).unwrap()
+        ));
+        world.inventory_mut(second).unwrap().add(ItemId(7), 2);
+        assert_eq!(world.inventory(first).unwrap().quantity(ItemId(7)), 2);
+    }
 }

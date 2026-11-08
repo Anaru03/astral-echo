@@ -17,10 +17,14 @@ use gameplay::{
     Derelict, DerelictId, DerelictReward, InteractionBehavior, RewardDistributionPolicy,
     StationType, WeaponAmmunition, WeaponConfiguration,
 };
-use render_core::{LightingMode, MaterialInfo, VisualAssets};
+use render_core::{
+    GpuAssetState, LightingMode, LodLevel, MaterialHandle, MaterialInfo, MeshHandle,
+    VisualAssetRequest, VisualAssetState,
+    VisualAssets,
+};
 use render_present::{
-    run_hot_swap_window_with_input_and_scene_and_focus, ElementState, GraphicsDebugConfig,
-    KeyCode, Preset, WindowConfig,
+    run_hot_swap_window_with_input_and_scene_and_focus_and_assets, visual_asset_channel,
+    ElementState, GraphicsDebugConfig, KeyCode, Preset, VisualAssetClient, WindowConfig,
 };
 
 #[path = "gamepad.rs"]
@@ -32,10 +36,31 @@ use audio::{AudioEvent, AudioManager, SoundEffect};
 
 const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
+const TESSARA_DESTINATION: DestinationId = DestinationId::new(9_601);
+const KHARVEX_DESTINATION: DestinationId = DestinationId::new(9_602);
+const NARETH_DESTINATION: DestinationId = DestinationId::new(9_603);
+const NARETH_POSITION: GameplayVec3 = GameplayVec3 {
+    x: 105.30,
+    y: 18.0,
+    z: -123.30,
+};
+const NARETH_RESOURCE_ID: &str = "planet.nareth";
+const NARETH_MODEL_RELATIVE_PATH: &str = "../../assets/models/seraphim/Seraphim_planet.obj";
+const NARETH_MODEL_SHA256: &str = "E7CF257E50AE7A51DA3D09E2D69F3313F780616AA23F5026D1649C0783486B93";
+const TESSARA_POSITION: GameplayVec3 = GameplayVec3 {
+    x: -49.17,
+    y: 8.0,
+    z: 31.17,
+};
+const KHARVEX_POSITION: GameplayVec3 = GameplayVec3 {
+    x: -70.20,
+    y: -12.0,
+    z: -88.20,
+};
 const VISUAL_INITIAL_SHIP_POSITION: GameplayVec3 = GameplayVec3 {
     x: 0.0,
     y: 0.0,
-    z: 120.0,
+    z: 220.0,
 };
 const SIGNAL: DestinationId = DestinationId::new(9_003);
 const ENCOUNTER: EncounterId = EncounterId::new(9_004);
@@ -48,6 +73,8 @@ struct FlightKeys {
     backward: bool,
     left: bool,
     right: bool,
+    ascend: bool,
+    descend: bool,
 }
 
 impl FlightKeys {
@@ -57,6 +84,8 @@ impl FlightKeys {
             KeyCode::KeyS => &mut self.backward,
             KeyCode::KeyA => &mut self.left,
             KeyCode::KeyD => &mut self.right,
+            KeyCode::Space => &mut self.ascend,
+            KeyCode::ControlLeft | KeyCode::ControlRight => &mut self.descend,
             _ => return false,
         };
         *slot = active;
@@ -66,7 +95,7 @@ impl FlightKeys {
     fn input(self) -> GameplayVec3 {
         GameplayVec3 {
             x: if self.right { 1.0 } else { 0.0 } - if self.left { 1.0 } else { 0.0 },
-            y: 0.0,
+            y: if self.ascend { 1.0 } else { 0.0 } - if self.descend { 1.0 } else { 0.0 },
             z: if self.backward { 1.0 } else { 0.0 } - if self.forward { 1.0 } else { 0.0 },
         }
     }
@@ -191,6 +220,12 @@ impl ObservationTransition {
         self.azimuth += azimuth_delta;
         self.elevation = (self.elevation + elevation_delta).clamp(-1.2, 1.2);
     }
+
+    fn retarget(&mut self, now: u64) {
+        self.from = self.progress(now);
+        self.to = 1.0;
+        self.started_at = now;
+    }
 }
 
 struct VisualBridge {
@@ -205,6 +240,9 @@ struct VisualBridge {
     enemy: EntityId,
     feedback: String,
     observation: ObservationTransition,
+    observation_target: Option<DestinationId>,
+    navigation_selector_open: bool,
+    free_navigation_candidate: Option<DestinationId>,
     flight_keys: FlightKeys,
     gamepad: GamepadInput,
     audio: AudioManager,
@@ -220,7 +258,10 @@ struct VisualBridge {
     interior_mode: bool,
     introductory_threat_pending: bool,
     controls_panel_open: bool,
+    hud_visible: bool,
+    inventory_open: bool,
     pilot_mode: bool,
+    pilot_camera_distance: f32,
     fire_pressed: bool,
     boost_pressed: bool,
     shield_active: bool,
@@ -231,6 +272,10 @@ struct VisualBridge {
     look_down: bool,
     last_interior_update: Instant,
     last_world_update: Instant,
+    visual_asset_client: Option<VisualAssetClient>,
+    visual_asset_states: BTreeMap<String, VisualAssetState>,
+    gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, u64, GpuAssetState)>,
+    nareth_diag_snapshot_mesh: Option<MeshHandle>,
 }
 
 impl VisualBridge {
@@ -252,6 +297,11 @@ impl VisualBridge {
         let mut session = ProjectEchoSession::new();
         let player = session.ids.first_player;
         let ship = session.ids.first_ship;
+        let exterior_position = |local: GameplayVec3| GameplayVec3 {
+            x: initial_ship_position.x + local.x,
+            y: initial_ship_position.y + local.y,
+            z: initial_ship_position.z + local.z,
+        };
         session.update([
             GameplayCommand::RegisterItemDefinition {
                 definition: gameplay::ItemDefinition::new(
@@ -270,7 +320,7 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_010),
-                    GameplayVec3 { x: 40.0, y: 0.0, z: 0.0 },
+                    exterior_position(GameplayVec3 { x: 70.0, y: 0.0, z: 70.0 }),
                     3.5,
                 )
                 .with_rewards(
@@ -284,7 +334,7 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_011),
-                    GameplayVec3 { x: -40.0, y: 0.0, z: 0.0 },
+                    exterior_position(GameplayVec3 { x: -80.0, y: 0.0, z: 40.0 }),
                     3.5,
                 )
                 .with_rewards(
@@ -298,7 +348,7 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_012),
-                    GameplayVec3 { x: 60.0, y: 0.0, z: 0.0 },
+                    exterior_position(GameplayVec3 { x: 55.0, y: 0.0, z: -85.0 }),
                     3.5,
                 )
                 .with_rewards(
@@ -309,7 +359,7 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_013),
-                    GameplayVec3 { x: -60.0, y: 0.0, z: 0.0 },
+                    exterior_position(GameplayVec3 { x: -70.0, y: 0.0, z: -65.0 }),
                     3.5,
                 )
                 .with_rewards(
@@ -320,7 +370,7 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_014),
-                    GameplayVec3 { x: 0.0, y: 0.0, z: 60.0 },
+                    exterior_position(GameplayVec3 { x: 95.0, y: 0.0, z: 35.0 }),
                     3.5,
                 )
                 .with_rewards(
@@ -333,6 +383,12 @@ impl VisualBridge {
             .world_mut()
             .initialize_ship_position(initial_ship_position)
             .map_err(|error| format!("inicializar posición visual de ECHO-7: {error:?}"))?;
+        if !session
+            .world_mut()
+            .initialize_player_position(player, initial_ship_position)
+        {
+            return Err("inicializar posición del protagonista dentro de ECHO-7".to_owned());
+        }
         session
             .register_destination(Destination {
                 id: ORIGIN,
@@ -357,6 +413,36 @@ impl VisualBridge {
                 discovery: DiscoveryState::Discovered,
             })
             .map_err(|error| format!("registrar destino visual: {error:?}"))?;
+        session
+            .register_destination(Destination {
+                id: TESSARA_DESTINATION,
+                destination_type: DestinationType::Planet,
+                position: TESSARA_POSITION,
+                travel_duration: Duration(1_000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .map_err(|error| format!("registrar Tessara: {error:?}"))?;
+        session
+            .register_destination(Destination {
+                id: KHARVEX_DESTINATION,
+                destination_type: DestinationType::Planet,
+                position: KHARVEX_POSITION,
+                travel_duration: Duration(1_000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .map_err(|error| format!("registrar Kharvex: {error:?}"))?;
+        session
+            .register_destination(Destination {
+                id: NARETH_DESTINATION,
+                destination_type: DestinationType::Planet,
+                position: NARETH_POSITION,
+                travel_duration: Duration(1_000),
+                fuel_cost: 1,
+                discovery: DiscoveryState::Discovered,
+            })
+            .map_err(|error| format!("registrar Nareth: {error:?}"))?;
         session
             .register_destination(Destination {
                 id: SIGNAL,
@@ -399,6 +485,21 @@ impl VisualBridge {
                 state: NavigationRouteState::Available,
             },
         }]);
+        for (from, to, distance) in [
+            (ORIGIN, TESSARA_DESTINATION, 101.85),
+            (TESSARA_DESTINATION, ORIGIN, 101.85),
+        ] {
+            session.update([GameplayCommand::RegisterNavigationRoute {
+                route: NavigationRoute {
+                    from,
+                    to,
+                    distance,
+                    duration: Duration(1_000),
+                    fuel_cost: 1,
+                    state: NavigationRouteState::Available,
+                },
+            }]);
+        }
         if !session.world_mut().configure_planet_physics(PlanetPhysics {
             destination: DESTINATION,
             orbit_center: GameplayVec3 {
@@ -407,6 +508,9 @@ impl VisualBridge {
                 z: -18.0,
             },
             orbit_radius: game::render_bridge::PLANET_ORBIT_RADIUS,
+            orbit_start: GameplayVec3::ZERO,
+            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
+            orbit_phase: 0.0,
             orbit_angular_speed: game::render_bridge::PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
             ship_radius: 1.0,
@@ -415,6 +519,70 @@ impl VisualBridge {
             atmosphere_height: 4.0,
         }) {
             return Err("configurar la fÃ­sica planetaria visual".to_owned());
+        }
+        if !session.world_mut().configure_planet_physics(PlanetPhysics {
+            destination: TESSARA_DESTINATION,
+            orbit_center: GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0,
+            },
+            orbit_radius: game::render_bridge::TESSARA_ORBIT_RADIUS,
+            orbit_start: TESSARA_POSITION,
+            orbit_axis: GameplayVec3 { x: 49.17, y: 0.0, z: 49.17 },
+            orbit_phase: 0.0,
+            orbit_angular_speed: game::render_bridge::TESSARA_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
+            surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }) {
+            return Err("configurar la física de Tessara".to_owned());
+        }
+        if !session.world_mut().configure_planet_physics(PlanetPhysics {
+            destination: KHARVEX_DESTINATION,
+            orbit_center: GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0,
+            },
+            orbit_radius: game::render_bridge::KHARVEX_ORBIT_RADIUS,
+            orbit_start: KHARVEX_POSITION,
+            orbit_axis: GameplayVec3 { x: 70.2, y: 0.0, z: -70.2 },
+            orbit_phase: game::render_bridge::KHARVEX_ORBIT_PHASE_RAD,
+            orbit_angular_speed: game::render_bridge::KHARVEX_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
+            surface_radius: game::render_bridge::KHARVEX_SURFACE_RADIUS,
+            ship_radius: 1.0,
+            gravity_influence_radius: 28.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }) {
+            return Err("configurar la fisica de Kharvex".to_owned());
+        }
+        if !session.world_mut().configure_planet_physics(PlanetPhysics {
+            destination: NARETH_DESTINATION,
+            orbit_center: GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0,
+            },
+            orbit_radius: game::render_bridge::NARETH_ORBIT_RADIUS,
+            orbit_start: NARETH_POSITION,
+            orbit_axis: GameplayVec3 {
+                x: 105.3,
+                y: 0.0,
+                z: 105.3,
+            },
+            orbit_phase: 0.0,
+            orbit_angular_speed: game::render_bridge::NARETH_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
+            surface_radius: game::render_bridge::NARETH_VISUAL_RADIUS,
+            ship_radius: 1.0,
+            gravity_influence_radius: 48.0,
+            gravitational_parameter: 160.0,
+            atmosphere_height: 8.0,
+        }) {
+            return Err("configurar la fisica de Nareth".to_owned());
         }
         if initial_ship_position != GameplayVec3::ZERO
             && !session.world_mut().configure_solar_physics(PlanetPhysics {
@@ -425,6 +593,9 @@ impl VisualBridge {
                 z: -18.0,
             },
             orbit_radius: 0.0,
+            orbit_start: GameplayVec3::ZERO,
+            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 12.0,
             ship_radius: 1.0,
@@ -435,37 +606,42 @@ impl VisualBridge {
         {
             return Err("configurar la física solar visual".to_owned());
         }
+        let interior_position = |local: GameplayVec3| GameplayVec3 {
+            x: initial_ship_position.x + local.x,
+            y: initial_ship_position.y + local.y,
+            z: initial_ship_position.z + local.z,
+        };
         let pilot_station = session
             .create_station(
-                GameplayVec3 { x: 0.0, y: 0.0, z: 1.5 },
+                interior_position(GameplayVec3 { x: 0.0, y: 0.0, z: 1.5 }),
                 3.0,
                 StationType::Piloting,
             )
             .map_err(|error| format!("crear estación visual: {error:?}"))?;
         let engineering_station = session
             .create_station(
-                GameplayVec3 { x: 2.5, y: 0.0, z: 0.0 },
+                interior_position(GameplayVec3 { x: 2.5, y: 0.0, z: 0.0 }),
                 3.0,
                 StationType::Engineering,
             )
             .map_err(|error| format!("engineering station: {error:?}"))?;
         let _status_console = session
             .create_ship_status_console(
-                GameplayVec3 {
+                interior_position(GameplayVec3 {
                     x: -2.0,
                     y: 0.0,
                     z: 0.0,
-                },
+                }),
                 3.0,
             )
             .map_err(|error| format!("crear consola de estado visual: {error:?}"))?;
         let electrical_panel = session
             .create_electrical_panel(
-                GameplayVec3 {
+                interior_position(GameplayVec3 {
                     x: 0.0,
                     y: 0.0,
                     z: -2.0,
-                },
+                }),
                 3.0,
                 ElectricalPanelConfiguration::new(vec![ElectricalBreakerConfiguration {
                     id: BreakerId::new(1),
@@ -476,11 +652,11 @@ impl VisualBridge {
             .map_err(|error| format!("crear panel electrico visual: {error:?}"))?;
         let life_support_panel = session
             .create_life_support_panel(
-                GameplayVec3 {
+                interior_position(GameplayVec3 {
                     x: 2.0,
                     y: 0.0,
                     z: 0.0,
-                },
+                }),
                 3.0,
                 LifeSupportConfiguration::new(
                     5,
@@ -503,21 +679,21 @@ impl VisualBridge {
             .map_err(|error| format!("crear panel de soporte visual: {error:?}"))?;
         let bridge_door = session
             .create_bridge_door(
-                GameplayVec3 {
+                interior_position(GameplayVec3 {
                     x: 0.0,
                     y: 0.0,
                     z: 2.0,
-                },
+                }),
                 3.0,
             )
             .map_err(|error| format!("crear puerta del puente visual: {error:?}"))?;
         
             let enemy_position = if interior_mode && safe_interior_enemy_start {
-            GameplayVec3 {
+            interior_position(GameplayVec3 {
                 x: 24.0,
                 y: 0.0,
                 z: 120.0,
-            }
+            })
         } else {
             GameplayVec3 {
                 x: 18.0,
@@ -622,6 +798,9 @@ impl VisualBridge {
             enemy,
             feedback: "ESCENA INICIALIZADA".to_owned(),
             observation: ObservationTransition::default(),
+            observation_target: Some(DESTINATION),
+            navigation_selector_open: false,
+            free_navigation_candidate: None,
             flight_keys: FlightKeys::default(),
             gamepad: GamepadInput::new(),
             audio,
@@ -637,7 +816,10 @@ impl VisualBridge {
             interior_mode,
             introductory_threat_pending,
             controls_panel_open: false,
+            hud_visible: true,
+            inventory_open: false,
             pilot_mode: false,
+            pilot_camera_distance: game::render_bridge::PILOT_CAMERA_DEFAULT_DISTANCE,
             fire_pressed: false,
             boost_pressed: false,
             shield_active: false,
@@ -648,6 +830,10 @@ impl VisualBridge {
             look_down: false,
             last_interior_update: Instant::now(),
             last_world_update: Instant::now(),
+            visual_asset_client: None,
+            visual_asset_states: BTreeMap::new(),
+            gpu_asset_states: BTreeMap::new(),
+            nareth_diag_snapshot_mesh: None,
         })
     }
 
@@ -660,6 +846,166 @@ impl VisualBridge {
         bridge.started = false;
         bridge.feedback = "ASTRAL ECHO - PULSA ENTER PARA COMENZAR".to_owned();
         Ok(bridge)
+    }
+
+    fn attach_visual_asset_client(&mut self, client: VisualAssetClient) {
+        self.visual_asset_client = Some(client);
+        // Start the deferred load during runtime initialization so Nareth is
+        // ready before the player first selects it for observation.
+        self.request_nareth_visual_asset();
+    }
+
+    fn request_visual_asset(
+        &mut self,
+        resource_id: impl Into<String>,
+        path: impl Into<std::path::PathBuf>,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+    ) -> bool {
+        let resource_id = resource_id.into();
+        if self.visual_asset_states.contains_key(&resource_id) {
+            return false;
+        }
+        let request = VisualAssetRequest {
+            resource_id: resource_id.clone(),
+            path: path.into(),
+            mesh,
+            material,
+        };
+        let Some(client) = self.visual_asset_client.as_ref() else {
+            return false;
+        };
+        if client.request(request).is_err() {
+            return false;
+        }
+        self.visual_asset_states
+            .insert(resource_id, VisualAssetState::Loading);
+        true
+    }
+
+    fn poll_visual_asset_events(&mut self) {
+        let Some(client) = self.visual_asset_client.as_mut() else {
+            return;
+        };
+        for event in client.poll_events() {
+            if event.resource_id == NARETH_RESOURCE_ID {
+                let label = match event.state {
+                    VisualAssetState::Loading => "FALLBACK_LOADING_CPU",
+                    VisualAssetState::Ready => "FALLBACK_CPU_REGISTERED_GPU_PENDING",
+                    VisualAssetState::Failed => "FALLBACK_CPU_FAILED",
+                };
+                eprintln!(
+                    "nareth-diag state={} destination=9603 resource={} error={:?}",
+                    label, event.resource_id, event.error
+                );
+            }
+            self.visual_asset_states
+                .insert(event.resource_id, event.state.clone());
+            if let VisualAssetState::Failed = event.state {
+                if let Some(error) = event.error {
+                    self.feedback = format!("RECURSO VISUAL NO DISPONIBLE: {error}");
+                }
+            }
+        }
+        for event in client.poll_gpu_events() {
+            let key = (event.mesh, event.lod);
+            let is_newer = self
+                .gpu_asset_states
+                .get(&key)
+                .is_none_or(|(epoch, generation, _)| {
+                    (event.renderer_epoch, event.generation) >= (*epoch, *generation)
+                });
+            if is_newer {
+                let state = event.state.clone();
+                if event.mesh == MeshHandle::NARETH_PLANET {
+                    let label = match state {
+                        GpuAssetState::Unavailable => "FALLBACK_GPU_FAILED",
+                        GpuAssetState::UploadingGpu => "FALLBACK_CPU_REGISTERED_GPU_PENDING",
+                        GpuAssetState::GpuReady => "REAL_MODEL_SELECTED",
+                        GpuAssetState::GpuFailed => "FALLBACK_GPU_FAILED",
+                    };
+                    eprintln!(
+                        "nareth-diag state={} destination=9603 resource={} mesh={} lod={:?} renderer_epoch={} generation={} error={:?}",
+                        label, NARETH_RESOURCE_ID, event.mesh.0, event.lod,
+                        event.renderer_epoch, event.generation, event.error
+                    );
+                }
+                self.gpu_asset_states
+                    .insert(key, (event.renderer_epoch, event.generation, state.clone()));
+                if event.mesh == MeshHandle::NARETH_PLANET
+                    && matches!(state, GpuAssetState::GpuFailed)
+                {
+                    if let Some(error) = event.error {
+                        self.feedback = format!("RECURSO GPU NO DISPONIBLE: {error}");
+                    }
+                }
+            } else if event.mesh == MeshHandle::NARETH_PLANET {
+                eprintln!(
+                    "nareth-diag state=FALLBACK_STALE_GENERATION destination=9603 resource={} mesh={} lod={:?} renderer_epoch={} generation={}",
+                    NARETH_RESOURCE_ID, event.mesh.0, event.lod,
+                    event.renderer_epoch, event.generation
+                );
+            }
+        }
+    }
+
+    fn log_nareth_snapshot_mesh(&mut self, mesh: MeshHandle) {
+        if self.nareth_diag_snapshot_mesh == Some(mesh) {
+            return;
+        }
+        self.nareth_diag_snapshot_mesh = Some(mesh);
+        let label = if mesh == MeshHandle::NARETH_PLANET {
+            "REAL_MODEL_SELECTED"
+        } else {
+            match self.visual_asset_states.get(NARETH_RESOURCE_ID) {
+                None => "FALLBACK_NOT_REQUESTED",
+                Some(VisualAssetState::Loading) => "FALLBACK_LOADING_CPU",
+                Some(VisualAssetState::Failed) => "FALLBACK_CPU_FAILED",
+                Some(VisualAssetState::Ready) => match self
+                    .gpu_asset_states
+                    .get(&(MeshHandle::NARETH_PLANET, LodLevel::High))
+                    .map(|(_, _, state)| state)
+                {
+                    Some(GpuAssetState::GpuFailed | GpuAssetState::Unavailable) => {
+                        "FALLBACK_GPU_FAILED"
+                    }
+                    _ => "FALLBACK_CPU_REGISTERED_GPU_PENDING",
+                },
+            }
+        };
+        eprintln!(
+            "nareth-diag state={} destination=9603 resource={} snapshot_mesh={} snapshot_material={}",
+            label, NARETH_RESOURCE_ID, mesh.0, VisualAssets::PLANET.0
+        );
+    }
+
+    fn nareth_visual_asset_ready(&self) -> bool {
+        self.visual_asset_states
+            .get(NARETH_RESOURCE_ID)
+            .is_some_and(|state| *state == VisualAssetState::Ready)
+            && self
+                .gpu_asset_states
+                .get(&(MeshHandle::NARETH_PLANET, LodLevel::High))
+                .is_some_and(|(_, _, state)| *state == GpuAssetState::GpuReady)
+    }
+
+    fn request_nareth_visual_asset(&mut self) {
+        let request = nareth_visual_asset_request();
+        let size = std::fs::metadata(&request.path).map(|metadata| metadata.len()).ok();
+        let resource_id = request.resource_id.clone();
+        let path = request.path.clone();
+        let requested = self.request_visual_asset(
+            request.resource_id,
+            request.path,
+            request.mesh,
+            request.material,
+        );
+        eprintln!(
+            "nareth-diag state={} destination=9603 resource={} mesh={} material={} path={} bytes={:?} sha256_verified={} sha256_source=preflight request_accepted={}",
+            if requested { "FALLBACK_LOADING_CPU" } else { "FALLBACK_CPU_FAILED" },
+            resource_id, request.mesh.0, request.material.0,
+            path.display(), size, NARETH_MODEL_SHA256, requested
+        );
     }
 
     fn start_game(&mut self) {
@@ -802,13 +1148,72 @@ impl VisualBridge {
             }
             return;
         }
+        if state == ElementState::Pressed && key == KeyCode::F2 {
+            self.hud_visible = !self.hud_visible;
+            self.controls_panel_open = false;
+            return;
+        }
+        if state == ElementState::Pressed && key == KeyCode::F3 {
+            self.inventory_open = !self.inventory_open;
+            return;
+        }
         if self.controls_panel_open {
+            return;
+        }
+        if self.pilot_mode && state == ElementState::Pressed {
+            match key {
+                KeyCode::PageUp | KeyCode::Equal => {
+                    self.pilot_camera_distance =
+                        (self.pilot_camera_distance - 2.0)
+                            .max(game::render_bridge::PILOT_CAMERA_MIN_DISTANCE);
+                    return;
+                }
+                KeyCode::PageDown | KeyCode::Minus => {
+                    self.pilot_camera_distance =
+                        (self.pilot_camera_distance + 2.0)
+                            .min(game::render_bridge::PILOT_CAMERA_MAX_DISTANCE);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.pilot_mode && state == ElementState::Pressed && key == KeyCode::KeyN {
+            self.toggle_navigation_selector();
+            return;
+        }
+        if self.navigation_selector_open {
+            if state != ElementState::Pressed {
+                return;
+            }
+            match key {
+                KeyCode::ArrowLeft => self.select_free_navigation_candidate(-1),
+                KeyCode::ArrowRight => self.select_free_navigation_candidate(1),
+                KeyCode::Enter => self.confirm_free_navigation_candidate(),
+                _ => {}
+            }
             return;
         }
         let player = self.player;
         let ship = self.ship;
         let enemy = self.enemy;
         let pilot_station = self.pilot_station;
+        if self.pilot_mode
+            && state == ElementState::Pressed
+            && key == KeyCode::Escape
+            && matches!(
+                self.session.world().travel_state(),
+                gameplay::TravelState::InProgress { .. }
+            )
+        {
+            if self.issue([GameplayCommand::CancelAutopilot {
+                player,
+                pilot_station,
+            }]) {
+                self.feedback = "ERICK: autopilotaje libre cancelado.".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+            }
+            return;
+        }
         if self.player_defeated {
             if state == ElementState::Pressed {
                 match key {
@@ -844,6 +1249,19 @@ impl VisualBridge {
                 active: self.boost_pressed,
             }]);
             return;
+        }
+        if self.pilot_mode && self.observation_is_active() && state == ElementState::Pressed {
+            match key {
+                KeyCode::BracketLeft => {
+                    self.select_observation_planet(-1);
+                    return;
+                }
+                KeyCode::BracketRight => {
+                    self.select_observation_planet(1);
+                    return;
+                }
+                _ => {}
+            }
         }
         if key == KeyCode::KeyG && self.pilot_mode {
             if state == ElementState::Pressed {
@@ -1709,6 +2127,11 @@ impl VisualBridge {
         self.last_interior_update = now;
         let seconds = delta_ms as f32 / 1_000.0;
         let local = self.current_flight_input();
+        let interior_origin = self
+            .session
+            .world()
+            .ship_position()
+            .unwrap_or(GameplayVec3::ZERO);
         let yaw = player.orientation.yaw_degrees.to_radians();
         let (sin_yaw, cos_yaw) = yaw.sin_cos();
         let mut direction = GameplayVec3 {
@@ -1725,16 +2148,16 @@ impl VisualBridge {
             );
         }
         let collision_buffer = 0.75;
-        let min_x = -game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+        let min_x = interior_origin.x - game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
             + game::render_bridge::ECHO7_PLAYER_RADIUS
             + collision_buffer;
-        let max_x = game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+        let max_x = interior_origin.x + game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
             - game::render_bridge::ECHO7_PLAYER_RADIUS
             - collision_buffer;
-        let min_z = -game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
+        let min_z = interior_origin.z - game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
             + game::render_bridge::ECHO7_PLAYER_RADIUS
             + collision_buffer;
-        let max_z = game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
+        let max_z = interior_origin.z + game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
             - game::render_bridge::ECHO7_PLAYER_RADIUS
             - collision_buffer;
         let braking_distance_x = player.velocity.x.abs().powi(2)
@@ -1995,7 +2418,37 @@ impl VisualBridge {
             return "PULSA ENTER PARA COMENZAR".to_owned();
         }
         if self.pilot_mode {
-            return "PILOTAJE ACTIVO: USA F1 PARA VER CONTROLES".to_owned();
+            if self.navigation_selector_open {
+                let candidate = self
+                    .free_navigation_candidate
+                    .map(Self::navigation_destination_label)
+                    .unwrap_or("NINGUNO");
+                return format!(
+                    "SELECCIÓN DE DESTINO | CANDIDATO: {candidate} | FLECHAS CAMBIAR | ENTER CONFIRMAR | N CERRAR"
+                );
+            }
+            let confirmed = self
+                .session
+                .world()
+                .free_navigation_destination()
+                .map(Self::navigation_destination_label)
+                .unwrap_or("NINGUNO");
+            let proposal = self
+                .free_navigation_proposal_status();
+            let autopilot = match self.session.world().autopilot_state() {
+                gameplay::AutopilotState::InTransit { .. }
+                    if matches!(
+                        self.session.world().travel_state(),
+                        gameplay::TravelState::InProgress { .. }
+                    ) => "EN TRANSITO",
+                gameplay::AutopilotState::Completed { .. } => "COMPLETADO",
+                gameplay::AutopilotState::Interrupted { .. } => "CANCELADO",
+                _ => "INACTIVO",
+            };
+            return format!(
+                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - F1 CONTROLES - F2 HUD - F3 INVENTARIO",
+                self.observation_target_label(),
+            );
         }
         if let Some(prompt) = self.contextual_prompt() {
             return format!("{prompt} - ACERCATE Y USA I");
@@ -2007,9 +2460,9 @@ impl VisualBridge {
             {
                 return "PULSA M PARA INICIAR LA MISION DISPONIBLE".to_owned();
             }
-            return "EXPLORACION: USA F1 PARA VER CONTROLES".to_owned();
+            return "EXPLORACION: F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned();
         }
-        "EXTERIOR: SIGUE LA GUIA Y USA F1 PARA VER CONTROLES".to_owned()
+        "EXTERIOR: SIGUE LA GUIA - F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned()
     }
 
     fn guidance_prompt(&self) -> Option<String> {
@@ -2056,7 +2509,7 @@ impl VisualBridge {
                 gameplay::AutopilotState::Interrupted { .. } => "INTERRUMPIDO",
                 gameplay::AutopilotState::Failed { .. } => "FALLIDO",
             };
-            format!("MODO PILOTAJE ECHO-7 | WASD VOLAR | FLECHAS RUMBO | P AUTOPILOTO | I SALIR | AUTO: {autopilot}")
+            format!("MODO PILOTAJE ECHO-7 | WASD VOLAR | ESPACIO SUBIR | CTRL BAJAR | PGUP/PGDN CAMARA | FLECHAS RUMBO | P AUTOPILOTO | I SALIR | AUTO: {autopilot}")
         } else if self.interior_mode {
             "WASD MOVER | FLECHAS MIRAR | I USAR | M INICIAR".to_owned()
         } else if self
@@ -2071,15 +2524,21 @@ impl VisualBridge {
     }
 
     fn controls_panel_entries(&self) -> Vec<String> {
-        let mut entries = vec!["F1 ABRIR O CERRAR PANEL".to_owned()];
+        let mut entries = vec![
+            "F1 ABRIR O CERRAR PANEL".to_owned(),
+            "F2 OCULTAR O MOSTRAR HUD".to_owned(),
+            "F3 ABRIR O CERRAR INVENTARIO".to_owned(),
+        ];
         if self.pilot_mode {
             entries.extend([
-                "WASD VOLAR - PILOTAJE".to_owned(),
+                "WASD VOLAR | ESPACIO SUBIR | CTRL BAJAR | PGUP/PGDN CAMARA - PILOTAJE".to_owned(),
                 "FLECHAS CAMBIAR RUMBO - PILOTAJE".to_owned(),
                 "F DISPARAR - PILOTAJE".to_owned(),
                 "G ESCUDO - PILOTAJE".to_owned(),
                 "SHIFT BOOST - PILOTAJE".to_owned(),
                 "X FRENAR - PILOTAJE".to_owned(),
+                "[/] CAMBIAR PLANETA OBSERVADO - PILOTAJE".to_owned(),
+                "N SELECCIONAR DESTINO LIBRE - PILOTAJE".to_owned(),
                 "U USAR COMBUSTIBLE - PILOTAJE".to_owned(),
                 "B EQUIPAR PLASMA - ARMAMENTO ENCONTRADO".to_owned(),
                 "P AUTOPILOTO - PILOTAJE".to_owned(),
@@ -2196,6 +2655,27 @@ impl VisualBridge {
 
     fn exit_pilot(&mut self) {
         let mut aggregate = FeedbackAggregate::default();
+        let free_autopilot_active = matches!(
+            self.session.world().autopilot_state(),
+            gameplay::AutopilotState::InTransit { route, next_leg: 1, .. }
+                if route.len() == 2 && route[0] == route[1]
+        ) && matches!(
+            self.session.world().travel_state(),
+            gameplay::TravelState::InProgress { .. }
+        );
+        if free_autopilot_active
+            && !self.issue_into(
+                [GameplayCommand::CancelAutopilot {
+                    player: self.player,
+                    pilot_station: self.pilot_station,
+                }],
+                &mut aggregate,
+            )
+        {
+            self.feedback = "ERICK: no puedo abandonar la estación mientras el viaje siga activo.".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+            return;
+        }
         let accepted = self.issue_into(
             [GameplayCommand::SetShipControlActive {
                 player: self.player,
@@ -2210,13 +2690,28 @@ impl VisualBridge {
                 ship: self.ship,
                 active: false,
             }]);
-            self.issue_into(
+            let released = self.issue_into(
                 [GameplayCommand::ReleaseStation {
                     station: self.pilot_station,
                     player: self.player,
                 }],
                 &mut aggregate,
             );
+            if !released {
+                self.issue([GameplayCommand::SetShipControlActive {
+                    player: self.player,
+                    pilot_station: self.pilot_station,
+                    active: true,
+                }]);
+                self.feedback = "ERICK: el viaje fue cancelado, pero no puedo liberar la estación.".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+                return;
+            }
+            if let Some(ship_position) = self.session.world().ship_position() {
+                self.session
+                    .world_mut()
+                    .initialize_player_position(self.player, ship_position);
+            }
             self.pilot_mode = false;
             self.interior_mode = true;
             self.flight_keys = FlightKeys::default();
@@ -2224,7 +2719,11 @@ impl VisualBridge {
             self.fire_pressed = false;
             self.boost_pressed = false;
             self.shield_active = false;
-            self.feedback = "PILOTAJE FINALIZADO - CONTROL DE PERSONAJE RESTAURADO".to_owned();
+            self.feedback = if free_autopilot_active {
+                "ERICK: viaje cancelado por abandono de la estación. PILOTAJE FINALIZADO.".to_owned()
+            } else {
+                "PILOTAJE FINALIZADO - CONTROL DE PERSONAJE RESTAURADO".to_owned()
+            };
         } else {
             self.feedback = aggregate.message();
         }
@@ -2424,7 +2923,247 @@ impl VisualBridge {
         self.observation.toggle(now);
     }
 
+    fn observation_is_active(&self) -> bool {
+        self.observation
+            .progress(self.session.world().time().elapsed.0)
+            >= 0.5
+    }
+
+    fn observation_target_label(&self) -> &'static str {
+        match self.observation_target {
+            Some(id) if id == DESTINATION => "VEYRA",
+            Some(id) if id == TESSARA_DESTINATION => "TESSARA",
+            Some(id) if id == KHARVEX_DESTINATION => "KHARVEX",
+            Some(id) if id == NARETH_DESTINATION => "NARETH",
+            _ => "VEYRA",
+        }
+    }
+
+    fn navigation_destination_label(destination: DestinationId) -> &'static str {
+        match destination {
+            id if id == DESTINATION => "VEYRA",
+            id if id == TESSARA_DESTINATION => "TESSARA",
+            _ => "DESTINO",
+        }
+    }
+
+    fn free_navigation_proposal_status(&self) -> &'static str {
+        if self.free_navigation_proposal_is_stale() {
+            return "OBSOLETA";
+        }
+        self.session
+            .world()
+            .free_navigation_proposal()
+            .map(|value| match value.evaluation {
+                gameplay::FreeNavigationEvaluation::Viable => "VIABLE",
+                gameplay::FreeNavigationEvaluation::NotViable => "NO VIABLE",
+                gameplay::FreeNavigationEvaluation::Incomplete => "INCOMPLETA",
+            })
+            .unwrap_or("SIN EVALUAR")
+    }
+
+    fn free_navigation_proposal_is_stale(&self) -> bool {
+        let Some(proposal) = self.session.world().free_navigation_proposal() else {
+            return false;
+        };
+        let world = self.session.world();
+        let Some(current_position) = world.ship_position() else {
+            return true;
+        };
+        let Some(destination) = world.destination(proposal.destination) else {
+            return true;
+        };
+        let destination_position = world
+            .navigation()
+            .planet_position_at(proposal.destination, world.time().elapsed)
+            .unwrap_or(destination.position);
+        let fuel_available = world
+            .navigation()
+            .ship_id()
+            .and_then(|ship| world.ship_fuel(ship))
+            .map(|fuel| fuel.current())
+            .unwrap_or_default();
+        let destination_moves = world
+            .navigation()
+            .planet_physics(proposal.destination)
+            .is_some_and(|physics| physics.orbit_angular_speed != 0.0);
+        proposal.is_stale(
+            world.time().elapsed,
+            current_position,
+            destination_position,
+            fuel_available,
+            destination_moves,
+        )
+    }
+
+    fn free_navigation_candidates(&self) -> Vec<DestinationId> {
+        self.session
+            .world()
+            .destinations()
+            .filter(|destination| {
+                destination.destination_type == gameplay::DestinationType::Planet
+                    && destination.discovery != gameplay::DiscoveryState::Unknown
+                    && gameplay::is_free_navigation_destination(destination.id)
+            })
+            .map(|destination| destination.id)
+            .collect()
+    }
+
+    fn toggle_navigation_selector(&mut self) {
+        if self.navigation_selector_open {
+            self.navigation_selector_open = false;
+            self.free_navigation_candidate = None;
+            return;
+        }
+        let candidates = self.free_navigation_candidates();
+        let Some(first) = candidates.first().copied() else {
+            self.feedback = "ERICK: no hay planetas disponibles para navegación libre.".to_owned();
+            return;
+        };
+        let confirmed = self.session.world().free_navigation_destination();
+        self.free_navigation_candidate = Some(
+            confirmed
+                .filter(|destination| candidates.contains(destination))
+                .unwrap_or(first),
+        );
+        self.navigation_selector_open = true;
+    }
+
+    fn select_free_navigation_candidate(&mut self, direction: i32) {
+        let candidates = self.free_navigation_candidates();
+        if candidates.is_empty() {
+            return;
+        }
+        let current = self
+            .free_navigation_candidate
+            .filter(|destination| candidates.contains(destination))
+            .unwrap_or(candidates[0]);
+        let index = candidates.iter().position(|value| *value == current).unwrap_or(0) as i32;
+        let next = (index + direction).rem_euclid(candidates.len() as i32) as usize;
+        self.free_navigation_candidate = Some(candidates[next]);
+    }
+
+    fn confirm_free_navigation_candidate(&mut self) {
+        let Some(destination) = self.free_navigation_candidate else {
+            return;
+        };
+        let results = self.session.update([GameplayCommand::ConfirmFreeNavigationDestination {
+            player: self.player,
+            pilot_station: self.pilot_station,
+            destination,
+        }]);
+        let status = results.first().map(|result| result.status);
+        match status {
+            Some(gameplay::CommandStatus::Success { .. }) => {
+                self.navigation_selector_open = false;
+                self.free_navigation_candidate = None;
+                let evaluation = self.session.update([GameplayCommand::EvaluateFreeNavigation {
+                    player: self.player,
+                    pilot_station: self.pilot_station,
+                }]);
+                if matches!(
+                    evaluation.first().map(|result| result.status),
+                    Some(gameplay::CommandStatus::Success { .. })
+                ) {
+                    self.feedback = self.free_navigation_proposal_feedback();
+                } else {
+                    self.feedback = format!(
+                        "ERICK: destino de navegación seleccionado: {}.",
+                        Self::navigation_destination_label(destination)
+                    );
+                }
+            }
+            Some(gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::MissionOneIncomplete,
+            }) => {
+                self.feedback = "ERICK: primero debemos preparar la nave para el vuelo.".to_owned();
+            }
+            Some(gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::PilotStationNotOccupiedByPlayer,
+            }) => {
+                self.feedback = "ERICK: necesito acceso a la estación de pilotaje.".to_owned();
+            }
+            Some(gameplay::CommandStatus::Rejected { .. })
+            | Some(gameplay::CommandStatus::Invalid { .. })
+            | None => {
+                self.feedback = "ERICK: no puedo aceptar ese destino.".to_owned();
+            }
+        }
+        println!("visual gameplay: {}", self.feedback);
+    }
+
+    fn free_navigation_proposal_feedback(&self) -> String {
+        let Some(proposal) = self.session.world().free_navigation_proposal() else {
+            return "ERICK: no puedo validar la trayectoria con la información disponible.".to_owned();
+        };
+        let evaluation = match proposal.evaluation {
+            gameplay::FreeNavigationEvaluation::Viable => "VIABLE",
+            gameplay::FreeNavigationEvaluation::NotViable => "NO VIABLE",
+            gameplay::FreeNavigationEvaluation::Incomplete => "INCOMPLETA",
+        };
+        let risks = if proposal.risks.is_empty() {
+            "NINGUNO".to_owned()
+        } else {
+            proposal
+                .risks
+                .iter()
+                .map(|risk| match risk {
+                    gameplay::FreeNavigationRisk::SolarCollision => "IMPACTO SOLAR",
+                    gameplay::FreeNavigationRisk::PlanetCollision(_) => "COLISIÓN PLANETARIA",
+                    gameplay::FreeNavigationRisk::InsufficientFuel { .. } => "COMBUSTIBLE INSUFICIENTE",
+                    gameplay::FreeNavigationRisk::IncompleteBodyData(_) => "DATOS GEOMÉTRICOS INCOMPLETOS",
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        format!(
+            "ERICK: {} | DESTINO: {} | DISTANCIA: {:.2} | DURACIÓN ESTIMADA: {:.1}s | COMBUSTIBLE: {}/{} | RIESGOS: {}",
+            evaluation,
+            Self::navigation_destination_label(proposal.destination),
+            proposal.distance,
+            proposal.duration.0 as f32 / 1000.0,
+            proposal.fuel_required,
+            proposal.fuel_available,
+            risks,
+        )
+    }
+
+    fn select_observation_planet(&mut self, direction: i32) {
+        let planets = game::render_bridge::observable_planets(self.session.world());
+        if planets.len() <= 1 {
+            return;
+        }
+        let current = self
+            .observation_target
+            .filter(|id| planets.contains(id))
+            .unwrap_or(DESTINATION);
+        let index = planets.iter().position(|id| *id == current).unwrap_or(0) as i32;
+        let next = (index + direction).rem_euclid(planets.len() as i32) as usize;
+        let selected = planets[next];
+        if self.observation_target == Some(selected) {
+            return;
+        }
+        self.observation_target = Some(selected);
+        self.observation
+            .retarget(self.session.world().time().elapsed.0);
+        if selected == NARETH_DESTINATION {
+            self.request_nareth_visual_asset();
+        }
+        self.feedback = format!("OBSERVANDO: {}", self.observation_target_label());
+    }
+
     fn toggle_flight(&mut self, player: EntityId, pilot_station: EntityId) {
+        if self.session.world().free_navigation_proposal().is_some() {
+            let started = self.issue([GameplayCommand::StartFreeNavigation {
+                player,
+                pilot_station,
+            }]);
+            if started {
+                self.feedback = "ERICK: autopilotaje libre iniciado.".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+            }
+            return;
+        }
         if let Ok(guidance) = self.session.world().guidance_for_player(player) {
             if let Some(
                 gameplay::GuidanceAction::TravelTo(destination)
@@ -2500,21 +3239,40 @@ impl VisualBridge {
 
     fn camera(&self, aspect: f32) -> Result<render_core::Camera, render_core::CameraError> {
         let world = self.session.world();
+        if self.pilot_mode {
+            return game::render_bridge::pilot_camera(
+                world,
+                aspect,
+                self.pilot_camera_distance,
+            );
+        }
         if self.interior_mode {
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
         }
-        game::render_bridge::observation_camera(
+        game::render_bridge::observation_camera_for_destination(
             world,
             aspect,
             self.observation.progress(world.time().elapsed.0),
             self.observation.azimuth,
             self.observation.elevation,
+            self.observation_target,
         )
+    }
+}
+
+fn nareth_visual_asset_request() -> VisualAssetRequest {
+    VisualAssetRequest {
+        resource_id: NARETH_RESOURCE_ID.to_owned(),
+        path: Path::new(env!("CARGO_MANIFEST_DIR")).join(NARETH_MODEL_RELATIVE_PATH),
+        mesh: MeshHandle::NARETH_PLANET,
+        material: VisualAssets::PLANET,
     }
 }
 
 pub fn run() -> Result<(), String> {
     let runtime = Rc::new(RefCell::new(VisualBridge::new_visual_runtime()?));
+    let (asset_client, asset_host) = visual_asset_channel();
+    runtime.borrow_mut().attach_visual_asset_client(asset_client);
     let snapshot_runtime = Rc::clone(&runtime);
     let input_runtime = Rc::clone(&runtime);
     let focus_runtime = Rc::clone(&runtime);
@@ -2530,10 +3288,11 @@ pub fn run() -> Result<(), String> {
         raster_controls: false,
         ..Default::default()
     };
-    run_hot_swap_window_with_input_and_scene_and_focus(
+    run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
         config,
         Box::new(move |width, height| {
             let mut bridge = snapshot_runtime.borrow_mut();
+            bridge.poll_visual_asset_events();
             bridge.advance_visual_time();
             bridge.update_interior_motion();
             bridge.update_pilot_motion();
@@ -2541,12 +3300,39 @@ pub fn run() -> Result<(), String> {
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
-            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
+            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth(
                 bridge.session.world(),
                 Default::default(),
                 &camera,
                 bridge.interior_mode,
+                bridge.nareth_visual_asset_ready(),
             );
+            if bridge.hud_visible {
+                snapshot.overlay.hud.inventory_open = bridge.inventory_open;
+                if bridge.inventory_open {
+                    snapshot.overlay.hud.inventory_items = bridge
+                        .session
+                        .world()
+                        .players()
+                        .next()
+                        .and_then(|player| bridge.session.world().inventory(player.entity_id))
+                        .map(|inventory| {
+                            inventory
+                                .entries()
+                                .filter(|(_, amount)| *amount > 0)
+                                .map(|(item, amount)| format!("ITEM {}  CANTIDAD {}", item.0, amount))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                }
+            } else {
+                snapshot.overlay.hud = Default::default();
+            }
+            if let Some(node) = snapshot.nodes.iter().find(|node| {
+                node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value())
+            }) {
+                bridge.log_nareth_snapshot_mesh(node.mesh);
+            }
             // Sustituir cada nodo por sus submallas sin alterar el mundo de juego.
             // El hash de SnapshotId es estable dentro de una ejecucion y distingue
             // instancias del mismo tipo de modelo.
@@ -2624,6 +3410,22 @@ pub fn run() -> Result<(), String> {
                     Err(error) => eprintln!("modelo no cargado {}: {error}; se usa respaldo", path.display()),
                 }
             }
+
+            // Modelos de main que aun no tienen entrada en el registro texturizado.
+            for (relative_path, mesh, material) in [
+                ("stars/stars.obj", render_core::MeshHandle::STARS, VisualAssets::STARS),
+                ("moon/moon.obj", render_core::MeshHandle::MOON, VisualAssets::PLANET),
+                ("building/building_planet.obj", render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
+                ("clock/clock_planet.obj", render_core::MeshHandle::TESSARA_PLANET, VisualAssets::PLANET),
+                ("mecanic/mecanic_planet.obj", render_core::MeshHandle::KHARVEX_PLANET, VisualAssets::PLANET),
+                ("sun/sun.obj", render_core::MeshHandle::SUN_MODEL, VisualAssets::SUN),
+            ] {
+                let path = assets_root.join(relative_path);
+                match render_core::load_obj(&path) {
+                    Ok(mesh_data) => scene.register_mesh(mesh, material, mesh_data),
+                    Err(error) => eprintln!("modelo no cargado {}: {error}", path.display()),
+                }
+            }
             scene.set_material(VisualAssets::SHIP, MaterialInfo::ship());
             scene.set_material(VisualAssets::PLAYER, MaterialInfo::player());
             scene.set_material(VisualAssets::ENEMY, MaterialInfo::enemy_shooter());
@@ -2633,11 +3435,19 @@ pub fn run() -> Result<(), String> {
             scene.set_material(VisualAssets::COLLECTIBLE, MaterialInfo::new(render_core::Vec4::new(1.0, 0.62, 0.04, 1.0), 0.38, 0.25).with_emissive(render_core::Vec3::new(0.16, 0.035, 0.002)));
             scene.set_material(VisualAssets::SUN, MaterialInfo::sun());
             scene.set_material(VisualAssets::PLANET, MaterialInfo::planet());
+            scene.set_material(VisualAssets::STARS, MaterialInfo::stars());
             scene.set_material(VisualAssets::STATION, MaterialInfo::station());
             scene.set_material(VisualAssets::DERELICT, MaterialInfo::derelict());
             scene.set_material(VisualAssets::ASTEROID, MaterialInfo::asteroid());
         },
-        GraphicsDebugConfig::default(),
+        GraphicsDebugConfig {
+            directory: std::env::var_os("ASTRAL_ECHO_CAPTURE_DIR").map(std::path::PathBuf::from),
+            dual_capture: matches!(
+                std::env::var("ASTRAL_ECHO_DUAL_CAPTURE").as_deref(),
+                Ok("1") | Ok("true") | Ok("TRUE")
+            ),
+        },
+        asset_host,
     )
     .map(|report| {
         println!(
@@ -2695,6 +3505,7 @@ fn guidance_requirement_label(requirement: gameplay::GuidanceRequirement) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use render_present::DeferredMeshRegistry;
 
     #[test]
     fn visual_runtime_requires_explicit_start_and_preserves_initial_campaign_state() {
@@ -2739,6 +3550,77 @@ mod tests {
 
         assert_eq!(ship, VISUAL_INITIAL_SHIP_POSITION);
         assert_eq!(world.destination(ORIGIN).map(|value| value.position), Some(ship));
+        assert_eq!(
+            world.destination(TESSARA_DESTINATION).map(|value| value.position),
+            Some(TESSARA_POSITION)
+        );
+        assert_eq!(
+            world.destination(KHARVEX_DESTINATION).map(|value| value.position),
+            Some(KHARVEX_POSITION)
+        );
+        assert_eq!(
+            world.destination(NARETH_DESTINATION).map(|value| value.position),
+            Some(NARETH_POSITION)
+        );
+        let tessara_physics = world
+            .navigation()
+            .planet_physics(TESSARA_DESTINATION)
+            .expect("Tessara should have independent planet physics");
+        assert_eq!(tessara_physics.orbit_radius, game::render_bridge::TESSARA_ORBIT_RADIUS);
+        assert_eq!(
+            tessara_physics.orbit_angular_speed,
+            game::render_bridge::TESSARA_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND
+        );
+        assert_eq!(
+            tessara_physics.orbit_center,
+            GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }
+        );
+        assert_eq!(tessara_physics.orbit_start, TESSARA_POSITION);
+        let kharvex_physics = world
+            .navigation()
+            .planet_physics(KHARVEX_DESTINATION)
+            .expect("Kharvex should have independent planet physics");
+        assert_eq!(kharvex_physics.orbit_radius, game::render_bridge::KHARVEX_ORBIT_RADIUS);
+        assert_eq!(
+            kharvex_physics.orbit_angular_speed,
+            game::render_bridge::KHARVEX_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND
+        );
+        assert_eq!(
+            kharvex_physics.orbit_phase,
+            game::render_bridge::KHARVEX_ORBIT_PHASE_RAD
+        );
+        assert_eq!(
+            kharvex_physics.orbit_center,
+            GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }
+        );
+        let nareth_physics = world
+            .navigation()
+            .planet_physics(NARETH_DESTINATION)
+            .expect("Nareth should have independent planet physics");
+        assert_eq!(nareth_physics.orbit_radius, game::render_bridge::NARETH_ORBIT_RADIUS);
+        assert_eq!(
+            nareth_physics.orbit_angular_speed,
+            game::render_bridge::NARETH_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND
+        );
+        assert_eq!(nareth_physics.orbit_start, NARETH_POSITION);
+        let nareth_initial = world
+            .planet_position_at(NARETH_DESTINATION, Duration(0))
+            .expect("Nareth should have an initial orbital position");
+        let nareth_delta = GameplayVec3 {
+            x: nareth_initial.x - NARETH_POSITION.x,
+            y: nareth_initial.y - NARETH_POSITION.y,
+            z: nareth_initial.z - NARETH_POSITION.z,
+        };
+        assert!(
+            nareth_delta.x * nareth_delta.x
+                + nareth_delta.y * nareth_delta.y
+                + nareth_delta.z * nareth_delta.z
+                < 1e-8
+        );
+        assert_ne!(
+            world.planet_position_at(NARETH_DESTINATION, Duration(0)),
+            world.planet_position_at(NARETH_DESTINATION, Duration(10_000))
+        );
         assert!(distance_squared(ship, GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }) > 100.0 * 100.0);
         assert!(world.destinations().filter(|value| value.id != ORIGIN).all(|value| {
             distance_squared(ship, value.position) > 30.0 * 30.0
@@ -2791,12 +3673,40 @@ mod tests {
     }
 
     #[test]
+    fn kharvex_is_observable_but_not_a_free_navigation_candidate() {
+        let bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        assert!(game::render_bridge::observable_planets(bridge.session.world())
+            .contains(&KHARVEX_DESTINATION));
+        assert_eq!(bridge.free_navigation_candidates(), vec![DESTINATION, TESSARA_DESTINATION]);
+    }
+
+    #[test]
+    fn observation_target_labels_cover_registered_planets_and_unknown_fallback() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+
+        bridge.observation_target = Some(DESTINATION);
+        assert_eq!(bridge.observation_target_label(), "VEYRA");
+
+        bridge.observation_target = Some(TESSARA_DESTINATION);
+        assert_eq!(bridge.observation_target_label(), "TESSARA");
+
+        bridge.observation_target = Some(KHARVEX_DESTINATION);
+        assert_eq!(bridge.observation_target_label(), "KHARVEX");
+
+        bridge.observation_target = Some(DestinationId::new(999_999));
+        assert_eq!(bridge.observation_target_label(), "VEYRA");
+    }
+
+    #[test]
     fn solar_impact_defeats_the_player_and_stops_visual_gameplay() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         assert!(bridge.session.world_mut().configure_solar_physics(PlanetPhysics {
             destination: gameplay::SUN_DESTINATION_ID,
             orbit_center: GameplayVec3::ZERO,
             orbit_radius: 0.0,
+            orbit_start: GameplayVec3::ZERO,
+            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: 12.0,
             ship_radius: 1.0,
@@ -2875,6 +3785,380 @@ mod tests {
         assert!(!bridge.controls_panel_open);
         bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
         assert!(bridge.flight_keys.forward);
+    }
+
+    #[test]
+    fn observation_target_starts_at_veyra_and_cycles_to_tessara_only_in_pilot_observation() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        assert_eq!(bridge.observation_target, Some(DESTINATION));
+
+        bridge.handle_key(KeyCode::BracketRight, ElementState::Pressed);
+        assert_eq!(bridge.observation_target, Some(DESTINATION));
+
+        let before = format!("{:?}", bridge.session.world());
+        bridge.pilot_mode = true;
+        bridge.observation.from = 1.0;
+        bridge.observation.to = 1.0;
+        bridge.handle_key(KeyCode::BracketRight, ElementState::Pressed);
+
+        assert_eq!(bridge.observation_target, Some(TESSARA_DESTINATION));
+        assert_eq!(before, format!("{:?}", bridge.session.world()));
+        assert!(bridge.feedback.contains("TESSARA"));
+
+        bridge.handle_key(KeyCode::BracketLeft, ElementState::Pressed);
+        assert_eq!(bridge.observation_target, Some(DESTINATION));
+    }
+
+    #[test]
+    fn nareth_observation_requests_deferred_asset_and_keeps_fallback() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let (client, _host) = visual_asset_channel();
+        bridge.attach_visual_asset_client(client);
+        bridge.pilot_mode = true;
+        bridge.observation.from = 1.0;
+        bridge.observation.to = 1.0;
+
+        for _ in 0..3 {
+            bridge.handle_key(KeyCode::BracketRight, ElementState::Pressed);
+        }
+
+        assert_eq!(bridge.observation_target, Some(NARETH_DESTINATION));
+        assert_eq!(
+            bridge.visual_asset_states.get(NARETH_RESOURCE_ID),
+            Some(&VisualAssetState::Loading)
+        );
+        assert!(bridge.feedback.contains("NARETH"));
+
+        let snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth(
+            bridge.session.world(),
+            Default::default(),
+            &render_core::Camera::demo(),
+            false,
+            false,
+        );
+        let nareth = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value()))
+            .expect("Nareth should remain in the snapshot while loading");
+        assert_eq!(nareth.mesh, render_core::MeshHandle::PLANET_SPHERE);
+
+        bridge
+            .visual_asset_states
+            .insert(NARETH_RESOURCE_ID.to_owned(), VisualAssetState::Ready);
+        let ready_snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth(
+            bridge.session.world(),
+            Default::default(),
+            &render_core::Camera::demo(),
+            false,
+            true,
+        );
+        let ready_nareth = ready_snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value()))
+            .expect("Nareth should remain in the snapshot after loading");
+        assert_eq!(ready_nareth.mesh, render_core::MeshHandle::NARETH_PLANET);
+    }
+
+    #[test]
+    fn nareth_visual_request_has_canonical_model_identity() {
+        let request = nareth_visual_asset_request();
+        assert_eq!(request.resource_id, NARETH_RESOURCE_ID);
+        assert_eq!(request.mesh, MeshHandle::NARETH_PLANET);
+        assert_eq!(request.material, VisualAssets::PLANET);
+        assert!(request
+            .path
+            .ends_with(Path::new("assets/models/seraphim/Seraphim_planet.obj")));
+        assert!(request.path.is_file());
+    }
+
+    #[test]
+    fn nareth_mesh_requires_gpu_ready_and_ignores_older_generations() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let (client, mut host) = visual_asset_channel();
+        bridge.attach_visual_asset_client(client);
+        bridge
+            .visual_asset_states
+            .insert(NARETH_RESOURCE_ID.to_owned(), VisualAssetState::Ready);
+        assert!(!bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            renderer_epoch: 3,
+            generation: 4,
+            state: GpuAssetState::UploadingGpu,
+            error: None,
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(!bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            renderer_epoch: 3,
+            generation: 4,
+            state: GpuAssetState::GpuReady,
+            error: None,
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            renderer_epoch: 3,
+            generation: 5,
+            state: GpuAssetState::GpuFailed,
+            error: Some("test GPU failure".into()),
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(!bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            renderer_epoch: 3,
+            generation: 4,
+            state: GpuAssetState::GpuReady,
+            error: None,
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(!bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            renderer_epoch: 4,
+            generation: 0,
+            state: GpuAssetState::GpuReady,
+            error: None,
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(bridge.nareth_visual_asset_ready());
+
+        host.publish_gpu_events([render_core::GpuAssetEvent {
+            mesh: MeshHandle::NARETH_PLANET,
+            lod: LodLevel::High,
+            renderer_epoch: 3,
+            generation: 99,
+            state: GpuAssetState::GpuFailed,
+            error: Some("old renderer".into()),
+        }]);
+        bridge.poll_visual_asset_events();
+        assert!(bridge.nareth_visual_asset_ready());
+    }
+
+    #[test]
+    fn observation_target_selection_does_not_change_navigation_or_missions() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.pilot_mode = true;
+        bridge.observation.from = 1.0;
+        bridge.observation.to = 1.0;
+        let navigation_before = format!("{:?}", bridge.session.world().travel_state());
+        let missions_before = format!("{:?}", bridge.session.world().missions().collect::<Vec<_>>());
+
+        bridge.handle_key(KeyCode::BracketRight, ElementState::Pressed);
+
+        assert_eq!(bridge.observation_target, Some(TESSARA_DESTINATION));
+        assert_eq!(navigation_before, format!("{:?}", bridge.session.world().travel_state()));
+        assert_eq!(missions_before, format!("{:?}", bridge.session.world().missions().collect::<Vec<_>>()));
+    }
+
+    #[test]
+    fn free_navigation_selector_confirms_planet_without_starting_travel() {
+        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..6 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        assert!(bridge.pilot_mode);
+
+        let position_before = bridge.session.world().ship_position();
+        let fuel_before = bridge
+            .session
+            .world()
+            .ship_fuel(bridge.ship)
+            .expect("ship fuel should exist")
+            .current();
+        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
+        assert!(bridge.navigation_selector_open);
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
+        assert_eq!(
+            bridge.free_navigation_candidate,
+            Some(TESSARA_DESTINATION)
+        );
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+
+        assert_eq!(
+            bridge.session.world().free_navigation_destination(),
+            Some(TESSARA_DESTINATION)
+        );
+        assert!(!bridge.navigation_selector_open);
+        assert_eq!(bridge.session.world().ship_position(), position_before);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .ship_fuel(bridge.ship)
+                .expect("ship fuel should remain available")
+                .current(),
+            fuel_before
+        );
+        assert_eq!(bridge.session.world().travel_state(), gameplay::TravelState::Idle);
+        assert_eq!(
+            bridge.session.world().autopilot_state(),
+            &gameplay::AutopilotState::Inactive
+        );
+        assert_eq!(bridge.observation_target, Some(DESTINATION));
+        assert!(bridge.feedback.contains("TESSARA"));
+
+        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
+        bridge.handle_key(KeyCode::ArrowLeft, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        assert_eq!(
+            bridge.session.world().free_navigation_destination(),
+            Some(DESTINATION)
+        );
+    }
+
+    #[test]
+    fn free_navigation_selector_does_not_open_outside_pilot_mode() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
+        assert!(!bridge.navigation_selector_open);
+        assert_eq!(bridge.session.world().free_navigation_destination(), None);
+    }
+
+    #[test]
+    fn free_navigation_proposal_starts_and_can_cancel_authoritatively() {
+        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..6 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        assert!(bridge.pilot_mode);
+
+        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        let position_before = bridge.session.world().ship_position().expect("ship position should exist");
+        let fuel_before = bridge
+            .session
+            .world()
+            .ship_fuel(bridge.ship)
+            .expect("ship fuel should exist")
+            .current();
+
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        assert!(matches!(
+            bridge.session.world().travel_state(),
+            gameplay::TravelState::InProgress { destination: TESSARA_DESTINATION, .. }
+        ));
+        assert!(matches!(
+            bridge.session.world().autopilot_state(),
+            gameplay::AutopilotState::InTransit { destination: TESSARA_DESTINATION, .. }
+        ));
+        assert!(bridge
+            .session
+            .world()
+            .ship_fuel(bridge.ship)
+            .expect("ship fuel should exist")
+            .current() < fuel_before);
+
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(500),
+        }]);
+        assert_ne!(bridge.session.world().ship_position(), Some(position_before));
+
+        bridge.handle_key(KeyCode::Escape, ElementState::Pressed);
+        assert!(matches!(
+            bridge.session.world().travel_state(),
+            gameplay::TravelState::Cancelled { destination: TESSARA_DESTINATION }
+        ));
+        assert!(matches!(
+            bridge.session.world().autopilot_state(),
+            gameplay::AutopilotState::Interrupted { destination: TESSARA_DESTINATION }
+        ));
+        let position_after_cancel = bridge.session.world().ship_position();
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(500),
+        }]);
+        assert_eq!(bridge.session.world().ship_position(), position_after_cancel);
+    }
+
+    #[test]
+    fn leaving_pilot_during_free_autopilot_cancels_before_releasing_station() {
+        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..6 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        assert!(bridge.pilot_mode);
+
+        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(500),
+        }]);
+        let position_at_exit = bridge.session.world().ship_position();
+        let fuel_at_exit = bridge
+            .session
+            .world()
+            .ship_fuel(bridge.ship)
+            .expect("ship fuel should exist")
+            .current();
+
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+
+        assert!(!bridge.pilot_mode);
+        assert!(!bridge.pilot_station_occupied_by(bridge.player));
+        assert!(matches!(
+            bridge.session.world().travel_state(),
+            gameplay::TravelState::Cancelled { destination: TESSARA_DESTINATION }
+        ));
+        assert!(matches!(
+            bridge.session.world().autopilot_state(),
+            gameplay::AutopilotState::Interrupted { destination: TESSARA_DESTINATION }
+        ));
+        assert_eq!(bridge.session.world().ship_position(), position_at_exit);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .ship_fuel(bridge.ship)
+                .expect("ship fuel should remain consumed once")
+                .current(),
+            fuel_at_exit
+        );
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(500),
+        }]);
+        assert_eq!(bridge.session.world().ship_position(), position_at_exit);
+        assert!(bridge.feedback.contains("abandono de la estación"));
+    }
+
+    #[test]
+    fn free_navigation_confirmation_requires_mission_one_completion() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.pilot_mode = true;
+        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+
+        assert_eq!(bridge.session.world().free_navigation_destination(), None);
+        assert!(bridge.feedback.contains("preparar la nave"));
+        assert_eq!(bridge.session.world().travel_state(), gameplay::TravelState::Idle);
+        assert_eq!(
+            bridge.session.world().autopilot_state(),
+            &gameplay::AutopilotState::Inactive
+        );
     }
 
     #[test]
@@ -3477,6 +4761,18 @@ mod tests {
     }
 
     #[test]
+    fn flight_keys_support_vertical_space_navigation() {
+        let mut keys = FlightKeys::default();
+        keys.set(KeyCode::Space, true);
+        assert_eq!(keys.input().y, 1.0);
+        keys.set(KeyCode::Space, false);
+        keys.set(KeyCode::ControlLeft, true);
+        assert_eq!(keys.input().y, -1.0);
+        keys.set(KeyCode::ControlLeft, false);
+        assert_eq!(keys.input().y, 0.0);
+    }
+
+    #[test]
     fn releasing_a_flight_key_preserves_other_active_inputs() {
         let mut keys = FlightKeys::default();
         keys.set(KeyCode::KeyW, true);
@@ -3673,6 +4969,9 @@ mod tests {
             destination: DESTINATION,
             orbit_center: GameplayVec3::ZERO,
             orbit_radius: 5.0,
+            orbit_start: GameplayVec3::ZERO,
+            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
+            orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
             ship_radius: 1.0,
@@ -5016,5 +6315,56 @@ mod tests {
         }]);
         assert!(matches!(rejected.first().map(|value| value.status), Some(gameplay::CommandStatus::Rejected { .. })));
         assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 0);
+    }
+
+    #[test]
+    fn visual_bridge_sends_one_test_asset_request_and_receives_ready() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let (client, mut host) = visual_asset_channel();
+        bridge.attach_visual_asset_client(client);
+        let path = std::env::temp_dir().join(format!(
+            "astral_echo_visual_asset_test_{}.obj",
+            std::process::id()
+        ));
+        std::fs::write(&path, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
+            .expect("write test OBJ");
+        let before_tick = bridge.session.world().time().tick;
+        assert!(bridge.request_visual_asset(
+            "fixture.visual_bridge",
+            &path,
+            MeshHandle::new(30_020),
+            MaterialHandle::new(30_020),
+        ));
+        assert!(!bridge.request_visual_asset(
+            "fixture.visual_bridge",
+            &path,
+            MeshHandle::new(30_020),
+            MaterialHandle::new(30_020),
+        ));
+        assert_eq!(
+            bridge.visual_asset_states.get("fixture.visual_bridge"),
+            Some(&VisualAssetState::Loading)
+        );
+        let mut registry = DeferredMeshRegistry::new();
+        let mut scene = render_core::SnapshotScene::default();
+        host.poll(&mut registry, Some(&mut scene));
+        bridge.poll_visual_asset_events();
+        for _ in 0..10_000 {
+            host.poll(&mut registry, Some(&mut scene));
+            bridge.poll_visual_asset_events();
+            if bridge.visual_asset_states.get("fixture.visual_bridge")
+                == Some(&VisualAssetState::Ready)
+            {
+                assert_eq!(bridge.session.world().time().tick, before_tick);
+                assert!(scene
+                    .shared_mesh(MeshHandle::new(30_020), MaterialHandle::new(30_020))
+                    .is_ok());
+                std::fs::remove_file(path).expect("remove test OBJ");
+                return;
+            }
+            std::thread::yield_now();
+        }
+        std::fs::remove_file(path).expect("remove test OBJ");
+        panic!("VisualBridge did not receive Ready");
     }
 }

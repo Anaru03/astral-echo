@@ -1,16 +1,24 @@
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use render_core::{
-    game_over_layout, hud_overlay, Camera, HudState, Mat4, MaterialHandle, MeshHandle, PreparedScene, RasterMesh,
+    game_over_layout, hud_overlay, Camera, GpuAssetEvent, GpuAssetState, HudState, LodLevel, Mat4,
+    MaterialHandle, MeshHandle, PreparedScene, RasterMesh,
     RasterVertex, SnapshotId, SnapshotScene, Transform, Vec3, Vec4, GAME_OVER_GLYPHS,
 };
 use wgpu::util::DeviceExt;
 
 use crate::{block_on, GpuContext, GpuError};
+
+static NEXT_RENDERER_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+fn next_renderer_epoch() -> u64 {
+    NEXT_RENDERER_EPOCH.fetch_add(1, Ordering::Relaxed)
+}
 
 pub const CLEAR_RGBA: [u8; 4] = [8, 10, 18, 255];
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -178,6 +186,7 @@ pub struct ResourceStats {
 }
 
 pub struct GpuRenderer {
+    renderer_epoch: u64,
     pub(crate) gpu: Arc<GpuContext>,
     pipeline: wgpu::RenderPipeline,
     pipeline_layout: wgpu::PipelineLayout,
@@ -204,6 +213,10 @@ pub struct GpuRenderer {
 }
 
 impl GpuRenderer {
+    pub fn renderer_epoch(&self) -> u64 {
+        self.renderer_epoch
+    }
+
     pub fn new(
         gpu: Arc<GpuContext>,
         format: wgpu::TextureFormat,
@@ -336,6 +349,7 @@ impl GpuRenderer {
         gpu.check()?;
         let result = Self {
             gpu,
+            renderer_epoch: next_renderer_epoch(),
             pipeline,
             pipeline_layout,
             shader,
@@ -421,12 +435,48 @@ impl GpuRenderer {
                 self.format,
                 &self.pipeline_layout,
                 &self.shader,
+                self.renderer_epoch,
             ));
         }
         self.instanced
             .as_mut()
             .expect("initialized instancing")
             .sync(&self.gpu, scene)
+    }
+
+    /// Returns GPU availability transitions produced since the previous poll.
+    /// Events are emitted only when a geometry changes state.
+    pub fn poll_gpu_asset_events(&mut self) -> Vec<GpuAssetEvent> {
+        self.instanced
+            .as_mut()
+            .map_or_else(Vec::new, |scene| scene.take_gpu_asset_events())
+    }
+
+    pub fn gpu_asset_state(&self, mesh: MeshHandle, lod: LodLevel) -> GpuAssetState {
+        self.instanced.as_ref().map_or(GpuAssetState::Unavailable, |scene| {
+            scene.gpu_asset_state((mesh, lod))
+        })
+    }
+
+    pub fn ensure_shared_mesh(
+        &mut self,
+        mesh: MeshHandle,
+        lod: LodLevel,
+        source: Arc<RasterMesh>,
+    ) -> Result<(), GpuError> {
+        if self.instanced.is_none() {
+            self.instanced = Some(crate::instancing::InstancedScene::new(
+                &self.gpu,
+                self.format,
+                &self.pipeline_layout,
+                &self.shader,
+                self.renderer_epoch,
+            ));
+        }
+        self.instanced
+            .as_mut()
+            .expect("initialized instancing")
+            .ensure_geometry(&self.gpu, mesh, lod, &source)
     }
 
     pub fn sync_prepared_reference(&mut self, scene: &PreparedScene) -> Result<bool, GpuError> {

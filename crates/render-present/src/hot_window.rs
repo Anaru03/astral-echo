@@ -1,12 +1,14 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use render_core::{
     hud_contextual_button_hit, hud_controls_button_hit, hud_controls_panel_hit,
-    InterpolationConfig, RenderSnapshot, SnapshotBuffer, SnapshotScene,
+    InterpolationConfig, LodLevel, MeshHandle, RenderSnapshot, SnapshotBuffer, SnapshotScene,
+    VisualAssets,
 };
 use render_cpu::{
     render_snapshot_scene_with_stats, render_snapshot_scene_with_shader, write_png, Framebuffer,
@@ -23,7 +25,7 @@ use winit::window::{Window, WindowId};
 
 use crate::{
     copy_nearest_rgba, BackendKind, BackendSnapshot, HotSwapState, Preset, ScaleLayout,
-    WindowConfig,
+    DeferredMeshRegistry, VisualAssetHost, WindowConfig,
 };
 
 pub type SnapshotSource = Box<dyn FnMut(u32, u32) -> Result<RenderSnapshot, String>>;
@@ -31,6 +33,14 @@ pub type SnapshotSource = Box<dyn FnMut(u32, u32) -> Result<RenderSnapshot, Stri
 #[derive(Clone, Debug, Default)]
 pub struct GraphicsDebugConfig {
     pub directory: Option<std::path::PathBuf>,
+    pub dual_capture: bool,
+}
+
+fn parse_auto_capture_after_frames(value: Option<std::ffi::OsString>) -> Option<u64> {
+    value
+        .and_then(|value| value.into_string().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
 }
 
 pub fn run_hot_swap_window(
@@ -85,6 +95,28 @@ pub fn run_hot_swap_window_with_input_and_scene_and_focus(
     configure_scene: impl FnMut(&mut SnapshotScene) + 'static,
     debug: GraphicsDebugConfig,
 ) -> Result<HotSwapReport, String> {
+    run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
+        config,
+        source,
+        start_gpu,
+        input,
+        focus,
+        configure_scene,
+        debug,
+        VisualAssetHost::default(),
+    )
+}
+
+pub fn run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
+    config: WindowConfig,
+    source: SnapshotSource,
+    start_gpu: bool,
+    input: impl FnMut(KeyCode, ElementState) + 'static,
+    focus: impl FnMut(bool) + 'static,
+    configure_scene: impl FnMut(&mut SnapshotScene) + 'static,
+    debug: GraphicsDebugConfig,
+    visual_assets: VisualAssetHost,
+) -> Result<HotSwapReport, String> {
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let wake_proxy = event_loop.create_proxy();
     let mut app = Host {
@@ -104,7 +136,12 @@ pub fn run_hot_swap_window_with_input_and_scene_and_focus(
         debug,
         debug_frame: 0,
         frames: 0,
+        auto_capture_after_frames: parse_auto_capture_after_frames(
+            std::env::var_os("ASTRAL_ECHO_DUAL_CAPTURE_AFTER_FRAMES"),
+        ),
+        auto_capture_requested: false,
         wake_proxy,
+        visual_assets,
     };
     event_loop
         .run_app(&mut app)
@@ -138,7 +175,10 @@ struct Host {
     debug: GraphicsDebugConfig,
     debug_frame: u64,
     frames: u64,
+    auto_capture_after_frames: Option<u64>,
+    auto_capture_requested: bool,
     wake_proxy: EventLoopProxy<()>,
+    visual_assets: VisualAssetHost,
 }
 
 struct HostState {
@@ -158,6 +198,8 @@ struct HostState {
     pending_gpu: Option<PendingGpu>,
     pending_gpu_started: Option<Instant>,
     cursor_position: (f64, f64),
+    deferred_meshes: DeferredMeshRegistry,
+    visual_assets: VisualAssetHost,
 }
 
 struct PendingGpu {
@@ -266,6 +308,8 @@ impl ApplicationHandler for Host {
             pending_gpu: None,
             pending_gpu_started: None,
             cursor_position: (0.0, 0.0),
+            deferred_meshes: DeferredMeshRegistry::default(),
+            visual_assets: std::mem::replace(&mut self.visual_assets, VisualAssetHost::default()),
         });
         if self.start_gpu {
             self.toggle();
@@ -633,7 +677,10 @@ impl Host {
                     state.pending_gpu_started = Some(Instant::now());
                     println!("hot-swap gpu-requested");
                     let window = state.window.clone();
-                    let scene = state.snapshot.owned_draws();
+                    // The new renderer starts empty. Shared meshes are
+                    // prepared from SnapshotScene after the backend is live,
+                    // avoiding a full RasterMesh clone during reconstruction.
+                    let scene = Vec::new();
                     let high_preset = state.config_preset() != Preset::Low;
                     let window_surface = match SurfaceRenderer::create_window_surface(
                         window.clone(),
@@ -736,7 +783,9 @@ impl Host {
                     });
                 }
             }
-            previous_gpu
+            // A successful CPU switch deliberately drops the old GPU
+            // renderer. A failed device must never be reused later.
+            None
         };
         let result = state.backend.confirm_switch(target);
         if result.is_ok() {
@@ -780,7 +829,7 @@ impl Host {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let _ = std::fs::create_dir_all(directory);
+        let _ = std::fs::create_dir_all(&directory);
         let path = directory.join(format!("frame-{:04}-{}.log", self.debug_frame, reason));
         self.debug_frame += 1;
         let size = state.window.inner_size();
@@ -811,13 +860,37 @@ impl Host {
     }
 
     fn capture_images(&mut self) {
-        let Some(directory) = self.debug.directory.as_ref() else {
+        let Some(directory) = self.debug.directory.clone() else {
             return;
         };
         let Some(state) = self.state.as_mut() else {
             return;
         };
         if state.backend.backend() != BackendKind::Cpu {
+            let frame = self.debug_frame;
+            self.debug_frame += 1;
+            match state.gpu.as_mut() {
+                Some(gpu) if self.debug.dual_capture => {
+                    let (scene_only, composite) =
+                        Self::unique_dual_capture_paths(&directory, frame);
+                    match gpu.request_dual_capture(scene_only.clone(), composite.clone()) {
+                        Ok(()) => println!(
+                            "graphics-debug gpu-dual-capture-requested scene_only={} composite={}",
+                            scene_only.display(),
+                            composite.display()
+                        ),
+                        Err(error) => println!("graphics-debug gpu-capture-error={error}"),
+                    }
+                }
+                Some(gpu) => {
+                    let path = Self::unique_capture_path(&directory, frame, "gpu");
+                    match gpu.request_capture(path.clone()) {
+                        Ok(()) => println!("graphics-debug gpu-capture-requested={}", path.display()),
+                        Err(error) => println!("graphics-debug gpu-capture-error={error}"),
+                    }
+                }
+                None => println!("graphics-debug gpu-capture-error=GPU backend unavailable"),
+            }
             return;
         }
         let size = state.window.inner_size();
@@ -833,7 +906,7 @@ impl Host {
         ) {
             return;
         }
-        let _ = std::fs::create_dir_all(directory);
+        let _ = std::fs::create_dir_all(&directory);
         let internal_path =
             directory.join(format!("frame-{:04}-cpu-internal.png", self.debug_frame));
         let scaled_path = directory.join(format!("frame-{:04}-cpu-scaled.png", self.debug_frame));
@@ -871,6 +944,46 @@ impl Host {
         );
     }
 
+    fn unique_capture_path(directory: &std::path::Path, frame: u64, backend: &str) -> PathBuf {
+        let mut index = 0_u32;
+        loop {
+            let suffix = if index == 0 {
+                String::new()
+            } else {
+                format!("-{index}")
+            };
+            let path = directory.join(format!("frame-{frame:04}-{backend}{suffix}.png"));
+            if !path.exists() {
+                return path;
+            }
+            index = index.saturating_add(1);
+        }
+    }
+
+    fn unique_dual_capture_paths(
+        directory: &std::path::Path,
+        frame: u64,
+    ) -> (PathBuf, PathBuf) {
+        let mut index = 0_u32;
+        loop {
+            let suffix = if index == 0 {
+                String::new()
+            } else {
+                format!("-{index}")
+            };
+            let scene_only = directory.join(format!(
+                "building_planet_scene_only_frame-{frame:04}{suffix}.png"
+            ));
+            let composite = directory.join(format!(
+                "building_planet_composite_frame-{frame:04}{suffix}.png"
+            ));
+            if !scene_only.exists() && !composite.exists() {
+                return (scene_only, composite);
+            }
+            index = index.saturating_add(1);
+        }
+    }
+
     fn new_cpu_surface(state: &HostState) -> Option<Surface<Arc<Window>, Arc<Window>>> {
         let size = state.window.inner_size();
         Self::new_cpu_surface_for_size(state, size.width, size.height)
@@ -896,6 +1009,14 @@ impl Host {
             return;
         };
         self.frames = self.frames.saturating_add(1);
+        if let Some(scene) = Rc::get_mut(&mut state.snapshot) {
+            let _ = state
+                .visual_assets
+                .poll(&mut state.deferred_meshes, Some(scene));
+        }
+        state
+            .visual_assets
+            .set_gpu_backend_active(state.backend.backend() == BackendKind::Gpu);
         let frame_id = self.frames;
         let trace_frame = frame_id <= 3 || frame_id % 60 == 0 || state.pending_gpu.is_some();
         let frame_started = Instant::now();
@@ -931,9 +1052,36 @@ impl Host {
             }
         }
         if state.backend.backend() == BackendKind::Gpu {
+            let auto_capture_due = self
+                .auto_capture_after_frames
+                .is_some_and(|threshold| frame_id >= threshold)
+                && !self.auto_capture_requested;
             let gpu_error = match state.gpu.as_mut() {
-                Some(gpu) => match gpu.present_snapshot_with_stats(&state.snapshot) {
+                Some(gpu) => {
+                    if let Ok(nareth) = state
+                        .snapshot
+                        .shared_mesh(MeshHandle::NARETH_PLANET, VisualAssets::PLANET)
+                    {
+                        let _ = gpu.ensure_shared_mesh(
+                            MeshHandle::NARETH_PLANET,
+                            LodLevel::High,
+                            nareth,
+                        );
+                    }
+                    match gpu.present_snapshot_with_stats(&state.snapshot) {
                     Ok((_, stats)) => {
+                        let gpu_events = gpu.poll_gpu_asset_events();
+                        state.visual_assets.publish_gpu_events(gpu_events.iter().cloned());
+                        for event in gpu_events {
+                            println!(
+                                "hot-swap gpu-asset mesh={} lod={:?} generation={} state={:?} error={:?}",
+                                event.mesh.0,
+                                event.lod,
+                                event.generation,
+                                event.state,
+                                event.error
+                            );
+                        }
                         if trace_frame {
                             println!(
                             "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
@@ -951,14 +1099,44 @@ impl Host {
                                 frame_started.elapsed().as_secs_f64() * 1000.0
                             );
                         }
+                        if auto_capture_due {
+                            if let Some(directory) = self.debug.directory.clone() {
+                                if self.debug.dual_capture {
+                                    let capture_frame = self.debug_frame;
+                                    let (scene_only, composite) =
+                                        Self::unique_dual_capture_paths(&directory, capture_frame);
+                                    match gpu.request_dual_capture(scene_only.clone(), composite.clone()) {
+                                        Ok(()) => {
+                                            self.auto_capture_requested = true;
+                                            self.debug_frame = self.debug_frame.saturating_add(1);
+                                            println!(
+                                                "graphics-debug gpu-auto-dual-capture-requested frame={} scene_only={} composite={}",
+                                                frame_id,
+                                                scene_only.display(),
+                                                composite.display()
+                                            );
+                                        }
+                                        Err(error) => println!(
+                                            "graphics-debug gpu-auto-capture-error={error}"
+                                        ),
+                                    }
+                                }
+                            }
+                        }
                         None
                     }
                     Err(error) => Some(error.to_string()),
+                    }
                 },
                 None => Some("GPU backend active without GPU resources".into()),
             };
             if let Some(error) = gpu_error {
-                let _ = state;
+                // A failed GPU renderer is not reusable. Drop it before the
+                // controlled CPU transition; the registered CPU mesh remains
+                // owned by SnapshotScene/VisualAssets.
+                if let Some(state) = self.state.as_mut() {
+                    state.gpu = None;
+                }
                 self.report_gpu_error(error);
                 self.toggle();
             }
@@ -1166,6 +1344,16 @@ fn resize_is_needed(current: Option<(u32, u32)>, requested: (u32, u32)) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_capture_frame_configuration_requires_a_positive_integer() {
+        assert_eq!(parse_auto_capture_after_frames(None), None);
+        assert_eq!(parse_auto_capture_after_frames(Some("".into())), None);
+        assert_eq!(parse_auto_capture_after_frames(Some("invalid".into())), None);
+        assert_eq!(parse_auto_capture_after_frames(Some("0".into())), None);
+        assert_eq!(parse_auto_capture_after_frames(Some("-1".into())), None);
+        assert_eq!(parse_auto_capture_after_frames(Some("12".into())), Some(12));
+    }
 
     #[test]
     fn updates_reuse_the_same_scene_instance() {

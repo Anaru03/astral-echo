@@ -253,6 +253,8 @@ pub struct HudState {
     pub controls: Option<String>,
     pub instructions: Option<String>,
     pub feedback: Option<String>,
+    pub inventory_open: bool,
+    pub inventory_items: Vec<String>,
 }
 
 pub const GAME_OVER_GLYPHS: [[u8; 7]; 8] = [

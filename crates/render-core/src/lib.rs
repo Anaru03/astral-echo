@@ -3,6 +3,7 @@ mod textured_model;
 
 pub mod bounds;
 pub mod camera;
+pub mod cpu_model_loader;
 pub mod demo;
 pub mod geometry;
 pub mod hud;
@@ -17,6 +18,7 @@ pub mod shadows;
 pub mod snapshot;
 pub mod transform;
 pub mod visual;
+pub mod visual_asset;
 
 pub use bounds::{Aabb, AabbError, Frustum, Plane};
 pub use camera::{Camera, CameraError, Projection};
@@ -30,6 +32,7 @@ pub use hud::{
     HudOverlay, HudOverlayRect,
 };
 pub use interpolation::{InterpolationConfig, SnapshotBuffer};
+pub use cpu_model_loader::{CpuModelLoadManager, CpuModelLoadState};
 pub use lighting::{
     material_fixture, shade_surface, shade_surface_profiled, shade_surface_profiled_sanitized,
     shade_surface_profiled_sanitized_normalized, shade_surface_sanitized,
@@ -61,3 +64,4 @@ pub use visual::{
     SnapshotScene, VisibilityClass, VisualAssets, VisualError,
 };
 pub use material_texture::MaterialTextureRegistry;
+pub use visual_asset::{GpuAssetEvent, GpuAssetState, VisualAssetEvent, VisualAssetRequest, VisualAssetState};
