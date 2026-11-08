@@ -1,2 +1,43 @@
-# Blender 5.2.0 LTS MTL File: 'shooter.blend'
-# www.blender.org
+# Astral Echo - Shooter Materials
+
+newmtl Shooter_Hull
+Kd 0.22 0.28 0.34
+Ke 0.00 0.00 0.00
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
+
+newmtl Shooter_Metal
+Kd 0.58 0.66 0.72
+Ke 0.00 0.00 0.00
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
+
+newmtl Shooter_Wings
+Kd 0.30 0.43 0.53
+Ke 0.00 0.00 0.00
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
+
+newmtl Shooter_Glass
+Kd 0.05 0.20 0.32
+Ke 0.01 0.04 0.07
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
+
+newmtl Shooter_Engine
+Kd 0.08 0.38 0.58
+Ke 0.02 0.15 0.25
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
+
+newmtl Shooter_Emissive
+Kd 0.02 0.85 0.95
+Ke 0.02 0.45 0.55
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
