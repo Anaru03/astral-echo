@@ -296,6 +296,11 @@ impl VisualBridge {
         let mut session = ProjectEchoSession::new();
         let player = session.ids.first_player;
         let ship = session.ids.first_ship;
+        let exterior_position = |local: GameplayVec3| GameplayVec3 {
+            x: initial_ship_position.x + local.x,
+            y: initial_ship_position.y + local.y,
+            z: initial_ship_position.z + local.z,
+        };
         session.update([
             GameplayCommand::RegisterItemDefinition {
                 definition: gameplay::ItemDefinition::new(
@@ -314,7 +319,7 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_010),
-                    GameplayVec3 { x: 40.0, y: 0.0, z: 0.0 },
+                    exterior_position(GameplayVec3 { x: 70.0, y: 0.0, z: 70.0 }),
                     3.5,
                 )
                 .with_rewards(
@@ -328,7 +333,7 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_011),
-                    GameplayVec3 { x: -40.0, y: 0.0, z: 0.0 },
+                    exterior_position(GameplayVec3 { x: -80.0, y: 0.0, z: 40.0 }),
                     3.5,
                 )
                 .with_rewards(
@@ -342,7 +347,7 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_012),
-                    GameplayVec3 { x: 60.0, y: 0.0, z: 0.0 },
+                    exterior_position(GameplayVec3 { x: 55.0, y: 0.0, z: -85.0 }),
                     3.5,
                 )
                 .with_rewards(
@@ -353,7 +358,7 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_013),
-                    GameplayVec3 { x: -60.0, y: 0.0, z: 0.0 },
+                    exterior_position(GameplayVec3 { x: -70.0, y: 0.0, z: -65.0 }),
                     3.5,
                 )
                 .with_rewards(
@@ -364,7 +369,7 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_014),
-                    GameplayVec3 { x: 0.0, y: 0.0, z: 60.0 },
+                    exterior_position(GameplayVec3 { x: 95.0, y: 0.0, z: 35.0 }),
                     3.5,
                 )
                 .with_rewards(
@@ -4709,6 +4714,18 @@ mod tests {
         keys.set(KeyCode::KeyD, false);
         keys.set(KeyCode::KeyS, true);
         assert_eq!(keys.input(), GameplayVec3 { x: -1.0, y: 0.0, z: 1.0 });
+    }
+
+    #[test]
+    fn flight_keys_support_vertical_space_navigation() {
+        let mut keys = FlightKeys::default();
+        keys.set(KeyCode::Space, true);
+        assert_eq!(keys.input().y, 1.0);
+        keys.set(KeyCode::Space, false);
+        keys.set(KeyCode::ControlLeft, true);
+        assert_eq!(keys.input().y, -1.0);
+        keys.set(KeyCode::ControlLeft, false);
+        assert_eq!(keys.input().y, 0.0);
     }
 
     #[test]
