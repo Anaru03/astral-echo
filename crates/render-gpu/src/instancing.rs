@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use render_core::{
@@ -20,6 +21,8 @@ struct Geometry {
     opaque: bool,
     vertex_bytes: u64,
     index_bytes: u64,
+    uvs: Option<wgpu::Buffer>,
+    uv_bytes: u64,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -40,6 +43,8 @@ struct Batch {
 
 pub(crate) struct InstancedScene {
     pipeline: wgpu::RenderPipeline,
+    material_textures: BTreeMap<MaterialHandle, (PathBuf, crate::GpuTexture)>,
+    texture_bind_groups: BTreeMap<(MaterialHandle, usize), wgpu::BindGroup>,
     lighting: Option<crate::lighting::LightingPass>,
     shadows: Option<crate::shadows::ShadowPass>,
     shadow_sources: Vec<InstanceSource>,
@@ -72,6 +77,8 @@ impl InstancedScene {
     ) -> Self {
         Self {
             pipeline: color_pipeline(gpu, format, layout, shader, true),
+            material_textures: BTreeMap::new(),
+            texture_bind_groups: BTreeMap::new(),
             lighting: None,
             shadows: None,
             shadow_sources: Vec::new(),
@@ -124,7 +131,7 @@ impl InstancedScene {
             || mesh
                 .vertices
                 .iter()
-                .any(|v| !v.position.is_finite() || !v.color.is_finite())
+                .any(|v| !v.position.is_finite() || !v.color.is_finite() || !v.uv.is_finite())
             || mesh
                 .indices
                 .iter()
@@ -171,6 +178,8 @@ impl InstancedScene {
             opaque: mesh.vertices.iter().all(|v| v.color.w == 1.0),
             vertex_bytes,
             index_bytes,
+            uvs: None,
+            uv_bytes: 0,
         };
         let index = self.geometries.len();
         self.geometries.push(geometry);
@@ -257,6 +266,29 @@ impl InstancedScene {
             }
             for source in &self.next_sources {
                 let geometry = &mut self.geometries[source.geometry];
+                if geometry.uvs.is_none() {
+                    let uvs: Vec<[f32; 2]> = geometry
+                        .source
+                        .vertices
+                        .iter()
+                        .map(|vertex| vertex.uv.to_array())
+                        .collect();
+                    let bytes = bytemuck::cast_slice(&uvs);
+                    let uv_bytes = bytes.len() as u64;
+                    if uv_bytes > gpu.device.limits().max_buffer_size {
+                        return Err(GpuError::InvalidInput(
+                            "UV buffer exceeds device limit".into(),
+                        ));
+                    }
+                    geometry.uvs = Some(gpu.device.create_buffer_init(
+                        &wgpu::util::BufferInitDescriptor {
+                            label: Some("cached mesh UVs"),
+                            contents: if bytes.is_empty() { &[0; 4] } else { bytes },
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+                        },
+                    ));
+                    geometry.uv_bytes = uv_bytes.max(4);
+                }
                 if geometry.normals.is_none() {
                     let normals: Vec<_> = geometry
                         .source
@@ -287,6 +319,43 @@ impl InstancedScene {
                 .as_mut()
                 .expect("initialized lighting")
                 .sync(gpu, scene)?;
+            let mut needed = BTreeMap::new();
+            for batch in &self.batches {
+                if let Some(path) = scene.texture_path(batch.material) {
+                    needed.insert(batch.material, path.to_path_buf());
+                }
+            }
+            self.material_textures.retain(|material, _| needed.contains_key(material));
+            self.texture_bind_groups.retain(|(material, _), _| needed.contains_key(material));
+            for (material, path) in needed {
+                let reload = self.material_textures.get(&material).is_none_or(|(old, _)| old != &path);
+                if reload {
+                    let image = crate::texture_loader::TextureImage::load_png(&path)
+                        .map_err(|e| GpuError::InvalidInput(format!("texture {}: {e}", path.display())))?;
+                    let texture = crate::GpuTexture::from_image(gpu, &image)?;
+                    self.material_textures.insert(material, (path, texture));
+                    self.texture_bind_groups.retain(|(m, _), _| *m != material);
+                }
+            }
+            let lighting = self.lighting.as_ref().expect("lighting initialized");
+            for batch in &self.batches {
+                if let Some((_, texture)) = self.material_textures.get(&batch.material) {
+                    let key = (batch.material, batch.geometry);
+                    if !self.texture_bind_groups.contains_key(&key) {
+                        let uv = self.geometries[batch.geometry].uvs.as_ref().expect("UV buffer");
+                        let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("material texture and geometry UVs"),
+                            layout: &lighting.texture_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&texture.view) },
+                                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&texture.sampler) },
+                                wgpu::BindGroupEntry { binding: 2, resource: uv.as_entire_binding() },
+                            ],
+                        });
+                        self.texture_bind_groups.insert(key, group);
+                    }
+                }
+            }
         } else if let Some(lighting) = &mut self.lighting {
             lighting.active = false;
         }
@@ -455,6 +524,17 @@ impl InstancedScene {
             pass.set_vertex_buffer(1, self.instances.slice(..));
         }
         for batch in &self.batches {
+            if let Some(lighting) = lighting {
+                if let Some(group) = self.texture_bind_groups.get(&(batch.material, batch.geometry)) {
+                    lighting.bind_textured(pass);
+                    pass.set_bind_group(1, group, &[]);
+                } else {
+                    lighting.bind(pass);
+                    if let Some(shadows) = self.shadows.as_ref().filter(|s| s.active) {
+                        shadows.bind_color(pass);
+                    }
+                }
+            }
             let geometry = &self.geometries[batch.geometry];
             pass.set_vertex_buffer(0, geometry.vertices.slice(..));
             if lighting.is_some() {
@@ -514,7 +594,7 @@ impl InstancedScene {
                 + self
                     .geometries
                     .iter()
-                    .map(|g| g.vertex_bytes + g.normal_bytes)
+                    .map(|g| g.vertex_bytes + g.normal_bytes + g.uv_bytes)
                     .sum::<u64>(),
             index_bytes: base.index_bytes
                 + self.geometries.iter().map(|g| g.index_bytes).sum::<u64>(),
@@ -537,6 +617,11 @@ impl InstancedScene {
                     .geometries
                     .iter()
                     .filter(|geometry| geometry.normals.is_some())
+                    .count() as u64
+                + self
+                    .geometries
+                    .iter()
+                    .filter(|geometry| geometry.uvs.is_some())
                     .count() as u64
                 + self
                     .lighting
