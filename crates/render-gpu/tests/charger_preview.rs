@@ -76,9 +76,10 @@ fn draw(with_textures: bool, gpu: Arc<GpuContext>) -> Vec<u8> {
     );
     snapshot.nodes = expand_model_parts(&parent, &parts, 100);
     scene.update(&snapshot).unwrap();
-    let prepared = scene.prepare(render_core::CullingConfig {
+    let mut prepared = scene.prepare(render_core::CullingConfig {
         width: 640, height: 320, ..Default::default()
     });
+    prepared.lighting.ambient = Vec3::splat(0.30);
     println!("Submallas visibles: {}", prepared.stats().visible);
     let mut renderer = GpuRenderer::from_prepared(gpu.clone(), &prepared).unwrap();
     let target = OffscreenTarget::new(gpu, 640, 320).unwrap();

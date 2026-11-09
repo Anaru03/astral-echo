@@ -2,7 +2,7 @@
 
 newmtl Charger_Hull
 Ka 0.000 0.000 0.000
-Kd 0.19 0.21 0.25
+Kd 0.32 0.36 0.42
 Ke 0 0 0
 Ks 0.350 0.350 0.350
 Ns 80.0
@@ -11,7 +11,7 @@ map_Kd ../../textures/ships/charger/charger_hull.png
 
 newmtl Charger_Hull_Solid
 Ka 0.000 0.000 0.000
-Kd 0.19 0.21 0.25
+Kd 0.32 0.36 0.42
 Ke 0 0 0
 Ks 0.350 0.350 0.350
 Ns 80.0
@@ -36,7 +36,7 @@ illum 2
 
 newmtl Charger_Wings
 Ka 0.000 0.000 0.000
-Kd 0.36 0.39 0.43
+Kd 0.46 0.50 0.56
 Ke 0 0 0
 Ks 0.350 0.350 0.350
 Ns 80.0
@@ -45,7 +45,7 @@ map_Kd ../../textures/ships/charger/charger_wings.png
 
 newmtl Charger_Wings_Solid
 Ka 0.000 0.000 0.000
-Kd 0.36 0.39 0.43
+Kd 0.46 0.50 0.56
 Ke 0 0 0
 Ks 0.350 0.350 0.350
 Ns 80.0
