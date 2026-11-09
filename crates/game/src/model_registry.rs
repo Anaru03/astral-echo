@@ -9,7 +9,7 @@ pub struct ModelDefinition {
 pub fn registered_models() -> Vec<ModelDefinition> {
     vec![
         ModelDefinition {
-            path: "echo_7/nave/ECHO7_Exterior_DosCubiertas.obj",
+            path: "echo_7/montajes/ECHO7_Completa_DosCubiertas.obj",
             mesh: MeshHandle::SHIP_PLACEHOLDER,
             material: VisualAssets::SHIP,
         },

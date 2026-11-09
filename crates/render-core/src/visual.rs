@@ -605,6 +605,14 @@ impl SnapshotScene {
         self.textures.register(material, path);
     }
 
+    pub fn try_register_material_texture(
+        &mut self,
+        material: MaterialHandle,
+        path: impl Into<std::path::PathBuf>,
+    ) -> Result<(), String> {
+        self.textures.try_register(material, path)
+    }
+
     pub fn register_mesh(
         &mut self,
         mesh: MeshHandle,

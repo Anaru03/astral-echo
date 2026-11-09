@@ -4536,6 +4536,7 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "glam",
+ "png",
  "tobj",
 ]
 

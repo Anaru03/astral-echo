@@ -183,7 +183,9 @@ pub fn register_textured_model(
             scene.set_material(material, model.materials[index].info);
             if let Some(texture) = model.materials[index].diffuse_texture.as_ref() {
                 if texture.is_file() {
-                    scene.register_material_texture(material, texture.clone());
+                    scene
+                        .try_register_material_texture(material, texture.clone())
+                        .map_err(|error| format!("{error}"))?;
                 } else {
                     eprintln!("textura ausente: {}", texture.display());
                 }
