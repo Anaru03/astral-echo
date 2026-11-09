@@ -5718,6 +5718,17 @@ impl GameplayWorld {
         self.navigation.restore_position(position)
     }
 
+    pub fn restore_ship_position(
+        &mut self,
+        position: engine::Vec3,
+    ) -> Result<(), crate::navigation::NavigationMovementError> {
+        self.navigation.restore_position(position)
+    }
+
+    pub fn resume_ship_from_landing(&mut self) -> bool {
+        self.navigation.resume_from_landing()
+    }
+
     pub fn initialize_ship_integrity(
         &mut self,
         ship: EntityId,

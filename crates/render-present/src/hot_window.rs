@@ -183,6 +183,7 @@ struct Host {
 
 struct HostState {
     window: Arc<Window>,
+    window_title: String,
     surface: Option<Surface<Arc<Window>, Arc<Window>>>,
     _context: Context<Arc<Window>>,
     framebuffer: Framebuffer,
@@ -293,6 +294,7 @@ impl ApplicationHandler for Host {
         );
         self.state = Some(HostState {
             window,
+            window_title: String::new(),
             surface: Some(surface),
             _context: context,
             framebuffer,
@@ -1043,7 +1045,10 @@ impl Host {
                     state.backend.backend(),
                     state.snapshot.snapshot(),
                 );
-                state.window.set_title(&title);
+                if state.window_title != title {
+                    state.window.set_title(&title);
+                    state.window_title = title;
+                }
                 state.backend.update_snapshot(BackendSnapshot {
                     value: (),
                     width: size.width,

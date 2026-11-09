@@ -181,10 +181,11 @@ impl VisualAssets {
         raster_mesh: RasterMesh,
     ) {
         let raster_mesh = Arc::new(raster_mesh);
+        let low_mesh = low_lod_mesh(&raster_mesh);
         self.bounds
             .insert((mesh, material), mesh_bounds(&raster_mesh));
-        self.meshes.insert((mesh, material), raster_mesh.clone());
-        self.low.insert((mesh, material), raster_mesh);
+        self.meshes.insert((mesh, material), raster_mesh);
+        self.low.insert((mesh, material), low_mesh);
     }
 
     pub fn register_shared_mesh(
@@ -201,10 +202,56 @@ impl VisualAssets {
             return Err(VisualError::MeshAlreadyRegistered(mesh, material));
         }
         let bounds = mesh_bounds(&raster_mesh);
+        let low_mesh = low_lod_mesh(&raster_mesh);
         self.bounds.insert(key, bounds);
         self.meshes.insert(key, Arc::clone(&raster_mesh));
-        self.low.insert(key, raster_mesh);
+        self.low.insert(key, low_mesh);
         Ok(())
+    }
+}
+
+const MAX_LOW_LOD_TRIANGLES: usize = 2_048;
+
+fn low_lod_mesh(mesh: &Arc<RasterMesh>) -> Arc<RasterMesh> {
+    if mesh.indices.len() / 3 <= MAX_LOW_LOD_TRIANGLES {
+        Arc::clone(mesh)
+    } else {
+        Arc::new(simplify_mesh_for_lod(mesh))
+    }
+}
+
+fn simplify_mesh_for_lod(mesh: &RasterMesh) -> RasterMesh {
+    let triangle_count = mesh.indices.len() / 3;
+    if triangle_count <= MAX_LOW_LOD_TRIANGLES {
+        return mesh.clone();
+    }
+
+    let step = (triangle_count + MAX_LOW_LOD_TRIANGLES - 1) / MAX_LOW_LOD_TRIANGLES;
+    let mut vertices = Vec::with_capacity(MAX_LOW_LOD_TRIANGLES * 3);
+    let mut indices = Vec::with_capacity(MAX_LOW_LOD_TRIANGLES * 3);
+    let mut remap = BTreeMap::<u32, u32>::new();
+
+    for triangle in mesh.indices.chunks_exact(3).step_by(step) {
+        for &source_index in triangle {
+            let destination_index = if let Some(&index) = remap.get(&source_index) {
+                index
+            } else {
+                let index = vertices.len() as u32;
+                let Some(&vertex) = mesh.vertices.get(source_index as usize) else {
+                    return mesh.clone();
+                };
+                vertices.push(vertex);
+                remap.insert(source_index, index);
+                index
+            };
+            indices.push(destination_index);
+        }
+    }
+
+    if indices.len() < 3 {
+        mesh.clone()
+    } else {
+        RasterMesh::new(vertices, indices)
     }
 }
 
@@ -298,7 +345,7 @@ impl Default for VisualAssets {
             ),
             (
                 (MeshHandle::STARS, Self::STARS),
-                RasterMesh::sphere(Vec3::ZERO, 110.0, Vec4::new(0.72, 0.82, 1.0, 1.0)),
+                RasterMesh::star_field(Vec4::new(0.72, 0.82, 1.0, 1.0), 70.0, 384, 0x51A7_2024),
             ),
         ])
         .into_iter()
@@ -534,6 +581,39 @@ mod tests {
         let (mesh, material) = shared_mesh_handles();
         assets.register_mesh(mesh, material, (*shared_triangle()).clone());
         assert!(assets.mesh(mesh, material).is_ok());
+    }
+
+    #[test]
+    fn large_meshes_get_a_real_low_lod_copy() {
+        let mut vertices = Vec::with_capacity(6_000);
+        let mut indices = Vec::with_capacity(6_000);
+        for triangle in 0..2_000 {
+            let base = vertices.len() as u32;
+            vertices.extend([
+                RasterVertex::new(Vec3::new(triangle as f32, 0.0, 0.0), Vec4::ONE),
+                RasterVertex::new(Vec3::new(triangle as f32, 1.0, 0.0), Vec4::ONE),
+                RasterVertex::new(Vec3::new(triangle as f32, 0.0, 1.0), Vec4::ONE),
+            ]);
+            indices.extend([base, base + 1, base + 2]);
+        }
+        let mesh = RasterMesh::new(vertices, indices);
+        let low = simplify_mesh_for_lod(&mesh);
+        assert_eq!(low.indices.len(), mesh.indices.len());
+
+        let mut vertices = Vec::with_capacity(12_000);
+        let mut indices = Vec::with_capacity(12_000);
+        for triangle in 0..4_000 {
+            let base = vertices.len() as u32;
+            vertices.extend([
+                RasterVertex::new(Vec3::new(triangle as f32, 0.0, 0.0), Vec4::ONE),
+                RasterVertex::new(Vec3::new(triangle as f32, 1.0, 0.0), Vec4::ONE),
+                RasterVertex::new(Vec3::new(triangle as f32, 0.0, 1.0), Vec4::ONE),
+            ]);
+            indices.extend([base, base + 1, base + 2]);
+        }
+        let reduced = simplify_mesh_for_lod(&RasterMesh::new(vertices, indices));
+        assert!(reduced.indices.len() < 12_000);
+        assert_eq!(reduced.indices.len() % 3, 0);
     }
 }
 
