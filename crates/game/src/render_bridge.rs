@@ -80,6 +80,9 @@ pub const ACADEMIC_SURFACE_OBJECT_SEED: u64 = 0xA57A_1E5D;
 pub const MAX_ACADEMIC_SURFACE_OBJECTS: usize = 64;
 pub const PLANET_OBSERVATION_RADIUS: f32 = 14.0;
 pub const OBSERVATION_TRANSITION_DURATION_MS: u64 = 1_000;
+pub const LANDING_CINEMATIC_DURATION_MS: u64 = 1_800;
+pub const TAKEOFF_CINEMATIC_DURATION_MS: u64 = 1_500;
+pub const SURFACE_RETURN_DISTANCE: f32 = 5.0;
 const SUN_POSITION: Vec3 = Vec3::new(0.0, 0.0, -18.0);
 const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 28.0, 46.0);
 pub const PILOT_CAMERA_DEFAULT_DISTANCE: f32 = 2.0;
@@ -110,6 +113,10 @@ const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(0.5759995, 0.8370645, 0.0);
 const ECHO7_MODEL_AFT_EDGE_X: f32 = 11.11;
 const ECHO7_AFT_EDGE_OFFSET: f32 =
     (ECHO7_MODEL_AFT_EDGE_X - ECHO7_MODEL_CENTER.x) * ECHO7_VISUAL_SCALE.x;
+// The OBJ faces -X, while gameplay considers yaw=0 forward along -Z.
+// Rotate the visual model by -90° so the ship, controls and solar system use
+// the same forward direction.
+const ECHO7_MODEL_YAW_OFFSET_RAD: f32 = -core::f32::consts::FRAC_PI_2;
 // Aim at the rear third of the hull. Aiming at the bow made the camera look
 // through the entire ship even though its position was already behind the
 // engines.
@@ -511,6 +518,26 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot(
     nareth_mesh_ready: bool,
     pilot_mode: bool,
 ) -> RenderSnapshot {
+    snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface(
+        world,
+        params,
+        camera,
+        interior,
+        nareth_mesh_ready,
+        pilot_mode,
+        None,
+    )
+}
+
+pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface(
+    world: &GameplayWorld,
+    params: BridgeParams<'_>,
+    camera: &Camera,
+    interior: bool,
+    nareth_mesh_ready: bool,
+    pilot_mode: bool,
+    surface_planet: Option<gameplay::DestinationId>,
+) -> RenderSnapshot {
     let tick = world.time().tick;
     let academic_planet = academic_planet_id(world);
     let tessara_planet = tessara_planet_id(world);
@@ -530,7 +557,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot(
         Transform::new(star_center, Quat::IDENTITY, Vec3::splat(STAR_SHELL_SCALE)),
         STARS_MESH,
         STARS_MATERIAL,
-        !interior,
+        !interior && surface_planet.is_none(),
     ));
     snapshot
         .nodes
@@ -584,6 +611,22 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot(
         }
     }
 
+    if let Some(planet) = surface_planet {
+        if let Some(origin) = planet_surface_origin(world, planet) {
+            snapshot.push_node(SnapshotNode::new(
+                LANDING_INDICATOR_ENTITY,
+                Transform::new(
+                    origin + Vec3::new(0.0, -0.8, 0.0),
+                    Quat::IDENTITY,
+                    Vec3::new(7.0, 0.15, 7.0),
+                ),
+                PLACEHOLDER_MESH,
+                DESTINATION_MATERIAL,
+                true,
+            ));
+        }
+    }
+
     if world.navigation().ship_id().is_some() {
         snapshot.push_node(SnapshotNode::new(
             SUN_ENTITY,
@@ -594,10 +637,20 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot(
         ));
     }
 
-    if let (Some(ship), Some(pos)) = (world.navigation().ship_id(), visual_ship_position(world)) {
+    let surface_ship = surface_planet.and_then(|planet| surface_ship_position(world, planet));
+    if let (Some(ship), Some(pos)) = (
+        world.navigation().ship_id(),
+        surface_ship.or_else(|| visual_ship_position(world)),
+    ) {
         let orientation = world.ship_orientation().unwrap_or_default();
-        let rotation = Quat::from_rotation_y(orientation.yaw_degrees.to_radians())
-            * Quat::from_rotation_x(orientation.pitch_degrees.to_radians());
+        let rotation = if surface_ship.is_some() {
+            Quat::IDENTITY
+        } else {
+            Quat::from_rotation_y(
+            orientation.yaw_degrees.to_radians() + ECHO7_MODEL_YAW_OFFSET_RAD,
+        )
+            * Quat::from_rotation_x(orientation.pitch_degrees.to_radians())
+        };
         let mut transform = Transform::new(
             pos,
             rotation,
@@ -676,6 +729,9 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot(
     }
 
     for dest in world.destinations() {
+        if surface_planet == Some(dest.id) {
+            continue;
+        }
         if dest.id == gameplay::DestinationId::new(9_001) {
             // Echo-7's origin is the player's spawn marker, not a world object.
             continue;
@@ -1271,7 +1327,8 @@ pub fn pilot_camera(
     let orientation = world.ship_orientation().unwrap_or_default();
     let yaw = orientation.yaw_degrees.to_radians();
     let pitch = orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);
-    let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+    let rotation = Quat::from_rotation_y(yaw + ECHO7_MODEL_YAW_OFFSET_RAD)
+        * Quat::from_rotation_x(pitch);
     // echo-7.obj is longitudinal on X and its propulsion groups are on +X.
     // Keep the ship's existing visual orientation and derive the chase camera
     // from that same local axis, so the camera starts behind the engines.
@@ -1417,6 +1474,25 @@ fn planet_visual_radius(destination: gameplay::DestinationId) -> f32 {
         NARETH_DESTINATION_ID => NARETH_VISUAL_RADIUS,
         _ => PLANET_VISUAL_RADIUS,
     }
+}
+
+pub fn planet_surface_origin(
+    world: &GameplayWorld,
+    destination: gameplay::DestinationId,
+) -> Option<Vec3> {
+    let center = world
+        .planet_position_at(destination, world.time().elapsed)
+        .map(from_engine)
+        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))?;
+    Some(center + Vec3::new(0.0, planet_visual_radius(destination) + 1.0, 0.0))
+}
+
+pub fn surface_ship_position(
+    world: &GameplayWorld,
+    destination: gameplay::DestinationId,
+) -> Option<Vec3> {
+    planet_surface_origin(world, destination)
+        .map(|origin| origin + Vec3::new(4.0, 0.0, 4.0))
 }
 
 fn observation_distance(visual_radius: f32) -> f32 {

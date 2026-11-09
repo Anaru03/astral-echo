@@ -302,6 +302,13 @@ impl PlanetFlightState {
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Landed { .. } | Self::Impacted { .. })
     }
+
+    pub const fn landed_planet(self) -> Option<DestinationId> {
+        match self {
+            Self::Landed { planet } => Some(planet),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -655,6 +662,17 @@ impl NavigationState {
     }
     pub const fn boost_active(&self) -> bool {
         self.boost_active
+    }
+
+    pub(crate) fn resume_from_landing(&mut self) -> bool {
+        if !matches!(self.planet_flight_state, PlanetFlightState::Landed { .. }) {
+            return false;
+        }
+        self.planet_flight_state = PlanetFlightState::Free;
+        self.travel_state = TravelState::Idle;
+        self.braking = false;
+        self.velocity = Vec3::ZERO;
+        true
     }
     pub fn speed_limit(&self) -> f32 {
         if self.boost_active { self.movement.max_speed * 1.5 } else { self.movement.max_speed }

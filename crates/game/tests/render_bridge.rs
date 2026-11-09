@@ -885,11 +885,22 @@ fn pilot_camera_is_behind_the_echo7_propulsors_and_aims_at_its_rear_hull() {
     let camera = pilot_camera(&world, 16.0 / 9.0, PILOT_CAMERA_DEFAULT_DISTANCE)
         .expect("pilot camera should be valid");
 
-    // The fixture starts with yaw/pitch = 0. Echo-7's aft axis is therefore +X.
-    assert!(camera.position().x > ship.x + 6.8);
-    assert!(camera.target().x > ship.x);
-    assert!(camera.position().x > camera.target().x);
+    // The fixture starts with yaw/pitch = 0. Echo-7's visual nose points -Z
+    // toward the solar system, so its propulsion/camera side is +Z.
+    assert!(camera.position().z > ship.z + 6.8);
+    assert!(camera.target().z > ship.z);
+    assert!(camera.position().z > camera.target().z);
     assert!(camera.view_projection_matrix().is_finite());
+
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let ship_id = world.navigation().ship_id().expect("fixture ship should exist");
+    let ship_node = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Entity(ship_id))
+        .expect("fixture ship should be rendered");
+    let nose_direction = ship_node.transform.rotation * Vec3::NEG_X;
+    assert!(nose_direction.dot(Vec3::NEG_Z) > 0.99);
 }
 
 #[test]
