@@ -519,7 +519,7 @@ impl VisualBridge {
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 24.0,
-            gravitational_parameter: 35.0,
+            gravitational_parameter: 24.0,
             atmosphere_height: 4.0,
         }) {
             return Err("configurar la fÃ­sica planetaria visual".to_owned());
@@ -539,7 +539,7 @@ impl VisualBridge {
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 24.0,
-            gravitational_parameter: 35.0,
+            gravitational_parameter: 24.0,
             atmosphere_height: 4.0,
         }) {
             return Err("configurar la física de Tessara".to_owned());
@@ -559,7 +559,7 @@ impl VisualBridge {
             surface_radius: game::render_bridge::KHARVEX_SURFACE_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 28.0,
-            gravitational_parameter: 45.0,
+            gravitational_parameter: 30.0,
             atmosphere_height: 4.0,
         }) {
             return Err("configurar la fisica de Kharvex".to_owned());
@@ -583,7 +583,7 @@ impl VisualBridge {
             surface_radius: game::render_bridge::NARETH_VISUAL_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 48.0,
-            gravitational_parameter: 60.0,
+            gravitational_parameter: 40.0,
             atmosphere_height: 8.0,
         }) {
             return Err("configurar la fisica de Nareth".to_owned());
@@ -604,7 +604,7 @@ impl VisualBridge {
             surface_radius: 12.0,
             ship_radius: 1.0,
             gravity_influence_radius: 80.0,
-            gravitational_parameter: 900.0,
+            gravitational_parameter: 500.0,
             atmosphere_height: 0.0,
             })
         {
@@ -613,10 +613,10 @@ impl VisualBridge {
         let movement_configured = session.update([GameplayCommand::ConfigureShipMovement {
             ship,
             parameters: gameplay::ShipMovementParameters {
-                acceleration: 2.5,
-                deceleration: 5.0,
-                max_speed: 12.0,
-                turn_rate_degrees: 45.0,
+                acceleration: 1.6,
+                deceleration: 6.5,
+                max_speed: 8.0,
+                turn_rate_degrees: 75.0,
             },
         }]);
         if !matches!(
@@ -1381,14 +1381,14 @@ impl VisualBridge {
                 self.look_left = true;
                 if self.interior_mode { self.rotate_player(-6.0, 0.0); }
                 if self.pilot_mode {
-                    self.rotate_ship_from_input(-1.0, 0.0);
+                    self.rotate_ship_from_input(1.0, 0.0);
                 }
             }
             KeyCode::ArrowRight if self.interior_mode || self.pilot_mode => {
                 self.look_right = true;
                 if self.interior_mode { self.rotate_player(6.0, 0.0); }
                 if self.pilot_mode {
-                    self.rotate_ship_from_input(1.0, 0.0);
+                    self.rotate_ship_from_input(-1.0, 0.0);
                 }
             }
             KeyCode::ArrowUp if self.interior_mode || self.pilot_mode => {
@@ -2774,9 +2774,9 @@ impl VisualBridge {
         }
         // A/D are the primary steering controls. Arrow keys remain an
         // optional alternative for players who prefer them.
-        let yaw = ((self.flight_keys.right as i8 - self.flight_keys.left as i8)
-            + self.look_right as i8
-            - self.look_left as i8)
+        let yaw = ((self.flight_keys.left as i8 - self.flight_keys.right as i8)
+            + self.look_left as i8
+            - self.look_right as i8)
             .clamp(-1, 1);
         let pitch = self.look_down as i8 - self.look_up as i8;
         if yaw != 0 || pitch != 0 {
