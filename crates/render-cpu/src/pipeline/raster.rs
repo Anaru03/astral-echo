@@ -1,4 +1,5 @@
-use glam::Vec4;
+use glam::{Vec2, Vec4};
+use render_core::MaterialHandle;
 
 use crate::clip::ClipVertex;
 use crate::color::vec4_to_rgba8;
@@ -14,6 +15,8 @@ pub struct ScreenVertex {
     pub z: f32,
     pub inv_w: f32,
     pub color: Vec4,
+    pub uv: Vec2,
+    pub material: Option<MaterialHandle>,
 }
 
 /// Regla de relleno de triángulos.
@@ -39,6 +42,8 @@ pub struct Fragment {
     pub y: u32,
     pub depth: f32,
     pub color: Vec4,
+    pub uv: Vec2,
+    pub material: Option<MaterialHandle>,
 }
 
 /// Efecto ejecutado por la etapa de fragmentos del rasterizador CPU.
@@ -81,6 +86,8 @@ pub fn to_screen(v: &ClipVertex, viewport: &Viewport) -> Option<ScreenVertex> {
         z: ndc_z.clamp(0.0, 1.0),
         inv_w,
         color: v.color,
+        uv: v.uv,
+        material: None,
     })
 }
 
@@ -190,6 +197,8 @@ pub(crate) fn raster_triangle_visit(
                 z: 0.0,
                 inv_w: 0.0,
                 color: Vec4::ZERO,
+                uv: Vec2::ZERO,
+                material: None,
             };
             // Edge functions computadas una sola vez; se reusan para cobertura
             // y para las coordenadas barícéntricas (evita recomputarlas como
@@ -230,11 +239,14 @@ pub(crate) fn raster_triangle_visit(
             let w1p = b1 * b.inv_w / inv_w;
             let w2p = b2 * c.inv_w / inv_w;
             let color = a.color * w0p + b.color * w1p + c.color * w2p;
+            let uv = a.uv * w0p + b.uv * w1p + c.uv * w2p;
             emit(Fragment {
                 x: px as u32,
                 y: py as u32,
                 depth: depth.clamp(0.0, 1.0),
                 color,
+                uv,
+                material: a.material,
             });
             count += 1;
         }

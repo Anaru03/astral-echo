@@ -23,12 +23,12 @@ pub use raster::{
     shade_fragment_with_shader, shade_fragment_with_time, to_screen, FillRule, Fragment,
     FragmentShader, RasterOutput, ScreenVertex,
 };
+use tiles::rasterize_triangles_tiled_with_shader;
 pub use stages::{PipelineConfig, PipelineError, PipelineStats, Stage, StageMetrics};
 pub use tiles::{
     rasterize_triangles_tiled, RasterMode, RasterWorkload, TileConfig, TileGrid, TileRect,
     TileStats,
 };
-use tiles::rasterize_triangles_tiled_with_shader;
 use vertex::VertexLighting;
 pub use vertex::VertexStage;
 
@@ -48,6 +48,7 @@ pub struct CpuPipeline<'a> {
     assembly: AssemblyStats,
     fragment_shader: FragmentShader,
     fragment_time: f32,
+    draw_material: Option<render_core::MaterialHandle>,
 }
 
 impl<'a> CpuPipeline<'a> {
@@ -71,6 +72,7 @@ impl<'a> CpuPipeline<'a> {
             assembly: AssemblyStats::default(),
             fragment_shader: FragmentShader::VertexColor,
             fragment_time: 0.0,
+            draw_material: None,
         }
     }
 
@@ -126,7 +128,7 @@ impl<'a> CpuPipeline<'a> {
         mvp: Mat4,
         topology: Topology,
     ) -> Result<PipelineStats, RasterError> {
-        self.draw_mesh_inner(mesh, mvp, topology, false, None)
+        self.draw_mesh_inner(mesh, mvp, topology, false, None, None)
     }
 
     pub fn draw_mesh_instances(
@@ -137,7 +139,7 @@ impl<'a> CpuPipeline<'a> {
     ) -> Result<PipelineStats, RasterError> {
         let mut reuse = false;
         for mvp in matrices {
-            self.draw_mesh_inner(mesh, mvp, topology, reuse, None)?;
+            self.draw_mesh_inner(mesh, mvp, topology, reuse, None, None)?;
             reuse = true;
         }
         Ok(self.stats)
@@ -193,6 +195,7 @@ impl<'a> CpuPipeline<'a> {
                     Topology::TriangleList,
                     reuse,
                     Some(&lighting),
+                    Some(draw.node.material),
                 )?;
                 reuse = true;
                 if !draws
@@ -214,9 +217,11 @@ impl<'a> CpuPipeline<'a> {
         topology: Topology,
         reuse: bool,
         lighting: Option<&VertexLighting<'_>>,
+        material: Option<render_core::MaterialHandle>,
     ) -> Result<PipelineStats, RasterError> {
         self.stats.draws += 1;
         let stage = VertexStage::new(mvp);
+        self.draw_material = material;
         self.stats.metrics.vertices_in += mesh.vertices.len() as u32;
         let t0 = self.timer();
         if let Some(lighting) = lighting {
@@ -329,7 +334,20 @@ impl<'a> CpuPipeline<'a> {
                             self.stats.metrics.triangles_degenerate += 1;
                             continue;
                         }
-                        screen_triangles.push((va, vb, vc));
+                        screen_triangles.push((
+                            ScreenVertex {
+                                material: self.draw_material,
+                                ..va
+                            },
+                            ScreenVertex {
+                                material: self.draw_material,
+                                ..vb
+                            },
+                            ScreenVertex {
+                                material: self.draw_material,
+                                ..vc
+                            },
+                        ));
                     }
                     _ => {
                         self.stats.metrics.triangles_degenerate += 1;
@@ -443,6 +461,9 @@ impl<'a> CpuPipeline<'a> {
         self.fragments.clear();
         let t0 = self.timer();
         let produced = raster_triangle(&va, &vb, &vc, size, self.fill_rule, &mut self.fragments);
+        for fragment in self.fragments.iter_mut().rev().take(produced as usize) {
+            fragment.material = self.draw_material;
+        }
         let raster_ns = self.elapsed(t0);
         self.stats.metrics.timings.raster_ns += raster_ns;
         self.stats.metrics.fragments_rasterized += produced;

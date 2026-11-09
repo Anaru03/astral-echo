@@ -1,4 +1,5 @@
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Vec2, Vec3, Vec4};
+use render_core::MaterialHandle;
 use render_cpu::pipeline::raster::{
     raster_triangle, shade_fragment_with_shader, shade_fragment_with_time, to_screen, FillRule,
     Fragment, FragmentShader, ScreenVertex,
@@ -23,7 +24,31 @@ fn screen(x: f32, y: f32) -> ScreenVertex {
         z: 0.5,
         inv_w: 1.0,
         color: Vec4::ONE,
+        uv: glam::Vec2::ZERO,
+        material: None,
     }
+}
+
+#[test]
+fn raster_fragments_keep_perspective_uv_and_material_association() {
+    let material = MaterialHandle::new(17);
+    let mut a = screen(1.0, 1.0);
+    let mut b = screen(7.0, 1.0);
+    let mut c = screen(1.0, 7.0);
+    a.uv = Vec2::new(0.0, 0.0);
+    b.uv = Vec2::new(1.0, 0.0);
+    c.uv = Vec2::new(0.0, 1.0);
+    b.inv_w = 0.5;
+    c.inv_w = 0.5;
+    a.material = Some(material);
+    b.material = Some(material);
+    c.material = Some(material);
+    let mut fragments = Vec::new();
+    raster_triangle(&a, &b, &c, (8, 8), FillRule::All, &mut fragments);
+    let fragment = fragments.first().expect("fragment");
+    assert_eq!(fragment.material, Some(material));
+    assert!(fragment.uv.is_finite());
+    assert_ne!(fragment.uv, Vec2::ZERO);
 }
 
 #[test]
@@ -34,12 +59,16 @@ fn solar_fragment_shader_applies_position_dependent_effect() {
         y: 0,
         depth: 0.5,
         color,
+        uv: glam::Vec2::ZERO,
+        material: None,
     };
     let right = Fragment {
         x: 16,
         y: 0,
         depth: 0.5,
         color,
+        uv: glam::Vec2::ZERO,
+        material: None,
     };
 
     assert_ne!(
@@ -59,6 +88,8 @@ fn solar_fragment_shader_is_deterministic_and_animated() {
         y: 3,
         depth: 0.5,
         color: glam::Vec4::new(0.8, 0.4, 0.2, 1.0),
+        uv: glam::Vec2::ZERO,
+        material: None,
     };
     let first = shade_fragment_with_time(&fragment, FragmentShader::SolarBands, 0.0);
     let repeat = shade_fragment_with_time(&fragment, FragmentShader::SolarBands, 0.0);
