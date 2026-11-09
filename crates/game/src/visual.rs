@@ -519,7 +519,7 @@ impl VisualBridge {
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 24.0,
-            gravitational_parameter: 80.0,
+            gravitational_parameter: 35.0,
             atmosphere_height: 4.0,
         }) {
             return Err("configurar la fÃ­sica planetaria visual".to_owned());
@@ -539,7 +539,7 @@ impl VisualBridge {
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 24.0,
-            gravitational_parameter: 80.0,
+            gravitational_parameter: 35.0,
             atmosphere_height: 4.0,
         }) {
             return Err("configurar la física de Tessara".to_owned());
@@ -559,7 +559,7 @@ impl VisualBridge {
             surface_radius: game::render_bridge::KHARVEX_SURFACE_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 28.0,
-            gravitational_parameter: 80.0,
+            gravitational_parameter: 45.0,
             atmosphere_height: 4.0,
         }) {
             return Err("configurar la fisica de Kharvex".to_owned());
@@ -583,7 +583,7 @@ impl VisualBridge {
             surface_radius: game::render_bridge::NARETH_VISUAL_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 48.0,
-            gravitational_parameter: 160.0,
+            gravitational_parameter: 60.0,
             atmosphere_height: 8.0,
         }) {
             return Err("configurar la fisica de Nareth".to_owned());
@@ -604,11 +604,26 @@ impl VisualBridge {
             surface_radius: 12.0,
             ship_radius: 1.0,
             gravity_influence_radius: 80.0,
-            gravitational_parameter: 6_000.0,
+            gravitational_parameter: 900.0,
             atmosphere_height: 0.0,
             })
         {
             return Err("configurar la física solar visual".to_owned());
+        }
+        let movement_configured = session.update([GameplayCommand::ConfigureShipMovement {
+            ship,
+            parameters: gameplay::ShipMovementParameters {
+                acceleration: 2.5,
+                deceleration: 5.0,
+                max_speed: 12.0,
+                turn_rate_degrees: 45.0,
+            },
+        }]);
+        if !matches!(
+            movement_configured.first().map(|result| &result.status),
+            Some(gameplay::CommandStatus::Success { .. })
+        ) {
+            return Err("configurar el movimiento suave de ECHO-7".to_owned());
         }
         let interior_position = |local: GameplayVec3| GameplayVec3 {
             x: initial_ship_position.x + local.x,

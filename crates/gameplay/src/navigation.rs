@@ -375,6 +375,8 @@ pub struct ShipMovementParameters {
     pub turn_rate_degrees: f32,
 }
 
+const MAX_GRAVITY_ACCELERATION: f32 = 1.25;
+
 impl Default for ShipMovementParameters {
     fn default() -> Self {
         Self {
@@ -830,7 +832,7 @@ impl NavigationState {
                 };
                 let denominator = distance.max(physics.collision_radius()).powi(2);
                 let gravity = (physics.gravitational_parameter / denominator)
-                    .min(self.speed_limit() / seconds.max(0.001));
+                    .min(MAX_GRAVITY_ACCELERATION);
                 self.velocity = add_vec(self.velocity, scale_vec(direction, gravity * seconds));
                 self.velocity = clamp_speed(self.velocity, self.speed_limit());
             }
@@ -857,7 +859,7 @@ impl NavigationState {
                 };
                 let denominator = distance.max(physics.collision_radius()).powi(2);
                 let gravity = (physics.gravitational_parameter / denominator)
-                    .min(self.speed_limit() / seconds.max(0.001));
+                    .min(MAX_GRAVITY_ACCELERATION);
                 self.velocity = add_vec(self.velocity, scale_vec(direction, gravity * seconds));
                 self.velocity = clamp_speed(self.velocity, self.speed_limit());
             }
