@@ -98,6 +98,10 @@ impl Camera {
         self.position
     }
 
+    pub fn target(self) -> Vec3 {
+        self.target
+    }
+
     pub fn projection(self) -> Projection {
         self.projection
     }

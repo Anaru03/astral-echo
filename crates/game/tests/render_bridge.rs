@@ -879,6 +879,20 @@ fn flight_camera_tracks_visual_ship_and_keeps_projection_valid() {
 }
 
 #[test]
+fn pilot_camera_is_behind_the_echo7_propulsors_and_aims_at_its_rear_hull() {
+    let world = support::fixture_world();
+    let ship = visual_ship_position(&world).expect("fixture ship should be visible");
+    let camera = pilot_camera(&world, 16.0 / 9.0, PILOT_CAMERA_DEFAULT_DISTANCE)
+        .expect("pilot camera should be valid");
+
+    // The fixture starts with yaw/pitch = 0. Echo-7's aft axis is therefore +X.
+    assert!(camera.position().x > ship.x + 6.8);
+    assert!(camera.target().x > ship.x);
+    assert!(camera.position().x > camera.target().x);
+    assert!(camera.view_projection_matrix().is_finite());
+}
+
+#[test]
 fn observation_camera_stays_outside_planet_and_transition_is_deterministic() {
     let world = support::fixture_world();
     let start = observation_camera(&world, 16.0 / 9.0, 0.0, 0.0, 0.0).unwrap();

@@ -850,9 +850,6 @@ impl VisualBridge {
 
     fn attach_visual_asset_client(&mut self, client: VisualAssetClient) {
         self.visual_asset_client = Some(client);
-        // Start the deferred load during runtime initialization so Nareth is
-        // ready before the player first selects it for observation.
-        self.request_nareth_visual_asset();
     }
 
     fn request_visual_asset(
@@ -1236,7 +1233,7 @@ impl VisualBridge {
             return;
         }
         if self.flight_keys.set(key, state == ElementState::Pressed) {
-            if self.pilot_mode || self.legacy_exterior_controls {
+            if self.ship_flight_controls_enabled() {
                 self.accelerate_ship(player, pilot_station, self.current_flight_input());
             }
             return;
@@ -1340,7 +1337,7 @@ impl VisualBridge {
                         self.feedback = "ATERRIZAJE CONFIRMADO".to_owned();
                         println!("visual gameplay: {}", self.feedback);
                     }
-                } else if self.pilot_mode || self.legacy_exterior_controls {
+                } else if self.ship_flight_controls_enabled() {
                     self.issue([GameplayCommand::AttackEnemy { player, enemy }]);
                 }
             }
@@ -1359,29 +1356,41 @@ impl VisualBridge {
                     }]);
                 }
             }
-            KeyCode::KeyP if self.pilot_mode || !self.interior_mode => {
+            KeyCode::KeyP if self.ship_flight_controls_enabled() => {
                 self.toggle_flight(player, pilot_station)
             }
             KeyCode::KeyO => self.toggle_observation(),
             KeyCode::ArrowLeft if self.interior_mode || self.pilot_mode => {
                 self.look_left = true;
                 if self.interior_mode { self.rotate_player(-6.0, 0.0); }
-                if self.pilot_mode { self.observation.adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0); }
+                if self.pilot_mode {
+                    self.observation.adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0);
+                    self.rotate_ship_from_input(-1.0, 0.0);
+                }
             }
             KeyCode::ArrowRight if self.interior_mode || self.pilot_mode => {
                 self.look_right = true;
                 if self.interior_mode { self.rotate_player(6.0, 0.0); }
-                if self.pilot_mode { self.observation.adjust_orbit(OBSERVATION_AZIMUTH_STEP, 0.0); }
+                if self.pilot_mode {
+                    self.observation.adjust_orbit(OBSERVATION_AZIMUTH_STEP, 0.0);
+                    self.rotate_ship_from_input(1.0, 0.0);
+                }
             }
             KeyCode::ArrowUp if self.interior_mode || self.pilot_mode => {
                 self.look_up = true;
                 if self.interior_mode { self.rotate_player(0.0, -4.0); }
-                if self.pilot_mode { self.observation.adjust_orbit(0.0, OBSERVATION_ELEVATION_STEP); }
+                if self.pilot_mode {
+                    self.observation.adjust_orbit(0.0, OBSERVATION_ELEVATION_STEP);
+                    self.rotate_ship_from_input(0.0, -1.0);
+                }
             }
             KeyCode::ArrowDown if self.interior_mode || self.pilot_mode => {
                 self.look_down = true;
                 if self.interior_mode { self.rotate_player(0.0, 4.0); }
-                if self.pilot_mode { self.observation.adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP); }
+                if self.pilot_mode {
+                    self.observation.adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP);
+                    self.rotate_ship_from_input(0.0, 1.0);
+                }
             }
             KeyCode::ArrowLeft => self.observation.adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0),
             KeyCode::ArrowRight => self.observation.adjust_orbit(OBSERVATION_AZIMUTH_STEP, 0.0),
@@ -1864,18 +1873,8 @@ impl VisualBridge {
     fn guided_interaction(&mut self) {
         let can_access_pilot_console = !self.pilot_mode
             && !self.legacy_exterior_controls
-            && self
-                .session
-                .mission_progress(crate::el_despertar::EL_DESPERTAR)
-                .is_some_and(|mission| {
-                    mission.state == gameplay::domains::mission::MissionState::Completed
-                })
-            && self
-                .session
-                .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
-                .is_some_and(|mission| {
-                    mission.state == gameplay::domains::mission::MissionState::Available
-                });
+            && !self.interior_mode
+            && self.mission_one_completed();
         if can_access_pilot_console {
             let mut aggregate = FeedbackAggregate::default();
             self.issue_into(
@@ -1951,18 +1950,8 @@ impl VisualBridge {
         let pilot_console_available = action.is_none()
             && !self.pilot_mode
             && !self.legacy_exterior_controls
-            && self
-                .session
-                .mission_progress(crate::el_despertar::EL_DESPERTAR)
-                .is_some_and(|mission| {
-                    mission.state == gameplay::domains::mission::MissionState::Completed
-                })
-            && self
-                .session
-                .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
-                .is_some_and(|mission| {
-                    mission.state == gameplay::domains::mission::MissionState::Available
-                });
+            && !self.interior_mode
+            && self.mission_one_completed();
         if (self.interior_mode || pilot_console_available) && action.is_none() {
             let mut aggregate = FeedbackAggregate::default();
             self.issue_into(
@@ -2012,18 +2001,7 @@ impl VisualBridge {
             let mut aggregate = FeedbackAggregate::default();
             let pilot_access_requested = target == self.pilot_station
                 && !self.legacy_exterior_controls
-                && self
-                    .session
-                    .mission_progress(crate::el_despertar::EL_DESPERTAR)
-                    .is_some_and(|mission| {
-                        mission.state == gameplay::domains::mission::MissionState::Completed
-                    })
-                && self
-                    .session
-                    .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
-                    .is_some_and(|mission| {
-                        mission.state == gameplay::domains::mission::MissionState::Available
-                    });
+                && self.mission_one_completed();
             let behavior = self
                 .session
                 .world()
@@ -2632,6 +2610,10 @@ impl VisualBridge {
     }
 
     fn enter_pilot(&mut self) {
+        if self.pilot_mode && !self.mission_one_completed() {
+            self.feedback = "ERICK: primero debo completar la Misión 1 para preparar la nave.".to_owned();
+            return;
+        }
         let mut aggregate = FeedbackAggregate::default();
         let accepted = self.issue_into(
             [GameplayCommand::SetShipControlActive {
@@ -2757,13 +2739,66 @@ impl VisualBridge {
         }
     }
 
+    fn rotate_ship_from_input(&mut self, yaw_input: f32, pitch_input: f32) {
+        if !self.ship_flight_controls_enabled() {
+            return;
+        }
+        self.issue([GameplayCommand::RotateShip {
+            player: self.player,
+            pilot_station: self.pilot_station,
+            yaw_input,
+            pitch_input,
+            delta: Duration(16),
+        }]);
+    }
+
     fn current_flight_input(&self) -> GameplayVec3 {
         let keyboard = self.flight_keys.input();
-        GameplayVec3 {
+        let local = GameplayVec3 {
             x: (keyboard.x + self.gamepad_flight.x).clamp(-1.0, 1.0),
-            y: 0.0,
+            y: keyboard.y,
             z: (keyboard.z + self.gamepad_flight.z).clamp(-1.0, 1.0),
+        };
+        let orientation = self.session.world().ship_orientation().unwrap_or_default();
+        let yaw = orientation.yaw_degrees.to_radians();
+        let pitch = orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);
+        let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        let (sin_pitch, cos_pitch) = pitch.sin_cos();
+        let right = GameplayVec3 {
+            x: cos_yaw,
+            y: 0.0,
+            z: sin_yaw,
+        };
+        let up = GameplayVec3 {
+            x: sin_yaw * sin_pitch,
+            y: cos_pitch,
+            z: cos_yaw * sin_pitch,
+        };
+        let forward = GameplayVec3 {
+            x: sin_yaw * cos_pitch,
+            y: sin_pitch,
+            z: -cos_yaw * cos_pitch,
+        };
+        GameplayVec3 {
+            x: right.x * local.x + up.x * local.y - forward.x * local.z,
+            y: right.y * local.x + up.y * local.y - forward.y * local.z,
+            z: right.z * local.x + up.z * local.y - forward.z * local.z,
         }
+    }
+
+    fn mission_one_completed(&self) -> bool {
+        self.session
+            .mission_progress(crate::el_despertar::EL_DESPERTAR)
+            .is_some_and(|mission| {
+                mission.state == gameplay::domains::mission::MissionState::Completed
+            })
+    }
+
+    fn ship_flight_controls_enabled(&self) -> bool {
+        // Exterior flight remains available for the legacy/exploration mode.
+        // Requiring mission_one_completed here made WASD silently stop
+        // applying acceleration while the observation camera still moved.
+        self.pilot_mode || self.legacy_exterior_controls
     }
 
     fn set_gamepad_flight(&mut self, input: GameplayVec3) {
@@ -2775,7 +2810,7 @@ impl VisualBridge {
             return;
         }
         self.gamepad_flight = input;
-        if !self.pilot_mode && !self.legacy_exterior_controls {
+        if !self.ship_flight_controls_enabled() {
             return;
         }
         self.issue([GameplayCommand::AccelerateShip {
@@ -2919,6 +2954,10 @@ impl VisualBridge {
     }
 
     fn toggle_observation(&mut self) {
+        if self.interior_mode {
+            self.feedback = "ERICK: sal al exterior o entra en pilotaje para observar los planetas.".to_owned();
+            return;
+        }
         let now = self.session.world().time().elapsed.0;
         self.observation.toggle(now);
     }
@@ -3300,12 +3339,13 @@ pub fn run() -> Result<(), String> {
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
-            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth(
+            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth_and_pilot(
                 bridge.session.world(),
                 Default::default(),
                 &camera,
                 bridge.interior_mode,
                 bridge.nareth_visual_asset_ready(),
+                bridge.pilot_mode,
             );
             if bridge.hud_visible {
                 snapshot.overlay.hud.inventory_open = bridge.inventory_open;
@@ -3413,7 +3453,6 @@ pub fn run() -> Result<(), String> {
 
             // Modelos de main que aun no tienen entrada en el registro texturizado.
             for (relative_path, mesh, material) in [
-                ("stars/stars.obj", render_core::MeshHandle::STARS, VisualAssets::STARS),
                 ("moon/moon.obj", render_core::MeshHandle::MOON, VisualAssets::PLANET),
                 ("building/building_planet.obj", render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
                 ("clock/clock_planet.obj", render_core::MeshHandle::TESSARA_PLANET, VisualAssets::PLANET),

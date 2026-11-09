@@ -298,7 +298,7 @@ impl Default for VisualAssets {
             ),
             (
                 (MeshHandle::STARS, Self::STARS),
-                RasterMesh::sphere(Vec3::ZERO, 110.0, Vec4::new(0.72, 0.82, 1.0, 1.0)),
+                RasterMesh::star_field(Vec4::new(0.72, 0.82, 1.0, 1.0), 70.0, 384, 0x51A7_2024),
             ),
         ])
         .into_iter()

@@ -290,6 +290,61 @@ impl RasterMesh {
         result
     }
 
+    pub fn star_field(color: Vec4, radius: f32, count: u32, seed: u32) -> Self {
+        let shell_radius = radius.max(1.0);
+        let mut result = Self {
+            vertices: Vec::with_capacity(count as usize * 4),
+            indices: Vec::with_capacity(count as usize * 12),
+        };
+        let mut state = u64::from(seed) | 1;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 40) as f32) / ((1u32 << 24) - 1) as f32
+        };
+        for _ in 0..count {
+            let latitude = next() * 2.0 - 1.0;
+            let longitude = next() * core::f32::consts::TAU;
+            let ring = (1.0 - latitude * latitude).max(0.0).sqrt();
+            let direction = Vec3::new(
+                ring * longitude.cos(),
+                latitude,
+                ring * longitude.sin(),
+            )
+            .normalize_or_zero();
+            let reference = if direction.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
+            let tangent = direction.cross(reference).normalize_or_zero();
+            let bitangent = direction.cross(tangent).normalize_or_zero();
+            let center = direction * shell_radius;
+            let half_size = shell_radius * (0.0008 + next() * 0.0012);
+            let base = result.vertices.len() as u32;
+            let star_color = Vec4::new(
+                color.x * (0.75 + next() * 0.25),
+                color.y * (0.75 + next() * 0.25),
+                color.z,
+                color.w,
+            );
+            for position in [
+                center - tangent * half_size - bitangent * half_size,
+                center + tangent * half_size - bitangent * half_size,
+                center + tangent * half_size + bitangent * half_size,
+                center - tangent * half_size + bitangent * half_size,
+            ] {
+                result.vertices.push(
+                    RasterVertex::new(position, star_color).with_normal(direction),
+                );
+            }
+            // Keep both windings: the camera is inside the shell and the CPU
+            // rasterizer performs winding culling for ordinary triangles.
+            result.indices.extend([
+                base, base + 1, base + 2, base, base + 2, base + 3,
+                base, base + 2, base + 1, base, base + 3, base + 2,
+            ]);
+        }
+        result
+    }
+
     pub fn resolved_normals(&self) -> Vec<Vec3> {
         let mut normals = vec![Vec3::ZERO; self.vertices.len()];
         for triangle in self.indices.chunks_exact(3) {
