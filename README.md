@@ -43,6 +43,26 @@ cargo run -p game -- --runtime
 
 En la consola interactiva aparecerá `astral>`. Allí puedes usar comandos como `status`, `help` y `quit`; los comandos de PowerShell deben ejecutarse fuera de esa consola.
 
+### Multijugador por LAN (experimental)
+
+En el equipo que hará de servidor, inicia la sesión escuchando en todas las interfaces:
+
+```powershell
+cargo run -p game -- --multiplayer 0.0.0.0:4000
+```
+
+En cada equipo cliente, usa la dirección IPv4 LAN del servidor:
+
+```powershell
+cargo run -p game -- --visual-client 192.168.1.20:4000 Ana
+```
+
+Reemplaza `192.168.1.20` por la dirección que muestre `ipconfig` en el equipo servidor. Permite el puerto TCP `4000` en el firewall de la red privada. El servidor admite hasta tres jugadores. Todos deben usar la misma versión del protocolo y abrir su propia ventana `--visual-client`.
+
+El servidor concede el control de la nave a un solo jugador a la vez. Los demás pueden entrar al modo piloto para observar la cámara, pero no controlar la nave. La posición y orientación de la nave se transmiten a todos; los avatares de los pasajeros se representan junto a ella también en la vista exterior. El servidor separa las posiciones iniciales y corrige solapamientos entre jugadores.
+
+La sincronización de combate, inventario por jugador y el resto de acciones cooperativas aún no está completa. El movimiento de personajes y la nave sí se replican entre las ventanas conectadas.
+
 ### Ejecutar sin ventana
 
 ```powershell
@@ -98,10 +118,11 @@ El panel `F1` muestra los controles del modo actual. `F2` oculta o muestra el HU
 - `Shift`: mantener pulsado para activar el boost.
 - `X`: frenar.
 - `N`: abrir o cerrar el selector de destino libre.
-- En el selector: flechas izquierda/derecha cambian de planeta y `Enter` confirma.
+- En el selector: flechas izquierda/derecha cambian de planeta; `P` elige el planeta resaltado e inicia el autopiloto en un solo paso. No hace falta pulsar `Enter`.
+- Si el planeta se movió mientras elegías, el juego recalcula la ruta al iniciar y muestra el resultado en el HUD.
 - `U`: usar una unidad de combustible del inventario.
 - `B` / `V` / `C`: equipar plasma, energía o armamento cinético.
-- `P`: activar o invertir el autopiloto configurado.
+- `P`: iniciar el autopiloto hacia el destino seleccionado o continuar la ruta de navegación guiada.
 - `I`: abandonar el pilotaje y devolver el control al personaje.
 - `PageUp` / `PageDown` o `=` / `-`: acercar o alejar la cámara de pilotaje.
 - La cámara sigue automáticamente a ECHO-7 durante el pilotaje.
