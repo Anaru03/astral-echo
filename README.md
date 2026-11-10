@@ -99,6 +99,10 @@ La opción `--output` es para modo sin ventana y no debe combinarse con `--windo
 
 - `W/A/S/D`: acelerar la nave en la dirección correspondiente mientras el modo de pilotaje está activo.
 - Flechas: cambiar el rumbo de ECHO-7.
+- `W/S`: avanzar o retroceder; `A/D`: girar la nave.
+- `Espacio/Ctrl`: subir o bajar.
+- Durante el pilotaje las flechas ya no son necesarias; la cÃ¡mara sigue automÃ¡ticamente a ECHO-7.
+- `PageUp/PageDown`: acercar o alejar la cÃ¡mara de pilotaje.
 - `P`: activar o invertir el autopiloto configurado.
 - `I`: abandonar el pilotaje y devolver el control al personaje.
 

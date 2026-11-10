@@ -302,6 +302,13 @@ impl PlanetFlightState {
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Landed { .. } | Self::Impacted { .. })
     }
+
+    pub const fn landed_planet(self) -> Option<DestinationId> {
+        match self {
+            Self::Landed { planet } => Some(planet),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -368,13 +375,20 @@ pub struct ShipMovementParameters {
     pub turn_rate_degrees: f32,
 }
 
+const MAX_GRAVITY_ACCELERATION: f32 = 0.55;
+// Flight-assist margins keep manual travel forgiving without turning it into
+// an autopilot. This is the same kind of safety envelope used by assisted
+// supercruise/approach systems in space games: brake before the hard collider
+// and bend away from bodies that are not the selected destination.
+const COLLISION_ASSIST_BUFFER: f32 = 2.5;
+
 impl Default for ShipMovementParameters {
     fn default() -> Self {
         Self {
             acceleration: 4.0,
             deceleration: 6.0,
             max_speed: 20.0,
-            turn_rate_degrees: 45.0,
+            turn_rate_degrees: 75.0,
         }
     }
 }
@@ -656,6 +670,17 @@ impl NavigationState {
     pub const fn boost_active(&self) -> bool {
         self.boost_active
     }
+
+    pub(crate) fn resume_from_landing(&mut self) -> bool {
+        if !matches!(self.planet_flight_state, PlanetFlightState::Landed { .. }) {
+            return false;
+        }
+        self.planet_flight_state = PlanetFlightState::Free;
+        self.travel_state = TravelState::Idle;
+        self.braking = false;
+        self.velocity = Vec3::ZERO;
+        true
+    }
     pub fn speed_limit(&self) -> f32 {
         if self.boost_active { self.movement.max_speed * 1.5 } else { self.movement.max_speed }
     }
@@ -812,7 +837,7 @@ impl NavigationState {
                 };
                 let denominator = distance.max(physics.collision_radius()).powi(2);
                 let gravity = (physics.gravitational_parameter / denominator)
-                    .min(self.speed_limit() / seconds.max(0.001));
+                    .min(MAX_GRAVITY_ACCELERATION);
                 self.velocity = add_vec(self.velocity, scale_vec(direction, gravity * seconds));
                 self.velocity = clamp_speed(self.velocity, self.speed_limit());
             }
@@ -839,11 +864,21 @@ impl NavigationState {
                 };
                 let denominator = distance.max(physics.collision_radius()).powi(2);
                 let gravity = (physics.gravitational_parameter / denominator)
-                    .min(self.speed_limit() / seconds.max(0.001));
+                    .min(MAX_GRAVITY_ACCELERATION);
                 self.velocity = add_vec(self.velocity, scale_vec(direction, gravity * seconds));
                 self.velocity = clamp_speed(self.velocity, self.speed_limit());
             }
         }
+        apply_collision_assist(
+            &mut self.velocity,
+            previous_position,
+            self.free_navigation_destination.or(self.selected_destination),
+            &self.planet_physics,
+            solar_physics,
+            self.movement.deceleration,
+            seconds,
+            now,
+        );
         let displacement = Vec3 {
             x: self.velocity.x * seconds,
             y: self.velocity.y * seconds,
@@ -2022,6 +2057,72 @@ fn segment_intersects_sphere(start: Vec3, end: Vec3, center: Vec3, radius: f32) 
     dot(distance, distance) <= radius * radius
 }
 
+fn apply_collision_assist(
+    velocity: &mut Vec3,
+    position: Vec3,
+    target: Option<DestinationId>,
+    planets: &BTreeMap<DestinationId, PlanetPhysics>,
+    solar: Option<PlanetPhysics>,
+    deceleration: f32,
+    seconds: f32,
+    now: Duration,
+) {
+    // Assistance is intentional only while the player has selected a
+    // destination. Free flight without a target keeps the original physics
+    // and collision feedback intact.
+    let Some(target) = target else {
+        return;
+    };
+    if !finite_vec3(position) || !finite_vec3(*velocity) {
+        return;
+    }
+
+    let mut assist_body = |body_id: DestinationId, body: PlanetPhysics| {
+        let body_position = body.position_at(now);
+        let offset = sub_vec(position, body_position);
+        let distance = magnitude(offset);
+        if !distance.is_finite() || distance <= f32::EPSILON {
+            return;
+        }
+        let speed = magnitude(*velocity);
+        let stopping_distance = speed * speed / (2.0 * deceleration.max(0.1));
+        let braking_radius = body.collision_radius()
+            + COLLISION_ASSIST_BUFFER
+            + stopping_distance.min(12.0);
+        let projected = add_vec(position, scale_vec(*velocity, seconds));
+        let target_body = target == body_id;
+
+        if target_body && distance <= braking_radius {
+            *velocity = move_towards_zero(*velocity, deceleration * seconds * 1.35);
+            return;
+        }
+        if !target_body
+            && segment_intersects_sphere(
+                position,
+                projected,
+                body_position,
+                body.collision_radius() + COLLISION_ASSIST_BUFFER,
+            )
+        {
+            // Remove the component aimed at the obstacle. The remaining
+            // tangential component lets the player naturally pass around it.
+            let outward = scale_vec(offset, 1.0 / distance);
+            let inward_speed = dot(*velocity, outward);
+            if inward_speed < 0.0 {
+                *velocity = sub_vec(*velocity, scale_vec(outward, inward_speed));
+            }
+            *velocity = scale_vec(*velocity, 0.65);
+        }
+    };
+
+    for (id, body) in planets {
+        assist_body(*id, *body);
+    }
+    if let Some(body) = solar {
+        assist_body(SUN_DESTINATION_ID, body);
+    }
+}
+
 fn impact_position(start: Vec3, center: Vec3, radius: f32) -> Vec3 {
     let direction = sub_vec(start, center);
     let length = distance(start, center).max(radius);
@@ -2196,6 +2297,78 @@ mod tests {
         let mut moving = physics;
         moving.orbit_angular_speed = 1.0;
         assert_ne!(moving.position_at(Duration(0)), moving.position_at(Duration(1_000)));
+    }
+
+    #[test]
+    fn collision_assist_brakes_for_selected_planet_before_arrival() {
+        let destination = DestinationId::new(7);
+        let mut bodies = BTreeMap::new();
+        bodies.insert(
+            destination,
+            PlanetPhysics {
+                destination,
+                orbit_center: Vec3::ZERO,
+                orbit_radius: 0.0,
+                orbit_start: Vec3::ZERO,
+                orbit_axis: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+                orbit_phase: 0.0,
+                orbit_angular_speed: 0.0,
+                surface_radius: 2.0,
+                ship_radius: 1.0,
+                gravity_influence_radius: 20.0,
+                gravitational_parameter: 1.0,
+                atmosphere_height: 2.0,
+            },
+        );
+        let mut velocity = Vec3 { x: 8.0, y: 0.0, z: 0.0 };
+        apply_collision_assist(
+            &mut velocity,
+            Vec3 { x: -5.0, y: 0.0, z: 0.0 },
+            Some(destination),
+            &bodies,
+            None,
+            6.5,
+            0.1,
+            Duration(0),
+        );
+        assert!(velocity.x < 8.0);
+        assert_eq!(velocity.y, 0.0);
+    }
+
+    #[test]
+    fn collision_assist_removes_course_towards_non_target_body() {
+        let destination = DestinationId::new(7);
+        let obstacle = DestinationId::new(8);
+        let mut bodies = BTreeMap::new();
+        bodies.insert(
+            obstacle,
+            PlanetPhysics {
+                destination: obstacle,
+                orbit_center: Vec3::ZERO,
+                orbit_radius: 0.0,
+                orbit_start: Vec3::ZERO,
+                orbit_axis: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+                orbit_phase: 0.0,
+                orbit_angular_speed: 0.0,
+                surface_radius: 2.0,
+                ship_radius: 1.0,
+                gravity_influence_radius: 20.0,
+                gravitational_parameter: 1.0,
+                atmosphere_height: 2.0,
+            },
+        );
+        let mut velocity = Vec3 { x: 20.0, y: 0.0, z: 0.0 };
+        apply_collision_assist(
+            &mut velocity,
+            Vec3 { x: -5.0, y: 0.0, z: 0.0 },
+            Some(destination),
+            &bodies,
+            None,
+            6.5,
+            0.5,
+            Duration(0),
+        );
+        assert!(velocity.x.abs() < 0.001);
     }
 
     #[test]
