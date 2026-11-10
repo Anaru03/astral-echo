@@ -155,7 +155,11 @@ pub fn register_textured_model(
         let mesh_id = first_mesh_id
             .checked_add(offset)
             .ok_or_else(|| "mesh ID overflow".to_string())?;
-        let repeat_wall = part.name == "ECHO7_30_Exterior_Unificado__Drum_doble_altura_08"
+        let repeat_wall = part
+            .name
+            .strip_prefix("ECHO7_30_Exterior_Unificado__Drum_doble_altura_")
+            .and_then(|suffix| suffix.parse::<u32>().ok())
+            .is_some_and(|segment| (1..=88).contains(&segment))
             && part
                 .material_index
                 .and_then(|index| model.materials.get(index))
@@ -166,25 +170,10 @@ pub fn register_textured_model(
                         .is_some_and(|name| name == "base_marfil.png")
                 });
         if repeat_wall {
-            let use_y_axis = part
-                .mesh
-                .vertices
-                .iter()
-                .map(|vertex| vertex.normal.x.abs())
-                .sum::<f32>()
-                > part
-                    .mesh
-                    .vertices
-                    .iter()
-                    .map(|vertex| vertex.normal.y.abs())
-                    .sum::<f32>();
             for vertex in &mut part.mesh.vertices {
-                let longitudinal = if use_y_axis {
-                    vertex.position.y
-                } else {
-                    vertex.position.x
-                };
-                vertex.uv = crate::Vec2::new(longitudinal * 0.35, vertex.position.z * 0.35);
+                let angle = vertex.position.y.atan2(vertex.position.x);
+                let radius = vertex.position.x.hypot(vertex.position.y);
+                vertex.uv = crate::Vec2::new(angle * radius * 0.35, vertex.position.z * 0.35);
             }
         }
         let material_offset = if repeat_wall {

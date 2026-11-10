@@ -109,3 +109,30 @@ fn registers_confirmed_habitat_wall_with_seamless_repeat() {
         .expect("PNG no decodificado");
     assert!(image.width > 0 && image.height > 0);
 }
+
+#[test]
+fn habitat_wall_selection_excludes_habitat_furniture_and_glass() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    for segment in ["01", "07", "08", "09", "88"] {
+        let name = format!("ECHO7_30_Exterior_Unificado__Drum_doble_altura_{segment}");
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        let material = mesh.material_index.unwrap();
+        assert_eq!(model.materials[material].name, "Casco_Marfil");
+    }
+    for excluded in [
+        "ECHO7_09_Habitat_Central__Jardinera_01",
+        "ECHO7_09_Habitat_Central__Estante_hidroponico_01",
+        "ECHO7_09_Habitat_Central__Cristal_cupula_01",
+    ] {
+        let mesh = model
+            .meshes
+            .iter()
+            .find(|mesh| mesh.name == excluded)
+            .unwrap();
+        assert!(!mesh
+            .name
+            .starts_with("ECHO7_30_Exterior_Unificado__Drum_doble_altura_"));
+    }
+}
