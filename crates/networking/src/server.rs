@@ -24,6 +24,9 @@ struct ServerState {
     players: BTreeMap<NetworkPlayerId, String>,
     connections: BTreeMap<NetworkPlayerId, Connection>,
     last_sequences: BTreeMap<NetworkPlayerId, u64>,
+    pilot_owner: Option<NetworkPlayerId>,
+    last_ship_sequence: Option<u64>,
+    ship_transform: Option<PlayerTransform>,
     publication: Arc<Mutex<()>>,
 }
 
@@ -174,7 +177,44 @@ impl ServerState {
             connection.close();
         }
         self.last_sequences.remove(&id);
+        if self.pilot_owner == Some(id) {
+            self.pilot_owner = None;
+            self.last_ship_sequence = None;
+        }
         self.players.remove(&id).is_some()
+    }
+
+    fn set_pilot_owner(&mut self, id: NetworkPlayerId, active: bool) -> bool {
+        if !self.players.contains_key(&id) {
+            return false;
+        }
+        if active && (self.pilot_owner.is_none() || self.pilot_owner == Some(id)) {
+            self.pilot_owner = Some(id);
+            return true;
+        }
+        if !active && self.pilot_owner == Some(id) {
+            self.pilot_owner = None;
+            self.last_ship_sequence = None;
+            return true;
+        }
+        false
+    }
+
+    fn accept_ship_movement(
+        &mut self,
+        id: NetworkPlayerId,
+        sequence: u64,
+        transform: PlayerTransform,
+    ) -> bool {
+        if self.pilot_owner != Some(id) || !transform.is_valid() {
+            return false;
+        }
+        if self.last_ship_sequence.is_some_and(|previous| sequence <= previous) {
+            return false;
+        }
+        self.last_ship_sequence = Some(sequence);
+        self.ship_transform = Some(transform);
+        true
     }
 
     fn count(&self) -> usize {
@@ -282,7 +322,14 @@ fn broadcast_disconnections_inner(
             &ServerMessage::PlayerLeft { player_id },
             Some(player_id),
         );
+        let pilot_owner = state.lock().ok().and_then(|server| server.pilot_owner);
+        let failed_owner_notice = broadcast_state_inner(
+            state,
+            &ServerMessage::PilotControlChanged { player_id: pilot_owner },
+            None,
+        );
         pending.extend(failed);
+        pending.extend(failed_owner_notice);
         publish_disconnections(events, vec![player_id]);
     }
 }
@@ -302,6 +349,36 @@ fn broadcast_all(
         Err(_) => return,
     };
     broadcast_message_locked(state, events, message, exclude);
+}
+
+fn set_pilot_control(
+    state: &Arc<Mutex<ServerState>>,
+    events: Option<&ServerEventQueue>,
+    player_id: NetworkPlayerId,
+    active: bool,
+) {
+    let publication = match state.lock() {
+        Ok(server) => Arc::clone(&server.publication),
+        Err(_) => return,
+    };
+    let _publication = match publication.lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+    let current_owner = {
+        let mut server = match state.lock() {
+            Ok(server) => server,
+            Err(_) => return,
+        };
+        server.set_pilot_owner(player_id, active);
+        server.pilot_owner
+    };
+    broadcast_message_locked(
+        state,
+        events,
+        &ServerMessage::PilotControlChanged { player_id: current_owner },
+        None,
+    );
 }
 
 fn broadcast_message_locked(
@@ -1087,6 +1164,27 @@ fn handle_client(
                     drop(publication_guard);
                     drop(lifecycle_guard);
 
+                    let (pilot_owner, ship_transform) = state
+                        .lock()
+                        .map(|server| (server.pilot_owner, server.ship_transform))
+                        .unwrap_or((None, None));
+                    send_response(
+                        output.as_ref(),
+                        &mut stream,
+                        &ServerMessage::PilotControlChanged { player_id: pilot_owner },
+                    )?;
+                    if let (Some(owner), Some(transform)) = (pilot_owner, ship_transform) {
+                        send_response(
+                            output.as_ref(),
+                            &mut stream,
+                            &ServerMessage::ShipMoved {
+                                player_id: owner,
+                                sequence: state.lock().map(|server| server.last_ship_sequence.unwrap_or(0)).unwrap_or(0),
+                                transform,
+                            },
+                        )?;
+                    }
+
                     println!("Jugador {id} conectado: {name}");
                 }
 
@@ -1121,6 +1219,33 @@ fn handle_client(
                             } else {
                                 broadcast_all(&state, events.as_ref(), &message, Some(id));
                             }
+                        }
+                    }
+                }
+
+                ClientMessage::SetPilotControl { active } => {
+                    if let Some(id) = player_id {
+                        set_pilot_control(&state, events.as_ref(), id, active);
+                    }
+                }
+
+                ClientMessage::ShipMove { sequence, transform } => {
+                    if let Some(id) = player_id {
+                        let accepted = state
+                            .lock()
+                            .map_err(|_| io::Error::other("Estado del servidor no disponible"))?
+                            .accept_ship_movement(id, sequence, transform);
+                        if accepted {
+                            broadcast_all(
+                                &state,
+                                events.as_ref(),
+                                &ServerMessage::ShipMoved {
+                                    player_id: id,
+                                    sequence,
+                                    transform,
+                                },
+                                None,
+                            );
                         }
                     }
                 }

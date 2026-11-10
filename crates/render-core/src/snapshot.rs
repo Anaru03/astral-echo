@@ -102,6 +102,7 @@ pub enum SnapshotId {
     Derelict(u32),
     Hazard(u32),
     VisualEvent(u64),
+    RemotePlayer(u64),
     ModelPart {
         parent: u64,
         part: u32,

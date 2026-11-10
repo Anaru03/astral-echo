@@ -364,6 +364,8 @@ impl GameClient {
                     event @ (ServerMessage::PlayerJoined { .. }
                     | ServerMessage::PlayerLeft { .. }
                     | ServerMessage::PlayerMoved { .. }
+                    | ServerMessage::PilotControlChanged { .. }
+                    | ServerMessage::ShipMoved { .. }
                     | ServerMessage::MissionRecoveryResult { .. }
                     | ServerMessage::Mission5ContentState { .. }
                     | ServerMessage::MissionContentUpdated { .. }),
