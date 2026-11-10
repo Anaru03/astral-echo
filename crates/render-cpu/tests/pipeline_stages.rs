@@ -1,8 +1,9 @@
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use render_core::MaterialHandle;
 use render_cpu::pipeline::raster::{
-    raster_triangle, shade_fragment_with_shader, shade_fragment_with_time, to_screen, FillRule,
-    Fragment, FragmentShader, ScreenVertex,
+    raster_triangle, sample_texture, shade_fragment_with_shader, shade_fragment_with_time,
+    shade_fragment_with_time_and_textures, to_screen, FillRule, Fragment, FragmentShader,
+    ScreenVertex,
 };
 use render_cpu::pipeline::CpuPipeline;
 use render_cpu::{
@@ -49,6 +50,61 @@ fn raster_fragments_keep_perspective_uv_and_material_association() {
     assert_eq!(fragment.material, Some(material));
     assert!(fragment.uv.is_finite());
     assert_ne!(fragment.uv, Vec2::ZERO);
+}
+
+#[test]
+fn texture_sampling_clamps_and_flips_png_rows() {
+    let texture = render_core::DecodedTexture {
+        width: 2,
+        height: 2,
+        pixels: std::sync::Arc::from([
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+        ]),
+    };
+    assert_eq!(
+        sample_texture(&texture, Vec2::new(0.0, 1.0)),
+        Vec4::new(1.0, 0.0, 0.0, 1.0)
+    );
+    assert_eq!(
+        sample_texture(&texture, Vec2::new(1.0, 0.0)),
+        Vec4::new(1.0, 1.0, 0.0, 1.0)
+    );
+    assert_eq!(
+        sample_texture(&texture, Vec2::new(-1.0, 2.0)),
+        Vec4::new(1.0, 0.0, 0.0, 1.0)
+    );
+}
+
+#[test]
+fn textured_fragment_uses_perspective_uv_once() {
+    let material = render_core::MaterialHandle::new(23);
+    let path = std::env::temp_dir().join(format!("astral-echo-raster-{}.png", std::process::id()));
+    let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 2, 1);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&[255, 0, 0, 255, 0, 255, 0, 255])
+        .unwrap();
+    writer.finish().unwrap();
+    let mut registry = render_core::MaterialTextureRegistry::new();
+    registry.try_register(material, &path).unwrap();
+    let fragment = Fragment {
+        x: 0,
+        y: 0,
+        depth: 0.5,
+        color: Vec4::ONE,
+        uv: Vec2::new(0.75, 0.0),
+        material: Some(material),
+    };
+    let color = shade_fragment_with_time_and_textures(
+        &fragment,
+        FragmentShader::VertexColor,
+        0.0,
+        Some(&registry),
+    );
+    assert_eq!(color, render_cpu::Color::new(0, 255, 0, 255));
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -122,7 +178,10 @@ fn sequential_and_tiled_paths_apply_the_same_animated_shader() {
         framebuffer.color_bytes().to_vec()
     };
 
-    assert_eq!(render(render_cpu::RasterMode::Secuencial), render(render_cpu::RasterMode::Paralelo));
+    assert_eq!(
+        render(render_cpu::RasterMode::Secuencial),
+        render(render_cpu::RasterMode::Paralelo)
+    );
 }
 
 #[test]

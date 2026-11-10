@@ -20,11 +20,11 @@ use crate::viewport::Viewport;
 pub use assembly::{assemble, AssemblyStats, Topology, Triangle};
 pub use raster::{
     depth_resolve, edge_function, raster_triangle, resolve_fragment, shade_fragment,
-    shade_fragment_with_shader, shade_fragment_with_time, to_screen, FillRule, Fragment,
-    FragmentShader, RasterOutput, ScreenVertex,
+    shade_fragment_with_shader, shade_fragment_with_time, shade_fragment_with_time_and_textures,
+    to_screen, FillRule, Fragment, FragmentShader, RasterOutput, ScreenVertex,
 };
-use tiles::rasterize_triangles_tiled_with_shader;
 pub use stages::{PipelineConfig, PipelineError, PipelineStats, Stage, StageMetrics};
+use tiles::rasterize_triangles_tiled_with_shader;
 pub use tiles::{
     rasterize_triangles_tiled, RasterMode, RasterWorkload, TileConfig, TileGrid, TileRect,
     TileStats,
@@ -49,6 +49,7 @@ pub struct CpuPipeline<'a> {
     fragment_shader: FragmentShader,
     fragment_time: f32,
     draw_material: Option<render_core::MaterialHandle>,
+    textures: Option<render_core::MaterialTextureRegistry>,
 }
 
 impl<'a> CpuPipeline<'a> {
@@ -73,6 +74,7 @@ impl<'a> CpuPipeline<'a> {
             fragment_shader: FragmentShader::VertexColor,
             fragment_time: 0.0,
             draw_material: None,
+            textures: None,
         }
     }
 
@@ -153,19 +155,16 @@ impl<'a> CpuPipeline<'a> {
         if scene.lighting.mode != render_core::LightingMode::Unlit {
             return self.draw_lit_scene(scene, vp);
         }
-        let mut draws = scene.draws().peekable();
-        while let Some(first) = draws.next() {
-            let matrices = std::iter::once(vp * first.node.transform.matrix()).chain(
-                std::iter::from_fn(|| {
-                    let next = draws.peek()?;
-                    if !Arc::ptr_eq(&first.mesh, &next.mesh) {
-                        return None;
-                    }
-                    let next = draws.next()?;
-                    Some(vp * next.node.transform.matrix())
-                }),
-            );
-            self.draw_mesh_instances(&first.mesh, matrices, Topology::TriangleList)?;
+        self.textures = Some(scene.textures().clone());
+        for draw in scene.draws() {
+            self.draw_mesh_inner(
+                &draw.mesh,
+                vp * draw.node.transform.matrix(),
+                Topology::TriangleList,
+                false,
+                None,
+                Some(draw.node.material),
+            )?;
         }
         Ok(self.stats)
     }
@@ -175,6 +174,7 @@ impl<'a> CpuPipeline<'a> {
         scene: &render_core::PreparedScene,
         vp: Mat4,
     ) -> Result<PipelineStats, RasterError> {
+        self.textures = Some(scene.textures().clone());
         let mut draws = scene.draws().peekable();
         while let Some(first) = draws.next() {
             let normals = first.mesh.resolved_normals();
@@ -366,6 +366,7 @@ impl<'a> CpuPipeline<'a> {
             self.tile_config.unwrap_or_default(),
             self.fragment_shader,
             self.fragment_time,
+            self.textures.as_ref(),
         );
         let raster_ns = self.elapsed(t0);
 
@@ -474,10 +475,14 @@ impl<'a> CpuPipeline<'a> {
         // Etapa de fragment: sombreado y conversión de color.
         let t1 = self.timer();
         self.shaded.clear();
-        self.shaded
-            .extend(self.fragments.iter().map(|fragment| {
-                shade_fragment_with_time(fragment, self.fragment_shader, self.fragment_time)
-            }));
+        self.shaded.extend(self.fragments.iter().map(|fragment| {
+            shade_fragment_with_time_and_textures(
+                fragment,
+                self.fragment_shader,
+                self.fragment_time,
+                self.textures.as_ref(),
+            )
+        }));
         let fragment_ns = self.elapsed(t1);
         // Etapa de depth: test de profundidad y escritura en el framebuffer.
         let t2 = self.timer();

@@ -1,5 +1,6 @@
 use glam::{Vec2, Vec4};
 use render_core::MaterialHandle;
+use render_core::MaterialTextureRegistry;
 
 use crate::clip::ClipVertex;
 use crate::color::vec4_to_rgba8;
@@ -261,14 +262,19 @@ pub fn shade_fragment(fragment: &Fragment) -> Color {
 
 /// Ejecuta un shader de fragmentos software sobre un fragmento rasterizado.
 pub fn shade_fragment_with_shader(fragment: &Fragment, shader: FragmentShader) -> Color {
-    shade_fragment_with_time(fragment, shader, 0.0)
+    shade_fragment_with_time_and_textures(fragment, shader, 0.0, None)
 }
 
 /// Ejecuta un shader de fragmentos software con una fase temporal explícita.
-pub fn shade_fragment_with_time(
+pub fn shade_fragment_with_time(fragment: &Fragment, shader: FragmentShader, time: f32) -> Color {
+    shade_fragment_with_time_and_textures(fragment, shader, time, None)
+}
+
+pub fn shade_fragment_with_time_and_textures(
     fragment: &Fragment,
     shader: FragmentShader,
     time: f32,
+    textures: Option<&MaterialTextureRegistry>,
 ) -> Color {
     let color = match shader {
         FragmentShader::VertexColor => fragment.color,
@@ -278,10 +284,8 @@ pub fn shade_fragment_with_time(
             } else {
                 0.0
             };
-            let band = (((fragment.x / 16 + fragment.y / 16) as f32 + time * 0.5).floor()
-                as i32
-                & 1)
-                == 0;
+            let band =
+                (((fragment.x / 16 + fragment.y / 16) as f32 + time * 0.5).floor() as i32 & 1) == 0;
             let base = if band { 1.0 } else { 0.55 };
             let glow = ((fragment.x as f32 * 0.08 + time * 0.7).sin() * 0.5 + 0.5) * 0.25;
             glam::Vec4::new(
@@ -292,7 +296,30 @@ pub fn shade_fragment_with_time(
             )
         }
     };
+    let color = textures
+        .and_then(|registry| {
+            fragment
+                .material
+                .and_then(|material| registry.image_ref(material))
+        })
+        .map_or(color, |texture| {
+            color * sample_texture(texture, fragment.uv)
+        });
     vec4_to_rgba8(color)
+}
+
+pub fn sample_texture(texture: &render_core::DecodedTexture, uv: Vec2) -> Vec4 {
+    let u = uv.x.clamp(0.0, 1.0);
+    let v = uv.y.clamp(0.0, 1.0);
+    let x = (u * texture.width.saturating_sub(1) as f32).round() as u32;
+    let y = ((1.0 - v) * texture.height.saturating_sub(1) as f32).round() as u32;
+    let index = ((y * texture.width + x) * 4) as usize;
+    Vec4::new(
+        texture.pixels[index] as f32 / 255.0,
+        texture.pixels[index + 1] as f32 / 255.0,
+        texture.pixels[index + 2] as f32 / 255.0,
+        texture.pixels[index + 3] as f32 / 255.0,
+    )
 }
 
 /// Aplica el test de profundidad y escribe el fragmento en el framebuffer.

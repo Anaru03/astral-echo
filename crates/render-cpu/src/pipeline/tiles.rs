@@ -4,9 +4,10 @@ use rayon::prelude::*;
 
 use crate::framebuffer::Framebuffer;
 use crate::pipeline::raster::{
-    edge_function, raster_triangle_visit, shade_fragment_with_time, FillRule, FragmentShader,
-    ScreenVertex,
+    edge_function, raster_triangle_visit, shade_fragment_with_time_and_textures, FillRule,
+    FragmentShader, ScreenVertex,
 };
+use render_core::MaterialTextureRegistry;
 
 /// Rectangle que representa un tile en la cuadrícula de tiles.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -192,6 +193,7 @@ pub fn rasterize_triangles_tiled(
         config,
         FragmentShader::VertexColor,
         0.0,
+        None,
     )
 }
 
@@ -204,6 +206,7 @@ pub(crate) fn rasterize_triangles_tiled_with_shader(
     config: TileConfig,
     fragment_shader: FragmentShader,
     fragment_time: f32,
+    textures: Option<&MaterialTextureRegistry>,
 ) -> TileStats {
     let grid = TileGrid::new(framebuffer.width(), framebuffer.height(), config.tile_size);
     let mut stats = TileStats::default();
@@ -276,6 +279,7 @@ pub(crate) fn rasterize_triangles_tiled_with_shader(
         depth_write,
         fragment_shader,
         fragment_time,
+        textures,
     };
     let start = Instant::now();
     let band_pixels = grid.framebuffer_w as usize * grid.tile_size.min(grid.framebuffer_h) as usize;
@@ -355,6 +359,7 @@ struct RasterJob<'a> {
     depth_write: bool,
     fragment_shader: FragmentShader,
     fragment_time: f32,
+    textures: Option<&'a MaterialTextureRegistry>,
 }
 
 impl RasterJob<'_> {
@@ -381,10 +386,11 @@ impl RasterJob<'_> {
                             output.rejected += 1;
                             return;
                         }
-                        let rgba = shade_fragment_with_time(
+                        let rgba = shade_fragment_with_time_and_textures(
                             &fragment,
                             self.fragment_shader,
                             self.fragment_time,
+                            self.textures,
                         )
                         .to_rgba8();
                         color[pixel * 4..pixel * 4 + 4].copy_from_slice(&rgba);

@@ -72,11 +72,19 @@ pub struct PreparedSceneStats {
 }
 
 impl PreparedScene {
-    pub fn texture_path(
+    pub fn texture_path(&self, material: MaterialHandle) -> Option<&std::path::Path> {
+        self.textures.get(material)
+    }
+
+    pub fn texture_image(
         &self,
         material: MaterialHandle,
-    ) -> Option<&std::path::Path> {
-        self.textures.get(material)
+    ) -> Option<&crate::material_texture::DecodedTexture> {
+        self.textures.image_ref(material)
+    }
+
+    pub fn textures(&self) -> &MaterialTextureRegistry {
+        &self.textures
     }
 
     pub fn from_draws(draws: Vec<PreparedDraw>) -> Self {

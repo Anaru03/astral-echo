@@ -40,6 +40,7 @@ pub use lighting::{
     MAX_POINT_LIGHTS,
 };
 pub use material::{MaterialHandle, MaterialInfo};
+pub use material_texture::{DecodedTexture, MaterialTextureRegistry};
 pub use math::{
     from_engine, normal_matrix, normalize_direction, perspective_rh_wgpu, to_engine,
     transform_normal, Mat4, Quat, Vec2, Vec3, Vec4,

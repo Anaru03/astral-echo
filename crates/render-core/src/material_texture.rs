@@ -52,17 +52,17 @@ impl MaterialTextureRegistry {
         {
             return Ok(());
         }
-        let bytes = std::fs::read(&path)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let bytes = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
         let mut reader = decoder
             .read_info()
             .map_err(|error| format!("{}: {error}", path.display()))?;
         let mut pixels = vec![
             0;
-            reader
-                .output_buffer_size()
-                .ok_or_else(|| format!("{}: tamaño de imagen inválido", path.display()))?
+            reader.output_buffer_size().ok_or_else(|| format!(
+                "{}: tamaño de imagen inválido",
+                path.display()
+            ))?
         ];
         let info = reader
             .next_frame(&mut pixels)
@@ -105,6 +105,10 @@ impl MaterialTextureRegistry {
 
     pub fn image(&self, material: MaterialHandle) -> Option<Arc<DecodedTexture>> {
         self.textures.get(&material).map(|texture| texture.image.clone())
+    }
+
+    pub fn image_ref(&self, material: MaterialHandle) -> Option<&DecodedTexture> {
+        self.textures.get(&material).map(|texture| texture.image.as_ref())
     }
 
     /// Elimina una textura registrada.
