@@ -316,6 +316,62 @@ pub fn echo7_walkable_height(
     ECHO7_LOWER_DECK_Y
 }
 
+pub fn echo7_lower_deck_position_valid(
+    position: engine::Vec3,
+    ship_position: engine::Vec3,
+    ship_yaw_degrees: f32,
+    door_position: Option<engine::Vec3>,
+    door_open: bool,
+) -> bool {
+    let local = echo7_world_to_local(position, ship_position, ship_yaw_degrees);
+    if local.z > ECHO7_INTERIOR_CEILING_Y / ECHO7_VISUAL_SCALE.z {
+        return true;
+    }
+    let radius = ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.x;
+    let stair_exit = local.x >= ECHO7_STAIR_LOCAL_X_MIN - radius
+        && local.x <= ECHO7_STAIR_LOCAL_X_MAX + radius
+        && local.y >= ECHO7_STAIR_LOCAL_Y_MIN - radius
+        && local.y <= ECHO7_STAIR_LOCAL_Y_MAX + radius;
+    if stair_exit {
+        return true;
+    }
+    let bounds = (
+        -ECHO7_INTERIOR_HALF_WIDTH + radius,
+        ECHO7_INTERIOR_HALF_WIDTH - radius,
+        -ECHO7_INTERIOR_HALF_DEPTH + radius,
+        ECHO7_INTERIOR_HALF_DEPTH - radius,
+    );
+    let door_local = door_position
+        .map(|door| echo7_world_to_local(door, ship_position, ship_yaw_degrees));
+    let at_open_door = door_open
+        && door_local.is_some_and(|door| {
+            let on_x_wall = door.x.abs() >= ECHO7_INTERIOR_HALF_WIDTH - 0.6;
+            let on_y_wall = door.y.abs() >= ECHO7_INTERIOR_HALF_DEPTH - 0.6;
+            (on_x_wall || on_y_wall)
+                && (local.x - door.x).abs() < 1.0
+                && (local.y - door.y).abs() < 1.0
+        });
+    if at_open_door {
+        return true;
+    }
+    let door_gap = |coordinate: f32, other: f32, limit: f32| {
+        door_open
+            && door_local.is_some_and(|door| {
+                (door.x.abs() >= limit - 0.6 && (door.y - other).abs() < 1.0)
+                    || (door.y.abs() >= limit - 0.6 && (door.x - other).abs() < 1.0)
+            })
+            && coordinate.abs() >= limit - radius
+    };
+    let inside_x = local.x >= bounds.0 && local.x <= bounds.1;
+    let inside_y = local.y >= bounds.2 && local.y <= bounds.3;
+    inside_x
+        && inside_y
+        && !(local.x <= bounds.0 && !door_gap(local.x, local.y, ECHO7_INTERIOR_HALF_WIDTH))
+        && !(local.x >= bounds.1 && !door_gap(local.x, local.y, ECHO7_INTERIOR_HALF_WIDTH))
+        && !(local.y <= bounds.2 && !door_gap(local.y, local.x, ECHO7_INTERIOR_HALF_DEPTH))
+        && !(local.y >= bounds.3 && !door_gap(local.y, local.x, ECHO7_INTERIOR_HALF_DEPTH))
+}
+
 fn enemy_material(archetype: Option<gameplay::EnemyArchetype>) -> MaterialHandle {
     match archetype {
         Some(gameplay::EnemyArchetype::Charger) => CHARGER_MATERIAL,
@@ -1925,6 +1981,162 @@ mod tests {
         assert!(snapshot.nodes.iter().any(|node| {
             node.entity == render_core::SnapshotId::Entity(super::INTERIOR_BACK_WALL_ENTITY)
         }));
+        assert!(snapshot.lights.iter().any(|light| {
+            matches!(
+                light.light.kind,
+                render_core::RenderLightKind::Point { position, range }
+                    if position == render_core::Vec3::new(0.0, 5.6, 0.0)
+                        && range == 18.0
+            )
+        }));
+        assert_eq!(
+            snapshot
+                .lights
+                .iter()
+                .filter(|light| {
+                    matches!(light.light.kind, render_core::RenderLightKind::Point { .. })
+                })
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn echo7_z_up_conversion_maps_to_world_y_without_reflection() {
+        let conversion = super::echo7_local_to_world_rotation();
+        let right = conversion * render_core::Vec3::X;
+        let forward = conversion * render_core::Vec3::Y;
+        let up = conversion * render_core::Vec3::Z;
+
+        assert!((up - render_core::Vec3::Y).length() < 1e-5);
+        assert!((right.cross(forward) - up).length() < 1e-5);
+    }
+
+    #[test]
+    fn echo7_walkable_surfaces_connect_both_decks_without_jumping_under_balcony() {
+        assert_eq!(super::echo7_walkable_height(engine::Vec3 { x: 0.0, y: 0.0, z: 0.0 }, engine::Vec3::ZERO, 0.0), 0.0);
+        assert!(super::echo7_walkable_height(engine::Vec3 { x: -5.1, y: 0.0, z: 0.0 }, engine::Vec3::ZERO, 0.0) > 1.2);
+        assert!((super::echo7_walkable_height(
+            engine::Vec3 { x: -5.1, y: 0.0, z: 1.57 },
+            engine::Vec3::ZERO,
+            0.0,
+        ) - 2.73)
+            .abs()
+            < 0.01);
+        assert_eq!(
+            super::echo7_walkable_height(engine::Vec3 { x: 0.0, y: 0.0, z: 3.1 }, engine::Vec3::ZERO, 0.0),
+            0.0
+        );
+        assert_eq!(
+            super::echo7_walkable_height(engine::Vec3 { x: 8.0, y: 0.0, z: 0.0 }, engine::Vec3::ZERO, 0.0),
+            0.0
+        );
+    }
+
+    #[test]
+    fn echo7_balcony_is_transformed_ring_with_stair_connection_and_clearance() {
+        let ship = engine::Vec3 { x: 13.0, y: 0.0, z: -4.0 };
+        let yaw: f32 = 37.0;
+        let rotation = Quat::from_rotation_y(yaw.to_radians() + ECHO7_MODEL_YAW_OFFSET_RAD);
+        let at_local = |local: Vec3, height: f32| {
+            let offset = rotation
+                * (echo7_local_to_world_rotation()
+                    * (ECHO7_VISUAL_SCALE * (local - ECHO7_MODEL_CENTER)));
+            engine::Vec3 {
+                x: ship.x + offset.x,
+                y: height,
+                z: ship.z + offset.z,
+            }
+        };
+
+        assert!(
+            (super::echo7_walkable_height(at_local(Vec3::new(0.0, -9.0, 0.0), 2.7), ship, yaw)
+                - ECHO7_UPPER_DECK_Y)
+                .abs()
+                < 1e-5
+        );
+        assert!(super::echo7_upper_or_stair_surface_contains(
+            at_local(Vec3::new(0.0, -9.0, 0.0), 2.7),
+            ship,
+            yaw,
+        ));
+        assert!(!super::echo7_upper_or_stair_surface_contains(
+            at_local(Vec3::new(0.0, 0.0, 0.0), 2.7),
+            ship,
+            yaw,
+        ));
+        assert!(!super::echo7_upper_or_stair_surface_contains(
+            at_local(Vec3::new(0.0, -11.0, 0.0), 2.7),
+            ship,
+            yaw,
+        ));
+        assert_eq!(
+            super::echo7_walkable_height(at_local(Vec3::ZERO, 2.7), ship, yaw),
+            ECHO7_LOWER_DECK_Y
+        );
+        assert_eq!(
+            super::echo7_walkable_height(at_local(Vec3::new(0.0, -11.0, 0.0), 2.7), ship, yaw),
+            ECHO7_LOWER_DECK_Y
+        );
+        assert!(
+            (super::echo7_walkable_height(
+                at_local(Vec3::new(3.2, -7.0, 0.0), 2.7),
+                ship,
+                yaw,
+            ) - ECHO7_UPPER_DECK_Y)
+                .abs()
+                < 1e-5
+        );
+        assert_eq!(
+            super::echo7_walkable_height(at_local(Vec3::new(3.2, -7.0, 0.0), 0.0), ship, yaw),
+            ECHO7_LOWER_DECK_Y
+        );
+    }
+
+    #[test]
+    fn echo7_lower_deck_walls_keep_holes_and_follow_authoritative_door_state() {
+        let ship = engine::Vec3 { x: 8.0, y: 0.0, z: -6.0 };
+        let yaw: f32 = 29.0;
+        let rotation = Quat::from_rotation_y(yaw.to_radians() + ECHO7_MODEL_YAW_OFFSET_RAD);
+        let at_local = |local: Vec3| {
+            let offset = rotation
+                * (echo7_local_to_world_rotation()
+                    * (ECHO7_VISUAL_SCALE * (local - ECHO7_MODEL_CENTER)));
+            engine::Vec3 {
+                x: ship.x + offset.x,
+                y: 0.0,
+                z: ship.z + offset.z,
+            }
+        };
+        let wall_door = at_local(Vec3::new(5.0, -7.0, 0.0));
+        assert!(super::echo7_lower_deck_position_valid(
+            at_local(Vec3::new(0.0, 6.0, 0.0)),
+            ship,
+            yaw,
+            Some(wall_door),
+            false,
+        ));
+        assert!(!super::echo7_lower_deck_position_valid(
+            at_local(Vec3::new(5.0, 7.1, 0.0)),
+            ship,
+            yaw,
+            Some(wall_door),
+            false,
+        ));
+        assert!(!super::echo7_lower_deck_position_valid(
+            at_local(Vec3::new(8.4, 6.4, 0.0)),
+            ship,
+            yaw,
+            Some(wall_door),
+            false,
+        ));
+        assert!(super::echo7_lower_deck_position_valid(
+            at_local(Vec3::new(5.0, -7.2, 0.0)),
+            ship,
+            yaw,
+            Some(wall_door),
+            true,
+        ));
     }
 
     #[test]

@@ -158,3 +158,9 @@ La validación de la escalera subdivide ahora según distancia horizontal: cada 
 
 Archivos/hunks de esta etapa: `crates/game/src/render_bridge.rs` (clasificación explícita de superficies y límites laterales locales de escalera) y `crates/game/src/visual.rs` (revalidación del trayecto, conservación de posición y subdivisión por distancia). No se modificaron assets, iluminación, texturas, controles ni el test ajeno.
 
+## K. Colisiones de la cubierta inferior
+
+La cubierta inferior conserva paredes estáticas por segmentos en coordenadas locales de ECHO-7, con el hueco de la escalera exento y radio del jugador aplicado. El trayecto se subdivide con el mismo límite de `0.05` usado para la escalera; una muestra inválida conserva la última posición válida y permite el deslizamiento que no cruza la pared. La altura local limita el obstáculo a la cubierta inferior.
+
+Gameplay expone estado autoritativo de puertas (`Closed`, `Open`, `Locked`), pero el runtime visual solo registra actualmente la puerta del puente; no existen puertas interiores inferiores registradas. La colisión consulta ese estado real y no inventa estados: una puerta abierta conserva su hueco y una cerrada no lo abre. Las pruebas automáticas cubren pared frontal, diagonal, esquina, traslado/yaw y puerta abierta/cerrada mediante la transformación existente. La comprobación en ventana queda pendiente.
+

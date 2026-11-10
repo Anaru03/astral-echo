@@ -2139,65 +2139,12 @@ impl VisualBridge {
                 f32::from(look_pitch) * 4.0 * seconds / 0.016,
             );
         }
-        let collision_buffer = 0.75;
-        let collision_half_extent = if on_upper_deck {
-            11.0 * game::render_bridge::ECHO7_VISUAL_SCALE.x
-        } else {
-            game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
-        };
-        let min_x = interior_origin.x - collision_half_extent
-            + game::render_bridge::ECHO7_PLAYER_RADIUS
-            + collision_buffer;
-        let max_x = interior_origin.x + collision_half_extent
-            - game::render_bridge::ECHO7_PLAYER_RADIUS
-            - collision_buffer;
-        let min_z = interior_origin.z - if on_upper_deck {
-            collision_half_extent
-        } else {
-            game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
-        } + game::render_bridge::ECHO7_PLAYER_RADIUS
-            + collision_buffer;
-        let max_z = interior_origin.z + if on_upper_deck {
-            collision_half_extent
-        } else {
-            game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
-        } - game::render_bridge::ECHO7_PLAYER_RADIUS
-            - collision_buffer;
-        let braking_distance_x =
-            player.velocity.x.abs().powi(2) / (2.0 * player.movement.deceleration.max(1.0));
-        let braking_distance_z =
-            player.velocity.z.abs().powi(2) / (2.0 * player.movement.deceleration.max(1.0));
-        if player.velocity.x > 0.0
-            && max_x - player.position.x <= braking_distance_x + player.movement.max_speed * seconds
-        {
-            direction.x = -1.0;
-        } else if player.velocity.x < 0.0
-            && player.position.x - min_x <= braking_distance_x + player.movement.max_speed * seconds
-        {
-            direction.x = 1.0;
-        } else if (player.position.x <= min_x && direction.x < 0.0)
-            || (player.position.x >= max_x && direction.x > 0.0)
-        {
-            direction.x = 0.0;
+        let horizontal_magnitude = (direction.x * direction.x + direction.z * direction.z).sqrt();
+        if horizontal_magnitude > 1.0 {
+            direction.x /= horizontal_magnitude;
+            direction.z /= horizontal_magnitude;
         }
-        if player.velocity.z > 0.0
-            && max_z - player.position.z <= braking_distance_z + player.movement.max_speed * seconds
-        {
-            direction.z = -1.0;
-        } else if player.velocity.z < 0.0
-            && player.position.z - min_z <= braking_distance_z + player.movement.max_speed * seconds
-        {
-            direction.z = 1.0;
-        } else if (player.position.z <= min_z && direction.z < 0.0)
-            || (player.position.z >= max_z && direction.z > 0.0)
-        {
-            direction.z = 0.0;
-        }
-        let magnitude = (direction.x * direction.x + direction.z * direction.z).sqrt();
-        if magnitude > 1.0 {
-            direction.x /= magnitude;
-            direction.z /= magnitude;
-        }
+        direction.y = 0.0;
         if direction != GameplayVec3::ZERO {
             self.session.update([GameplayCommand::MovePlayer {
                 player: self.player,
@@ -2223,6 +2170,42 @@ impl VisualBridge {
                 interior_origin,
                 ship_yaw,
             );
+            let door = self.session.world().interactable(self.bridge_door);
+            let door_position = door.map(|value| value.position);
+            let door_open = door.is_some_and(|value| {
+                matches!(
+                    value.behavior,
+                    gameplay::InteractionBehavior::Door { door }
+                        if matches!(door.state, gameplay::domains::door::DoorState::Open)
+                )
+            });
+            let lower_deck_path_valid = if matches!(
+                current_surface,
+                game::render_bridge::Echo7SupportSurface::LowerDeck
+            ) {
+                let distance = ((updated.position.x - player.position.x).powi(2)
+                    + (updated.position.z - player.position.z).powi(2))
+                .sqrt();
+                let samples = (distance / 0.05).ceil().max(1.0) as u32;
+                (1..=samples).all(|step| {
+                    let fraction = step as f32 / samples as f32;
+                    game::render_bridge::echo7_lower_deck_position_valid(
+                        GameplayVec3 {
+                            x: player.position.x
+                                + (updated.position.x - player.position.x) * fraction,
+                            y: player.position.y,
+                            z: player.position.z
+                                + (updated.position.z - player.position.z) * fraction,
+                        },
+                        interior_origin,
+                        ship_yaw,
+                        door_position,
+                        door_open,
+                    )
+                })
+            } else {
+                true
+            };
             let stair_path_valid = if matches!(
                 current_surface,
                 game::render_bridge::Echo7SupportSurface::Stair
@@ -2262,7 +2245,7 @@ impl VisualBridge {
                     interior_origin,
                     ship_yaw,
                 );
-            if !stair_path_valid || crossed_upper_edge {
+            if !lower_deck_path_valid || !stair_path_valid || crossed_upper_edge {
                 let mut reverted_position = updated.position;
                 reverted_position.x = player.position.x;
                 reverted_position.z = player.position.z;
