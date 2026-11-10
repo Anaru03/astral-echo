@@ -1362,7 +1362,14 @@ impl VisualBridge {
             match key {
                 KeyCode::ArrowLeft => self.select_free_navigation_candidate(-1),
                 KeyCode::ArrowRight => self.select_free_navigation_candidate(1),
-                KeyCode::Enter => self.confirm_free_navigation_candidate(),
+                KeyCode::KeyP => {
+                    self.confirm_free_navigation_candidate();
+                    if !self.navigation_selector_open
+                        && self.session.world().free_navigation_destination().is_some()
+                    {
+                        self.toggle_flight(self.player, self.pilot_station);
+                    }
+                }
                 _ => {}
             }
             return;
@@ -2042,7 +2049,8 @@ impl VisualBridge {
         let can_access_pilot_console = !self.pilot_mode
             && !self.legacy_exterior_controls
             && !self.interior_mode
-            && self.mission_one_completed();
+            && self.mission_one_completed()
+            && self.player_in_interaction_range(self.player, self.pilot_station);
         if can_access_pilot_console {
             let mut aggregate = FeedbackAggregate::default();
             self.issue_into(
@@ -2119,7 +2127,8 @@ impl VisualBridge {
             && !self.pilot_mode
             && !self.legacy_exterior_controls
             && !self.interior_mode
-            && self.mission_one_completed();
+            && self.mission_one_completed()
+            && self.player_in_interaction_range(self.player, self.pilot_station);
         if (self.interior_mode || pilot_console_available) && action.is_none() {
             let mut aggregate = FeedbackAggregate::default();
             self.issue_into(
@@ -2492,6 +2501,19 @@ impl VisualBridge {
             .map(|(_, value)| value)
     }
 
+    fn player_in_interaction_range(&self, player: EntityId, target: EntityId) -> bool {
+        let (Some(player), Some(target)) = (
+            self.session.world().player(player),
+            self.session.world().interactable(target),
+        ) else {
+            return false;
+        };
+        let dx = player.position.x - target.position.x;
+        let dy = player.position.y - target.position.y;
+        let dz = player.position.z - target.position.z;
+        dx * dx + dy * dy + dz * dz <= target.interaction_range * target.interaction_range
+    }
+
     fn selected_weapon_collectible(&self) -> Option<gameplay::Collectible> {
         if self.interior_mode || self.pilot_mode {
             return None;
@@ -2603,7 +2625,7 @@ impl VisualBridge {
                     .map(Self::navigation_destination_label)
                     .unwrap_or("NINGUNO");
                 return format!(
-                    "SELECCIÓN DE DESTINO | CANDIDATO: {candidate} | FLECHAS CAMBIAR | ENTER CONFIRMAR DESTINO | N CERRAR"
+                    "SELECCIÓN DE DESTINO | CANDIDATO: {candidate} | FLECHAS CAMBIAR | P ELEGIR Y AUTOPILOTO | N CERRAR"
                 );
             }
             let confirmed = self
@@ -2780,7 +2802,7 @@ impl VisualBridge {
                 "SHIFT BOOST - PILOTAJE".to_owned(),
                 "X FRENAR - PILOTAJE".to_owned(),
                 "[/] CAMBIAR PLANETA OBSERVADO - PILOTAJE".to_owned(),
-                "N SELECCIONAR DESTINO LIBRE; FLECHAS CAMBIAR; ENTER CONFIRMAR - PILOTAJE".to_owned(),
+                "N SELECCIONAR DESTINO; FLECHAS CAMBIAR; P ELEGIR Y AUTOPILOTO - PILOTAJE".to_owned(),
                 "U USAR COMBUSTIBLE - PILOTAJE".to_owned(),
                 "B EQUIPAR PLASMA - ARMAMENTO ENCONTRADO".to_owned(),
                 "P INICIAR O REANUDAR AUTOPILOTO AL DESTINO SELECCIONADO - PILOTAJE".to_owned(),
@@ -4851,7 +4873,7 @@ mod tests {
     }
 
     #[test]
-    fn free_navigation_selector_confirms_planet_without_starting_travel() {
+    fn free_navigation_selector_p_selects_and_starts_autopilot() {
         let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
@@ -4874,7 +4896,8 @@ mod tests {
             bridge.free_navigation_candidate,
             Some(TESSARA_DESTINATION)
         );
-        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        assert!(bridge.instructions_hint().contains("P ELEGIR Y AUTOPILOTO"));
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
 
         assert_eq!(
             bridge.session.world().free_navigation_destination(),
@@ -4889,27 +4912,24 @@ mod tests {
                 .ship_fuel(bridge.ship)
                 .expect("ship fuel should remain available")
                 .current(),
-            fuel_before
+            fuel_before - 1
         );
-        assert_eq!(bridge.session.world().travel_state(), gameplay::TravelState::Idle);
-        assert_eq!(
+        assert!(matches!(
+            bridge.session.world().travel_state(),
+            gameplay::TravelState::InProgress { destination: TESSARA_DESTINATION, .. }
+        ));
+        assert!(matches!(
             bridge.session.world().autopilot_state(),
-            &gameplay::AutopilotState::Inactive
-        );
+            gameplay::AutopilotState::InTransit { destination: TESSARA_DESTINATION, .. }
+        ));
         assert_eq!(bridge.observation_target, Some(DESTINATION));
         assert!(bridge.feedback.contains("TESSARA"));
-        assert!(bridge.feedback.contains("VIABLE"));
-        assert!(bridge.feedback.contains("P INICIAR AUTOPILOTO"));
-        assert!(bridge.instructions_hint().contains("DESTINO LIBRE: TESSARA"));
-        assert!(bridge.instructions_hint().contains("P INICIAR AUTOPILOTO"));
-
-        bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
-        bridge.handle_key(KeyCode::ArrowLeft, ElementState::Pressed);
-        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
-        assert_eq!(
-            bridge.session.world().free_navigation_destination(),
-            Some(DESTINATION)
-        );
+        assert!(bridge.feedback.contains("AUTOPILOTO INICIADO"));
+        assert!(bridge.instructions_hint().contains("EN TRANSITO"));
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(500),
+        }]);
+        assert_ne!(bridge.session.world().ship_position(), position_before);
     }
 
     #[test]
@@ -4921,7 +4941,7 @@ mod tests {
     }
 
     #[test]
-    fn free_navigation_proposal_starts_and_can_cancel_authoritatively() {
+    fn free_navigation_selector_starts_and_can_cancel_authoritatively() {
         let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
@@ -4932,9 +4952,8 @@ mod tests {
 
         bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
         bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
-        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
-        // Planet motion can stale the proposal while the player reviews it.
         bridge.advance_visual_time_by(Duration(100));
+        // The selected planet can move while the user is choosing it.
         let position_before = bridge.session.world().ship_position().expect("ship position should exist");
         let fuel_before = bridge
             .session
@@ -4992,7 +5011,6 @@ mod tests {
 
         bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
         bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
-        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
         bridge.session.update([GameplayCommand::AdvanceTime {
             delta: Duration(500),
@@ -5040,7 +5058,7 @@ mod tests {
         bridge.pilot_mode = true;
         bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
         bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
-        bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
 
         assert_eq!(bridge.session.world().free_navigation_destination(), None);
         assert!(bridge.feedback.contains("preparar la nave"));
@@ -6386,7 +6404,7 @@ mod tests {
             .interactable(bridge.engineering_station)
             .expect("engineering station should exist")
             .position;
-        for _ in 0..20 {
+        for _ in 0..1_000 {
             let player_position = bridge
                 .session
                 .world()
@@ -6409,7 +6427,7 @@ mod tests {
                     y: 0.0,
                     z: direction.z / length,
                 },
-                delta: Duration(1_000),
+                delta: Duration(100),
             }]);
         }
         bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
@@ -6419,7 +6437,12 @@ mod tests {
                 .mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL)
                 .expect("Mission3 progress should exist")
                 .required_completed,
-            2
+            2,
+            "feedback={}, player={:?}, station={:?}, ship={:?}",
+            bridge.feedback,
+            bridge.session.world().player(bridge.player).map(|player| player.position),
+            bridge.session.world().interactable(bridge.engineering_station),
+            bridge.session.world().ship_position(),
         );
 
         bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
@@ -6538,7 +6561,7 @@ mod tests {
             .interactable(bridge.engineering_station)
             .expect("engineering station should exist")
             .position;
-        for _ in 0..20 {
+        for _ in 0..1_000 {
             let player_position = bridge
                 .session
                 .world()
@@ -6561,7 +6584,7 @@ mod tests {
                     y: 0.0,
                     z: direction.z / length,
                 },
-                delta: Duration(1_000),
+                delta: Duration(100),
             }]);
         }
         bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
@@ -6728,6 +6751,16 @@ mod tests {
 
         bridge.handle_key(KeyCode::KeyC, ElementState::Pressed);
         let shooter = bridge.enemy;
+        let pilot_position = bridge
+            .session
+            .world()
+            .interactable(bridge.pilot_station)
+            .expect("pilot station should exist")
+            .position;
+        bridge
+            .session
+            .world_mut()
+            .initialize_player_position(bridge.player, pilot_position);
         bridge.issue([GameplayCommand::Interact {
             player: bridge.player,
             target: bridge.pilot_station,
@@ -6997,7 +7030,13 @@ mod tests {
         bridge
             .session
             .world_mut()
-            .initialize_ship_position(wreck_position);
+            .initialize_ship_position(wreck_position)
+            .expect("ship should be placed next to the wreck");
+        for _ in 0..20 {
+            bridge.session.update([GameplayCommand::AdvanceTime {
+                delta: Duration(1_000),
+            }]);
+        }
 
         bridge.guided_interaction();
         assert_eq!(
@@ -7038,6 +7077,19 @@ mod tests {
             item: ItemId(3),
             amount: 1,
         }]);
+        bridge.session.update([GameplayCommand::CreateEnemy {
+            configuration: EnemyConfiguration::for_archetype(
+                EnemyArchetype::Shooter,
+                wreck_position,
+            ),
+        }]);
+        bridge.enemy = bridge
+            .session
+            .world()
+            .enemies()
+            .find(|enemy| enemy.position == wreck_position && enemy.entity != bridge.enemy)
+            .expect("test enemy should spawn beside the player")
+            .entity;
         let enemy_health = bridge.session.world().combatant(bridge.enemy).unwrap().current_health;
         assert!(matches!(
             bridge.session.update([GameplayCommand::AttackEnemy {
