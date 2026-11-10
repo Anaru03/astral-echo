@@ -53,6 +53,12 @@ cargo run --manifest-path .\crates\game\Cargo.toml --example gameplay_visual -- 
 
 ## Controles visuales
 
+- `F4`: pausar o reanudar la música.
+- `F5`: activar o desactivar el mute.
+- `F6`: pasar a la siguiente canción.
+
+Para agregar música, coloca archivos `.mp3` en `assets/audio/music`. El juego los ordena por nombre al iniciar y los reproduce en secuencia, pasando automáticamente a la siguiente canción al terminar cada una. `F6` vuelve a leer la carpeta para detectar canciones agregadas mientras el juego está abierto.
+
 El panel `F1` muestra los controles del modo actual. `F2` oculta o muestra el HUD y `F3` abre o cierra el inventario. Si el HUD está visible, las acciones urgentes aparecen en pantalla cuando corresponden.
 
 ### Inicio y exploración interior
@@ -125,3 +131,7 @@ El juego usa resolución baja por defecto, selección automática del rasterizad
 - `could not find Cargo.toml`: no estás en la raíz del repositorio; usa `cd` o `Set-Location`.
 - `comando desconocido ...`: estás escribiendo en `astral>`; escribe `quit` y ejecuta el comando en PowerShell.
 - El backend GPU falla: ejecuta el juego con `--backend cpu`.
+
+## Música del juego
+
+Coloca aquí las canciones en formato MP3 (`.mp3`). El juego las reproduce en orden alfabético, continúa con la siguiente cuando termina una y permite saltar con `F6`.

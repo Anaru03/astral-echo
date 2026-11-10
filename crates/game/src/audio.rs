@@ -132,10 +132,10 @@ fn discover_music_playlist() -> Vec<PathBuf> {
         .filter(|path| {
             path.is_file()
                 && path.extension().and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "flac" | "mp3" | "ogg" | "wav"))
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"))
         })
         .collect::<Vec<_>>();
-    let legacy_track = PathBuf::from("assets/audio/exploration.ogg");
+    let legacy_track = PathBuf::from("assets/audio/exploration.mp3");
     if legacy_track.is_file() && !tracks.contains(&legacy_track) {
         tracks.push(legacy_track);
     }
@@ -211,7 +211,7 @@ impl AudioManager {
         Self {
             output: RodioOutput::open().ok(),
             resources: AudioResources {
-                music: [(MusicTrack::Exploration, PathBuf::from("assets/audio/exploration.ogg"))]
+                music: [(MusicTrack::Exploration, PathBuf::from("assets/audio/exploration.mp3"))]
                     .into_iter()
                     .collect(),
                 effects: [
@@ -448,8 +448,7 @@ impl AudioManager {
         if !self.playlist_loading {
             let ended_index = self.output.as_ref().and_then(|output| {
                 output.music.as_ref().and_then(|music| {
-                    (music.playlist_index.is_some() && music.player.empty())
-                        .then_some(music.playlist_index.unwrap())
+                    music.playlist_index.filter(|_| music.player.empty())
                 })
             });
             if let Some(index) = ended_index {
@@ -646,7 +645,7 @@ mod tests {
 
         assert_eq!(
             audio.resources.music.get(&MusicTrack::Exploration),
-            Some(&PathBuf::from("assets/audio/exploration.ogg"))
+            Some(&PathBuf::from("assets/audio/exploration.mp3"))
         );
         let expected_effects = [
             (SoundEffect::PlayerAttack, "assets/audio/attack.wav"),
