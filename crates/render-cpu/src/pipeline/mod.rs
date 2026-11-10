@@ -5,6 +5,7 @@ pub mod tiles;
 pub mod vertex;
 
 use glam::Mat4;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -38,6 +39,7 @@ pub struct CpuPipelineScratch {
     clip_vertices: Vec<ClipVertex>,
     triangles: Vec<Triangle>,
     screen_triangles: Vec<(ScreenVertex, ScreenVertex, ScreenVertex)>,
+    normal_cache: HashMap<usize, (Arc<RasterMesh>, Arc<Vec<glam::Vec3>>)>,
     tile: TileScratch,
 }
 
@@ -129,6 +131,9 @@ impl<'a> CpuPipeline<'a> {
             + self.triangles.capacity() * std::mem::size_of::<Triangle>()
             + self.scratch.screen_triangles.capacity()
                 * std::mem::size_of::<(ScreenVertex, ScreenVertex, ScreenVertex)>()
+            + self.scratch.normal_cache.values().map(|(_, normals)| {
+                normals.capacity() * std::mem::size_of::<glam::Vec3>()
+            }).sum::<usize>()
             + self.scratch.tile.bytes()
             + self.fragments.capacity() * std::mem::size_of::<Fragment>()
             + self.shaded.capacity() * std::mem::size_of::<Color>()
@@ -204,7 +209,27 @@ impl<'a> CpuPipeline<'a> {
     ) -> Result<PipelineStats, RasterError> {
         let mut draws = scene.draws().peekable();
         while let Some(first) = draws.next() {
-            let normals = first.mesh.resolved_normals();
+            let mesh_key = Arc::as_ptr(&first.mesh) as usize;
+            let normals = self
+                .scratch
+                .normal_cache
+                .get(&mesh_key)
+                .filter(|(mesh, _)| Arc::ptr_eq(mesh, &first.mesh))
+                .map(|(_, normals)| Arc::clone(normals));
+            let normals = match normals {
+                Some(normals) => normals,
+                None => {
+                    let normals = Arc::new(first.mesh.resolved_normals());
+                    if self.scratch.normal_cache.len() >= 16 {
+                        self.scratch.normal_cache.clear();
+                    }
+                    self.scratch.normal_cache.insert(
+                        mesh_key,
+                        (Arc::clone(&first.mesh), Arc::clone(&normals)),
+                    );
+                    normals
+                }
+            };
             let mut draw = first;
             let mut reuse = false;
             loop {
@@ -212,7 +237,7 @@ impl<'a> CpuPipeline<'a> {
                 let lighting = VertexLighting {
                     model,
                     normal_matrix: render_core::normal_matrix(model),
-                    normals: &normals,
+                    normals: normals.as_slice(),
                     material: scene.material(draw.node.material),
                     environment: &scene.lighting,
                 };

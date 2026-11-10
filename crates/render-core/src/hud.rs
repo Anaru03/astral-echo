@@ -129,7 +129,7 @@ fn push_text_panel(
         .checked_div(char_width.max(1))
         .unwrap_or(1)
         .max(1) as usize;
-    let panel_height = (margin + lines.len() as u32 * 8 * scale + margin)
+    let panel_height = (margin + lines.len() as u32 * 10 * scale + margin)
         .min(height.saturating_sub(y).max(1));
     let panel = HudOverlayRect {
         x,
@@ -148,7 +148,7 @@ fn push_text_panel(
                     if bits & (1 << (4 - glyph_column)) != 0 {
                         glyphs.push(HudOverlayRect {
                             x: panel.x + margin + column as u32 * char_width + glyph_column * scale,
-                            y: panel.y + margin + row as u32 * 8 * scale + glyph_row as u32 * scale,
+                            y: panel.y + margin + row as u32 * 10 * scale + glyph_row as u32 * scale,
                             width: scale,
                             height: scale,
                             color: text_color,
@@ -237,7 +237,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     let text_width = panel_text_width(&lines, char_width, margin);
     let button_height = hud.contextual_action.as_ref().map_or(0, |_| 12 * scale);
     let panel_width = text_width.min(left_max_width);
-    let panel_height = (margin + lines.len() as u32 * 8 * scale + margin + button_height)
+    let panel_height = (margin + lines.len() as u32 * 10 * scale + margin + button_height)
         .min(height.saturating_sub(margin));
     let terminal = hud.feedback.as_deref().is_some_and(|v| v.contains("DERROTADO"));
     let color = if terminal { [255,96,80,255] } else { [210,240,255,255] };
@@ -249,7 +249,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             for (glyph_row, bits) in pattern.iter().copied().enumerate() {
                 for glyph_column in 0..5u32 {
                     if bits & (1 << (4 - glyph_column)) != 0 {
-                        glyphs.push(HudOverlayRect { x: margin + column as u32 * char_width + glyph_column * scale, y: margin + row as u32 * 8 * scale + glyph_row as u32 * scale, width: scale, height: scale, color });
+                        glyphs.push(HudOverlayRect { x: margin + column as u32 * char_width + glyph_column * scale, y: margin + row as u32 * 10 * scale + glyph_row as u32 * scale, width: scale, height: scale, color });
                     }
                 }
             }
@@ -312,7 +312,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         let center_max_width = (width * 78 / 100).max(char_width + margin);
         center_lines = wrap_lines(&center_lines, panel_char_capacity(center_max_width, char_width, margin / 2));
         let center_width = panel_text_width(&center_lines, char_width, margin / 2).min(center_max_width);
-        let estimated_height = margin + center_lines.len() as u32 * 8 * scale + margin;
+        let estimated_height = margin + center_lines.len() as u32 * 10 * scale + margin;
         let center_y = height.saturating_sub(estimated_height + margin).max(height / 2);
         push_text_panel(
             &mut glyphs,
@@ -334,7 +334,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         let notification_max_width = (width * 78 / 100).max(char_width + margin);
         let wrapped = wrap_lines(&text, panel_char_capacity(notification_max_width, char_width, margin / 2));
         let notification_width = panel_text_width(&wrapped, char_width, margin / 2).min(notification_max_width);
-        let notification_height = margin + wrapped.len() as u32 * 8 * scale + margin;
+        let notification_height = margin + wrapped.len() as u32 * 10 * scale + margin;
         let notification_x = width.saturating_sub(notification_width) / 2;
         let notification_y = height.saturating_sub(notification_height + margin);
         push_text_panel(&mut glyphs, &wrapped, notification_x, notification_y, notification_width,
@@ -344,7 +344,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         let inventory_max_width = (width * 38 / 100).max(char_width + margin);
         let inventory_lines = wrap_lines(&inventory_lines, panel_char_capacity(inventory_max_width, char_width, margin / 2));
         let inventory_width = panel_text_width(&inventory_lines, char_width, margin / 2).min(inventory_max_width);
-        let inventory_height = (margin + inventory_lines.len() as u32 * 8 * scale + margin)
+        let inventory_height = (margin + inventory_lines.len() as u32 * 10 * scale + margin)
             .min(height.saturating_sub(margin * 2));
         let inventory_x = width.saturating_sub(margin + inventory_width);
         glyphs.push(HudOverlayRect {
@@ -362,7 +362,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
                         if bits & (1 << (4 - glyph_column)) != 0 {
                             glyphs.push(HudOverlayRect {
                                 x: inventory_x + margin / 2 + column as u32 * char_width + glyph_column * scale,
-                                y: margin + margin / 2 + row as u32 * 8 * scale + glyph_row as u32 * scale,
+                                y: margin + margin / 2 + row as u32 * 10 * scale + glyph_row as u32 * scale,
                                 width: scale,
                                 height: scale,
                                 color: [245, 250, 255, 255],
@@ -444,7 +444,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         let controls_max_width = (width * 42 / 100).max(char_width + margin);
         let panel_lines = wrap_lines(&raw_panel_lines, panel_char_capacity(controls_max_width, char_width, margin / 2));
         let panel_width = panel_text_width(&panel_lines, char_width, margin / 2).min(controls_max_width);
-        let panel_height = (margin + panel_lines.len() as u32 * 8 * scale + margin)
+        let panel_height = (margin + panel_lines.len() as u32 * 10 * scale + margin)
             .min(height.saturating_sub(margin * 2));
         let panel = HudOverlayRect {
             x: width.saturating_sub(margin + panel_width),
@@ -462,7 +462,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
                         if bits & (1 << (4 - glyph_column)) != 0 {
                             glyphs.push(HudOverlayRect {
                                 x: panel.x + margin / 2 + column as u32 * char_width + glyph_column * scale,
-                                y: panel.y + margin + row as u32 * 8 * scale + glyph_row as u32 * scale,
+                                y: panel.y + margin + row as u32 * 10 * scale + glyph_row as u32 * scale,
                                 width: scale,
                                 height: scale,
                                 color: [235, 250, 255, 255],

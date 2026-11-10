@@ -1178,6 +1178,17 @@ impl VisualBridge {
             self.inventory_open = !self.inventory_open;
             return;
         }
+        if state == ElementState::Pressed {
+            match key {
+                KeyCode::F4 => self.audio.toggle_music_pause(),
+                KeyCode::F5 => self.audio.toggle_muted(),
+                KeyCode::F6 => self.audio.next_music(),
+                _ => {}
+            }
+            if matches!(key, KeyCode::F4 | KeyCode::F5 | KeyCode::F6) {
+                return;
+            }
+        }
         if self.controls_panel_open {
             return;
         }
@@ -2578,6 +2589,9 @@ impl VisualBridge {
             "F1 ABRIR O CERRAR PANEL".to_owned(),
             "F2 OCULTAR O MOSTRAR HUD".to_owned(),
             "F3 ABRIR O CERRAR INVENTARIO".to_owned(),
+            "F4 PAUSAR O REANUDAR MUSICA".to_owned(),
+            "F5 ACTIVAR O DESACTIVAR MUTE".to_owned(),
+            "F6 SIGUIENTE CANCION".to_owned(),
         ];
         if self.pilot_mode {
             entries.extend([
