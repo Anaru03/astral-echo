@@ -5725,6 +5725,19 @@ impl GameplayWorld {
         self.navigation.restore_position(position)
     }
 
+    pub fn restore_ship_transform(
+        &mut self,
+        position: engine::Vec3,
+        orientation: crate::navigation::ShipOrientation,
+        velocity: engine::Vec3,
+    ) -> Result<(), crate::navigation::NavigationMovementError> {
+        if self.navigation.ship_id().is_none() {
+            return Err(crate::navigation::NavigationMovementError::InvalidInput);
+        }
+        self.navigation
+            .restore_transform(position, orientation, velocity)
+    }
+
     pub fn resume_ship_from_landing(&mut self) -> bool {
         self.navigation.resume_from_landing()
     }

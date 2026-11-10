@@ -19,6 +19,7 @@ use crate::ProjectEchoSession;
 
 const NETWORK_TICK: Duration = Duration(100);
 const MAX_RECOVERY_REQUESTS_PER_PLAYER: usize = 32;
+const PLAYER_COLLISION_DIAMETER: f32 = 1.2;
 
 #[derive(Debug)]
 pub enum MultiplayerError {
@@ -246,12 +247,71 @@ impl MultiplayerSession {
         }
         self.players.insert(player_id, entity);
 
+        if let Some(mut player) = self.gameplay.world().player(entity).copied() {
+            let slot = self.players.keys().position(|id| *id == player_id).unwrap_or(0) as f32;
+            player.position.x += slot * PLAYER_COLLISION_DIAMETER * 1.15;
+            self.gameplay
+                .world_mut()
+                .initialize_player_position(entity, player.position);
+        }
+
         let _ = self.server.send_to(
             player_id,
             &ServerMessage::Mission5ContentState {
                 content: self.mission5_content_projection(),
             },
         );
+        let _ = self.server.send_to(
+            player_id,
+            &ServerMessage::SharedInventoryUpdated {
+                inventory: self.shared_inventory_projection(),
+            },
+        );
+        let _ = self.server.send_to(
+            player_id,
+            &ServerMessage::EnemyStateUpdated {
+                enemies: self.enemy_state_projection(),
+            },
+        );
+
+        let transforms = self
+            .players
+            .iter()
+            .filter_map(|(&network_id, &entity)| {
+                let player = self.gameplay.world().player(entity)?;
+                Some((
+                    network_id,
+                    PlayerTransform::new(
+                        NetworkVec3::new(
+                            player.position.x,
+                            player.position.y,
+                            player.position.z,
+                        ),
+                        NetworkOrientation::new(
+                            player.orientation.yaw_degrees,
+                            player.orientation.pitch_degrees,
+                        ),
+                        NetworkVec3::new(
+                            player.velocity.x,
+                            player.velocity.y,
+                            player.velocity.z,
+                        ),
+                    ),
+                ))
+            })
+            .collect::<Vec<_>>();
+        for &recipient in self.players.keys() {
+            for &(remote_id, transform) in &transforms {
+                let _ = self.server.send_to(
+                    recipient,
+                    &ServerMessage::PlayerMoved {
+                        player_id: remote_id,
+                        sequence: 0,
+                        transform,
+                    },
+                );
+            }
+        }
 
         Ok(())
     }
@@ -652,13 +712,41 @@ impl MultiplayerSession {
         {
             return Ok(());
         }
-        let updated = self
+        let mut updated = self
             .gameplay
             .world()
             .player(entity)
             .copied()
             .ok_or(MultiplayerError::UnknownPlayer(player_id))?;
-        self.server.broadcast_except(
+        for (&other_id, &other_entity) in &self.players {
+            if other_id == player_id {
+                continue;
+            }
+            let Some(other) = self.gameplay.world().player(other_entity) else {
+                continue;
+            };
+            let dx = updated.position.x - other.position.x;
+            let dz = updated.position.z - other.position.z;
+            let distance_squared = dx * dx + dz * dz;
+            let minimum_squared = PLAYER_COLLISION_DIAMETER * PLAYER_COLLISION_DIAMETER;
+            if distance_squared >= minimum_squared {
+                continue;
+            }
+            let (nx, nz) = if distance_squared > 0.0001 {
+                let inverse_distance = distance_squared.sqrt().recip();
+                (dx * inverse_distance, dz * inverse_distance)
+            } else if player_id < other_id {
+                (-1.0, 0.0)
+            } else {
+                (1.0, 0.0)
+            };
+            updated.position.x = other.position.x + nx * PLAYER_COLLISION_DIAMETER;
+            updated.position.z = other.position.z + nz * PLAYER_COLLISION_DIAMETER;
+            self.gameplay
+                .world_mut()
+                .initialize_player_position(entity, updated.position);
+        }
+        self.server.broadcast(
             &ServerMessage::PlayerMoved {
                 player_id,
                 sequence,
@@ -671,9 +759,7 @@ impl MultiplayerSession {
                     NetworkVec3::new(updated.velocity.x, updated.velocity.y, updated.velocity.z),
                 ),
             },
-            Some(player_id),
         );
-        self.broadcast_enemy_state();
         Ok(())
     }
 }

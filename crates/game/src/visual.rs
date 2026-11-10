@@ -3,10 +3,16 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::rc::Rc;
-use std::time::Instant;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::thread;
+use std::time::{Duration as StdDuration, Instant};
 
 use engine::{Duration, EntityId, Vec3 as GameplayVec3};
 use game::ProjectEchoSession;
+use networking::{
+    ClientMessage, GameClient, NetworkOrientation, NetworkPlayerId, NetworkVec3, PlayerTransform,
+    RemotePlayers, ServerMessage,
+};
 use gameplay::types::ItemId;
 use gameplay::{
     AttackType, BreakerId, BreakerState, Destination, DestinationId, DestinationType,
@@ -66,6 +72,91 @@ const SIGNAL: DestinationId = DestinationId::new(9_003);
 const ENCOUNTER: EncounterId = EncounterId::new(9_004);
 const OBSERVATION_AZIMUTH_STEP: f32 = 0.2;
 const OBSERVATION_ELEVATION_STEP: f32 = 0.1;
+const NETWORK_MOVEMENT_INTERVAL: StdDuration = StdDuration::from_millis(100);
+
+enum LanClientCommand {
+    Send(ClientMessage),
+    Stop,
+}
+
+enum LanClientEvent {
+    Connected(NetworkPlayerId),
+    Message(ServerMessage),
+    Disconnected(String),
+}
+
+struct LanClient {
+    command_tx: Sender<LanClientCommand>,
+    event_rx: Receiver<LanClientEvent>,
+}
+
+impl LanClient {
+    fn connect(address: String, name: String) -> Self {
+        let (command_tx, command_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut client = match GameClient::connect(address, &name) {
+                Ok(client) => client,
+                Err(error) => {
+                    let _ = event_tx.send(LanClientEvent::Disconnected(error.to_string()));
+                    return;
+                }
+            };
+            let player_id = client.player_id();
+            if event_tx.send(LanClientEvent::Connected(player_id)).is_err() {
+                return;
+            }
+            loop {
+                loop {
+                    match command_rx.try_recv() {
+                        Ok(LanClientCommand::Send(message)) => {
+                            if let Err(error) = client.send(&message) {
+                                let _ = event_tx.send(LanClientEvent::Disconnected(error.to_string()));
+                                return;
+                            }
+                        }
+                        Ok(LanClientCommand::Stop) => {
+                            let _ = client.disconnect();
+                            return;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => return,
+                    }
+                }
+                match client.try_receive() {
+                    Ok(Some(message)) => {
+                        if event_tx.send(LanClientEvent::Message(message)).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(None) => thread::sleep(StdDuration::from_millis(2)),
+                    Err(error) => {
+                        let _ = event_tx.send(LanClientEvent::Disconnected(error.to_string()));
+                        return;
+                    }
+                }
+            }
+        });
+        Self { command_tx, event_rx }
+    }
+
+    fn send(&self, message: ClientMessage) {
+        let _ = self.command_tx.send(LanClientCommand::Send(message));
+    }
+}
+
+impl Drop for LanClient {
+    fn drop(&mut self) {
+        let _ = self.command_tx.send(LanClientCommand::Stop);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RemoteMotion {
+    from: PlayerTransform,
+    to: PlayerTransform,
+    received_at: Instant,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct FlightKeys {
@@ -246,6 +337,19 @@ struct VisualBridge {
     flight_keys: FlightKeys,
     gamepad: GamepadInput,
     audio: AudioManager,
+    lan_client: Option<LanClient>,
+    network_player_id: Option<NetworkPlayerId>,
+    remote_players: RemotePlayers,
+    remote_motion: BTreeMap<NetworkPlayerId, RemoteMotion>,
+    movement_sequence: u64,
+    ship_sequence: u64,
+    pilot_owner: Option<NetworkPlayerId>,
+    remote_ship: Option<PlayerTransform>,
+    remote_ship_motion: Option<RemoteMotion>,
+    remote_ship_sequence: Option<u64>,
+    last_network_movement: Instant,
+    last_ship_network_update: Instant,
+    network_status: String,
     gamepad_flight: GameplayVec3,
     last_discrete_action: Option<KeyCode>,
     haptic_event_cursor: u64,
@@ -823,6 +927,19 @@ impl VisualBridge {
             flight_keys: FlightKeys::default(),
             gamepad: GamepadInput::new(),
             audio,
+            lan_client: None,
+            network_player_id: None,
+            remote_players: RemotePlayers::new(),
+            remote_motion: BTreeMap::new(),
+            movement_sequence: 0,
+            ship_sequence: 0,
+            pilot_owner: None,
+            remote_ship: None,
+            remote_ship_motion: None,
+            remote_ship_sequence: None,
+            last_network_movement: Instant::now(),
+            last_ship_network_update: Instant::now(),
+            network_status: "SIN CONEXION LAN".to_owned(),
             gamepad_flight: GameplayVec3::ZERO,
             last_discrete_action: None,
             haptic_event_cursor: 0,
@@ -861,10 +978,18 @@ impl VisualBridge {
     }
 
     fn new_visual_runtime() -> Result<Self, String> {
+        Self::new_visual_runtime_at(VISUAL_INITIAL_SHIP_POSITION)
+    }
+
+    fn new_lan_visual_runtime() -> Result<Self, String> {
+        Self::new_visual_runtime_at(GameplayVec3::ZERO)
+    }
+
+    fn new_visual_runtime_at(initial_ship_position: GameplayVec3) -> Result<Self, String> {
         let mut bridge = Self::new_with_mode_and_enemy_distance(
             true,
             true,
-            VISUAL_INITIAL_SHIP_POSITION,
+            initial_ship_position,
         )?;
         bridge.started = false;
         bridge.feedback = "ASTRAL ECHO - PULSA ENTER PARA COMENZAR".to_owned();
@@ -873,6 +998,11 @@ impl VisualBridge {
 
     fn attach_visual_asset_client(&mut self, client: VisualAssetClient) {
         self.visual_asset_client = Some(client);
+    }
+
+    fn connect_lan(&mut self, address: &str, name: &str) {
+        self.network_status = format!("CONECTANDO A {address}");
+        self.lan_client = Some(LanClient::connect(address.to_owned(), name.to_owned()));
     }
 
     fn request_visual_asset(
@@ -1191,6 +1321,18 @@ impl VisualBridge {
         }
         if self.controls_panel_open {
             return;
+        }
+        if self.pilot_mode && self.lan_client.is_some() && !self.has_network_pilot_control() {
+            if state == ElementState::Pressed && key == KeyCode::KeyI {
+                self.exit_pilot();
+                return;
+            }
+            if matches!(key, KeyCode::PageUp | KeyCode::PageDown | KeyCode::Equal | KeyCode::Minus)
+            {
+                // Non-pilots may move only the pilot camera.
+            } else {
+                return;
+            }
         }
         if self.pilot_mode && state == ElementState::Pressed {
             match key {
@@ -2480,9 +2622,17 @@ impl VisualBridge {
                 gameplay::AutopilotState::Interrupted { .. } => "CANCELADO",
                 _ => "INACTIVO",
             };
+            let pilot_label = if self.lan_client.is_some() && !self.has_network_pilot_control() {
+                self.pilot_owner.map_or_else(
+                    || "CAMARA DE PILOTO - SOLICITANDO CONTROL".to_owned(),
+                    |owner| format!("CAMARA DE PILOTO - JUGADOR {owner} CONTROLA LA NAVE"),
+                )
+            } else {
+                "PILOTAJE ACTIVO".to_owned()
+            };
             return format!(
-                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - F1 CONTROLES - F2 HUD - F3 INVENTARIO",
-                self.observation_target_label(),
+                "{pilot_label}: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - F1 CONTROLES - F2 HUD - F3 INVENTARIO",
+                self.observation_target_label()
             );
         }
         if let Some(prompt) = self.contextual_prompt() {
@@ -2593,6 +2743,9 @@ impl VisualBridge {
             "F5 ACTIVAR O DESACTIVAR MUTE".to_owned(),
             "F6 SIGUIENTE CANCION".to_owned(),
         ];
+        if self.lan_client.is_some() || self.network_player_id.is_some() {
+            entries.push(format!("LAN: {}", self.network_status));
+        }
         if self.pilot_mode {
             entries.extend([
                 "W AVANZAR | S RETROCEDER | A/D GIRAR - PILOTAJE".to_owned(),
@@ -2716,12 +2869,19 @@ impl VisualBridge {
             &mut aggregate,
         );
         if accepted {
+            if let Some(client) = &self.lan_client {
+                client.send(ClientMessage::SetPilotControl { active: true });
+            }
             self.pilot_mode = true;
             self.interior_mode = false;
             self.fire_pressed = false;
             self.boost_pressed = false;
             self.shield_active = false;
-            self.feedback = "PILOTAJE DE ECHO-7 ACTIVO - I SALIR, P AUTOPILOTO".to_owned();
+            self.feedback = if self.lan_client.is_some() {
+                "CAMARA DE PILOTAJE ACTIVA - SOLICITANDO CONTROL A LA RED".to_owned()
+            } else {
+                "PILOTAJE DE ECHO-7 ACTIVO - I SALIR, P AUTOPILOTO".to_owned()
+            };
         } else {
             self.feedback = aggregate.message();
         }
@@ -2759,6 +2919,9 @@ impl VisualBridge {
             &mut aggregate,
         );
         if accepted {
+            if let Some(client) = &self.lan_client {
+                client.send(ClientMessage::SetPilotControl { active: false });
+            }
             self.issue([GameplayCommand::SetShipShieldActive {
                 player: self.player,
                 ship: self.ship,
@@ -2804,7 +2967,7 @@ impl VisualBridge {
     }
 
     fn update_pilot_motion(&mut self) {
-        if !self.pilot_mode || self.player_defeated {
+        if !self.pilot_mode || self.player_defeated || !self.has_network_pilot_control() {
             return;
         }
         // A/D are the primary steering controls. Arrow keys remain an
@@ -2899,7 +3062,13 @@ impl VisualBridge {
         // Exterior flight remains available for the legacy/exploration mode.
         // Requiring mission_one_completed here made WASD silently stop
         // applying acceleration while the observation camera still moved.
-        self.pilot_mode || self.legacy_exterior_controls
+        (self.pilot_mode && self.has_network_pilot_control())
+            || (self.legacy_exterior_controls && self.lan_client.is_none())
+    }
+
+    fn has_network_pilot_control(&self) -> bool {
+        self.lan_client.is_none()
+            || self.network_player_id.is_some_and(|player| self.pilot_owner == Some(player))
     }
 
     fn set_gamepad_flight(&mut self, input: GameplayVec3) {
@@ -2958,6 +3127,334 @@ impl VisualBridge {
             }
             handled.push(key);
             self.handle_key(key, ElementState::Pressed);
+        }
+    }
+
+    fn poll_lan_network(&mut self) {
+        let events = self
+            .lan_client
+            .as_ref()
+            .map(|client| client.event_rx.try_iter().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for event in events {
+            match event {
+                LanClientEvent::Connected(player_id) => {
+                    self.network_player_id = Some(player_id);
+                    self.network_status = format!("CONECTADO COMO JUGADOR {player_id}");
+                    self.feedback = self.network_status.clone();
+                }
+                LanClientEvent::Message(message) => match message {
+                    moved @ ServerMessage::PlayerMoved { player_id, transform, .. } => {
+                        if self.network_player_id == Some(player_id) {
+                            self.session.world_mut().initialize_player_position(
+                                self.player,
+                                GameplayVec3 {
+                                    x: transform.position.x,
+                                    y: transform.position.y,
+                                    z: transform.position.z,
+                                },
+                            );
+                        } else if self.remote_players.apply(moved) {
+                            let from = self
+                                .remote_motion
+                                .get(&player_id)
+                                .map_or(transform, |motion| motion.to);
+                            self.remote_motion.insert(
+                                player_id,
+                                RemoteMotion {
+                                    from,
+                                    to: transform,
+                                    received_at: Instant::now(),
+                                },
+                            );
+                        }
+                    }
+                    joined @ ServerMessage::PlayerJoined { .. } => {
+                        self.remote_players.apply(joined);
+                    }
+                    left @ ServerMessage::PlayerLeft { player_id } => {
+                        self.remote_players.apply(left);
+                        self.remote_motion.remove(&player_id);
+                    }
+                    ServerMessage::PilotControlChanged { player_id } => {
+                        if self.pilot_owner != player_id {
+                            self.remote_ship_sequence = None;
+                            self.remote_ship_motion = None;
+                        }
+                        let lost_control = self.network_player_id == self.pilot_owner
+                            && player_id != self.network_player_id;
+                        self.pilot_owner = player_id;
+                        self.network_status = match player_id {
+                            Some(owner) if self.network_player_id == Some(owner) => {
+                                "PILOTAJE CONCEDIDO A ESTE JUGADOR".to_owned()
+                            }
+                            Some(owner) => format!("NAVE PILOTADA POR JUGADOR {owner}"),
+                            None => "NAVE SIN PILOTO".to_owned(),
+                        };
+                        if lost_control {
+                            self.flight_keys = FlightKeys::default();
+                            self.gamepad_flight = GameplayVec3::ZERO;
+                            self.boost_pressed = false;
+                            self.fire_pressed = false;
+                            self.shield_active = false;
+                        }
+                        if self.pilot_mode {
+                            self.feedback = self.network_status.clone();
+                        }
+                    }
+                    ServerMessage::ShipMoved { sequence, transform, .. } => {
+                        if self.remote_ship_sequence.map_or(true, |previous| sequence > previous) {
+                            self.remote_ship_sequence = Some(sequence);
+                            let from = self.remote_ship.unwrap_or(transform);
+                            self.remote_ship_motion = Some(RemoteMotion {
+                                from,
+                                to: transform,
+                                received_at: Instant::now(),
+                            });
+                            self.remote_ship = Some(transform);
+                        }
+                    }
+                    other => {
+                        self.remote_players.apply(other);
+                    }
+                },
+                LanClientEvent::Disconnected(reason) => {
+                    self.network_status = format!("DESCONECTADO: {reason}");
+                    self.feedback = self.network_status.clone();
+                    self.network_player_id = None;
+                    self.remote_players.clear();
+                    self.remote_motion.clear();
+                    self.pilot_owner = None;
+                    self.remote_ship = None;
+                    self.remote_ship_motion = None;
+                    self.lan_client = None;
+                }
+            }
+        }
+
+        if self.network_player_id != self.pilot_owner {
+            if let Some(motion) = self.remote_ship_motion {
+                let t = (Instant::now()
+                    .saturating_duration_since(motion.received_at)
+                    .as_secs_f32()
+                    / NETWORK_MOVEMENT_INTERVAL.as_secs_f32())
+                .clamp(0.0, 1.0);
+                let lerp = |from: f32, to: f32| from + (to - from) * t;
+                let angle = |from: f32, to: f32| {
+                    from + ((to - from + 180.0).rem_euclid(360.0) - 180.0) * t
+                };
+                let transform = PlayerTransform::new(
+                    NetworkVec3::new(
+                        lerp(motion.from.position.x, motion.to.position.x),
+                        lerp(motion.from.position.y, motion.to.position.y),
+                        lerp(motion.from.position.z, motion.to.position.z),
+                    ),
+                    NetworkOrientation::new(
+                        angle(
+                            motion.from.orientation.yaw_degrees,
+                            motion.to.orientation.yaw_degrees,
+                        ),
+                        lerp(
+                            motion.from.orientation.pitch_degrees,
+                            motion.to.orientation.pitch_degrees,
+                        ),
+                    ),
+                    NetworkVec3::new(
+                        lerp(motion.from.velocity.x, motion.to.velocity.x),
+                        lerp(motion.from.velocity.y, motion.to.velocity.y),
+                        lerp(motion.from.velocity.z, motion.to.velocity.z),
+                    ),
+                );
+                self.remote_ship = Some(transform);
+                let _ = self.session.world_mut().restore_ship_transform(
+                    GameplayVec3 {
+                        x: transform.position.x,
+                        y: transform.position.y,
+                        z: transform.position.z,
+                    },
+                    gameplay::ShipOrientation {
+                        yaw_degrees: transform.orientation.yaw_degrees,
+                        pitch_degrees: transform.orientation.pitch_degrees,
+                    },
+                    GameplayVec3 {
+                        x: transform.velocity.x,
+                        y: transform.velocity.y,
+                        z: transform.velocity.z,
+                    },
+                );
+            }
+        }
+
+        if self.pilot_mode
+            && self.has_network_pilot_control()
+            && Instant::now().saturating_duration_since(self.last_ship_network_update)
+                >= NETWORK_MOVEMENT_INTERVAL
+        {
+            if let (Some(client), Some(position), Some(orientation)) = (
+                self.lan_client.as_ref(),
+                self.session.world().ship_position(),
+                self.session.world().ship_orientation(),
+            ) {
+                let velocity = self.session.world().ship_velocity().unwrap_or(GameplayVec3::ZERO);
+                self.ship_sequence = self.ship_sequence.saturating_add(1);
+                self.last_ship_network_update = Instant::now();
+                client.send(ClientMessage::ShipMove {
+                    sequence: self.ship_sequence,
+                    transform: PlayerTransform::new(
+                        NetworkVec3::new(position.x, position.y, position.z),
+                        NetworkOrientation::new(
+                            orientation.yaw_degrees,
+                            orientation.pitch_degrees,
+                        ),
+                        NetworkVec3::new(velocity.x, velocity.y, velocity.z),
+                    ),
+                });
+            }
+        }
+
+        if self.network_player_id.is_none()
+            || !(self.interior_mode || self.surface_mode)
+            || self.player_defeated
+            || Instant::now().saturating_duration_since(self.last_network_movement)
+                < NETWORK_MOVEMENT_INTERVAL
+        {
+            return;
+        }
+        let Some(player) = self.session.world().player(self.player).copied() else {
+            return;
+        };
+        let mut direction = self.current_flight_input();
+        let yaw = player.orientation.yaw_degrees.to_radians();
+        let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        direction = GameplayVec3 {
+            x: direction.x * cos_yaw - direction.z * sin_yaw,
+            y: 0.0,
+            z: direction.x * sin_yaw + direction.z * cos_yaw,
+        };
+        let magnitude = (direction.x * direction.x + direction.z * direction.z).sqrt();
+        if magnitude > 1.0 {
+            direction.x /= magnitude;
+            direction.z /= magnitude;
+        }
+        let moving = direction != GameplayVec3::ZERO
+            || player.velocity != GameplayVec3::ZERO
+            || self.look_left
+            || self.look_right
+            || self.look_up
+            || self.look_down;
+        if !moving {
+            return;
+        }
+        self.movement_sequence = self.movement_sequence.saturating_add(1);
+        self.last_network_movement = Instant::now();
+        if let Some(client) = &self.lan_client {
+            client.send(ClientMessage::PlayerMove {
+                sequence: self.movement_sequence,
+                transform: PlayerTransform::new(
+                    NetworkVec3::new(
+                        player.position.x,
+                        player.position.y,
+                        player.position.z,
+                    ),
+                    NetworkOrientation::new(
+                        player.orientation.yaw_degrees,
+                        player.orientation.pitch_degrees,
+                    ),
+                    NetworkVec3::new(direction.x, direction.y, direction.z),
+                ),
+            });
+        }
+    }
+
+    fn append_remote_player_nodes(&self, snapshot: &mut render_core::RenderSnapshot) {
+        if let Some(transform) = self.remote_ship {
+            if let Some(ship_node) = snapshot
+                .nodes
+                .iter_mut()
+                .find(|node| node.entity == render_core::SnapshotId::Entity(self.ship))
+            {
+                ship_node.transform.translation = render_core::Vec3::new(
+                    transform.position.x,
+                    transform.position.y,
+                    transform.position.z,
+                );
+                ship_node.transform.rotation = render_core::Quat::from_rotation_y(
+                    transform.orientation.yaw_degrees.to_radians(),
+                ) * render_core::Quat::from_rotation_x(
+                    transform.orientation.pitch_degrees.to_radians(),
+                );
+            }
+        }
+        if self.lan_client.is_some() && !self.interior_mode {
+            if let (Some(ship_position), Some(player_node)) = (
+                self.session.world().ship_position(),
+                snapshot
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.entity == render_core::SnapshotId::Entity(self.player)),
+            ) {
+                let local = player_node.transform.translation;
+                let yaw = self
+                    .remote_ship
+                    .map_or(0.0, |transform| transform.orientation.yaw_degrees)
+                    .to_radians();
+                let (sin_yaw, cos_yaw) = yaw.sin_cos();
+                player_node.transform.translation = render_core::Vec3::new(
+                    ship_position.x + local.x * cos_yaw + local.z * sin_yaw,
+                    ship_position.y + local.y,
+                    ship_position.z - local.x * sin_yaw + local.z * cos_yaw,
+                );
+            }
+        }
+        let Some(template) = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == render_core::SnapshotId::Entity(self.player))
+            .copied()
+        else {
+            return;
+        };
+        let now = Instant::now();
+        let ship_position = if self.interior_mode {
+            GameplayVec3::ZERO
+        } else {
+            self.session.world().ship_position().unwrap_or(GameplayVec3::ZERO)
+        };
+        let ship_yaw = self
+            .remote_ship
+            .map_or(0.0, |transform| transform.orientation.yaw_degrees)
+            .to_radians();
+        let (sin_yaw, cos_yaw) = ship_yaw.sin_cos();
+        for remote in self.remote_players.iter() {
+            let Some(motion) = self.remote_motion.get(&remote.id) else {
+                continue;
+            };
+            let t = (now.saturating_duration_since(motion.received_at).as_secs_f32()
+                / NETWORK_MOVEMENT_INTERVAL.as_secs_f32())
+                .clamp(0.0, 1.0);
+            let lerp = |from: f32, to: f32| from + (to - from) * t;
+            let lerp_angle = |from: f32, to: f32| {
+                let difference = (to - from + 180.0).rem_euclid(360.0) - 180.0;
+                from + difference * t
+            };
+            let yaw = lerp_angle(
+                motion.from.orientation.yaw_degrees,
+                motion.to.orientation.yaw_degrees,
+            );
+            let pitch = lerp(motion.from.orientation.pitch_degrees, motion.to.orientation.pitch_degrees);
+            let mut node = template;
+            node.entity = render_core::SnapshotId::RemotePlayer(remote.id);
+            let local_x = lerp(motion.from.position.x, motion.to.position.x);
+            let local_y = lerp(motion.from.position.y, motion.to.position.y);
+            let local_z = lerp(motion.from.position.z, motion.to.position.z);
+            node.transform.translation = render_core::Vec3::new(
+                ship_position.x + local_x * cos_yaw + local_z * sin_yaw,
+                ship_position.y + local_y,
+                ship_position.z - local_x * sin_yaw + local_z * cos_yaw,
+            );
+            node.transform.rotation = render_core::Quat::from_rotation_y(yaw.to_radians())
+                * render_core::Quat::from_rotation_x(pitch.to_radians());
+            snapshot.nodes.push(node);
         }
     }
 
@@ -3561,7 +4058,23 @@ fn nareth_visual_asset_request() -> VisualAssetRequest {
 }
 
 pub fn run() -> Result<(), String> {
-    let runtime = Rc::new(RefCell::new(VisualBridge::new_visual_runtime()?));
+    run_visual(None)
+}
+
+pub fn run_lan_client(address: &str, name: &str) -> Result<(), String> {
+    run_visual(Some((address.to_owned(), name.to_owned())))
+}
+
+fn run_visual(lan_connection: Option<(String, String)>) -> Result<(), String> {
+    let bridge = if lan_connection.is_some() {
+        VisualBridge::new_lan_visual_runtime()?
+    } else {
+        VisualBridge::new_visual_runtime()?
+    };
+    let runtime = Rc::new(RefCell::new(bridge));
+    if let Some((address, name)) = lan_connection.as_ref() {
+        runtime.borrow_mut().connect_lan(address, name);
+    }
     let (asset_client, asset_host) = visual_asset_channel();
     runtime.borrow_mut().attach_visual_asset_client(asset_client);
     let snapshot_runtime = Rc::clone(&runtime);
@@ -3573,8 +4086,12 @@ pub fn run() -> Result<(), String> {
         Rc::new(RefCell::new(BTreeMap::new()));
     let parts_for_snapshot = Rc::clone(&model_parts);
     let parts_for_setup = Rc::clone(&model_parts);
+    let title = lan_connection.as_ref().map_or_else(
+        || "Astral Echo - CPU propio".to_owned(),
+        |(address, _)| format!("Astral Echo - LAN {address}"),
+    );
     let config = WindowConfig {
-        title: "Astral Echo — CPU propio".into(),
+        title,
         preset: Preset::Low,
         raster_controls: false,
         ..Default::default()
@@ -3588,6 +4105,7 @@ pub fn run() -> Result<(), String> {
             bridge.update_interior_motion();
             bridge.update_pilot_motion();
             bridge.poll_gamepad();
+            bridge.poll_lan_network();
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
@@ -3600,6 +4118,7 @@ pub fn run() -> Result<(), String> {
                 bridge.pilot_mode,
                 bridge.surface_planet,
             );
+            bridge.append_remote_player_nodes(&mut snapshot);
             if bridge.hud_visible {
                 snapshot.overlay.hud.inventory_open = bridge.inventory_open;
                 if bridge.inventory_open {

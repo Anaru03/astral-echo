@@ -538,6 +538,27 @@ impl NavigationState {
         Ok(())
     }
 
+    pub(crate) fn restore_transform(
+        &mut self,
+        position: Vec3,
+        orientation: ShipOrientation,
+        velocity: Vec3,
+    ) -> Result<(), NavigationMovementError> {
+        if !finite_position(position)
+            || !finite_position(velocity)
+            || !orientation.yaw_degrees.is_finite()
+            || !orientation.pitch_degrees.is_finite()
+        {
+            return Err(NavigationMovementError::InvalidInput);
+        }
+        self.current_position = position;
+        self.orientation = orientation;
+        self.velocity = velocity;
+        self.acceleration_input = Vec3::ZERO;
+        self.braking = false;
+        Ok(())
+    }
+
     pub fn register_destination(
         &mut self,
         destination: Destination,
