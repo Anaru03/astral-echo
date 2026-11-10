@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -51,11 +51,11 @@ pub struct PreparedDraw {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PreparedScene {
-    textures: MaterialTextureRegistry,
+    textures: Arc<MaterialTextureRegistry>,
     draws: Vec<PreparedDraw>,
     shadow_draws: Option<Vec<PreparedDraw>>,
     pub lighting: crate::LightingEnvironment,
-    materials: BTreeMap<MaterialHandle, crate::MaterialInfo>,
+    materials: Arc<BTreeMap<MaterialHandle, crate::MaterialInfo>>,
     pub considered: usize,
     pub visible: usize,
     pub discarded: usize,
@@ -86,10 +86,10 @@ impl PreparedScene {
             discarded: 0,
             triangles: draws.iter().map(|draw| draw.mesh.indices.len() / 3).sum(),
             draws,
-            textures: MaterialTextureRegistry::default(),
+            textures: Arc::new(MaterialTextureRegistry::default()),
             shadow_draws: None,
             lighting: crate::LightingEnvironment::default(),
-            materials: BTreeMap::new(),
+            materials: Arc::new(BTreeMap::new()),
         }
     }
 
@@ -108,7 +108,7 @@ impl PreparedScene {
     }
 
     pub fn set_material(&mut self, handle: MaterialHandle, material: crate::MaterialInfo) {
-        self.materials.insert(handle, material.sanitized());
+        Arc::make_mut(&mut self.materials).insert(handle, material.sanitized());
     }
 
     pub fn draws(&self) -> impl DoubleEndedIterator<Item = &PreparedDraw> {
@@ -647,12 +647,14 @@ pub struct SceneUpdate {
 }
 
 pub struct SnapshotScene {
-    textures: MaterialTextureRegistry,
+    textures: Arc<MaterialTextureRegistry>,
     assets: VisualAssets,
     snapshot: RenderSnapshot,
     lighting_mode: crate::LightingMode,
     shadow_config: crate::ShadowConfig,
-    materials: BTreeMap<MaterialHandle, crate::MaterialInfo>,
+    materials: Arc<BTreeMap<MaterialHandle, crate::MaterialInfo>>,
+    update_seen: HashSet<SnapshotId>,
+    update_old: HashMap<SnapshotId, usize>,
     lod_history: RefCell<BTreeMap<SnapshotId, (MeshHandle, MaterialHandle, LodLevel)>>,
 }
 
@@ -660,12 +662,14 @@ impl Default for SnapshotScene {
     fn default() -> Self {
         let camera = Camera::demo();
         Self {
-            textures: MaterialTextureRegistry::default(),
+            textures: Arc::new(MaterialTextureRegistry::default()),
             assets: VisualAssets::default(),
             lod_history: RefCell::default(),
             lighting_mode: crate::LightingMode::Unlit,
             shadow_config: crate::ShadowConfig::default(),
-            materials: BTreeMap::new(),
+            materials: Arc::new(BTreeMap::new()),
+            update_seen: HashSet::new(),
+            update_old: HashMap::new(),
             snapshot: RenderSnapshot::new(
                 engine::Tick(0),
                 camera.position(),
@@ -682,7 +686,7 @@ impl SnapshotScene {
         material: MaterialHandle,
         path: impl Into<std::path::PathBuf>,
     ) {
-        self.textures.register(material, path);
+        Arc::make_mut(&mut self.textures).register(material, path);
     }
 
     pub fn register_mesh(
@@ -713,7 +717,7 @@ impl SnapshotScene {
     }
 
     pub fn set_material(&mut self, handle: MaterialHandle, material: crate::MaterialInfo) {
-        self.materials.insert(handle, material.sanitized());
+        Arc::make_mut(&mut self.materials).insert(handle, material.sanitized());
     }
 
     pub fn procedural_lod_fixture() -> Self {
@@ -735,9 +739,13 @@ impl SnapshotScene {
         {
             return Err(VisualError::NonFinite);
         }
-        let mut seen = BTreeSet::new();
+        self.update_seen.clear();
+        self.update_old.clear();
+        for (index, node) in self.snapshot.nodes.iter().enumerate() {
+            self.update_old.insert(node.entity, index);
+        }
         for node in &snapshot.nodes {
-            if !seen.insert(node.entity) {
+            if !self.update_seen.insert(node.entity) {
                 return Err(VisualError::DuplicateIdentity);
             }
             if !node.transform.matrix().is_finite() {
@@ -745,23 +753,30 @@ impl SnapshotScene {
             }
             self.assets.mesh(node.mesh, node.material)?;
         }
-        let old: BTreeMap<_, _> = self.snapshot.nodes.iter().map(|n| (n.entity, n)).collect();
         let update = SceneUpdate {
             added: snapshot
                 .nodes
                 .iter()
-                .filter(|n| !old.contains_key(&n.entity))
+                .filter(|node| !self.update_old.contains_key(&node.entity))
                 .count(),
-            removed: old.keys().filter(|id| !seen.contains(id)).count(),
+            removed: self
+                .update_old
+                .keys()
+                .filter(|id| !self.update_seen.contains(id))
+                .count(),
             changed: snapshot
                 .nodes
                 .iter()
-                .filter(|n| old.get(&n.entity).is_some_and(|previous| **previous != **n))
+                .filter(|node| {
+                    self.update_old
+                        .get(&node.entity)
+                        .is_some_and(|index| self.snapshot.nodes[*index] != **node)
+                })
                 .count(),
         };
         self.lod_history
             .borrow_mut()
-            .retain(|id, _| seen.contains(id));
+            .retain(|id, _| self.update_seen.contains(id));
         self.snapshot.clone_from(snapshot);
         self.snapshot.nodes.sort_by_key(|n| n.entity);
         Ok(update)

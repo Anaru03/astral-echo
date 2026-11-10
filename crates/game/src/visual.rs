@@ -2560,13 +2560,8 @@ impl VisualBridge {
             return vec![
                 "G ESCUDO".to_owned(),
                 "F DISPARAR".to_owned(),
-                "SHIFT BOOST".to_owned(),
                 "X FRENAR".to_owned(),
-                "N DESTINO".to_owned(),
-                "U COMBUSTIBLE".to_owned(),
-                "B PLASMA".to_owned(),
-                "V ENERGIA".to_owned(),
-                "C CINETICA".to_owned(),
+                "SHIFT BOOST".to_owned(),
             ];
         }
         if self.surface_mode {
@@ -2575,12 +2570,7 @@ impl VisualBridge {
         if self.interior_mode {
             return vec!["I INTERACTUAR".to_owned(), "M INICIAR MISION".to_owned()];
         }
-        vec![
-            "Q ESCANEAR".to_owned(),
-            "P VIAJAR".to_owned(),
-            "F ATACAR".to_owned(),
-            "E RECOGER".to_owned(),
-        ]
+        Vec::new()
     }
 
     fn controls_panel_entries(&self) -> Vec<String> {

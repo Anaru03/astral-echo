@@ -3,8 +3,8 @@ use render_core::{
 };
 
 use crate::{
-    Color, CpuPipeline, Framebuffer, FragmentShader, PipelineConfig, PipelineStats, RasterError,
-    RasterMode,
+    Color, CpuPipeline, CpuPipelineScratch, Framebuffer, FragmentShader, PipelineConfig,
+    PipelineStats, RasterError, RasterMode,
     TileConfig, Topology, Viewport,
 };
 
@@ -22,19 +22,37 @@ pub fn render_snapshot_scene_with_stats(
     scene: &SnapshotScene,
     mode: RasterMode,
 ) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
+    render_snapshot_scene_with_stats_and_scratch(
+        framebuffer,
+        scene,
+        mode,
+        &mut CpuPipelineScratch::default(),
+    )
+}
+
+pub fn render_snapshot_scene_with_stats_and_scratch(
+    framebuffer: &mut Framebuffer,
+    scene: &SnapshotScene,
+    mode: RasterMode,
+    scratch: &mut CpuPipelineScratch,
+) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
     let prepared = scene.prepare(render_core::CullingConfig {
         width: framebuffer.width(),
         height: framebuffer.height(),
         ..Default::default()
     });
     let prepared_stats = prepared.stats();
-    let pipeline_stats = render_prepared_scene_with_clear(
+    let pipeline_stats = render_prepared_scene_with_scratch(
         framebuffer,
         &prepared,
         scene.view_projection(),
         mode,
         overlay_clear_color(scene.overlay()),
         scene.overlay().game_over,
+        FragmentShader::VertexColor,
+        0.0,
+        PipelineConfig::default(),
+        scratch,
     )?;
     compose_hud_overlay(framebuffer, &scene.overlay().hud);
     Ok((prepared_stats, pipeline_stats))
@@ -255,8 +273,39 @@ fn render_prepared_scene_with_shader(
     time: f32,
     config: PipelineConfig,
 ) -> Result<PipelineStats, RasterError> {
+    render_prepared_scene_with_scratch(
+        framebuffer,
+        scene,
+        view_projection,
+        mode,
+        clear,
+        game_over,
+        shader,
+        time,
+        config,
+        &mut CpuPipelineScratch::default(),
+    )
+}
+
+fn render_prepared_scene_with_scratch(
+    framebuffer: &mut Framebuffer,
+    scene: &PreparedScene,
+    view_projection: render_core::Mat4,
+    mode: RasterMode,
+    clear: Color,
+    game_over: bool,
+    shader: FragmentShader,
+    time: f32,
+    config: PipelineConfig,
+    scratch: &mut CpuPipelineScratch,
+) -> Result<PipelineStats, RasterError> {
     let viewport = Viewport::from_size(framebuffer.width(), framebuffer.height())?;
-    let mut pipeline = CpuPipeline::new(framebuffer, viewport, config)
+    let mut pipeline = CpuPipeline::new_with_scratch(
+        framebuffer,
+        viewport,
+        config,
+        std::mem::take(scratch),
+    )
         .with_fragment_shader(shader)
         .with_fragment_time(time)
         .with_tile_config(TileConfig {
@@ -266,12 +315,15 @@ fn render_prepared_scene_with_shader(
     pipeline.clear(clear);
     if game_over {
         let stats = pipeline.stats;
-        drop(pipeline);
+        *scratch = pipeline.into_scratch();
         draw_game_over(framebuffer);
         return Ok(stats);
     }
-    pipeline.draw_prepared_scene(scene, view_projection)?;
-    Ok(pipeline.stats)
+    let draw_result = pipeline.draw_prepared_scene(scene, view_projection);
+    let stats = pipeline.stats;
+    *scratch = pipeline.into_scratch();
+    draw_result?;
+    Ok(stats)
 }
 
 fn draw_game_over(framebuffer: &mut Framebuffer) {

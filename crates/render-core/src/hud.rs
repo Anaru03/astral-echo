@@ -154,6 +154,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         hud.objective_name.as_deref().map(|v| format!("OBJETIVO: {v}")),
         Some("OBJETIVOS:".to_owned()).filter(|_| !hud.mission_objectives.is_empty()),
         hud.guidance.as_deref().map(|v| format!("GUIA: {v}")),
+        hud.instructions.as_deref().map(|v| format!("MODO: {v}")),
     ].into_iter().flatten().collect::<Vec<_>>();
     let inventory_lines = hud.inventory_open.then(|| {
         std::iter::once("INVENTARIO".to_owned())
@@ -242,12 +243,6 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     }
     if let Some(value) = hud.interaction_prompt.as_deref() {
         center_lines.push(format!("INTERACCION: {value}"));
-    }
-    if let Some(value) = hud.instructions.as_deref() {
-        center_lines.push(format!("INSTRUCCIONES: {value}"));
-    }
-    if let Some(value) = hud.controls.as_deref() {
-        center_lines.push(format!("CONTROLES: {value}"));
     }
     if let Some(value) = hud
         .feedback
