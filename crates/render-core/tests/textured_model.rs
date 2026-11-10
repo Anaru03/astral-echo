@@ -205,3 +205,186 @@ fn cloning_wall_selection_excludes_doors_roof_and_equipment() {
         assert!(!excluded.contains("__Pared_presion_") && !excluded.contains("__Pared_frente_"));
     }
 }
+
+#[test]
+fn cloning_ceiling_selection_includes_only_clear_envelope() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    let ceiling = model
+        .meshes
+        .iter()
+        .find(|mesh| mesh.name == "ECHO7_03_Clonacion__Dintel_envolvente_01")
+        .unwrap();
+    let material = ceiling.material_index.unwrap();
+    assert_eq!(model.materials[material].name, "Casco_Marfil");
+    for excluded in [
+        "ECHO7_03_Clonacion__Costilla_techo_01",
+        "ECHO7_03_Clonacion__Luminaria_techo_01",
+        "ECHO7_03_Clonacion__Conducto_superior_01",
+        "ECHO7_03_Clonacion__Pilar_costilla_01",
+        "ECHO7_03_Clonacion__Panel_acceso_01",
+        "ECHO7_03_Clonacion__Dintel_puerta_01",
+        "ECHO7_03_Clonacion__Tanque_cabezal_01",
+    ] {
+        assert!(model.meshes.iter().any(|mesh| mesh.name == excluded));
+        assert_ne!(excluded, "ECHO7_03_Clonacion__Dintel_envolvente_01");
+    }
+}
+
+#[test]
+fn habitat_slab_splits_only_the_downward_cloning_face() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    let upper = model
+        .meshes
+        .iter()
+        .find(|mesh| mesh.name == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_01")
+        .unwrap();
+    let lower = model
+        .meshes
+        .iter()
+        .find(|mesh| mesh.name.ends_with("__Cara_inferior_clonacion"))
+        .unwrap();
+    assert!(!upper.mesh.indices.is_empty());
+    assert!(!lower.mesh.indices.is_empty());
+    for triangle in lower.mesh.indices.chunks_exact(3) {
+        let normal = (lower.mesh.vertices[triangle[0] as usize].normal
+            + lower.mesh.vertices[triangle[1] as usize].normal
+            + lower.mesh.vertices[triangle[2] as usize].normal)
+            .normalize_or_zero();
+        assert!(normal.z < -0.5);
+    }
+    assert!(!upper.name.ends_with("__Cara_inferior_clonacion"));
+}
+
+#[test]
+fn awakening_roof_uses_only_the_downward_face_of_shared_slab() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    let upper = model
+        .meshes
+        .iter()
+        .find(|mesh| mesh.name == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_02")
+        .unwrap();
+    let lower = model
+        .meshes
+        .iter()
+        .find(|mesh| {
+            mesh.name
+                == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_02__Cara_inferior_despertar"
+        })
+        .unwrap();
+    assert!(!upper.mesh.indices.is_empty());
+    assert!(!lower.mesh.indices.is_empty());
+    for triangle in lower.mesh.indices.chunks_exact(3) {
+        let normal = (lower.mesh.vertices[triangle[0] as usize].normal
+            + lower.mesh.vertices[triangle[1] as usize].normal
+            + lower.mesh.vertices[triangle[2] as usize].normal)
+            .normalize_or_zero();
+        assert!(normal.z < -0.5);
+    }
+    let rib = model
+        .meshes
+        .iter()
+        .find(|mesh| mesh.name == "ECHO7_04_Despertar__Costilla_techo_03")
+        .unwrap();
+    assert_eq!(
+        model.materials[rib.material_index.unwrap()].name,
+        "Metal_Gris"
+    );
+}
+
+#[test]
+fn cloning_cabinet_keeps_green_panels_and_metal_accessories_separate() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    let marfil = model
+        .meshes
+        .iter()
+        .find(|mesh| mesh.name == "ECHO7_16_Equipo_Clonacion__Banco_genetico_armario_01")
+        .unwrap();
+    let material = marfil.material_index.unwrap();
+    assert_eq!(model.materials[material].name, "Casco_Marfil");
+    for (name, expected) in [
+        (
+            "ECHO7_16_Equipo_Clonacion__Cajon_genetico_01",
+            "Panel_Verde",
+        ),
+        (
+            "ECHO7_16_Equipo_Clonacion__Panel_R04_BANCO_GENETICO_01",
+            "Panel_Verde",
+        ),
+        (
+            "ECHO7_16_Equipo_Clonacion__Indicador_banco_01",
+            "Metal_Gris",
+        ),
+    ] {
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        let material = mesh.material_index.unwrap();
+        assert_eq!(model.materials[material].name, expected);
+    }
+}
+
+#[test]
+fn cloning_front_panels_select_only_the_green_panel_variant() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    for name in [
+        "ECHO7_16_Equipo_Clonacion__Cajon_genetico_01",
+        "ECHO7_16_Equipo_Clonacion__Cajon_genetico_06",
+        "ECHO7_16_Equipo_Clonacion__Panel_R04_BANCO_GENETICO_01",
+    ] {
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        let material = mesh.material_index.unwrap();
+        assert_eq!(model.materials[material].name, "Panel_Verde");
+        assert_eq!(
+            model.materials[material]
+                .diffuse_texture
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .unwrap(),
+            "panel_verde_original.png"
+        );
+    }
+    for excluded in [
+        "ECHO7_16_Equipo_Clonacion__Banco_genetico_armario_01",
+        "ECHO7_16_Equipo_Clonacion__Tirador_cajon_01",
+        "ECHO7_16_Equipo_Clonacion__Indicador_banco_01",
+    ] {
+        assert!(model.meshes.iter().any(|mesh| mesh.name == excluded));
+    }
+}
+
+#[test]
+fn awakening_walls_and_ceiling_exclude_capsules_and_fixtures() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    for name in [
+        "ECHO7_04_Despertar__Pared_presion_01",
+        "ECHO7_04_Despertar__Pared_presion_27",
+        "ECHO7_04_Despertar__Pared_frente_01",
+        "ECHO7_04_Despertar__Pared_frente_02",
+        "ECHO7_04_Despertar__Dintel_envolvente_01",
+    ] {
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        let material = mesh.material_index.unwrap();
+        assert_eq!(model.materials[material].name, "Casco_Marfil");
+    }
+    for excluded in [
+        "ECHO7_04_Despertar__Cristal_tapa_capsula_01",
+        "ECHO7_04_Despertar__Costilla_techo_01",
+        "ECHO7_04_Despertar__Conducto_superior_01",
+        "ECHO7_04_Despertar__Mesa_tablero_01",
+        "ECHO7_04_Despertar__Capsula_base_01",
+    ] {
+        assert!(model.meshes.iter().any(|mesh| mesh.name == excluded));
+        assert!(!excluded.contains("__Pared_"));
+    }
+}

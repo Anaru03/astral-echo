@@ -88,12 +88,55 @@ pub fn load_textured_obj(path: impl AsRef<Path>) -> Result<TexturedModel, ObjLoa
         }
 
         let mesh = build_mesh(std::iter::once(model.mesh))?;
-
-        meshes.push(TexturedMesh {
-            name: model.name,
-            mesh,
-            material_index,
-        });
+        if model.name == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_01"
+            || model.name == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_02"
+        {
+            let mut upper = Vec::new();
+            let mut lower = Vec::new();
+            for triangle in mesh.indices.chunks_exact(3) {
+                let normal = (mesh.vertices[triangle[0] as usize].normal
+                    + mesh.vertices[triangle[1] as usize].normal
+                    + mesh.vertices[triangle[2] as usize].normal)
+                    .normalize_or_zero();
+                let centroid = (mesh.vertices[triangle[0] as usize].position
+                    + mesh.vertices[triangle[1] as usize].position
+                    + mesh.vertices[triangle[2] as usize].position)
+                    / 3.0;
+                let awakening_bounds = centroid.x >= -28.11
+                    && centroid.x <= -11.89
+                    && centroid.y >= -21.11
+                    && centroid.y <= -10.89;
+                if normal.z < -0.5
+                    && (model.name != "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_02"
+                        || awakening_bounds)
+                {
+                    lower.extend_from_slice(triangle);
+                } else {
+                    upper.extend_from_slice(triangle);
+                }
+            }
+            meshes.push(TexturedMesh {
+                name: model.name.clone(),
+                mesh: crate::RasterMesh::new(mesh.vertices.clone(), upper),
+                material_index,
+            });
+            let suffix = if model.name == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_02" {
+                "__Cara_inferior_despertar"
+            } else {
+                "__Cara_inferior_clonacion"
+            };
+            meshes.push(TexturedMesh {
+                name: format!("{}{}", model.name, suffix),
+                mesh: crate::RasterMesh::new(mesh.vertices, lower),
+                material_index,
+            });
+        } else {
+            meshes.push(TexturedMesh {
+                name: model.name,
+                mesh,
+                material_index,
+            });
+        }
     }
 
     if meshes.is_empty() {
@@ -209,14 +252,92 @@ pub fn register_textured_model(
                         .file_name()
                         .is_some_and(|name| name == "base_marfil.png")
                 });
-        let repeat_wall =
-            habitat_ring_wall || lower_corridor_wall || upper_corridor_wall || cloning_wall;
+        let cloning_ceiling = part.name == "ECHO7_03_Clonacion__Dintel_envolvente_01"
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let cloning_losa_underface = (part.name
+            == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_01__Cara_inferior_clonacion"
+            || part.name
+                == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_02__Cara_inferior_despertar")
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let cloning_cabinet = part.name == "ECHO7_16_Equipo_Clonacion__Banco_genetico_armario_01"
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let cloning_green_panel = (part
+            .name
+            .starts_with("ECHO7_16_Equipo_Clonacion__Cajon_genetico_")
+            || part.name == "ECHO7_16_Equipo_Clonacion__Panel_R04_BANCO_GENETICO_01")
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "panel_verde_original.png")
+                });
+        let awakening_surface = (part.name.starts_with("ECHO7_04_Despertar__Pared_presion_")
+            || part.name.starts_with("ECHO7_04_Despertar__Pared_frente_")
+            || part.name == "ECHO7_04_Despertar__Dintel_envolvente_01")
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let repeat_wall = habitat_ring_wall
+            || lower_corridor_wall
+            || upper_corridor_wall
+            || cloning_wall
+            || cloning_ceiling
+            || cloning_losa_underface
+            || cloning_cabinet
+            || cloning_green_panel
+            || awakening_surface;
         if repeat_wall {
             for vertex in &mut part.mesh.vertices {
                 if habitat_ring_wall {
                     let angle = vertex.position.y.atan2(vertex.position.x);
                     let radius = vertex.position.x.hypot(vertex.position.y);
                     vertex.uv = crate::Vec2::new(angle * radius * 0.35, vertex.position.z * 0.35);
+                } else if cloning_ceiling || cloning_losa_underface {
+                    vertex.uv =
+                        crate::Vec2::new(vertex.position.x * 0.35, vertex.position.y * 0.35);
+                } else if cloning_cabinet || cloning_green_panel {
+                    let normal = vertex.normal.abs();
+                    let uv = if normal.z >= normal.x && normal.z >= normal.y {
+                        crate::Vec2::new(vertex.position.x, vertex.position.y)
+                    } else if normal.x >= normal.y {
+                        crate::Vec2::new(vertex.position.y, vertex.position.z)
+                    } else {
+                        crate::Vec2::new(vertex.position.x, vertex.position.z)
+                    };
+                    vertex.uv = uv * 0.18;
                 } else {
                     let longitudinal = if vertex.normal.x.abs() > vertex.normal.y.abs() {
                         vertex.position.y
@@ -243,7 +364,11 @@ pub fn register_textured_model(
             scene.set_material(material, model.materials[index].info);
             if let Some(texture) = model.materials[index].diffuse_texture.as_ref() {
                 let texture_path = if repeat_wall {
-                    texture.with_file_name("base_marfil_seamless.png")
+                    if cloning_green_panel {
+                        texture.with_file_name("panel_verde_seamless.png")
+                    } else {
+                        texture.with_file_name("base_marfil_seamless.png")
+                    }
                 } else {
                     texture.clone()
                 };
