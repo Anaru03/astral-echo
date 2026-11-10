@@ -150,14 +150,20 @@ pub(crate) fn raster_triangle_visit(
     if !area.is_finite() || area.abs() < 1e-8 {
         return 0;
     }
-    // Normaliza el winding para que el interior del triángulo quede en `w <= 0`
-    // en las tres aristas, independientemente del orden de entrada.
     let (b, c) = if area > 0.0 { (c, b) } else { (b, c) };
-    // denom = w0 + w1 + w2 = area (constante por triángulo, no por píxel).
     let denom = edge_function(a, b, c);
     if denom.abs() < f32::EPSILON {
         return 0;
     }
+    let edge0_dx = c.x - b.x;
+    let edge0_dy = c.y - b.y;
+    let edge1_dx = a.x - c.x;
+    let edge1_dy = a.y - c.y;
+    let edge2_dx = b.x - a.x;
+    let edge2_dy = b.y - a.y;
+    let edge0_top_left = is_top_left(b, c);
+    let edge1_top_left = is_top_left(c, a);
+    let edge2_top_left = is_top_left(a, b);
     let (fb_w, fb_h) = framebuffer_size;
     let min_x = a.x.min(b.x).min(c.x);
     let max_x = a.x.max(b.x).max(c.x);
@@ -175,28 +181,15 @@ pub(crate) fn raster_triangle_visit(
     }
     let mut count = 0;
     for py in y0..=y1 {
-        if py < 0 || py >= fb_h as i64 {
-            continue;
-        }
         let sy = (py as f32) + 0.5;
         for px in x0..=x1 {
-            if px < 0 || px >= fb_w as i64 {
-                continue;
-            }
             let sx = (px as f32) + 0.5;
-            let p = ScreenVertex {
-                x: sx,
-                y: sy,
-                z: 0.0,
-                inv_w: 0.0,
-                color: Vec4::ZERO,
-            };
             // Edge functions computadas una sola vez; se reusan para cobertura
             // y para las coordenadas barícéntricas (evita recomputarlas como
             // hacía la antigua llamada a covers() más el recálculo posterior).
-            let w0 = edge_function(b, c, &p);
-            let w1 = edge_function(c, a, &p);
-            let w2 = edge_function(a, b, &p);
+            let w0 = edge0_dx * (sy - b.y) - edge0_dy * (sx - b.x);
+            let w1 = edge1_dx * (sy - c.y) - edge1_dy * (sx - c.x);
+            let w2 = edge2_dx * (sy - a.y) - edge2_dy * (sx - a.x);
             // Cobertura: descarta si el punto está estrictamente fuera de
             // cualquier arista (equivalente a covers() con FillRule::All).
             if w0 > 0.0 || w1 > 0.0 || w2 > 0.0 {
@@ -205,13 +198,13 @@ pub(crate) fn raster_triangle_visit(
             // FillRule::TopLeft: si el punto cae en una arista, solo se acepta
             // si esa arista es superior o izquierda.
             if rule == FillRule::TopLeft {
-                if w0 == 0.0 && !is_top_left(b, c) {
+                if w0 == 0.0 && !edge0_top_left {
                     continue;
                 }
-                if w1 == 0.0 && !is_top_left(c, a) {
+                if w1 == 0.0 && !edge1_top_left {
                     continue;
                 }
-                if w2 == 0.0 && !is_top_left(a, b) {
+                if w2 == 0.0 && !edge2_top_left {
                     continue;
                 }
             }
