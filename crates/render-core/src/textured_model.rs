@@ -197,7 +197,20 @@ pub fn register_textured_model(
                         .file_name()
                         .is_some_and(|name| name == "base_marfil.png")
                 });
-        let repeat_wall = habitat_ring_wall || lower_corridor_wall || upper_corridor_wall;
+        let cloning_wall = part.name.starts_with("ECHO7_03_Clonacion__Pared_presion_")
+            || part.name.starts_with("ECHO7_03_Clonacion__Pared_frente_");
+        let cloning_wall = cloning_wall
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let repeat_wall =
+            habitat_ring_wall || lower_corridor_wall || upper_corridor_wall || cloning_wall;
         if repeat_wall {
             for vertex in &mut part.mesh.vertices {
                 if habitat_ring_wall {

@@ -178,3 +178,30 @@ fn upper_corridor_wall_selection_excludes_lower_corridor_and_fixtures() {
         assert!(!excluded.starts_with("ECHO7_26_Pasillos_Superiores__Pared_pasillo_"));
     }
 }
+
+#[test]
+fn cloning_wall_selection_excludes_doors_roof_and_equipment() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    for name in [
+        "ECHO7_03_Clonacion__Pared_presion_01",
+        "ECHO7_03_Clonacion__Pared_presion_27",
+        "ECHO7_03_Clonacion__Pared_frente_01",
+        "ECHO7_03_Clonacion__Pared_frente_02",
+    ] {
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        let material = mesh.material_index.unwrap();
+        assert_eq!(model.materials[material].name, "Casco_Marfil");
+    }
+    for excluded in [
+        "ECHO7_03_Clonacion__Jamba_puerta_01",
+        "ECHO7_03_Clonacion__Suelo_modulo_01",
+        "ECHO7_03_Clonacion__Costilla_techo_01",
+        "ECHO7_03_Clonacion__Conducto_superior_01",
+        "ECHO7_03_Clonacion__Tanque_base_01",
+    ] {
+        assert!(model.meshes.iter().any(|mesh| mesh.name == excluded));
+        assert!(!excluded.contains("__Pared_presion_") && !excluded.contains("__Pared_frente_"));
+    }
+}
