@@ -2552,6 +2552,37 @@ impl VisualBridge {
         }
     }
 
+    fn quick_action_hints(&self) -> Vec<String> {
+        if !self.started {
+            return vec!["ENTER COMENZAR".to_owned()];
+        }
+        if self.pilot_mode {
+            return vec![
+                "G ESCUDO".to_owned(),
+                "F DISPARAR".to_owned(),
+                "SHIFT BOOST".to_owned(),
+                "X FRENAR".to_owned(),
+                "N DESTINO".to_owned(),
+                "U COMBUSTIBLE".to_owned(),
+                "B PLASMA".to_owned(),
+                "V ENERGIA".to_owned(),
+                "C CINETICA".to_owned(),
+            ];
+        }
+        if self.surface_mode {
+            return vec!["I DESPEGAR CERCA DE ECHO-7".to_owned()];
+        }
+        if self.interior_mode {
+            return vec!["I INTERACTUAR".to_owned(), "M INICIAR MISION".to_owned()];
+        }
+        vec![
+            "Q ESCANEAR".to_owned(),
+            "P VIAJAR".to_owned(),
+            "F ATACAR".to_owned(),
+            "E RECOGER".to_owned(),
+        ]
+    }
+
     fn controls_panel_entries(&self) -> Vec<String> {
         let mut entries = vec![
             "F1 ABRIR O CERRAR PANEL".to_owned(),
@@ -3617,11 +3648,12 @@ pub fn run() -> Result<(), String> {
                 snapshot.overlay.hud.guidance = None;
                 snapshot.overlay.hud.controls = None;
                 snapshot.overlay.hud.instructions = None;
+                snapshot.overlay.hud.quick_actions.clear();
                 snapshot.overlay.hud.feedback = Some("JUGADOR DERROTADO".to_owned());
             } else {
                 snapshot.overlay.hud.interaction_prompt = bridge.contextual_prompt();
                 snapshot.overlay.hud.contextual_action = bridge.contextual_action();
-                snapshot.overlay.hud.controls_panel = if bridge.started {
+                snapshot.overlay.hud.controls_panel = if bridge.hud_visible && bridge.started {
                     render_core::HudControlsPanel {
                         open: bridge.controls_panel_open,
                         entries: bridge.controls_panel_entries(),
@@ -3632,6 +3664,9 @@ pub fn run() -> Result<(), String> {
                 snapshot.overlay.hud.guidance = bridge.guidance_prompt();
                 snapshot.overlay.hud.controls = None;
                 snapshot.overlay.hud.instructions = Some(bridge.instructions_hint());
+                if bridge.hud_visible {
+                    snapshot.overlay.hud.quick_actions = bridge.quick_action_hints();
+                }
                 snapshot.overlay.hud.feedback = Some(bridge.feedback.clone());
             }
             Ok(snapshot)

@@ -57,6 +57,56 @@ fn objective_status(state: crate::HudObjectiveState) -> &'static str {
     }
 }
 
+fn push_text_panel(
+    glyphs: &mut Vec<HudOverlayRect>,
+    lines: &[String],
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    scale: u32,
+    char_width: u32,
+    margin: u32,
+    text_color: [u8; 4],
+    background_color: [u8; 4],
+) -> HudOverlayRect {
+    let max_chars = width
+        .saturating_sub(margin * 2)
+        .checked_div(char_width.max(1))
+        .unwrap_or(1)
+        .max(1) as usize;
+    let panel_height = (margin + lines.len() as u32 * 8 * scale + margin)
+        .min(height.saturating_sub(y).max(1));
+    let panel = HudOverlayRect {
+        x,
+        y,
+        width,
+        height: panel_height,
+        color: background_color,
+    };
+    glyphs.push(panel);
+    for (row, source) in lines.iter().enumerate() {
+        let text: String = source.chars().take(max_chars).collect();
+        for (column, ch) in text.chars().enumerate() {
+            let Some(pattern) = glyph(normalize(ch)) else { continue };
+            for (glyph_row, bits) in pattern.iter().copied().enumerate() {
+                for glyph_column in 0..5u32 {
+                    if bits & (1 << (4 - glyph_column)) != 0 {
+                        glyphs.push(HudOverlayRect {
+                            x: panel.x + margin + column as u32 * char_width + glyph_column * scale,
+                            y: panel.y + margin + row as u32 * 8 * scale + glyph_row as u32 * scale,
+                            width: scale,
+                            height: scale,
+                            color: text_color,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    panel
+}
+
 pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     if hud.mission_name.is_none()
         && hud.mission_description.is_none()
@@ -80,6 +130,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         && hud.guidance.is_none()
         && hud.controls.is_none()
         && hud.instructions.is_none()
+        && hud.quick_actions.is_empty()
         && hud.feedback.as_deref().is_none_or(str::is_empty)
         && !hud.inventory_open
     {
@@ -101,26 +152,8 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         Some(format!("ESTADO: {}  PROGRESO: {}", status(hud), progress.as_deref().unwrap_or("-"))),
         hud.mission_description.as_deref().map(|v| format!("CONTEXTO: {v}")),
         hud.objective_name.as_deref().map(|v| format!("OBJETIVO: {v}")),
-        None,
-        Some(format!("ESCUDO: {}", if hud.ship_shield_active { "ACTIVO" } else { "INACTIVO" }))
-            .filter(|_| hud.ship_speed.is_some() || hud.ship_shield_active),
-        hud.ship_speed.map(|(speed, limit)| format!("VELOCIDAD: {speed}/{limit}")),
-        Some("BOOST: ACTIVO".to_owned()).filter(|_| hud.ship_boost_active),
-        hud.weapon_name.as_deref().map(|name| format!("ARMA: {name}")),
-        hud.weapon_ammunition.map(|(_, amount)| format!("MUNICION: {amount}")),
-        hud.ship_fuel.map(|(current, capacity)| format!("COMBUSTIBLE: {current}/{capacity}")),
-        hud.ship_oxygen.map(|(current, capacity)| format!("OXIGENO: {current}/{capacity}")),
-        hud.ship_supplies.map(|amount| format!("SUMINISTROS: {amount}")),
-        hud.ship_resource_alert.as_deref().map(|value| format!("ALERTA: {value}")),
-        None,
         Some("OBJETIVOS:".to_owned()).filter(|_| !hud.mission_objectives.is_empty()),
-        None,
-        None,
         hud.guidance.as_deref().map(|v| format!("GUIA: {v}")),
-        hud.interaction_prompt.as_deref().map(|v| format!("INTERACCION: {v}")),
-        hud.controls.as_deref().map(|v| format!("CONTROLES: {v}")),
-        hud.instructions.as_deref().map(|v| format!("INSTRUCCIONES: {v}")),
-        hud.feedback.as_deref().filter(|v| !v.is_empty()).map(|v| format!("FEEDBACK: {v}")),
     ].into_iter().flatten().collect::<Vec<_>>();
     let inventory_lines = hud.inventory_open.then(|| {
         std::iter::once("INVENTARIO".to_owned())
@@ -166,6 +199,82 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             }
         }
     }
+
+    let right_lines = [
+        hud.target.map(|target| format!("DESTINO: {target}")),
+        Some(format!("VUELO: {:?}", hud.flight)).filter(|_| hud.ship_speed.is_some()),
+        Some(format!("ESCUDO: {}", if hud.ship_shield_active { "ACTIVO" } else { "INACTIVO" }))
+            .filter(|_| hud.ship_speed.is_some() || hud.ship_shield_active),
+        hud.ship_speed.map(|(speed, limit)| format!("VELOCIDAD: {speed}/{limit}")),
+        Some("BOOST: ACTIVO".to_owned()).filter(|_| hud.ship_boost_active),
+        hud.weapon_name.as_deref().map(|name| format!("ARMA: {name}")),
+        hud.weapon_ammunition.map(|(_, amount)| format!("MUNICION: {amount}")),
+        hud.ship_fuel.map(|(current, capacity)| format!("COMBUSTIBLE: {current}/{capacity}")),
+        hud.ship_oxygen.map(|(current, capacity)| format!("OXIGENO: {current}/{capacity}")),
+        hud.ship_supplies.map(|amount| format!("SUMINISTROS: {amount}")),
+        hud.ship_resource_alert.as_deref().map(|value| format!("ALERTA: {value}")),
+        (hud.active_enemies > 0).then(|| format!("ENEMIGOS: {}", hud.active_enemies)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    if !right_lines.is_empty() {
+        let right_width = (max_chars as u32 * char_width + margin * 2).min(width / 2);
+        push_text_panel(
+            &mut glyphs,
+            &right_lines,
+            width.saturating_sub(margin + right_width),
+            margin,
+            right_width,
+            height,
+            scale,
+            char_width,
+            margin / 2,
+            [210, 240, 255, 255],
+            [5, 12, 24, 220],
+        );
+    }
+
+    let mut center_lines = Vec::new();
+    if !hud.quick_actions.is_empty() {
+        center_lines.push("ACCIONES RAPIDAS".to_owned());
+        center_lines.extend(hud.quick_actions.iter().cloned());
+    }
+    if let Some(value) = hud.interaction_prompt.as_deref() {
+        center_lines.push(format!("INTERACCION: {value}"));
+    }
+    if let Some(value) = hud.instructions.as_deref() {
+        center_lines.push(format!("INSTRUCCIONES: {value}"));
+    }
+    if let Some(value) = hud.controls.as_deref() {
+        center_lines.push(format!("CONTROLES: {value}"));
+    }
+    if let Some(value) = hud
+        .feedback
+        .as_deref()
+        .filter(|value| !value.is_empty() && (!hud.quick_actions.is_empty() || terminal))
+    {
+        center_lines.push(format!("FEEDBACK: {value}"));
+    }
+    if !center_lines.is_empty() {
+        let center_width = (max_chars as u32 * char_width + margin * 2).min(width.saturating_sub(margin * 2));
+        let estimated_height = margin + center_lines.len() as u32 * 8 * scale + margin;
+        let center_y = height.saturating_sub(estimated_height + margin).max(height / 2);
+        push_text_panel(
+            &mut glyphs,
+            &center_lines,
+            width.saturating_sub(center_width) / 2,
+            center_y,
+            center_width,
+            height,
+            scale,
+            char_width,
+            margin / 2,
+            if terminal { [255, 96, 80, 255] } else { [235, 250, 255, 255] },
+            if terminal { [80, 20, 20, 235] } else { [8, 18, 32, 235] },
+        );
+    }
+
     if let Some(notification) = hud.mission_notification.as_deref() {
         let text = format!("AVISO: {notification}");
         let notification_width = (text.chars().count() as u32 * char_width + margin * 2)
