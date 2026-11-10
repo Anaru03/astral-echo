@@ -2123,6 +2123,7 @@ impl VisualBridge {
             .world()
             .ship_position()
             .unwrap_or(GameplayVec3::ZERO);
+        let on_upper_deck = player.position.y > 1.0;
         let yaw = player.orientation.yaw_degrees.to_radians();
         let (sin_yaw, cos_yaw) = yaw.sin_cos();
         let mut direction = GameplayVec3 {
@@ -2139,22 +2140,33 @@ impl VisualBridge {
             );
         }
         let collision_buffer = 0.75;
-        let min_x = interior_origin.x - game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+        let collision_half_extent = if on_upper_deck {
+            11.0 * game::render_bridge::ECHO7_VISUAL_SCALE.x
+        } else {
+            game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+        };
+        let min_x = interior_origin.x - collision_half_extent
             + game::render_bridge::ECHO7_PLAYER_RADIUS
             + collision_buffer;
-        let max_x = interior_origin.x + game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+        let max_x = interior_origin.x + collision_half_extent
             - game::render_bridge::ECHO7_PLAYER_RADIUS
             - collision_buffer;
-        let min_z = interior_origin.z - game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
-            + game::render_bridge::ECHO7_PLAYER_RADIUS
+        let min_z = interior_origin.z - if on_upper_deck {
+            collision_half_extent
+        } else {
+            game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
+        } + game::render_bridge::ECHO7_PLAYER_RADIUS
             + collision_buffer;
-        let max_z = interior_origin.z + game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
-            - game::render_bridge::ECHO7_PLAYER_RADIUS
+        let max_z = interior_origin.z + if on_upper_deck {
+            collision_half_extent
+        } else {
+            game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
+        } - game::render_bridge::ECHO7_PLAYER_RADIUS
             - collision_buffer;
-        let braking_distance_x = player.velocity.x.abs().powi(2)
-            / (2.0 * player.movement.deceleration.max(1.0));
-        let braking_distance_z = player.velocity.z.abs().powi(2)
-            / (2.0 * player.movement.deceleration.max(1.0));
+        let braking_distance_x =
+            player.velocity.x.abs().powi(2) / (2.0 * player.movement.deceleration.max(1.0));
+        let braking_distance_z =
+            player.velocity.z.abs().powi(2) / (2.0 * player.movement.deceleration.max(1.0));
         if player.velocity.x > 0.0
             && max_x - player.position.x <= braking_distance_x + player.movement.max_speed * seconds
         {
@@ -2198,6 +2210,93 @@ impl VisualBridge {
                 direction: GameplayVec3::ZERO,
                 delta: Duration(delta_ms),
             }]);
+        }
+        if let Some(updated) = self.session.world().player(self.player).copied() {
+            let ship_yaw = self
+                .session
+                .world()
+                .ship_orientation()
+                .map(|orientation| orientation.yaw_degrees)
+                .unwrap_or_default();
+            let current_surface = game::render_bridge::echo7_support_surface(
+                player.position,
+                interior_origin,
+                ship_yaw,
+            );
+            let stair_path_valid = if matches!(
+                current_surface,
+                game::render_bridge::Echo7SupportSurface::Stair
+            ) {
+                let horizontal_distance = ((updated.position.x - player.position.x).powi(2)
+                    + (updated.position.z - player.position.z).powi(2))
+                .sqrt();
+                let sample_count = (horizontal_distance / 0.05).ceil().max(1.0) as u32;
+                (1..=sample_count).all(|step| {
+                    let fraction = step as f32 / sample_count as f32;
+                    let candidate = GameplayVec3 {
+                        x: player.position.x + (updated.position.x - player.position.x) * fraction,
+                        y: player.position.y + (updated.position.y - player.position.y) * fraction,
+                        z: player.position.z + (updated.position.z - player.position.z) * fraction,
+                    };
+                    game::render_bridge::echo7_stair_path_position_valid(
+                        engine::Vec3 {
+                            x: candidate.x,
+                            y: candidate.y,
+                            z: candidate.z,
+                        },
+                        interior_origin,
+                        ship_yaw,
+                    )
+                })
+            } else {
+                true
+            };
+            let support = game::render_bridge::echo7_walkable_height(
+                updated.position,
+                interior_origin,
+                ship_yaw,
+            );
+            let crossed_upper_edge = player.position.y > 1.0
+                && !game::render_bridge::echo7_upper_or_stair_surface_contains(
+                    updated.position,
+                    interior_origin,
+                    ship_yaw,
+                );
+            if !stair_path_valid || crossed_upper_edge {
+                let mut reverted_position = updated.position;
+                reverted_position.x = player.position.x;
+                reverted_position.z = player.position.z;
+                reverted_position.y = player.position.y;
+                self.session
+                    .world_mut()
+                    .initialize_player_position(self.player, reverted_position);
+            } else if (support - updated.position.y).abs() <= 0.75 {
+                let mut supported_position = updated.position;
+                supported_position.y = support;
+                self.session
+                    .world_mut()
+                    .initialize_player_position(self.player, supported_position);
+            } else if player.position.y > 1.0 && support < 1.0 {
+                let mut reverted_position = updated.position;
+                reverted_position.x = player.position.x;
+                reverted_position.z = player.position.z;
+                reverted_position.y = player.position.y;
+                self.session
+                    .world_mut()
+                    .initialize_player_position(self.player, reverted_position);
+            }
+            if matches!(
+                std::env::var("ASTRAL_ECHO_STAIR_DIAGNOSTIC").as_deref(),
+                Ok("1") | Ok("true")
+            ) {
+                self.feedback = format!(
+                    "STAIR feet=({:.2},{:.2},{:.2}) support={:.2} balcony=ring[r=8.45..10.55]+connection",
+                    updated.position.x,
+                    updated.position.y,
+                    updated.position.z,
+                    support
+                );
+            }
         }
     }
 
@@ -4531,7 +4630,52 @@ mod tests {
             .expect("visual player should still exist")
             .position;
         assert_ne!(before, after);
-        assert_eq!(bridge.session.world().ship_position(), Some(GameplayVec3::ZERO));
+        assert_eq!(
+            bridge.session.world().ship_position(),
+            Some(GameplayVec3::ZERO)
+        );
+    }
+
+    #[test]
+    fn interior_motion_supports_real_stair_ascent_and_descent() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.session.world_mut().initialize_player_position(
+            bridge.player,
+            GameplayVec3 {
+                x: -5.1,
+                y: 0.0,
+                z: -2.8,
+            },
+        );
+        bridge.flight_keys.backward = true;
+        assert!(bridge.current_flight_input().z > 0.0);
+        for _ in 0..100 {
+            bridge.last_interior_update =
+                Instant::now() - std::time::Duration::from_millis(50);
+            bridge.update_interior_motion();
+        }
+        let upper = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .expect("player should remain present")
+            .position;
+        assert!(upper.y > 2.0, "player did not climb the stair: {upper:?}");
+
+        bridge.flight_keys.backward = false;
+        bridge.flight_keys.forward = true;
+        for _ in 0..100 {
+            bridge.last_interior_update =
+                Instant::now() - std::time::Duration::from_millis(50);
+            bridge.update_interior_motion();
+        }
+        let lower = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .expect("player should remain present")
+            .position;
+        assert!(lower.y < 0.5, "player did not descend the stair: {lower:?}");
     }
 
     #[test]

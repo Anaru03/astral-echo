@@ -121,6 +121,10 @@ const ECHO7_MODEL_YAW_OFFSET_RAD: f32 = -core::f32::consts::FRAC_PI_2;
 // through the entire ship even though its position was already behind the
 // engines.
 const ECHO7_CAMERA_TARGET_AFT_OFFSET: f32 = 2.0;
+
+fn echo7_local_to_world_rotation() -> Quat {
+    Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+}
 pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
 pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
 pub const PLAYER_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
@@ -128,6 +132,20 @@ pub const ECHO7_INTERIOR_HALF_WIDTH: f32 = 9.0;
 pub const ECHO7_INTERIOR_HALF_DEPTH: f32 = 7.0;
 pub const ECHO7_INTERIOR_FLOOR_Y: f32 = -1.2;
 pub const ECHO7_INTERIOR_CEILING_Y: f32 = 6.4;
+pub const ECHO7_INTERIOR_EYE_HEIGHT: f32 = 1.65;
+const ECHO7_LOWER_DECK_Y: f32 = 0.0;
+const ECHO7_UPPER_DECK_Y: f32 = 4.2 * ECHO7_VISUAL_SCALE.z;
+const ECHO7_STAIR_LOCAL_X_MIN: f32 = -4.2;
+const ECHO7_STAIR_LOCAL_X_MAX: f32 = 3.0;
+const ECHO7_STAIR_LOCAL_Y_MIN: f32 = -7.8;
+const ECHO7_STAIR_LOCAL_Y_MAX: f32 = -6.2;
+const ECHO7_STAIR_LOCAL_Z_MAX: f32 = 4.2;
+const ECHO7_BALCONY_LOCAL_INNER_RADIUS: f32 = 8.0;
+const ECHO7_BALCONY_LOCAL_OUTER_RADIUS: f32 = 11.0;
+const ECHO7_BALCONY_LOCAL_CONNECTION_X_MIN: f32 = -4.65;
+const ECHO7_BALCONY_LOCAL_CONNECTION_X_MAX: f32 = 3.45;
+const ECHO7_BALCONY_LOCAL_CONNECTION_Y_MIN: f32 = -8.5;
+const ECHO7_BALCONY_LOCAL_CONNECTION_Y_MAX: f32 = -6.0;
 pub const ECHO7_PLAYER_RADIUS: f32 = 0.45;
 pub const INTERIOR_FLOOR_ENTITY: engine::EntityId = engine::EntityId::new(9_401);
 pub const INTERIOR_BACK_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_402);
@@ -169,6 +187,134 @@ pub const COLLECTIBLE_MATERIAL: MaterialHandle = VisualAssets::COLLECTIBLE;
 pub const STATION_MATERIAL: MaterialHandle = VisualAssets::STATION;
 pub const DERELICT_MATERIAL: MaterialHandle = VisualAssets::DERELICT;
 pub const ASTEROID_MATERIAL: MaterialHandle = VisualAssets::ASTEROID;
+
+fn echo7_world_to_local(
+    position: engine::Vec3,
+    ship_position: engine::Vec3,
+    ship_yaw_degrees: f32,
+) -> Vec3 {
+    let rotation = Quat::from_rotation_y(
+        ship_yaw_degrees.to_radians() + ECHO7_MODEL_YAW_OFFSET_RAD,
+    );
+    let model_local = echo7_local_to_world_rotation().inverse()
+        * rotation.inverse()
+        * (from_engine(engine::Vec3 {
+            x: position.x - ship_position.x,
+            y: position.y - ship_position.y,
+            z: position.z - ship_position.z,
+        })
+            + rotation
+                * (echo7_local_to_world_rotation() * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER)));
+    model_local / ECHO7_VISUAL_SCALE
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Echo7SupportSurface {
+    LowerDeck,
+    Stair,
+    UpperBalcony,
+}
+
+pub fn echo7_support_surface(
+    position: engine::Vec3,
+    ship_position: engine::Vec3,
+    ship_yaw_degrees: f32,
+) -> Echo7SupportSurface {
+    let local = echo7_world_to_local(position, ship_position, ship_yaw_degrees);
+    let stair_lateral_radius = ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.y;
+    let on_stair = local.x >= ECHO7_STAIR_LOCAL_X_MIN
+        && local.x <= ECHO7_STAIR_LOCAL_X_MAX
+        && local.y >= ECHO7_STAIR_LOCAL_Y_MIN + stair_lateral_radius
+        && local.y <= ECHO7_STAIR_LOCAL_Y_MAX - stair_lateral_radius;
+    if on_stair {
+        return Echo7SupportSurface::Stair;
+    }
+    if echo7_upper_or_stair_surface_contains(position, ship_position, ship_yaw_degrees)
+        && position.y > 1.0
+    {
+        return Echo7SupportSurface::UpperBalcony;
+    }
+    Echo7SupportSurface::LowerDeck
+}
+
+pub fn echo7_stair_path_position_valid(
+    position: engine::Vec3,
+    ship_position: engine::Vec3,
+    ship_yaw_degrees: f32,
+) -> bool {
+    let local = echo7_world_to_local(position, ship_position, ship_yaw_degrees);
+    let stair_lateral_radius = ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.y;
+    let within_lateral_clearance = local.y >= ECHO7_STAIR_LOCAL_Y_MIN + stair_lateral_radius
+        && local.y <= ECHO7_STAIR_LOCAL_Y_MAX - stair_lateral_radius;
+    within_lateral_clearance
+        && (local.x < ECHO7_STAIR_LOCAL_X_MIN
+            || local.x > ECHO7_STAIR_LOCAL_X_MAX
+            || matches!(
+                echo7_support_surface(position, ship_position, ship_yaw_degrees),
+                Echo7SupportSurface::Stair
+            ))
+}
+
+pub fn echo7_upper_or_stair_surface_contains(
+    position: engine::Vec3,
+    ship_position: engine::Vec3,
+    ship_yaw_degrees: f32,
+) -> bool {
+    let local = echo7_world_to_local(position, ship_position, ship_yaw_degrees);
+    let stair_lateral_radius = ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.y;
+    let on_stair = local.x >= ECHO7_STAIR_LOCAL_X_MIN
+        && local.x <= ECHO7_STAIR_LOCAL_X_MAX
+        && local.y >= ECHO7_STAIR_LOCAL_Y_MIN + stair_lateral_radius
+        && local.y <= ECHO7_STAIR_LOCAL_Y_MAX - stair_lateral_radius;
+    if on_stair {
+        return true;
+    }
+    if !local.y.is_finite() || !local.x.is_finite() {
+        return false;
+    }
+    let radius = (local.x * local.x + local.y * local.y).sqrt();
+    let on_balcony_ring = radius
+        >= ECHO7_BALCONY_LOCAL_INNER_RADIUS + ECHO7_PLAYER_RADIUS
+        && radius <= ECHO7_BALCONY_LOCAL_OUTER_RADIUS - ECHO7_PLAYER_RADIUS;
+    let at_stair_connection = local.x >= ECHO7_BALCONY_LOCAL_CONNECTION_X_MIN
+        && local.x <= ECHO7_BALCONY_LOCAL_CONNECTION_X_MAX
+        && local.y >= ECHO7_BALCONY_LOCAL_CONNECTION_Y_MIN
+        && local.y <= ECHO7_BALCONY_LOCAL_CONNECTION_Y_MAX;
+    on_balcony_ring || at_stair_connection
+}
+
+pub fn echo7_walkable_height(
+    position: engine::Vec3,
+    ship_position: engine::Vec3,
+    ship_yaw_degrees: f32,
+) -> f32 {
+    let local = echo7_world_to_local(position, ship_position, ship_yaw_degrees);
+    if matches!(
+        echo7_support_surface(position, ship_position, ship_yaw_degrees),
+        Echo7SupportSurface::Stair
+    ) {
+        let progress = ((local.x - ECHO7_STAIR_LOCAL_X_MIN)
+            / (ECHO7_STAIR_LOCAL_X_MAX - ECHO7_STAIR_LOCAL_X_MIN))
+            .clamp(0.0, 1.0);
+        return ECHO7_LOWER_DECK_Y
+            + (ECHO7_STAIR_LOCAL_Z_MAX * ECHO7_VISUAL_SCALE.z) * progress;
+    }
+    if position.y > 1.0 && echo7_upper_or_stair_surface_contains(position, ship_position, ship_yaw_degrees) {
+        if (local.x * local.x + local.y * local.y).sqrt()
+            >= ECHO7_BALCONY_LOCAL_INNER_RADIUS + ECHO7_PLAYER_RADIUS
+        {
+            return ECHO7_UPPER_DECK_Y;
+        }
+        if local.x >= ECHO7_BALCONY_LOCAL_CONNECTION_X_MIN
+            && local.x <= ECHO7_BALCONY_LOCAL_CONNECTION_X_MAX
+            && local.y >= ECHO7_BALCONY_LOCAL_CONNECTION_Y_MIN
+            && local.y <= ECHO7_BALCONY_LOCAL_CONNECTION_Y_MAX
+        {
+            return ECHO7_UPPER_DECK_Y;
+        }
+    }
+    ECHO7_LOWER_DECK_Y
+}
 
 fn enemy_material(archetype: Option<gameplay::EnemyArchetype>) -> MaterialHandle {
     match archetype {
