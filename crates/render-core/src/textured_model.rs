@@ -1,4 +1,3 @@
-
 use std::path::{Path, PathBuf};
 
 use crate::model_loader::build_mesh;
@@ -28,9 +27,7 @@ pub struct TexturedModel {
 }
 
 /// Carga un OBJ conservando geometria, UVs y materiales.
-pub fn load_textured_obj(
-    path: impl AsRef<Path>,
-) -> Result<TexturedModel, ObjLoadError> {
+pub fn load_textured_obj(path: impl AsRef<Path>) -> Result<TexturedModel, ObjLoadError> {
     let path = path.as_ref();
 
     let options = tobj::LoadOptions {
@@ -41,12 +38,9 @@ pub fn load_textured_obj(
         ..Default::default()
     };
 
-    let (models, materials_result) =
-        tobj::load_obj(path, &options)
-            .map_err(ObjLoadError::Parse)?;
+    let (models, materials_result) = tobj::load_obj(path, &options).map_err(ObjLoadError::Parse)?;
 
-    let materials = materials_result
-        .map_err(ObjLoadError::Parse)?;
+    let materials = materials_result.map_err(ObjLoadError::Parse)?;
 
     let base = path.parent().unwrap_or_else(|| Path::new("."));
 
@@ -70,9 +64,7 @@ pub fn load_textured_obj(
                 roughness,
                 0.0,
             )
-            .with_emissive(crate::Vec3::new(
-                emissive[0], emissive[1], emissive[2],
-            ));
+            .with_emissive(crate::Vec3::new(emissive[0], emissive[1], emissive[2]));
 
             TexturedMaterial {
                 name: material.name,
@@ -95,9 +87,7 @@ pub fn load_textured_obj(
             }
         }
 
-        let mesh = build_mesh(
-            std::iter::once(model.mesh),
-        )?;
+        let mesh = build_mesh(std::iter::once(model.mesh))?;
 
         meshes.push(TexturedMesh {
             name: model.name,
@@ -110,10 +100,7 @@ pub fn load_textured_obj(
         return Err(ObjLoadError::Empty);
     }
 
-    Ok(TexturedModel {
-        meshes,
-        materials,
-    })
+    Ok(TexturedModel { meshes, materials })
 }
 
 #[cfg(test)]
@@ -127,16 +114,12 @@ mod tests {
             materials: vec![
                 TexturedMaterial {
                     name: "Alas".into(),
-                    diffuse_texture: Some(
-                        PathBuf::from("textures/wings.png"),
-                    ),
+                    diffuse_texture: Some(PathBuf::from("textures/wings.png")),
                     info: crate::MaterialInfo::fixture_metal(),
                 },
                 TexturedMaterial {
                     name: "Nucleo".into(),
-                    diffuse_texture: Some(
-                        PathBuf::from("textures/core.png"),
-                    ),
+                    diffuse_texture: Some(PathBuf::from("textures/core.png")),
                     info: crate::MaterialInfo::fixture_rough(),
                 },
             ],
@@ -147,7 +130,6 @@ mod tests {
         assert_eq!(model.materials[1].name, "Nucleo");
     }
 }
-
 
 /// Una submalla registrada, lista para crear un SnapshotNode.
 #[derive(Clone, Debug)]
@@ -168,35 +150,95 @@ pub fn register_textured_model(
 ) -> Result<Vec<RegisteredModelPart>, String> {
     let model = load_textured_obj(path).map_err(|e| e.to_string())?;
     let mut parts = Vec::with_capacity(model.meshes.len());
-    for (i, part) in model.meshes.into_iter().enumerate() {
+    for (i, mut part) in model.meshes.into_iter().enumerate() {
         let offset = u32::try_from(i).map_err(|e| e.to_string())?;
-        let mesh_id = first_mesh_id.checked_add(offset)
+        let mesh_id = first_mesh_id
+            .checked_add(offset)
             .ok_or_else(|| "mesh ID overflow".to_string())?;
-        let material_offset = part.material_index
-            .and_then(|index| u32::try_from(index).ok())
-            .unwrap_or(offset);
-        let material_id = first_material_id.checked_add(material_offset)
+        let repeat_wall = part.name == "ECHO7_30_Exterior_Unificado__Drum_doble_altura_08"
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        if repeat_wall {
+            let use_y_axis = part
+                .mesh
+                .vertices
+                .iter()
+                .map(|vertex| vertex.normal.x.abs())
+                .sum::<f32>()
+                > part
+                    .mesh
+                    .vertices
+                    .iter()
+                    .map(|vertex| vertex.normal.y.abs())
+                    .sum::<f32>();
+            for vertex in &mut part.mesh.vertices {
+                let longitudinal = if use_y_axis {
+                    vertex.position.y
+                } else {
+                    vertex.position.x
+                };
+                vertex.uv = crate::Vec2::new(longitudinal * 0.35, vertex.position.z * 0.35);
+            }
+        }
+        let material_offset = if repeat_wall {
+            u32::try_from(model.materials.len() + i).map_err(|e| e.to_string())?
+        } else {
+            part.material_index
+                .and_then(|index| u32::try_from(index).ok())
+                .unwrap_or(offset)
+        };
+        let material_id = first_material_id
+            .checked_add(material_offset)
             .ok_or_else(|| "material ID overflow".to_string())?;
         let mesh = crate::MeshHandle::new(mesh_id);
         let material = crate::MaterialHandle::new(material_id);
         if let Some(index) = part.material_index {
             scene.set_material(material, model.materials[index].info);
             if let Some(texture) = model.materials[index].diffuse_texture.as_ref() {
-                if texture.is_file() {
+                let texture_path = if repeat_wall {
+                    texture.with_file_name("base_marfil_seamless.png")
+                } else {
+                    texture.clone()
+                };
+                if texture_path.is_file() {
                     scene
-                        .try_register_material_texture(material, texture.clone())
+                        .try_register_material_texture(material, texture_path)
                         .map_err(|error| format!("{error}"))?;
                 } else {
-                    eprintln!("textura ausente: {}", texture.display());
+                    eprintln!("textura ausente: {}", texture_path.display());
                 }
+            }
+            if repeat_wall {
+                scene
+                    .set_material_texture_address_mode(material, crate::TextureAddressMode::Repeat);
+                println!(
+                    "ECHO7 habitat texture object={} material={} handle={} address=Repeat path={}",
+                    part.name,
+                    model.materials[index].name,
+                    material.0,
+                    scene
+                        .texture_path(material)
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<missing>".to_owned()),
+                );
             }
         }
         scene.register_mesh(mesh, material, part.mesh);
-        parts.push(RegisteredModelPart { name: part.name, mesh, material });
+        parts.push(RegisteredModelPart {
+            name: part.name,
+            mesh,
+            material,
+        });
     }
     Ok(parts)
 }
-
 
 /// Expande un nodo en submallas registradas.
 ///
@@ -213,8 +255,7 @@ pub fn expand_model_parts(
         .map(|(index, part)| crate::SnapshotNode {
             entity: crate::SnapshotId::ModelPart {
                 parent,
-                part: u32::try_from(index)
-                    .expect("demasiadas submallas"),
+                part: u32::try_from(index).expect("demasiadas submallas"),
             },
             transform: original.transform,
             mesh: part.mesh,
