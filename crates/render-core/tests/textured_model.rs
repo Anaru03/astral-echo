@@ -157,3 +157,24 @@ fn lower_corridor_wall_selection_excludes_upper_corridor_and_fixtures() {
         assert!(!excluded.starts_with("ECHO7_02_Pasillos__Pared_pasillo_"));
     }
 }
+
+#[test]
+fn upper_corridor_wall_selection_excludes_lower_corridor_and_fixtures() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    for segment in ["01", "10", "20"] {
+        let name = format!("ECHO7_26_Pasillos_Superiores__Pared_pasillo_{segment}");
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        let material = mesh.material_index.unwrap();
+        assert_eq!(model.materials[material].name, "Casco_Marfil");
+    }
+    for excluded in [
+        "ECHO7_02_Pasillos__Pared_pasillo_01",
+        "ECHO7_26_Pasillos_Superiores__Suelo_pasillo_01",
+        "ECHO7_26_Pasillos_Superiores__Techo_pasillo_01",
+    ] {
+        assert!(model.meshes.iter().any(|mesh| mesh.name == excluded));
+        assert!(!excluded.starts_with("ECHO7_26_Pasillos_Superiores__Pared_pasillo_"));
+    }
+}

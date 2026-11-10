@@ -183,7 +183,21 @@ pub fn register_textured_model(
                         .file_name()
                         .is_some_and(|name| name == "base_marfil.png")
                 });
-        let repeat_wall = habitat_ring_wall || lower_corridor_wall;
+        let upper_corridor_wall = part
+            .name
+            .strip_prefix("ECHO7_26_Pasillos_Superiores__Pared_pasillo_")
+            .and_then(|suffix| suffix.parse::<u32>().ok())
+            .is_some_and(|segment| (1..=20).contains(&segment))
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let repeat_wall = habitat_ring_wall || lower_corridor_wall || upper_corridor_wall;
         if repeat_wall {
             for vertex in &mut part.mesh.vertices {
                 if habitat_ring_wall {
