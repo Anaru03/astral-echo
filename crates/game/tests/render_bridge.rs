@@ -676,6 +676,7 @@ fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
             SnapshotId::Destination(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Derelict(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Hazard(_) => panic!("surface object must have a stable entity id"),
+            SnapshotId::RemotePlayer(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::VisualEvent(_)
             | SnapshotId::ModelPart { .. } => {
                 panic!("surface object must have a stable entity id")

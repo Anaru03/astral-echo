@@ -819,6 +819,31 @@ mod tests {
         panic!("no se recibió el estado inicial de Mission5");
     }
 
+    fn receive_non_bootstrap(client: &mut GameClient) -> ServerMessage {
+        loop {
+            let message = client.receive().unwrap();
+            match message {
+                ServerMessage::SharedInventoryUpdated { .. }
+                | ServerMessage::EnemyStateUpdated { .. }
+                | ServerMessage::PilotControlChanged { .. }
+                | ServerMessage::ShipMoved { sequence: 0, .. }
+                | ServerMessage::PlayerMoved { sequence: 0, .. } => continue,
+                other => return other,
+            }
+        }
+    }
+
+    fn drain_initial_sync(client: &mut GameClient) {
+        while let Some(message) = client.try_receive().unwrap() {
+            assert!(matches!(
+                message,
+                ServerMessage::SharedInventoryUpdated { .. }
+                    | ServerMessage::EnemyStateUpdated { .. }
+                    | ServerMessage::PlayerMoved { sequence: 0, .. }
+            ));
+        }
+    }
+
     #[test]
     fn ingreso_crea_una_entidad_estable_y_movimiento_se_aplica() {
         let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
@@ -826,7 +851,7 @@ mod tests {
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            client.receive().unwrap(),
+            receive_non_bootstrap(&mut client),
             ServerMessage::Mission5ContentState { .. }
         ));
         let network_player = session.network_player(client.player_id()).unwrap();
@@ -864,7 +889,7 @@ mod tests {
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
 
-        let message = client.receive().unwrap();
+        let message = receive_non_bootstrap(&mut client);
         let ServerMessage::Mission5ContentState { content } = message else {
             panic!("faltó el estado inicial de Mission5");
         };
@@ -913,7 +938,7 @@ mod tests {
         let address = session.local_addr().unwrap();
         let mut first = GameClient::connect(address, "Jugador 1").unwrap();
         wait_for_update(&mut session);
-        let _ = first.receive().unwrap();
+        let _ = receive_non_bootstrap(&mut first);
 
         let mission = crate::cooperacion::PROGRESION_COOPERATIVA;
         let setup = session.gameplay.update([
@@ -928,21 +953,21 @@ mod tests {
         first.request_mission_recovery(21).unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            first.receive().unwrap(),
+            receive_non_bootstrap(&mut first),
             ServerMessage::MissionRecoveryResult { .. }
         ));
         assert!(matches!(
-            first.receive().unwrap(),
+            receive_non_bootstrap(&mut first),
             ServerMessage::MissionContentUpdated { .. }
         ));
 
         let mut second = GameClient::connect(address, "Jugador 2").unwrap();
         wait_for_player(&mut session, second.player_id());
         assert!(matches!(
-            second.receive().unwrap(),
+            receive_non_bootstrap(&mut second),
             ServerMessage::PlayerJoined { .. }
         ));
-        let message = second.receive().unwrap();
+        let message = receive_non_bootstrap(&mut second);
         let ServerMessage::Mission5ContentState { content } = message else {
             panic!("faltó el estado inicial para el segundo cliente");
         };
@@ -950,6 +975,7 @@ mod tests {
         assert!(content.destination.is_some());
         assert!(content.shooter.is_some());
         assert_eq!(second.mission5_content(), Some(&content));
+        drain_initial_sync(&mut second);
         assert!(second.try_receive().unwrap().is_none());
 
         first.disconnect().unwrap();
@@ -963,14 +989,14 @@ mod tests {
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            client.receive().unwrap(),
+            receive_non_bootstrap(&mut client),
             ServerMessage::Mission5ContentState { .. }
         ));
 
         client.request_mission_recovery(7).unwrap();
         wait_for_update(&mut session);
         assert_eq!(
-            client.receive().unwrap(),
+            receive_non_bootstrap(&mut client),
             ServerMessage::MissionRecoveryResult {
                 request_id: 7,
                 outcome: networking::MissionRecoveryOutcome::InvalidMissionTransition,
@@ -981,7 +1007,7 @@ mod tests {
         client.request_mission_recovery(7).unwrap();
         wait_for_update(&mut session);
         assert_eq!(
-            client.receive().unwrap(),
+            receive_non_bootstrap(&mut client),
             ServerMessage::MissionRecoveryResult {
                 request_id: 7,
                 outcome: networking::MissionRecoveryOutcome::InvalidMissionTransition,
@@ -997,22 +1023,22 @@ mod tests {
         let mut first = GameClient::connect(address, "Jugador 1").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            first.receive().unwrap(),
+            receive_non_bootstrap(&mut first),
             ServerMessage::Mission5ContentState { .. }
         ));
         let mut second = GameClient::connect(address, "Jugador 2").unwrap();
         wait_for_player(&mut session, second.player_id());
 
         assert!(matches!(
-            first.receive().unwrap(),
+            receive_non_bootstrap(&mut first),
             ServerMessage::PlayerJoined { .. }
         ));
         assert!(matches!(
-            second.receive().unwrap(),
+            receive_non_bootstrap(&mut second),
             ServerMessage::PlayerJoined { .. }
         ));
         assert!(matches!(
-            second.receive().unwrap(),
+            receive_non_bootstrap(&mut second),
             ServerMessage::Mission5ContentState { .. }
         ));
 
@@ -1030,14 +1056,14 @@ mod tests {
         wait_for_update(&mut session);
 
         assert_eq!(
-            first.receive().unwrap(),
+            receive_non_bootstrap(&mut first),
             ServerMessage::MissionRecoveryResult {
                 request_id: 11,
                 outcome: networking::MissionRecoveryOutcome::Succeeded,
             }
         );
-        let first_update = first.receive().unwrap();
-        let second_update = second.receive().unwrap();
+        let first_update = receive_non_bootstrap(&mut first);
+        let second_update = receive_non_bootstrap(&mut second);
         assert_eq!(first_update, second_update);
         let ServerMessage::MissionContentUpdated { content } = first_update else {
             panic!("faltó la actualización compartida de Mission5");
@@ -1052,7 +1078,7 @@ mod tests {
         first.request_mission_recovery(11).unwrap();
         wait_for_update(&mut session);
         assert_eq!(
-            first.receive().unwrap(),
+            receive_non_bootstrap(&mut first),
             ServerMessage::MissionRecoveryResult {
                 request_id: 11,
                 outcome: networking::MissionRecoveryOutcome::Succeeded,
@@ -1072,7 +1098,7 @@ mod tests {
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            client.receive().unwrap(),
+            receive_non_bootstrap(&mut client),
             ServerMessage::Mission5ContentState { .. }
         ));
 
@@ -1158,7 +1184,7 @@ mod tests {
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            client.receive().unwrap(),
+            receive_non_bootstrap(&mut client),
             ServerMessage::Mission5ContentState { .. }
         ));
 
@@ -1227,7 +1253,7 @@ mod tests {
         let mut first = GameClient::connect(address, "Jugador 1").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            first.receive().unwrap(),
+            receive_non_bootstrap(&mut first),
             ServerMessage::Mission5ContentState { .. }
         ));
         let mut second = GameClient::connect(address, "Jugador 2").unwrap();
@@ -1282,15 +1308,15 @@ mod tests {
         );
 
         assert!(matches!(
-            second.receive().unwrap(),
+            receive_non_bootstrap(&mut second),
             ServerMessage::PlayerJoined { .. }
         ));
         assert!(matches!(
-            second.receive().unwrap(),
+            receive_non_bootstrap(&mut second),
             ServerMessage::Mission5ContentState { .. }
         ));
         assert!(
-            matches!(second.receive().unwrap(), ServerMessage::PlayerMoved { player_id, sequence: 2, .. } if player_id == first.player_id())
+            matches!(receive_non_bootstrap(&mut second), ServerMessage::PlayerMoved { player_id, sequence: 2, .. } if player_id == first.player_id())
         );
 
         first.disconnect().unwrap();

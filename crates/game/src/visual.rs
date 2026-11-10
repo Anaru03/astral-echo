@@ -815,7 +815,7 @@ impl VisualBridge {
             interior_position(GameplayVec3 {
                 x: 24.0,
                 y: 0.0,
-                z: 120.0,
+                z: 18.0,
             })
         } else {
             GameplayVec3 {
@@ -1409,11 +1409,13 @@ impl VisualBridge {
             }
             return;
         }
-        if self.flight_keys.set(key, state == ElementState::Pressed) {
-            if self.ship_flight_controls_enabled() {
-                self.accelerate_ship(player, pilot_station, self.current_flight_input());
+        if key != KeyCode::Space || self.pilot_mode {
+            if self.flight_keys.set(key, state == ElementState::Pressed) {
+                if self.ship_flight_controls_enabled() {
+                    self.accelerate_ship(player, pilot_station, self.current_flight_input());
+                }
+                return;
             }
-            return;
         }
         if matches!(key, KeyCode::ShiftLeft | KeyCode::ShiftRight) && self.pilot_mode {
             self.boost_pressed = state == ElementState::Pressed;
@@ -1526,7 +1528,7 @@ impl VisualBridge {
                     }]);
                 }
             }
-            KeyCode::KeyP if self.ship_flight_controls_enabled() => {
+            KeyCode::KeyP if self.ship_flight_controls_enabled() || !self.interior_mode => {
                 self.toggle_flight(player, pilot_station)
             }
             KeyCode::KeyO => self.toggle_observation(),
@@ -2601,7 +2603,7 @@ impl VisualBridge {
                     .map(Self::navigation_destination_label)
                     .unwrap_or("NINGUNO");
                 return format!(
-                    "SELECCIÓN DE DESTINO | CANDIDATO: {candidate} | FLECHAS CAMBIAR | ENTER CONFIRMAR | N CERRAR"
+                    "SELECCIÓN DE DESTINO | CANDIDATO: {candidate} | FLECHAS CAMBIAR | ENTER CONFIRMAR DESTINO | N CERRAR"
                 );
             }
             let confirmed = self
@@ -2630,9 +2632,31 @@ impl VisualBridge {
             } else {
                 "PILOTAJE ACTIVO".to_owned()
             };
+            let navigation_action = match self.session.world().travel_state() {
+                gameplay::TravelState::InProgress { .. } => "ESC CANCELAR AUTOPILOTO".to_owned(),
+                gameplay::TravelState::Completed { .. } => "N ELEGIR SIGUIENTE DESTINO".to_owned(),
+                _ if self.session.world().free_navigation_destination().is_some() => {
+                    match self.session.world().free_navigation_proposal() {
+                        Some(proposal)
+                            if proposal.evaluation == gameplay::FreeNavigationEvaluation::Viable
+                                && !self.free_navigation_proposal_is_stale() =>
+                        {
+                            "P INICIAR AUTOPILOTO".to_owned()
+                        }
+                        Some(proposal)
+                            if proposal.evaluation == gameplay::FreeNavigationEvaluation::Viable =>
+                        {
+                            "P RECALCULAR RUTA".to_owned()
+                        }
+                        Some(_) => "N ELEGIR OTRA RUTA".to_owned(),
+                        None => "P RECALCULAR RUTA".to_owned(),
+                    }
+                }
+                _ => "N SELECCIONAR DESTINO".to_owned(),
+            };
             return format!(
-                "{pilot_label}: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - F1 CONTROLES - F2 HUD - F3 INVENTARIO",
-                self.observation_target_label()
+                "{pilot_label}: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - {navigation_action} - [/] OBSERVAR - F1 CONTROLES - F2 HUD - F3 INVENTARIO",
+                self.observation_target_label(),
             );
         }
         if let Some(prompt) = self.contextual_prompt() {
@@ -2756,10 +2780,10 @@ impl VisualBridge {
                 "SHIFT BOOST - PILOTAJE".to_owned(),
                 "X FRENAR - PILOTAJE".to_owned(),
                 "[/] CAMBIAR PLANETA OBSERVADO - PILOTAJE".to_owned(),
-                "N SELECCIONAR DESTINO LIBRE - PILOTAJE".to_owned(),
+                "N SELECCIONAR DESTINO LIBRE; FLECHAS CAMBIAR; ENTER CONFIRMAR - PILOTAJE".to_owned(),
                 "U USAR COMBUSTIBLE - PILOTAJE".to_owned(),
                 "B EQUIPAR PLASMA - ARMAMENTO ENCONTRADO".to_owned(),
-                "P IR AL PLANETA DE LA GUIA - PILOTAJE".to_owned(),
+                "P INICIAR O REANUDAR AUTOPILOTO AL DESTINO SELECCIONADO - PILOTAJE".to_owned(),
                 "I SALIR DEL PILOTAJE - PILOTAJE".to_owned(),
             ]);
         } else if self.surface_mode {
@@ -3753,6 +3777,11 @@ impl VisualBridge {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        let next_action = if proposal.evaluation == gameplay::FreeNavigationEvaluation::Viable {
+            " | P INICIAR AUTOPILOTO"
+        } else {
+            " | USA N PARA ELEGIR OTRA RUTA"
+        };
         format!(
             "ERICK: {} | DESTINO: {} | DISTANCIA: {:.2} | DURACIÓN ESTIMADA: {:.1}s | COMBUSTIBLE: {}/{} | RIESGOS: {}",
             evaluation,
@@ -3762,7 +3791,7 @@ impl VisualBridge {
             proposal.fuel_required,
             proposal.fuel_available,
             risks,
-        )
+        ) + next_action
     }
 
     fn select_observation_planet(&mut self, direction: i32) {
@@ -3790,13 +3819,53 @@ impl VisualBridge {
     }
 
     fn toggle_flight(&mut self, player: EntityId, pilot_station: EntityId) {
-        if self.session.world().free_navigation_proposal().is_some() {
+        let free_destination = self.session.world().free_navigation_destination();
+        let free_navigation_active = matches!(
+            self.session.world().travel_state(),
+            gameplay::TravelState::InProgress { .. }
+        );
+        if free_destination.is_some() && free_navigation_active {
+            self.feedback = "AUTOPILOTO EN CURSO - USA ESC PARA CANCELAR".to_owned();
+            return;
+        }
+        if free_destination.is_some()
+            && !matches!(
+                self.session.world().travel_state(),
+                gameplay::TravelState::Completed { .. }
+            )
+        {
+            if self.session.world().free_navigation_proposal().is_none()
+                || self.free_navigation_proposal_is_stale()
+            {
+                let evaluation = self.session.update([GameplayCommand::EvaluateFreeNavigation {
+                    player,
+                    pilot_station,
+                }]);
+                if !matches!(
+                    evaluation.first().map(|result| result.status),
+                    Some(gameplay::CommandStatus::Success { .. })
+                ) {
+                    self.feedback = "ERICK: no se pudo recalcular la ruta; vuelve a elegir destino con N.".to_owned();
+                    return;
+                }
+            }
+            let Some(proposal) = self.session.world().free_navigation_proposal() else {
+                self.feedback = "ERICK: la ruta no pudo validarse; selecciona otro destino con N.".to_owned();
+                return;
+            };
+            if proposal.evaluation != gameplay::FreeNavigationEvaluation::Viable {
+                self.feedback = self.free_navigation_proposal_feedback();
+                return;
+            }
             let started = self.issue([GameplayCommand::StartFreeNavigation {
                 player,
                 pilot_station,
             }]);
             if started {
-                self.feedback = "ERICK: autopilotaje libre iniciado.".to_owned();
+                self.feedback = format!(
+                    "AUTOPILOTO INICIADO HACIA {}",
+                    Self::navigation_destination_label(free_destination.unwrap())
+                );
                 println!("visual gameplay: {}", self.feedback);
             }
             return;
@@ -4829,6 +4898,10 @@ mod tests {
         );
         assert_eq!(bridge.observation_target, Some(DESTINATION));
         assert!(bridge.feedback.contains("TESSARA"));
+        assert!(bridge.feedback.contains("VIABLE"));
+        assert!(bridge.feedback.contains("P INICIAR AUTOPILOTO"));
+        assert!(bridge.instructions_hint().contains("DESTINO LIBRE: TESSARA"));
+        assert!(bridge.instructions_hint().contains("P INICIAR AUTOPILOTO"));
 
         bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
         bridge.handle_key(KeyCode::ArrowLeft, ElementState::Pressed);
@@ -4860,6 +4933,8 @@ mod tests {
         bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
         bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
+        // Planet motion can stale the proposal while the player reviews it.
+        bridge.advance_visual_time_by(Duration(100));
         let position_before = bridge.session.world().ship_position().expect("ship position should exist");
         let fuel_before = bridge
             .session
@@ -6027,7 +6102,13 @@ mod tests {
             .session
             .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
             .expect("anomaly mission should be registered");
-        assert_eq!(progress.required_completed, 2);
+        assert_eq!(
+            progress.required_completed,
+            2,
+            "travel={:?}, feedback={}",
+            bridge.session.world().travel_state(),
+            bridge.feedback,
+        );
 
         for _ in 0..20 {
             let Some(enemy_position) = bridge
@@ -6903,23 +6984,20 @@ mod tests {
         let player = bridge.player;
         let derelict = DerelictId::new(9_010);
 
-        for _ in 0..4 {
-            bridge.session.update([
-                GameplayCommand::AccelerateShip {
-                    player,
-                    pilot_station: bridge.pilot_station,
-                    input: GameplayVec3 { x: 1.0, y: 0.0, z: 0.0 },
-                },
-                GameplayCommand::AdvanceTime {
-                    delta: Duration(1_000),
-                },
-            ]);
-        }
-        assert!(bridge
+        let wreck_position = bridge
             .session
             .world()
-            .ship_position()
-            .is_some_and(|value| value.x > 35.0));
+            .derelict(derelict)
+            .expect("wreck should exist")
+            .position;
+        bridge
+            .session
+            .world_mut()
+            .initialize_player_position(player, wreck_position);
+        bridge
+            .session
+            .world_mut()
+            .initialize_ship_position(wreck_position);
 
         bridge.guided_interaction();
         assert_eq!(

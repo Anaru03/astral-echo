@@ -290,10 +290,20 @@ fn broadcast_state_inner(
         }
     }
     let mut disconnected = Vec::new();
+    let mut pilot_released = false;
     for id in failed {
+        pilot_released |= server.pilot_owner == Some(id);
         if server.leave(id) {
             disconnected.push(id);
         }
+    }
+    drop(server);
+    if pilot_released {
+        disconnected.extend(broadcast_state_inner(
+            state,
+            &ServerMessage::PilotControlChanged { player_id: None },
+            None,
+        ));
     }
     disconnected
 }
@@ -322,14 +332,7 @@ fn broadcast_disconnections_inner(
             &ServerMessage::PlayerLeft { player_id },
             Some(player_id),
         );
-        let pilot_owner = state.lock().ok().and_then(|server| server.pilot_owner);
-        let failed_owner_notice = broadcast_state_inner(
-            state,
-            &ServerMessage::PilotControlChanged { player_id: pilot_owner },
-            None,
-        );
         pending.extend(failed);
-        pending.extend(failed_owner_notice);
         publish_disconnections(events, vec![player_id]);
     }
 }
@@ -404,15 +407,26 @@ fn disconnect_player(
         Ok(guard) => guard,
         Err(_) => return false,
     };
-    let removed = state
+    let (removed, released_pilot) = state
         .lock()
-        .map(|mut server| server.leave(player_id))
-        .unwrap_or(false);
+        .map(|mut server| {
+            let was_pilot = server.pilot_owner == Some(player_id);
+            (server.leave(player_id), was_pilot)
+        })
+        .unwrap_or((false, false));
     if !removed {
         return false;
     }
 
     broadcast_disconnections_inner(state, events, vec![player_id]);
+    if released_pilot {
+        broadcast_message_locked(
+            state,
+            events,
+            &ServerMessage::PilotControlChanged { player_id: None },
+            None,
+        );
+    }
     true
 }
 
@@ -1168,11 +1182,13 @@ fn handle_client(
                         .lock()
                         .map(|server| (server.pilot_owner, server.ship_transform))
                         .unwrap_or((None, None));
-                    send_response(
-                        output.as_ref(),
-                        &mut stream,
-                        &ServerMessage::PilotControlChanged { player_id: pilot_owner },
-                    )?;
+                    if let Some(owner) = pilot_owner {
+                        send_response(
+                            output.as_ref(),
+                            &mut stream,
+                            &ServerMessage::PilotControlChanged { player_id: Some(owner) },
+                        )?;
+                    }
                     if let (Some(owner), Some(transform)) = (pilot_owner, ship_transform) {
                         send_response(
                             output.as_ref(),
