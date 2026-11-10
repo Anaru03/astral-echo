@@ -164,3 +164,7 @@ La cubierta inferior conserva paredes estáticas por segmentos en coordenadas lo
 
 Gameplay expone estado autoritativo de puertas (`Closed`, `Open`, `Locked`), pero el runtime visual solo registra actualmente la puerta del puente; no existen puertas interiores inferiores registradas. La colisión consulta ese estado real y no inventa estados: una puerta abierta conserva su hueco y una cerrada no lo abre. Las pruebas automáticas cubren pared frontal, diagonal, esquina, traslado/yaw y puerta abierta/cerrada mediante la transformación existente. La comprobación en ventana queda pendiente.
 
+## L. Mobiliario grande de la cubierta inferior
+
+Se añadieron volúmenes separados para las familias grandes identificadas en `Asignaciones_Materiales.csv`: mesas, cápsulas, armarios y jardineras. No se incluyen hojas, botones, cables ni decoración pequeña. Cada volumen se consulta dentro de la validación de paredes existente, usa el mismo radio y transformación local, y solo bloquea hasta su altura; las superficies superiores y los corredores laterales permanecen transitables. Las posiciones de interacción de las consolas no se convierten en una caja global, por lo que conservan acceso lateral. La regresión cubre choque por familia, espacio libre, traslación y yaw. La validación visual en ventana sigue pendiente.
+

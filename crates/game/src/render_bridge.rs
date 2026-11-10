@@ -364,8 +364,37 @@ pub fn echo7_lower_deck_position_valid(
     };
     let inside_x = local.x >= bounds.0 && local.x <= bounds.1;
     let inside_y = local.y >= bounds.2 && local.y <= bounds.3;
+    let furniture = [
+        (0.0, 4.0, 0.8, 0.4, 1.4),
+        (-5.0, 2.8, 1.0, 0.5, 1.2),
+        (6.0, -2.8, 0.5, 0.8, 2.4),
+        (-6.0, -2.5, 0.2, 0.25, 1.0),
+    ];
+    let blocked_by_furniture = furniture.iter().any(|(center_x, center_y, half_x, half_y, height)| {
+        position.y >= ECHO7_LOWER_DECK_Y
+            && position.y <= *height
+            && local.x >= center_x - half_x - radius
+            && local.x <= center_x + half_x + radius
+            && local.y >= center_y - half_y - radius
+            && local.y <= center_y + half_y + radius
+    });
+    let tree_trunks = [
+        (0.0, 0.0, 0.24),
+        (5.5, 5.5, 0.24),
+        (-5.5, 5.5, 0.24),
+        (-5.5, -5.5, 0.24),
+        (5.5, -4.0, 0.24),
+    ];
+    let blocked_by_tree_trunk = tree_trunks.iter().any(|(center_x, center_y, trunk_radius)| {
+        position.y >= ECHO7_LOWER_DECK_Y
+            && position.y <= 1.8
+            && (local.x - center_x).powi(2) + (local.y - center_y).powi(2)
+                <= (trunk_radius + radius).powi(2)
+    });
     inside_x
         && inside_y
+        && !blocked_by_furniture
+        && !blocked_by_tree_trunk
         && !(local.x <= bounds.0 && !door_gap(local.x, local.y, ECHO7_INTERIOR_HALF_WIDTH))
         && !(local.x >= bounds.1 && !door_gap(local.x, local.y, ECHO7_INTERIOR_HALF_WIDTH))
         && !(local.y <= bounds.2 && !door_gap(local.y, local.x, ECHO7_INTERIOR_HALF_DEPTH))
@@ -2136,6 +2165,53 @@ mod tests {
             yaw,
             Some(wall_door),
             true,
+        ));
+    }
+
+    #[test]
+    fn echo7_lower_deck_furniture_blocks_large_families_without_closing_corridors() {
+        let ship = engine::Vec3 { x: -7.0, y: 0.0, z: 11.0 };
+        let yaw: f32 = -23.0;
+        let rotation = Quat::from_rotation_y(yaw.to_radians() + ECHO7_MODEL_YAW_OFFSET_RAD);
+        let at_local = |local: Vec3| {
+            let offset = rotation
+                * (echo7_local_to_world_rotation()
+                    * (ECHO7_VISUAL_SCALE * (local - ECHO7_MODEL_CENTER)));
+            engine::Vec3 {
+                x: ship.x + offset.x,
+                y: 0.0,
+                z: ship.z + offset.z,
+            }
+        };
+        for center in [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(5.5, 5.5, 0.0),
+            Vec3::new(0.0, 4.0, 0.0),
+            Vec3::new(-5.0, 2.8, 0.0),
+            Vec3::new(6.0, -2.8, 0.0),
+            Vec3::new(-6.0, -2.5, 0.0),
+        ] {
+            assert!(!super::echo7_lower_deck_position_valid(
+                at_local(center),
+                ship,
+                yaw,
+                None,
+                false,
+            ));
+        }
+        assert!(super::echo7_lower_deck_position_valid(
+            at_local(Vec3::new(3.0, 4.0, 0.0)),
+            ship,
+            yaw,
+            None,
+            false,
+        ));
+        assert!(super::echo7_lower_deck_position_valid(
+            at_local(Vec3::new(2.5, 0.0, 0.0)),
+            ship,
+            yaw,
+            None,
+            false,
         ));
     }
 
