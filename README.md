@@ -2,50 +2,32 @@
 
 ## Ejecutar el juego en Windows
 
-### 1. Instalar Rust
+### Instalar Rust
 
-Si `cargo` no existe, instala Rust desde:
-
-```text
-https://www.rust-lang.org/tools/install
-```
-
-Cierra y vuelve a abrir PowerShell después de instalarlo. Comprueba la instalación:
+Si `cargo` no existe, instala Rust desde <https://www.rust-lang.org/tools/install>. Después de instalarlo, reinicia PowerShell y comprueba:
 
 ```powershell
 rustc --version
 cargo --version
 ```
 
-### 2. Abrir una terminal del sistema
+### Ejecutar la ventana visual
 
-Abre PowerShell o CMD. Debes ver un prompt parecido a `PS C:\...>` o `C:\...>`. No debes ver `astral>`: ese prompt pertenece a la consola interna del juego.
-
-### 3. Entrar al repositorio
-
-```powershell
-cd astral-echo
-```
-
-### 4. Abrir la ventana del juego
-
-Este es el comando recomendado y probado:
+Desde la raíz del repositorio:
 
 ```powershell
 cargo run --manifest-path .\crates\game\Cargo.toml --example gameplay_visual -- --window --backend cpu --graphics-validate
 ```
 
-La primera ejecución puede tardar mientras Cargo compila. Debe abrir una ventana titulada `Astral Echo - CPU/GPU Hot-Swap` y mostrar frames del backend CPU.
-
-También puedes solicitar selección automática del backend:
+Para dejar que el programa elija entre GPU y CPU:
 
 ```powershell
 cargo run --manifest-path .\crates\game\Cargo.toml --example gameplay_visual -- --window --backend auto --graphics-validate
 ```
 
-Usa `cpu` si `auto` o `gpu` no funcionan en tu equipo.
+Usa `cpu` si el backend GPU falla o funciona peor en tu equipo.
 
-## Modos adicionales
+### Otros modos
 
 Regresiones headless:
 
@@ -53,67 +35,103 @@ Regresiones headless:
 cargo run -p game
 ```
 
-Consola interactiva de gameplay:
+Consola interactiva:
 
 ```powershell
 cargo run -p game -- --runtime
 ```
 
-En la consola interactiva aparecerá `astral>`. Allí solo se aceptan comandos del juego, por ejemplo `status`, `help` o `quit`. No escribas comandos PowerShell como `cargo`, `Set-Location` o `cd` dentro de `astral>`.
+En la consola interactiva aparecerá `astral>`. Allí puedes usar comandos como `status`, `help` y `quit`; los comandos de PowerShell deben ejecutarse fuera de esa consola.
 
-## Ejecutar sin ventana
-
-Para generar una imagen:
+### Ejecutar sin ventana
 
 ```powershell
 cargo run --manifest-path .\crates\game\Cargo.toml --example gameplay_visual -- --backend cpu --frames 1 --output target/visual-cpu.png
 ```
 
-La opción `--output` es para modo sin ventana y no debe combinarse con `--window`.
+`--output` solo se usa sin `--window`.
 
 ## Controles visuales
 
+- `F4`: pausar o reanudar la música.
+- `F5`: activar o desactivar el mute.
+- `F6`: pasar a la siguiente canción.
+
+Para agregar música, coloca archivos `.mp3` en `assets/audio/music`. El juego los ordena por nombre al iniciar y los reproduce en secuencia, pasando automáticamente a la siguiente canción al terminar cada una. `F6` vuelve a leer la carpeta para detectar canciones agregadas mientras el juego está abierto.
+
+El panel `F1` muestra los controles del modo actual. `F2` oculta o muestra el HUD y `F3` abre o cierra el inventario. Si el HUD está visible, las acciones urgentes aparecen en pantalla cuando corresponden.
+
 ### Inicio y exploración interior
 
-- `Enter`: comenzar la partida desde la pantalla inicial.
-- `W/A/S/D`: mover al personaje dentro de ECHO-7 o controlar el desplazamiento de la nave durante el pilotaje.
-- Flechas: orientar la cámara del personaje dentro de ECHO-7.
-- `I`: interactuar con el elemento contextual seleccionado dentro del alcance. En la consola de pilotaje, entra o sale del modo de pilotaje.
-- `M`: iniciar la misión disponible. En una partida nueva inicia Mission1; las misiones sucesoras requieren que estén disponibles.
+- `Enter`: comenzar la partida.
+- `W/A/S/D`: mover al personaje dentro de ECHO-7.
+- Flechas: mirar con el personaje.
+- `I`: interactuar con el elemento contextual cercano.
+- `M`: iniciar la misión disponible.
 - `R`: reparar el sistema eléctrico cuando el panel y la condición de gameplay lo permiten.
-- `Y`: reparar el soporte vital cuando el panel y la condición de gameplay lo permiten.
-
-### Exterior, observación y misiones
-
-- `Q`: escanear señales cuando la acción está disponible.
-- `P`: iniciar o invertir el viaje/autopiloto cuando el jugador está en exterior o pilotando ECHO-7 y existe una ruta válida.
-- `O`: iniciar o invertir la observación del planeta.
-- Flechas: orbitar la cámara durante la observación planetaria; durante el pilotaje ajustan el rumbo de ECHO-7.
-- `F`: aterrizar cuando la ventana de aterrizaje es válida; en otro contexto intenta atacar al enemigo seleccionado.
-- `E`: recoger un coleccionable activo cuando está disponible.
-- `T`: reintentar la preparación del contenido cooperativo de Mission5 cuando la misión está activa y la recuperación corresponde.
+- `Y`: restaurar el soporte vital cuando el panel y la condición de gameplay lo permiten.
 - `V`: equipar el arma de energía.
+- `B`: equipar el arma de plasma si ya fue encontrada.
 - `C`: equipar el arma cinética.
+- `E`: recoger un coleccionable activo.
+
+### Exterior, observación y navegación
+
+- `Q`: escanear señales.
+- `P`: iniciar o invertir un viaje/autopiloto válido.
+- `O`: iniciar o invertir la observación planetaria.
+- `[` / `]`: cambiar el planeta observado mientras la observación está activa.
+- `L`: solicitar aterrizaje cuando el planeta está dentro de la distancia válida.
+- `F`: aterrizar si hay un planeta válido; en otro contexto ataca al enemigo seleccionado.
+- `T`: reintentar el contenido cooperativo cuando la misión lo permite.
+- `Escape`: cancelar un viaje de navegación libre en curso desde el pilotaje.
 
 ### Pilotaje de ECHO-7
 
-- `W/A/S/D`: acelerar la nave en la dirección correspondiente mientras el modo de pilotaje está activo.
-- Flechas: cambiar el rumbo de ECHO-7.
-- `W/S`: avanzar o retroceder; `A/D`: girar la nave.
-- `Espacio/Ctrl`: subir o bajar.
-- Durante el pilotaje las flechas ya no son necesarias; la cÃ¡mara sigue automÃ¡ticamente a ECHO-7.
-- `PageUp/PageDown`: acercar o alejar la cÃ¡mara de pilotaje.
+- `W/S`: avanzar o retroceder.
+- `A/D`: girar horizontalmente.
+- Flechas izquierda/derecha: girar horizontalmente.
+- Flechas arriba/abajo: inclinar la nave.
+- `Espacio` / `Ctrl`: subir o bajar.
+- `G`: activar o desactivar el escudo.
+- `F`: disparar mientras se pilota.
+- `Shift`: mantener pulsado para activar el boost.
+- `X`: frenar.
+- `N`: abrir o cerrar el selector de destino libre.
+- En el selector: flechas izquierda/derecha cambian de planeta y `Enter` confirma.
+- `U`: usar una unidad de combustible del inventario.
+- `B` / `V` / `C`: equipar plasma, energía o armamento cinético.
 - `P`: activar o invertir el autopiloto configurado.
 - `I`: abandonar el pilotaje y devolver el control al personaje.
+- `PageUp` / `PageDown` o `=` / `-`: acercar o alejar la cámara de pilotaje.
+- La cámara sigue automáticamente a ECHO-7 durante el pilotaje.
 
-### Renderizado
+### Exploración planetaria
 
-- `G`: cambiar entre CPU y GPU cuando el host de hot-swap de la ventana visual está activo.
-- `Space`: avanzar manualmente 100 ms de tiempo de gameplay. El modo visual también avanza el tiempo automáticamente mientras la partida está activa.
+- `W/A/S/D`: mover al personaje.
+- Flechas: mirar.
+- `I`: iniciar el despegue al acercarse al modelo de ECHO-7.
+
+### Entrada contextual
+
+Cuando el HUD muestra una acción contextual, puede activarse con la tecla indicada o haciendo clic izquierdo sobre el botón de acción. El clic también permite abrir el panel `F1` y los botones de controles que aparezcan en el HUD.
+
+## Renderizado y rendimiento
+
+- `G`: en la ventana de juego activa o desactiva el escudo durante el pilotaje. En hosts de hot-swap de pruebas con los controles de rasterizado habilitados también puede solicitar el cambio entre CPU y GPU.
+- `Space`: avanzar manualmente 100 ms de tiempo solo en herramientas de prueba; durante el pilotaje significa subir.
+- Teclas `1`, `2` y `3`: cambiar entre los presets de resolución bajo, medio y alto cuando el host de renderizado permite cambiar presets.
+- Teclas `S`, `P` y `A`: seleccionar rasterizado secuencial, paralelo o automático únicamente cuando los controles de rasterizado están habilitados.
+
+El juego usa resolución baja por defecto, selección automática del rasterizador y LOD para reducir el coste de modelos lejanos. Si el equipo tiene problemas de rendimiento, usa `--backend cpu`, mantén el preset bajo y evita capturas gráficas durante el juego.
 
 ## Problemas frecuentes
 
-- `cargo no se reconoce`: Rust no está instalado o la terminal debe reiniciarse.
-- `could not find Cargo.toml`: no estás en la raíz del repositorio; ejecuta `Set-Location` o `cd /d`.
-- `comando desconocido ...`: estás escribiendo en `astral>`; escribe `quit` y ejecuta el comando en PowerShell o CMD.
-- El backend GPU falla: vuelve a ejecutar con `--backend cpu`.
+- `cargo no se reconoce`: Rust no está instalado o debes reiniciar la terminal.
+- `could not find Cargo.toml`: no estás en la raíz del repositorio; usa `cd` o `Set-Location`.
+- `comando desconocido ...`: estás escribiendo en `astral>`; escribe `quit` y ejecuta el comando en PowerShell.
+- El backend GPU falla: ejecuta el juego con `--backend cpu`.
+
+## Música del juego
+
+Coloca aquí las canciones en formato MP3 (`.mp3`). El juego las reproduce en orden alfabético, continúa con la siguiente cuando termina una y permite saltar con `F6`.

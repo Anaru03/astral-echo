@@ -1184,6 +1184,7 @@ fn hud_state(
         guidance: None,
         controls: None,
         instructions: None,
+        quick_actions: Vec::new(),
         feedback: None,
         inventory_open: false,
         inventory_items: Vec::new(),
