@@ -28,11 +28,19 @@ pub use tiles::{
     rasterize_triangles_tiled, RasterMode, RasterWorkload, TileConfig, TileGrid, TileRect,
     TileStats,
 };
-use tiles::rasterize_triangles_tiled_with_shader;
+use tiles::{rasterize_triangles_tiled_with_shader_and_scratch, TileScratch};
 use vertex::VertexLighting;
 pub use vertex::VertexStage;
 
 /// Pipeline CPU por etapas: vertex, assembly, clipping, raster, fragment y depth.
+#[derive(Default)]
+pub struct CpuPipelineScratch {
+    clip_vertices: Vec<ClipVertex>,
+    triangles: Vec<Triangle>,
+    screen_triangles: Vec<(ScreenVertex, ScreenVertex, ScreenVertex)>,
+    tile: TileScratch,
+}
+
 pub struct CpuPipeline<'a> {
     framebuffer: &'a mut Framebuffer,
     viewport: Viewport,
@@ -43,6 +51,7 @@ pub struct CpuPipeline<'a> {
     pub stats: PipelineStats,
     clip_vertices: Vec<ClipVertex>,
     triangles: Vec<Triangle>,
+    scratch: CpuPipelineScratch,
     fragments: Vec<Fragment>,
     shaded: Vec<Color>,
     assembly: AssemblyStats,
@@ -56,6 +65,16 @@ impl<'a> CpuPipeline<'a> {
         viewport: Viewport,
         config: PipelineConfig,
     ) -> Self {
+        Self::new_with_scratch(framebuffer, viewport, config, CpuPipelineScratch::default())
+    }
+
+    pub fn new_with_scratch(
+        framebuffer: &'a mut Framebuffer,
+        viewport: Viewport,
+        config: PipelineConfig,
+        scratch: CpuPipelineScratch,
+    ) -> Self {
+        let mut scratch = scratch;
         Self {
             framebuffer,
             viewport,
@@ -64,14 +83,21 @@ impl<'a> CpuPipeline<'a> {
             tile_config: None,
             tile_stats: TileStats::default(),
             stats: PipelineStats::default(),
-            clip_vertices: Vec::new(),
-            triangles: Vec::new(),
+            clip_vertices: std::mem::take(&mut scratch.clip_vertices),
+            triangles: std::mem::take(&mut scratch.triangles),
+            scratch,
             fragments: Vec::new(),
             shaded: Vec::new(),
             assembly: AssemblyStats::default(),
             fragment_shader: FragmentShader::VertexColor,
             fragment_time: 0.0,
         }
+    }
+
+    pub fn into_scratch(mut self) -> CpuPipelineScratch {
+        self.scratch.clip_vertices = std::mem::take(&mut self.clip_vertices);
+        self.scratch.triangles = std::mem::take(&mut self.triangles);
+        self.scratch
     }
 
     pub fn with_fill_rule(mut self, rule: FillRule) -> Self {
@@ -101,6 +127,9 @@ impl<'a> CpuPipeline<'a> {
     pub fn scratch_bytes(&self) -> usize {
         self.clip_vertices.capacity() * std::mem::size_of::<ClipVertex>()
             + self.triangles.capacity() * std::mem::size_of::<Triangle>()
+            + self.scratch.screen_triangles.capacity()
+                * std::mem::size_of::<(ScreenVertex, ScreenVertex, ScreenVertex)>()
+            + self.scratch.tile.bytes()
             + self.fragments.capacity() * std::mem::size_of::<Fragment>()
             + self.shaded.capacity() * std::mem::size_of::<Color>()
             + self.tile_stats.scratch_bytes
@@ -276,7 +305,7 @@ impl<'a> CpuPipeline<'a> {
     /// Ruta de rasterización por tiles: procesa todos los triángulos del mesh
     /// usando binned rasterization, opcionalmente en paralelo con Rayon.
     fn draw_mesh_tiled(&mut self) {
-        let mut screen_triangles: Vec<(ScreenVertex, ScreenVertex, ScreenVertex)> = Vec::new();
+        self.scratch.screen_triangles.clear();
 
         for i in 0..self.triangles.len() {
             let triangle = self.triangles[i];
@@ -329,7 +358,7 @@ impl<'a> CpuPipeline<'a> {
                             self.stats.metrics.triangles_degenerate += 1;
                             continue;
                         }
-                        screen_triangles.push((va, vb, vc));
+                        self.scratch.screen_triangles.push((va, vb, vc));
                     }
                     _ => {
                         self.stats.metrics.triangles_degenerate += 1;
@@ -339,8 +368,8 @@ impl<'a> CpuPipeline<'a> {
         }
 
         let t0 = self.timer();
-        let mut tile_stats = rasterize_triangles_tiled_with_shader(
-            &screen_triangles,
+        let mut tile_stats = rasterize_triangles_tiled_with_shader_and_scratch(
+            &self.scratch.screen_triangles,
             self.framebuffer,
             self.fill_rule,
             self.config.depth_test,
@@ -348,6 +377,7 @@ impl<'a> CpuPipeline<'a> {
             self.tile_config.unwrap_or_default(),
             self.fragment_shader,
             self.fragment_time,
+            &mut self.scratch.tile,
         );
         let raster_ns = self.elapsed(t0);
 
@@ -356,7 +386,7 @@ impl<'a> CpuPipeline<'a> {
         self.stats.metrics.pixels_written += tile_stats.pixels_written;
         self.stats.metrics.fragments_shaded += tile_stats.fragments_rasterized;
         self.stats.metrics.fragments_depth_rejected += tile_stats.fragments_depth_rejected;
-        tile_stats.scratch_bytes += screen_triangles.capacity()
+        tile_stats.scratch_bytes += self.scratch.screen_triangles.capacity()
             * std::mem::size_of::<(ScreenVertex, ScreenVertex, ScreenVertex)>();
         if !self.config.timing {
             tile_stats.bin_ns = 0;
