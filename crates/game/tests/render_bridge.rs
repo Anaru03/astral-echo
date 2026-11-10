@@ -44,19 +44,16 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     );
     assert_eq!((node.mesh, node.material), (PLAYER_MESH, PLAYER_MATERIAL));
     let enemy = world.enemies().next().unwrap();
-    assert!(snapshot
-        .nodes
-        .iter()
-        .any(|n| {
-            n.entity == SnapshotId::Entity(enemy.entity)
-                && n.mesh == ENEMY_MESH
-                && n.material
-                    == match enemy.archetype {
-                        Some(gameplay::EnemyArchetype::Charger) => CHARGER_MATERIAL,
-                        Some(gameplay::EnemyArchetype::Shielded) => SHIELDED_MATERIAL,
-                        Some(gameplay::EnemyArchetype::Shooter) | None => ENEMY_MATERIAL,
-                    }
-        }));
+    assert!(snapshot.nodes.iter().any(|n| {
+        n.entity == SnapshotId::Entity(enemy.entity)
+            && n.mesh == ENEMY_MESH
+            && n.material
+                == match enemy.archetype {
+                    Some(gameplay::EnemyArchetype::Charger) => CHARGER_MATERIAL,
+                    Some(gameplay::EnemyArchetype::Shielded) => SHIELDED_MATERIAL,
+                    Some(gameplay::EnemyArchetype::Shooter) | None => ENEMY_MATERIAL,
+                }
+    }));
     assert!(snapshot
         .nodes
         .iter()
@@ -65,8 +62,7 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
         n.entity == SnapshotId::Destination(1)
             && n.mesh == BUILDING_PLANET_MESH
             && n.material == PLANET_MATERIAL
-            && n.transform.scale
-                == render_core::Vec3::splat((PLANET_VISUAL_RADIUS * 2.0) / 15.45)
+            && n.transform.scale == render_core::Vec3::splat((PLANET_VISUAL_RADIUS * 2.0) / 15.45)
     }));
     let collectible = world.collectibles().next().unwrap();
     assert!(snapshot
@@ -81,7 +77,10 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
 fn snapshot_hud_reflects_flight_target_and_encounter_state() {
     let world = support::fixture_world();
     let snapshot = snapshot_from_world(&world, Default::default());
-    assert_eq!(snapshot.overlay.hud.flight, render_core::HudFlightState::Free);
+    assert_eq!(
+        snapshot.overlay.hud.flight,
+        render_core::HudFlightState::Free
+    );
     assert_eq!(
         snapshot.overlay.hud.autopilot,
         render_core::HudAutopilotState::Inactive
@@ -115,7 +114,11 @@ fn snapshot_assigns_tessara_mesh_only_to_destination_9601() {
         orbit_center: position,
         orbit_radius: 0.0,
         orbit_start: engine::Vec3::ZERO,
-        orbit_axis: engine::Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+        orbit_axis: engine::Vec3 {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0
+        },
         orbit_phase: 0.0,
         orbit_angular_speed: 0.0,
         surface_radius: PLANET_SURFACE_RADIUS,
@@ -133,9 +136,10 @@ fn snapshot_assigns_tessara_mesh_only_to_destination_9601() {
         .unwrap();
     assert_eq!(tessara_node.mesh, TESSARA_PLANET_MESH);
     assert_eq!(tessara_node.material, PLANET_MATERIAL);
-    assert!(snapshot.nodes.iter().any(|node| {
-        node.entity == SnapshotId::Destination(1) && node.mesh == PLANET_MESH
-    }));
+    assert!(snapshot
+        .nodes
+        .iter()
+        .any(|node| { node.entity == SnapshotId::Destination(1) && node.mesh == PLANET_MESH }));
 }
 
 #[test]
@@ -157,8 +161,14 @@ fn station_nodes_use_stable_ids_positions_and_registered_assets() {
         .filter(|node| node.entity == SnapshotId::Entity(station))
         .collect();
     assert_eq!(nodes.len(), 1);
-    assert_eq!(nodes[0].transform.translation, render_core::from_engine(position));
-    assert_eq!((nodes[0].mesh, nodes[0].material), (STATION_MESH, STATION_MATERIAL));
+    assert_eq!(
+        nodes[0].transform.translation,
+        render_core::from_engine(position)
+    );
+    assert_eq!(
+        (nodes[0].mesh, nodes[0].material),
+        (STATION_MESH, STATION_MATERIAL)
+    );
     SnapshotScene::default()
         .update(&snapshot)
         .expect("station asset pair must resolve");
@@ -250,16 +260,19 @@ fn station_visibility_and_identity_are_preserved_across_snapshots() {
     let stations: Vec<_> = snapshot
         .nodes
         .iter()
-        .filter(|node| node.mesh == STATION_MESH && matches!(node.entity, SnapshotId::Entity(id) if id == first || id == second))
+        .filter(|node| {
+            node.mesh == STATION_MESH
+                && matches!(node.entity, SnapshotId::Entity(id) if id == first || id == second)
+        })
         .collect();
     assert_eq!(stations.len(), 2);
     assert_eq!(stations.iter().filter(|node| !node.visible).count(), 1);
-    assert!(stations.iter().any(|node| {
-        node.entity == SnapshotId::Entity(first) && !node.visible
-    }));
-    assert!(stations.iter().any(|node| {
-        node.entity == SnapshotId::Entity(second) && node.visible
-    }));
+    assert!(stations
+        .iter()
+        .any(|node| { node.entity == SnapshotId::Entity(first) && !node.visible }));
+    assert!(stations
+        .iter()
+        .any(|node| { node.entity == SnapshotId::Entity(second) && node.visible }));
     assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
     SnapshotScene::default()
         .update(&snapshot)
@@ -279,17 +292,9 @@ fn discovered_derelicts_use_stable_ids_positions_and_registered_assets() {
         y: 0.5,
         z: 3.0,
     };
-    let mut first = gameplay::Derelict::new(
-        gameplay::DerelictId::new(41),
-        first_position,
-        4.0,
-    );
+    let mut first = gameplay::Derelict::new(gameplay::DerelictId::new(41), first_position, 4.0);
     first.state = gameplay::DerelictState::Discovered;
-    let mut second = gameplay::Derelict::new(
-        gameplay::DerelictId::new(42),
-        second_position,
-        4.0,
-    );
+    let mut second = gameplay::Derelict::new(gameplay::DerelictId::new(42), second_position, 4.0);
     second.state = gameplay::DerelictState::Resolved;
     world.register_derelict(first).unwrap();
     world.register_derelict(second).unwrap();
@@ -492,11 +497,8 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
 #[test]
 fn gameplay_snapshot_reaches_prepared_scene_without_losing_visual_data() {
     let world = support::fixture_world();
-    let snapshot = snapshot_from_world_with_camera(
-        &world,
-        Default::default(),
-        &render_core::Camera::demo(),
-    );
+    let snapshot =
+        snapshot_from_world_with_camera(&world, Default::default(), &render_core::Camera::demo());
     let mut scene = SnapshotScene::default();
     scene.update(&snapshot).unwrap();
 
@@ -560,7 +562,8 @@ fn destination_filter_collectibles_and_camera_are_respected() {
     assert!(!filtered
         .nodes
         .iter()
-        .any(|n| n.entity == SnapshotId::Destination(2) || n.entity == SnapshotId::Entity(collectible)));
+        .any(|n| n.entity == SnapshotId::Destination(2)
+            || n.entity == SnapshotId::Entity(collectible)));
     let camera = render_core::demo_camera(1.0).unwrap();
     let custom = snapshot_from_world_with_camera(&world, Default::default(), &camera);
     assert_eq!(custom.projection, camera.projection_matrix());
@@ -634,8 +637,7 @@ fn academic_surface_objects_are_four_deterministic_exterior_visual_nodes() {
     let later_planet = academic_planet_transform(4.0);
     for (node, later_node) in first.iter().zip(later.iter()) {
         let radius = (node.transform.translation - planet.translation).length();
-        let later_radius =
-            (later_node.transform.translation - later_planet.translation).length();
+        let later_radius = (later_node.transform.translation - later_planet.translation).length();
         assert!(radius > PLANET_SURFACE_RADIUS);
         assert!((radius - later_radius).abs() < 0.0001);
         assert_ne!(node.transform, later_node.transform);
@@ -676,10 +678,9 @@ fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
             SnapshotId::Destination(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Derelict(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Hazard(_) => panic!("surface object must have a stable entity id"),
-            SnapshotId::VisualEvent(_)
-            | SnapshotId::ModelPart { .. } => {
+            SnapshotId::VisualEvent(_) | SnapshotId::ModelPart { .. } => {
                 panic!("surface object must have a stable entity id")
-            },
+            }
         };
         assert!(ids.insert(id), "duplicate surface object id {id:?}");
 
@@ -694,10 +695,7 @@ fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
         let mesh = assets.mesh(node.mesh, node.material).unwrap();
         assert!(!mesh.vertices.is_empty());
         for vertex in &mesh.vertices {
-            let world_position = node
-                .transform
-                .matrix()
-                .transform_point3(vertex.position);
+            let world_position = node.transform.matrix().transform_point3(vertex.position);
             let distance = world_position.distance(planet_center);
             assert!(
                 distance > PLANET_SURFACE_RADIUS,
@@ -864,7 +862,10 @@ fn only_the_selected_academic_planet_orbits() {
         .find(|node| node.entity == SnapshotId::Destination(1))
         .unwrap();
     assert_eq!(later_selected.transform, expected_transform(&world));
-    assert_ne!(later_selected.transform.translation, selected.transform.translation);
+    assert_ne!(
+        later_selected.transform.translation,
+        selected.transform.translation
+    );
     assert_eq!(later_other.transform, other.transform);
 }
 
@@ -875,7 +876,10 @@ fn flight_camera_tracks_visual_ship_and_keeps_projection_valid() {
     assert!(camera.view_matrix().is_finite());
     assert!(camera.projection_matrix().is_finite());
     assert!(camera.view_projection_matrix().is_finite());
-    assert_eq!(visual_ship_position(&world), world.ship_position().map(render_core::from_engine));
+    assert_eq!(
+        visual_ship_position(&world),
+        world.ship_position().map(render_core::from_engine)
+    );
 }
 
 #[test]
@@ -893,7 +897,10 @@ fn pilot_camera_is_behind_the_echo7_propulsors_and_aims_at_its_rear_hull() {
     assert!(camera.view_projection_matrix().is_finite());
 
     let snapshot = snapshot_from_world(&world, Default::default());
-    let ship_id = world.navigation().ship_id().expect("fixture ship should exist");
+    let ship_id = world
+        .navigation()
+        .ship_id()
+        .expect("fixture ship should exist");
     let ship_node = snapshot
         .nodes
         .iter()
@@ -928,7 +935,11 @@ fn observable_planets_are_sorted_and_ignore_space_points() {
         .register_destination(gameplay::Destination {
             id: tessara,
             destination_type: gameplay::DestinationType::Planet,
-            position: engine::Vec3 { x: -49.17, y: 8.0, z: 31.17 },
+            position: engine::Vec3 {
+                x: -49.17,
+                y: 8.0,
+                z: 31.17,
+            },
             travel_duration: engine::Duration(1_000),
             fuel_cost: 1,
             discovery: gameplay::DiscoveryState::Discovered,
@@ -938,7 +949,11 @@ fn observable_planets_are_sorted_and_ignore_space_points() {
         .register_destination(gameplay::Destination {
             id: gameplay::DestinationId::new(9_999),
             destination_type: gameplay::DestinationType::SpacePoint,
-            position: engine::Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+            position: engine::Vec3 {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
             travel_duration: engine::Duration(1_000),
             fuel_cost: 1,
             discovery: gameplay::DiscoveryState::Discovered,
@@ -946,7 +961,9 @@ fn observable_planets_are_sorted_and_ignore_space_points() {
         .unwrap();
 
     let planets = observable_planets(&world);
-    assert!(planets.windows(2).all(|pair| pair[0].value() < pair[1].value()));
+    assert!(planets
+        .windows(2)
+        .all(|pair| pair[0].value() < pair[1].value()));
     assert!(planets.contains(&tessara));
     assert!(!planets.contains(&gameplay::DestinationId::new(9_999)));
 }
@@ -955,7 +972,11 @@ fn observable_planets_are_sorted_and_ignore_space_points() {
 fn observation_camera_accepts_tessara_without_mutating_world() {
     let mut world = support::fixture_world();
     let tessara = gameplay::DestinationId::new(TESSARA_DESTINATION_ID);
-    let position = engine::Vec3 { x: -49.17, y: 8.0, z: 31.17 };
+    let position = engine::Vec3 {
+        x: -49.17,
+        y: 8.0,
+        z: 31.17,
+    };
     world
         .register_destination(gameplay::Destination {
             id: tessara,
@@ -967,15 +988,9 @@ fn observation_camera_accepts_tessara_without_mutating_world() {
         })
         .unwrap();
     let before = format!("{world:?}");
-    let camera = observation_camera_for_destination(
-        &world,
-        16.0 / 9.0,
-        1.0,
-        0.4,
-        -0.2,
-        Some(tessara),
-    )
-    .unwrap();
+    let camera =
+        observation_camera_for_destination(&world, 16.0 / 9.0, 1.0, 0.4, -0.2, Some(tessara))
+            .unwrap();
     assert!(camera.view_projection_matrix().is_finite());
     assert!((camera.position() - Vec3::new(-49.17, 8.0, 31.17)).length() >= 14.0);
     assert_eq!(before, format!("{world:?}"));
@@ -989,22 +1004,20 @@ fn observation_camera_rejects_non_planet_targets_with_a_finite_veyra_fallback() 
         .register_destination(gameplay::Destination {
             id: space_point,
             destination_type: gameplay::DestinationType::SpacePoint,
-            position: engine::Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+            position: engine::Vec3 {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
             travel_duration: engine::Duration(1_000),
             fuel_cost: 1,
             discovery: gameplay::DiscoveryState::Discovered,
         })
         .unwrap();
     let fallback = observation_camera(&world, 16.0 / 9.0, 1.0, 0.0, 0.0).unwrap();
-    let rejected = observation_camera_for_destination(
-        &world,
-        16.0 / 9.0,
-        1.0,
-        0.0,
-        0.0,
-        Some(space_point),
-    )
-    .unwrap();
+    let rejected =
+        observation_camera_for_destination(&world, 16.0 / 9.0, 1.0, 0.0, 0.0, Some(space_point))
+            .unwrap();
     assert_eq!(fallback, rejected);
     assert!(rejected.view_projection_matrix().is_finite());
 }
@@ -1116,24 +1129,30 @@ fn public_landing_request_accepts_valid_context_and_rejects_repeat() {
             discovery: gameplay::DiscoveryState::Discovered,
         })
         .unwrap();
-    assert!(session.world_mut().configure_planet_physics(gameplay::PlanetPhysics {
-        destination: planet,
-        orbit_center: engine::Vec3 {
-            x: -10.0,
-            y: 0.0,
-            z: 0.0,
-        },
-        orbit_radius: 10.0,
-        orbit_start: engine::Vec3::ZERO,
-        orbit_axis: engine::Vec3 { x: 0.0, y: 1.0, z: 0.0 },
-        orbit_phase: 0.0,
-        orbit_angular_speed: 0.0,
-        surface_radius: 2.0,
-        ship_radius: 1.0,
-        gravity_influence_radius: 20.0,
-        gravitational_parameter: 4.0,
-        atmosphere_height: 2.0,
-    }));
+    assert!(session
+        .world_mut()
+        .configure_planet_physics(gameplay::PlanetPhysics {
+            destination: planet,
+            orbit_center: engine::Vec3 {
+                x: -10.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            orbit_radius: 10.0,
+            orbit_start: engine::Vec3::ZERO,
+            orbit_axis: engine::Vec3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0
+            },
+            orbit_phase: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: 2.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 20.0,
+            gravitational_parameter: 4.0,
+            atmosphere_height: 2.0,
+        }));
     assert!(session.world().landing_available(planet));
     assert!(session.world_mut().request_planet_landing(planet));
     assert!(session
@@ -1211,7 +1230,10 @@ fn companion_snapshot_uses_gameplay_position_and_stable_identity() {
         .find(|node| node.entity == SnapshotId::Entity(companion))
         .expect("ERICK should be represented by a snapshot node");
     assert!(node.visible);
-    assert_eq!(node.transform.translation, render_core::from_engine(position));
+    assert_eq!(
+        node.transform.translation,
+        render_core::from_engine(position)
+    );
     assert_eq!((node.mesh, node.material), (ERICK_MESH, ERICK_MATERIAL));
     assert_eq!(
         first
@@ -1274,13 +1296,21 @@ fn accepted_scan_emits_one_expiring_visual_signal() {
     assert_eq!(event.id, 1);
     assert_eq!(event.kind, render_core::RenderVisualEventKind::Scan);
     assert_eq!(event.source, Some(ship));
-    assert_eq!(event.position, Some(render_core::from_engine(session.world().ship_position().unwrap())));
+    assert_eq!(
+        event.position,
+        Some(render_core::from_engine(
+            session.world().ship_position().unwrap()
+        ))
+    );
     let effect = first
         .nodes
         .iter()
         .find(|node| node.entity == SnapshotId::VisualEvent(event.id))
         .expect("scan should produce a visual event node");
-    assert_eq!((effect.mesh, effect.material), (DESTINATION_MESH, DESTINATION_MATERIAL));
+    assert_eq!(
+        (effect.mesh, effect.material),
+        (DESTINATION_MESH, DESTINATION_MATERIAL)
+    );
 
     let repeated = snapshot_from_world(session.world(), Default::default());
     assert_eq!(repeated.visual_events, first.visual_events);
@@ -1340,13 +1370,19 @@ fn visual_events_are_persistent_unique_and_time_bounded() {
     let first = snapshot_from_world(session.world(), Default::default());
     assert_eq!(first.visual_events.len(), 1);
     assert_eq!(first.visual_events[0].id, 1);
-    assert_eq!(first.visual_events[0].kind, render_core::RenderVisualEventKind::Attack);
+    assert_eq!(
+        first.visual_events[0].kind,
+        render_core::RenderVisualEventKind::Attack
+    );
     let first_effect = first
         .nodes
         .iter()
         .find(|node| node.entity == SnapshotId::VisualEvent(1))
         .expect("an attack event with a position should produce an effect node");
-    assert_eq!((first_effect.mesh, first_effect.material), (SUN_MESH, SUN_MATERIAL));
+    assert_eq!(
+        (first_effect.mesh, first_effect.material),
+        (SUN_MESH, SUN_MATERIAL)
+    );
     let mut scene = SnapshotScene::default();
     scene
         .update(&first)
@@ -1407,8 +1443,14 @@ fn visual_ship_flight_interpolates_without_frame_based_accumulation() {
     let repeated = interpolate_visual_ship_position(current, target, 0.5);
     assert_eq!(halfway, Vec3::new(21.0, 0.0, -9.0));
     assert_eq!(halfway, repeated);
-    assert_eq!(interpolate_visual_ship_position(current, target, -1.0), current);
-    assert_eq!(interpolate_visual_ship_position(current, target, 2.0), target);
+    assert_eq!(
+        interpolate_visual_ship_position(current, target, -1.0),
+        current
+    );
+    assert_eq!(
+        interpolate_visual_ship_position(current, target, 2.0),
+        target
+    );
 }
 
 #[test]

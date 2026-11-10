@@ -1,13 +1,9 @@
-
 use std::path::Path;
 use std::sync::Arc;
 
 use render_core::{load_textured_obj, Mat4};
 
-use crate::{
-    texture_loader::TextureImage, GpuContext, GpuError,
-    GpuTexture, TexturedRenderer,
-};
+use crate::{texture_loader::TextureImage, GpuContext, GpuError, GpuTexture, TexturedRenderer};
 
 pub struct TexturedModelRenderer {
     parts: Vec<TexturedRenderer>,
@@ -29,9 +25,7 @@ impl TexturedModelRenderer {
         for material in &model.materials {
             let index = if let Some(path) = &material.diffuse_texture {
                 let image = TextureImage::load_png(path)
-                    .map_err(|error| {
-                        GpuError::InvalidInput(error.to_string())
-                    })?;
+                    .map_err(|error| GpuError::InvalidInput(error.to_string()))?;
 
                 let texture = GpuTexture::from_image(&gpu, &image)?;
                 textures.push(texture);
@@ -46,30 +40,19 @@ impl TexturedModelRenderer {
         let mut parts = Vec::new();
 
         for part in &model.meshes {
-            let material_index = part.material_index
-                .ok_or_else(|| {
-                    GpuError::InvalidInput(format!(
-                        "mesh '{}' has no material",
-                        part.name
-                    ))
-                })?;
+            let material_index = part.material_index.ok_or_else(|| {
+                GpuError::InvalidInput(format!("mesh '{}' has no material", part.name))
+            })?;
 
             let texture_index = material_textures
                 .get(material_index)
                 .and_then(|index| *index)
                 .ok_or_else(|| {
-                    GpuError::InvalidInput(format!(
-                        "mesh '{}' has no diffuse texture",
-                        part.name
-                    ))
+                    GpuError::InvalidInput(format!("mesh '{}' has no diffuse texture", part.name))
                 })?;
 
-            let renderer = TexturedRenderer::new(
-                gpu.clone(),
-                format,
-                &part.mesh,
-                &textures[texture_index],
-            )?;
+            let renderer =
+                TexturedRenderer::new(gpu.clone(), format, &part.mesh, &textures[texture_index])?;
 
             parts.push(renderer);
         }

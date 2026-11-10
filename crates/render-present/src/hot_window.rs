@@ -1,8 +1,8 @@
 use std::num::NonZeroU32;
-use std::rc::Rc;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use render_core::{
@@ -11,8 +11,8 @@ use render_core::{
     VisualAssets,
 };
 use render_cpu::{
-    render_snapshot_scene_with_stats, render_snapshot_scene_with_shader, write_png, Framebuffer,
-    FragmentShader, RasterMode,
+    render_snapshot_scene_with_shader, render_snapshot_scene_with_stats, write_png, FragmentShader,
+    Framebuffer, RasterMode,
 };
 use render_gpu::{GpuError, GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
@@ -24,8 +24,8 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::{
-    copy_nearest_rgba, BackendKind, BackendSnapshot, HotSwapState, Preset, ScaleLayout,
-    DeferredMeshRegistry, VisualAssetHost, WindowConfig,
+    copy_nearest_rgba, BackendKind, BackendSnapshot, DeferredMeshRegistry, HotSwapState, Preset,
+    ScaleLayout, VisualAssetHost, WindowConfig,
 };
 
 pub type SnapshotSource = Box<dyn FnMut(u32, u32) -> Result<RenderSnapshot, String>>;
@@ -136,16 +136,14 @@ pub fn run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
         debug,
         debug_frame: 0,
         frames: 0,
-        auto_capture_after_frames: parse_auto_capture_after_frames(
-            std::env::var_os("ASTRAL_ECHO_DUAL_CAPTURE_AFTER_FRAMES"),
-        ),
+        auto_capture_after_frames: parse_auto_capture_after_frames(std::env::var_os(
+            "ASTRAL_ECHO_DUAL_CAPTURE_AFTER_FRAMES",
+        )),
         auto_capture_requested: false,
         wake_proxy,
         visual_assets,
     };
-    event_loop
-        .run_app(&mut app)
-        .map_err(|e| e.to_string())?;
+    event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
     app.failure.map_or_else(|| Ok(app.report), Err)
 }
 
@@ -347,17 +345,11 @@ impl ApplicationHandler for Host {
                 if focused {
                     return;
                 }
-                for code in [
-                    KeyCode::KeyW,
-                    KeyCode::KeyA,
-                    KeyCode::KeyS,
-                    KeyCode::KeyD,
-                ] {
+                for code in [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD] {
                     (self.input)(code, ElementState::Released);
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } if !event.repeat =>
-            {
+            WindowEvent::KeyboardInput { event, .. } if !event.repeat => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if event.state == ElementState::Pressed {
                         match code {
@@ -398,11 +390,29 @@ impl ApplicationHandler for Host {
                     let x = x.max(0.0) as u32;
                     let y = y.max(0.0) as u32;
                     if hud.controls_panel.open {
-                        hud_controls_panel_hit(hud, state.framebuffer.width(), state.framebuffer.height(), x, y)
-                            .then_some(KeyCode::F1)
-                    } else if hud_controls_button_hit(hud, state.framebuffer.width(), state.framebuffer.height(), x, y) {
+                        hud_controls_panel_hit(
+                            hud,
+                            state.framebuffer.width(),
+                            state.framebuffer.height(),
+                            x,
+                            y,
+                        )
+                        .then_some(KeyCode::F1)
+                    } else if hud_controls_button_hit(
+                        hud,
+                        state.framebuffer.width(),
+                        state.framebuffer.height(),
+                        x,
+                        y,
+                    ) {
                         Some(KeyCode::F1)
-                    } else if hud_contextual_button_hit(hud, state.framebuffer.width(), state.framebuffer.height(), x, y) {
+                    } else if hud_contextual_button_hit(
+                        hud,
+                        state.framebuffer.width(),
+                        state.framebuffer.height(),
+                        x,
+                        y,
+                    ) {
                         Some(KeyCode::KeyI)
                     } else {
                         None
@@ -431,7 +441,10 @@ impl ApplicationHandler for Host {
             if backend_ready_for_redraw(
                 state.backend.backend(),
                 state.surface.is_some(),
-                state.gpu.as_ref().is_some_and(SurfaceRenderer::ready_for_present),
+                state
+                    .gpu
+                    .as_ref()
+                    .is_some_and(SurfaceRenderer::ready_for_present),
                 state.window.inner_size(),
                 !state.cpu_redraw.is_blocked(),
             ) {
@@ -453,7 +466,12 @@ impl ApplicationHandler for Host {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: ()) {
-        println!("hot-swap user-event pending={}", self.state.as_ref().is_some_and(|state| state.pending_gpu.is_some()));
+        println!(
+            "hot-swap user-event pending={}",
+            self.state
+                .as_ref()
+                .is_some_and(|state| state.pending_gpu.is_some())
+        );
         self.poll_pending_gpu(event_loop);
     }
 }
@@ -497,8 +515,7 @@ impl Host {
                     return;
                 }
                 let (_, _, _, gpu_width, gpu_height) = gpu.diagnostic_state();
-                if (size.width, size.height) != (gpu_width, gpu_height)
-                    || !gpu.ready_for_present()
+                if (size.width, size.height) != (gpu_width, gpu_height) || !gpu.ready_for_present()
                 {
                     if let Err(error) = gpu.resize_without_wait(size.width, size.height) {
                         state.backend.cancel_switch(error.to_string());
@@ -555,7 +572,11 @@ impl Host {
                 self.report_gpu_error(error.to_string());
             }
         }
-        if self.state.as_ref().is_some_and(|state| state.pending_gpu.is_none()) {
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.pending_gpu.is_none())
+        {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
         }
     }
@@ -570,11 +591,15 @@ impl Host {
             state.preset = preset;
             if let Some(gpu) = &mut state.gpu {
                 if preset == Preset::Low {
-                    if let Err(error) = gpu.set_postprocess(render_gpu::PostProcessConfig::default()) {
+                    if let Err(error) =
+                        gpu.set_postprocess(render_gpu::PostProcessConfig::default())
+                    {
                         self.report_gpu_error(error.to_string());
                     }
                 } else {
-                    if let Err(error) = gpu.set_postprocess_preset(render_gpu::PostProcessPreset::High) {
+                    if let Err(error) =
+                        gpu.set_postprocess_preset(render_gpu::PostProcessPreset::High)
+                    {
                         self.report_gpu_error(error.to_string());
                     }
                 }
@@ -728,9 +753,7 @@ impl Host {
                             .backend
                             .cancel_switch("could not start GPU preparation worker");
                         state.pending_gpu_started = None;
-                        self.report_gpu_error(
-                            "could not start GPU preparation worker".into(),
-                        );
+                        self.report_gpu_error("could not start GPU preparation worker".into());
                         println!("hot-swap gpu-worker spawn-error");
                         return;
                     }
@@ -749,9 +772,7 @@ impl Host {
                 return;
             }
             let (_, _, _, gpu_width, gpu_height) = gpu.diagnostic_state();
-            if (size.width, size.height) != (gpu_width, gpu_height)
-                || !gpu.ready_for_present()
-            {
+            if (size.width, size.height) != (gpu_width, gpu_height) || !gpu.ready_for_present() {
                 if let Err(error) = gpu.resize_without_wait(size.width, size.height) {
                     state.gpu = Some(gpu);
                     state.backend.cancel_switch(error.to_string());
@@ -887,7 +908,9 @@ impl Host {
                 Some(gpu) => {
                     let path = Self::unique_capture_path(&directory, frame, "gpu");
                     match gpu.request_capture(path.clone()) {
-                        Ok(()) => println!("graphics-debug gpu-capture-requested={}", path.display()),
+                        Ok(()) => {
+                            println!("graphics-debug gpu-capture-requested={}", path.display())
+                        }
                         Err(error) => println!("graphics-debug gpu-capture-error={error}"),
                     }
                 }
@@ -902,7 +925,10 @@ impl Host {
         if !backend_ready_for_redraw(
             state.backend.backend(),
             state.surface.is_some(),
-            state.gpu.as_ref().is_some_and(SurfaceRenderer::ready_for_present),
+            state
+                .gpu
+                .as_ref()
+                .is_some_and(SurfaceRenderer::ready_for_present),
             size,
             !state.cpu_redraw.is_blocked(),
         ) {
@@ -917,7 +943,7 @@ impl Host {
             &mut state.framebuffer,
             &state.snapshot,
             self.config.raster_mode,
-            FragmentShader::SolarBands,
+            render_cpu::diagnostic_fragment_shader().unwrap_or(FragmentShader::SolarBands),
         );
         let _ = write_png(&internal_path, &state.framebuffer);
         let mut pixels = vec![0u32; (size.width as usize) * (size.height as usize)];
@@ -962,10 +988,7 @@ impl Host {
         }
     }
 
-    fn unique_dual_capture_paths(
-        directory: &std::path::Path,
-        frame: u64,
-    ) -> (PathBuf, PathBuf) {
+    fn unique_dual_capture_paths(directory: &std::path::Path, frame: u64) -> (PathBuf, PathBuf) {
         let mut index = 0_u32;
         loop {
             let suffix = if index == 0 {
@@ -1074,11 +1097,13 @@ impl Host {
                         );
                     }
                     match gpu.present_snapshot_with_stats(&state.snapshot) {
-                    Ok((_, stats)) => {
-                        let gpu_events = gpu.poll_gpu_asset_events();
-                        state.visual_assets.publish_gpu_events(gpu_events.iter().cloned());
-                        for event in gpu_events {
-                            println!(
+                        Ok((_, stats)) => {
+                            let gpu_events = gpu.poll_gpu_asset_events();
+                            state
+                                .visual_assets
+                                .publish_gpu_events(gpu_events.iter().cloned());
+                            for event in gpu_events {
+                                println!(
                                 "hot-swap gpu-asset mesh={} lod={:?} generation={} state={:?} error={:?}",
                                 event.mesh.0,
                                 event.lod,
@@ -1086,9 +1111,9 @@ impl Host {
                                 event.state,
                                 event.error
                             );
-                        }
-                        if trace_frame {
-                            println!(
+                            }
+                            if trace_frame {
+                                println!(
                             "hot-swap frame backend={:?} tick={} nodes={} considered={} visible={} discarded={} triangles={}",
                             state.backend.backend(),
                             state.snapshot.snapshot().tick.0,
@@ -1098,41 +1123,48 @@ impl Host {
                             stats.discarded,
                             stats.triangles
                             );
-                            println!(
+                                println!(
                                 "hot-swap frame-presented backend=GPU frame={} elapsed_ms={:.3}",
                                 frame_id,
                                 frame_started.elapsed().as_secs_f64() * 1000.0
                             );
-                        }
-                        if auto_capture_due {
-                            if let Some(directory) = self.debug.directory.clone() {
-                                if self.debug.dual_capture {
-                                    let capture_frame = self.debug_frame;
-                                    let (scene_only, composite) =
-                                        Self::unique_dual_capture_paths(&directory, capture_frame);
-                                    match gpu.request_dual_capture(scene_only.clone(), composite.clone()) {
-                                        Ok(()) => {
-                                            self.auto_capture_requested = true;
-                                            self.debug_frame = self.debug_frame.saturating_add(1);
-                                            println!(
+                            }
+                            if auto_capture_due {
+                                if let Some(directory) = self.debug.directory.clone() {
+                                    if self.debug.dual_capture {
+                                        let capture_frame = self.debug_frame;
+                                        let (scene_only, composite) =
+                                            Self::unique_dual_capture_paths(
+                                                &directory,
+                                                capture_frame,
+                                            );
+                                        match gpu.request_dual_capture(
+                                            scene_only.clone(),
+                                            composite.clone(),
+                                        ) {
+                                            Ok(()) => {
+                                                self.auto_capture_requested = true;
+                                                self.debug_frame =
+                                                    self.debug_frame.saturating_add(1);
+                                                println!(
                                                 "graphics-debug gpu-auto-dual-capture-requested frame={} scene_only={} composite={}",
                                                 frame_id,
                                                 scene_only.display(),
                                                 composite.display()
                                             );
+                                            }
+                                            Err(error) => println!(
+                                                "graphics-debug gpu-auto-capture-error={error}"
+                                            ),
                                         }
-                                        Err(error) => println!(
-                                            "graphics-debug gpu-auto-capture-error={error}"
-                                        ),
                                     }
                                 }
                             }
+                            None
                         }
-                        None
+                        Err(error) => Some(error.to_string()),
                     }
-                    Err(error) => Some(error.to_string()),
-                    }
-                },
+                }
                 None => Some("GPU backend active without GPU resources".into()),
             };
             if let Some(error) = gpu_error {
@@ -1354,7 +1386,10 @@ mod tests {
     fn automatic_capture_frame_configuration_requires_a_positive_integer() {
         assert_eq!(parse_auto_capture_after_frames(None), None);
         assert_eq!(parse_auto_capture_after_frames(Some("".into())), None);
-        assert_eq!(parse_auto_capture_after_frames(Some("invalid".into())), None);
+        assert_eq!(
+            parse_auto_capture_after_frames(Some("invalid".into())),
+            None
+        );
         assert_eq!(parse_auto_capture_after_frames(Some("0".into())), None);
         assert_eq!(parse_auto_capture_after_frames(Some("-1".into())), None);
         assert_eq!(parse_auto_capture_after_frames(Some("12".into())), Some(12));
@@ -1390,13 +1425,55 @@ mod tests {
 
     #[test]
     fn redraw_is_disabled_until_the_active_backend_has_resources() {
-        assert!(backend_ready_for_redraw(BackendKind::Cpu, true, false, (960, 540).into(), true));
-        assert!(!backend_ready_for_redraw(BackendKind::Cpu, false, false, (960, 540).into(), true));
-        assert!(backend_ready_for_redraw(BackendKind::Gpu, false, true, (960, 540).into(), false));
-        assert!(!backend_ready_for_redraw(BackendKind::Gpu, false, false, (960, 540).into(), false));
-        assert!(!backend_ready_for_redraw(BackendKind::Cpu, true, false, (960, 540).into(), false));
-        assert!(!backend_ready_for_redraw(BackendKind::Cpu, true, false, (0, 540).into(), true));
-        assert!(!backend_ready_for_redraw(BackendKind::Gpu, false, true, (960, 0).into(), true));
+        assert!(backend_ready_for_redraw(
+            BackendKind::Cpu,
+            true,
+            false,
+            (960, 540).into(),
+            true
+        ));
+        assert!(!backend_ready_for_redraw(
+            BackendKind::Cpu,
+            false,
+            false,
+            (960, 540).into(),
+            true
+        ));
+        assert!(backend_ready_for_redraw(
+            BackendKind::Gpu,
+            false,
+            true,
+            (960, 540).into(),
+            false
+        ));
+        assert!(!backend_ready_for_redraw(
+            BackendKind::Gpu,
+            false,
+            false,
+            (960, 540).into(),
+            false
+        ));
+        assert!(!backend_ready_for_redraw(
+            BackendKind::Cpu,
+            true,
+            false,
+            (960, 540).into(),
+            false
+        ));
+        assert!(!backend_ready_for_redraw(
+            BackendKind::Cpu,
+            true,
+            false,
+            (0, 540).into(),
+            true
+        ));
+        assert!(!backend_ready_for_redraw(
+            BackendKind::Gpu,
+            false,
+            true,
+            (960, 0).into(),
+            true
+        ));
     }
 
     #[test]
@@ -1406,11 +1483,23 @@ mod tests {
 
         gate.block();
         assert!(gate.is_blocked());
-        assert!(!backend_ready_for_redraw(BackendKind::Cpu, true, false, (960, 540).into(), !gate.is_blocked()));
+        assert!(!backend_ready_for_redraw(
+            BackendKind::Cpu,
+            true,
+            false,
+            (960, 540).into(),
+            !gate.is_blocked()
+        ));
 
         gate.reset();
         assert!(!gate.is_blocked());
-        assert!(backend_ready_for_redraw(BackendKind::Cpu, true, false, (960, 540).into(), !gate.is_blocked()));
+        assert!(backend_ready_for_redraw(
+            BackendKind::Cpu,
+            true,
+            false,
+            (960, 540).into(),
+            !gate.is_blocked()
+        ));
     }
 
     #[test]
@@ -1483,8 +1572,9 @@ mod tests {
                 render_core::HudMissionState::Active | render_core::HudMissionState::Failed => {
                     (2, 5)
                 }
-                render_core::HudMissionState::Locked
-                | render_core::HudMissionState::Available => (0, 5),
+                render_core::HudMissionState::Locked | render_core::HudMissionState::Available => {
+                    (0, 5)
+                }
             });
             snapshot.overlay.hud.mission_state = Some(state);
 
@@ -1500,7 +1590,10 @@ mod tests {
         let mut snapshot = RenderSnapshot::minimal_demo();
         snapshot.overlay.game_over = true;
 
-        assert_eq!(hud_title("Astral Echo", BackendKind::Gpu, &snapshot), "Astral Echo | GAME OVER");
+        assert_eq!(
+            hud_title("Astral Echo", BackendKind::Gpu, &snapshot),
+            "Astral Echo | GAME OVER"
+        );
     }
 
     fn report() -> HotSwapReport {

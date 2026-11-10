@@ -360,7 +360,10 @@ mod tests {
         };
 
         assert_eq!(decode_client(&encode(&request).unwrap()).unwrap(), request);
-        assert_eq!(decode_server(&encode(&response).unwrap()).unwrap(), response);
+        assert_eq!(
+            decode_server(&encode(&response).unwrap()).unwrap(),
+            response
+        );
     }
 
     #[test]

@@ -1,0 +1,338 @@
+[
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_01_Cabina.obj",
+    "objetos": 60,
+    "vertices": 1928,
+    "uv": 6520,
+    "normales": 1452,
+    "triangulos": 3616
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_02_Pasillos.obj",
+    "objetos": 282,
+    "vertices": 9024,
+    "uv": 31584,
+    "normales": 7332,
+    "triangulos": 16920
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_03_Clonacion.obj",
+    "objetos": 249,
+    "vertices": 11128,
+    "uv": 39208,
+    "normales": 8974,
+    "triangulos": 21260
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_04_Despertar.obj",
+    "objetos": 208,
+    "vertices": 6248,
+    "uv": 21704,
+    "normales": 5020,
+    "triangulos": 11664
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_05_Enfermeria_Laboratorio.obj",
+    "objetos": 175,
+    "vertices": 5560,
+    "uv": 19400,
+    "normales": 4490,
+    "triangulos": 10420
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_06_Dormitorios_Sanitarios.obj",
+    "objetos": 225,
+    "vertices": 4728,
+    "uv": 16096,
+    "normales": 3770,
+    "triangulos": 8556
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_07_Ingenieria_Taller.obj",
+    "objetos": 128,
+    "vertices": 4296,
+    "uv": 14920,
+    "normales": 3420,
+    "triangulos": 8080
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_08_Cocina_Comedor.obj",
+    "objetos": 248,
+    "vertices": 5192,
+    "uv": 17424,
+    "normales": 4016,
+    "triangulos": 9392
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_09_Habitat_Central.obj",
+    "objetos": 533,
+    "vertices": 12180,
+    "uv": 44084,
+    "normales": 10928,
+    "triangulos": 22228
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_10_Carga_Esclusa.obj",
+    "objetos": 23,
+    "vertices": 736,
+    "uv": 2576,
+    "normales": 598,
+    "triangulos": 1380
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_11_Propulsion_Paneles.obj",
+    "objetos": 148,
+    "vertices": 5752,
+    "uv": 19600,
+    "normales": 4340,
+    "triangulos": 10920
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_13_Esclusa_Intermedia.obj",
+    "objetos": 53,
+    "vertices": 1712,
+    "uv": 5936,
+    "normales": 1362,
+    "triangulos": 3212
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_14_Tren_Aterrizaje_Rampa.obj",
+    "objetos": 125,
+    "vertices": 3632,
+    "uv": 11840,
+    "normales": 2538,
+    "triangulos": 6764
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_15_Reactor_Soporte_Vital.obj",
+    "objetos": 95,
+    "vertices": 3536,
+    "uv": 12448,
+    "normales": 2848,
+    "triangulos": 6752
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_16_Equipo_Clonacion.obj",
+    "objetos": 55,
+    "vertices": 1544,
+    "uv": 5080,
+    "normales": 1106,
+    "triangulos": 2868
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_17_Equipo_Exploracion.obj",
+    "objetos": 71,
+    "vertices": 3064,
+    "uv": 11432,
+    "normales": 2788,
+    "triangulos": 5856
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_18_Kit_Dano_Reparacion.obj",
+    "objetos": 31,
+    "vertices": 1456,
+    "uv": 5504,
+    "normales": 1336,
+    "triangulos": 2832
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_19_Observatorio_Comunicaciones.obj",
+    "objetos": 249,
+    "vertices": 5488,
+    "uv": 18592,
+    "normales": 4306,
+    "triangulos": 9980
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_20_Huerto_Reserva.obj",
+    "objetos": 283,
+    "vertices": 8720,
+    "uv": 32160,
+    "normales": 7926,
+    "triangulos": 16308
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_21_Sala_Comun.obj",
+    "objetos": 227,
+    "vertices": 4520,
+    "uv": 15112,
+    "normales": 3490,
+    "triangulos": 8132
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_22_Control_Navegacion.obj",
+    "objetos": 251,
+    "vertices": 5584,
+    "uv": 18880,
+    "normales": 4358,
+    "triangulos": 10164
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_23_Archivo_Biologico.obj",
+    "objetos": 116,
+    "vertices": 3880,
+    "uv": 13608,
+    "normales": 3156,
+    "triangulos": 7296
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_24_Almacen_Logistica.obj",
+    "objetos": 116,
+    "vertices": 3880,
+    "uv": 13608,
+    "normales": 3156,
+    "triangulos": 7296
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_25_Control_Auxiliar.obj",
+    "objetos": 29,
+    "vertices": 888,
+    "uv": 3048,
+    "normales": 694,
+    "triangulos": 1660
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_26_Pasillos_Superiores.obj",
+    "objetos": 283,
+    "vertices": 9056,
+    "uv": 31696,
+    "normales": 7358,
+    "triangulos": 16980
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_27_Balcon_Habitat.obj",
+    "objetos": 675,
+    "vertices": 6452,
+    "uv": 19356,
+    "normales": 4576,
+    "triangulos": 10204
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_28_Escalera_Entre_Cubiertas.obj",
+    "objetos": 45,
+    "vertices": 1480,
+    "uv": 5192,
+    "normales": 1206,
+    "triangulos": 2780
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_29_Ascensor_Carga.obj",
+    "objetos": 31,
+    "vertices": 936,
+    "uv": 3224,
+    "normales": 738,
+    "triangulos": 1748
+  },
+  {
+    "archivo": "assets/models/echo_7/separados/ECHO7_30_Exterior_Unificado.obj",
+    "objetos": 550,
+    "vertices": 11576,
+    "uv": 39320,
+    "normales": 9184,
+    "triangulos": 20952
+  },
+  {
+    "archivo": "assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj",
+    "objetos": 5533,
+    "vertices": 142720,
+    "uv": 493648,
+    "normales": 115130,
+    "triangulos": 263388
+  },
+  {
+    "archivo": "assets/models/echo_7/componentes/ECHO7_Exterior.obj",
+    "objetos": 3011,
+    "vertices": 69520,
+    "uv": 238680,
+    "normales": 55838,
+    "triangulos": 127004
+  },
+  {
+    "archivo": "assets/models/echo_7/componentes/ECHO7_Interior_Inferior.obj",
+    "objetos": 1137,
+    "vertices": 41412,
+    "uv": 145716,
+    "normales": 33684,
+    "triangulos": 78348
+  },
+  {
+    "archivo": "assets/models/echo_7/componentes/ECHO7_Interior_Superior.obj",
+    "objetos": 634,
+    "vertices": 22920,
+    "uv": 81480,
+    "normales": 19088,
+    "triangulos": 43304
+  },
+  {
+    "archivo": "assets/models/echo_7/componentes/ECHO7_Nucleo_Entre_Cubiertas.obj",
+    "objetos": 751,
+    "vertices": 8868,
+    "uv": 27772,
+    "normales": 6520,
+    "triangulos": 14732
+  },
+  {
+    "archivo": "assets/models/echo_7/repuestos/R01_REACTOR_Sano.obj",
+    "objetos": 1,
+    "vertices": 32,
+    "uv": 112,
+    "normales": 26,
+    "triangulos": 60
+  },
+  {
+    "archivo": "assets/models/echo_7/repuestos/R01_REACTOR_Danado.obj",
+    "objetos": 1,
+    "vertices": 64,
+    "uv": 256,
+    "normales": 64,
+    "triangulos": 128
+  },
+  {
+    "archivo": "assets/models/echo_7/repuestos/R02_SOPORTE_VITAL_Sano.obj",
+    "objetos": 1,
+    "vertices": 32,
+    "uv": 112,
+    "normales": 26,
+    "triangulos": 60
+  },
+  {
+    "archivo": "assets/models/echo_7/repuestos/R02_SOPORTE_VITAL_Danado.obj",
+    "objetos": 1,
+    "vertices": 64,
+    "uv": 256,
+    "normales": 64,
+    "triangulos": 128
+  },
+  {
+    "archivo": "assets/models/echo_7/repuestos/R03_ELECTRICO_Sano.obj",
+    "objetos": 1,
+    "vertices": 32,
+    "uv": 112,
+    "normales": 26,
+    "triangulos": 60
+  },
+  {
+    "archivo": "assets/models/echo_7/repuestos/R03_ELECTRICO_Danado.obj",
+    "objetos": 1,
+    "vertices": 64,
+    "uv": 256,
+    "normales": 64,
+    "triangulos": 128
+  },
+  {
+    "archivo": "assets/models/echo_7/repuestos/R04_BANCO_GENETICO_Sano.obj",
+    "objetos": 1,
+    "vertices": 32,
+    "uv": 112,
+    "normales": 26,
+    "triangulos": 60
+  },
+  {
+    "archivo": "assets/models/echo_7/repuestos/R04_BANCO_GENETICO_Danado.obj",
+    "objetos": 1,
+    "vertices": 64,
+    "uv": 256,
+    "normales": 64,
+    "triangulos": 128
+  }
+]

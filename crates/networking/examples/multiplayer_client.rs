@@ -1,7 +1,6 @@
-
 use networking::{
-    ClientMessage, GameClient, NetworkOrientation, NetworkVec3,
-    PlayerTransform, RemotePlayers, ServerMessage,
+    ClientMessage, GameClient, NetworkOrientation, NetworkVec3, PlayerTransform, RemotePlayers,
+    ServerMessage,
 };
 
 use std::io::{self, BufRead, Write};
@@ -38,14 +37,9 @@ fn parse_f32(value: &str) -> Result<f32, String> {
     Ok(number)
 }
 
-fn parse_values(
-    arguments: &[&str],
-    expected: usize,
-) -> Result<Vec<f32>, String> {
+fn parse_values(arguments: &[&str], expected: usize) -> Result<Vec<f32>, String> {
     if arguments.len() != expected {
-        return Err(format!(
-            "Se esperaban {expected} valores numéricos"
-        ));
+        return Err(format!("Se esperaban {expected} valores numéricos"));
     }
 
     arguments.iter().map(|value| parse_f32(value)).collect()
@@ -66,22 +60,17 @@ fn print_players(players: &RemotePlayers) {
         if let Some(transform) = player.transform {
             println!(
                 "  Posición: ({:.2}, {:.2}, {:.2})",
-                transform.position.x,
-                transform.position.y,
-                transform.position.z
+                transform.position.x, transform.position.y, transform.position.z
             );
 
             println!(
                 "  Orientación: yaw={:.2}, pitch={:.2}",
-                transform.orientation.yaw_degrees,
-                transform.orientation.pitch_degrees
+                transform.orientation.yaw_degrees, transform.orientation.pitch_degrees
             );
 
             println!(
                 "  Velocidad: ({:.2}, {:.2}, {:.2})",
-                transform.velocity.x,
-                transform.velocity.y,
-                transform.velocity.z
+                transform.velocity.x, transform.velocity.y, transform.velocity.z
             );
         } else {
             println!("  Esperando primer movimiento...");
@@ -91,10 +80,7 @@ fn print_players(players: &RemotePlayers) {
     println!();
 }
 
-fn process_event(
-    message: ServerMessage,
-    players: &mut RemotePlayers,
-) {
+fn process_event(message: ServerMessage, players: &mut RemotePlayers) {
     match &message {
         ServerMessage::PlayerJoined { player_id, name } => {
             println!();
@@ -119,9 +105,7 @@ fn process_event(
 
             println!(
                 "  Posición: ({:.2}, {:.2}, {:.2})",
-                transform.position.x,
-                transform.position.y,
-                transform.position.z
+                transform.position.x, transform.position.y, transform.position.z
             );
         }
 
@@ -143,11 +127,11 @@ fn process_event(
             );
         }
 
-        ServerMessage::MissionRecoveryResult { request_id, outcome } => {
-            println!(
-                "[Mission5] solicitud {}: {:?}",
-                request_id, outcome
-            );
+        ServerMessage::MissionRecoveryResult {
+            request_id,
+            outcome,
+        } => {
+            println!("[Mission5] solicitud {}: {:?}", request_id, outcome);
         }
 
         ServerMessage::GameplayActionResult {
@@ -174,7 +158,10 @@ fn process_event(
         }
 
         ServerMessage::EnemyStateUpdated { enemies } => {
-            println!("[Enemigos] estado sincronizado: {} entidades", enemies.len());
+            println!(
+                "[Enemigos] estado sincronizado: {} entidades",
+                enemies.len()
+            );
         }
 
         ServerMessage::MissionContentUpdated { content } => {
@@ -248,9 +235,7 @@ fn run(address: &str, name: &str) -> Result<(), String> {
                 Ok(None) => break,
 
                 Err(error) => {
-                    return Err(format!(
-                        "Se perdió la conexión con el servidor: {error}"
-                    ));
+                    return Err(format!("Se perdió la conexión con el servidor: {error}"));
                 }
             }
         }
@@ -282,23 +267,14 @@ fn run(address: &str, name: &str) -> Result<(), String> {
                             }
                         };
 
-                        let velocity = NetworkVec3::new(
-                            values[0],
-                            values[1],
-                            values[2],
-                        );
+                        let velocity = NetworkVec3::new(values[0], values[1], values[2]);
 
-                        let magnitude_squared =
-                            velocity.x * velocity.x
+                        let magnitude_squared = velocity.x * velocity.x
                             + velocity.y * velocity.y
                             + velocity.z * velocity.z;
 
-                        if !magnitude_squared.is_finite()
-                            || magnitude_squared > 1.0001
-                        {
-                            println!(
-                                "La dirección debe tener magnitud máxima de 1."
-                            );
+                        if !magnitude_squared.is_finite() || magnitude_squared > 1.0001 {
+                            println!("La dirección debe tener magnitud máxima de 1.");
                             continue;
                         }
 
@@ -315,9 +291,7 @@ fn run(address: &str, name: &str) -> Result<(), String> {
                             })
                             .map_err(|error| error.to_string())?;
 
-                        println!(
-                            "Movimiento enviado (secuencia {sequence})"
-                        );
+                        println!("Movimiento enviado (secuencia {sequence})");
                     }
 
                     "rotate" => {
@@ -332,30 +306,19 @@ fn run(address: &str, name: &str) -> Result<(), String> {
                         let yaw = values[0];
                         let pitch = values[1];
 
-                        if !(-360.0..=360.0).contains(&yaw)
-                            || !(-360.0..=360.0).contains(&pitch)
-                        {
-                            println!(
-                                "La orientación debe estar entre -360 y 360 grados."
-                            );
+                        if !(-360.0..=360.0).contains(&yaw) || !(-360.0..=360.0).contains(&pitch) {
+                            println!("La orientación debe estar entre -360 y 360 grados.");
                             continue;
                         }
 
-                        transform.orientation =
-                            NetworkOrientation::new(yaw, pitch);
+                        transform.orientation = NetworkOrientation::new(yaw, pitch);
 
-                        println!(
-                            "Orientación actualizada: yaw={yaw}, pitch={pitch}"
-                        );
-                        println!(
-                            "Usa 'move' para enviar el cambio al servidor."
-                        );
+                        println!("Orientación actualizada: yaw={yaw}, pitch={pitch}");
+                        println!("Usa 'move' para enviar el cambio al servidor.");
                     }
 
                     "ping" => {
-                        client
-                            .ping()
-                            .map_err(|error| error.to_string())?;
+                        client.ping().map_err(|error| error.to_string())?;
 
                         println!("Conexión activa.");
                     }
@@ -363,9 +326,7 @@ fn run(address: &str, name: &str) -> Result<(), String> {
                     "quit" | "exit" => {
                         println!("Desconectando...");
 
-                        client
-                            .disconnect()
-                            .map_err(|error| error.to_string())?;
+                        client.disconnect().map_err(|error| error.to_string())?;
 
                         println!("Hasta pronto.");
                         return Ok(());
@@ -380,17 +341,13 @@ fn run(address: &str, name: &str) -> Result<(), String> {
             Err(mpsc::TryRecvError::Empty) => {}
 
             Err(mpsc::TryRecvError::Disconnected) => {
-                client
-                    .disconnect()
-                    .map_err(|error| error.to_string())?;
+                client.disconnect().map_err(|error| error.to_string())?;
 
                 return Ok(());
             }
         }
 
-        io::stdout()
-            .flush()
-            .map_err(|error| error.to_string())?;
+        io::stdout().flush().map_err(|error| error.to_string())?;
 
         thread::sleep(POLL_INTERVAL);
     }
@@ -402,10 +359,7 @@ fn main() {
     let address = arguments.next();
     let name = arguments.next();
 
-    if arguments.next().is_some()
-        || address.is_none()
-        || name.is_none()
-    {
+    if arguments.next().is_some() || address.is_none() || name.is_none() {
         eprintln!(
             "Uso: cargo run -p networking --example multiplayer_client -- <dirección> <nombre>"
         );
@@ -413,10 +367,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    if let Err(error) = run(
-        address.as_deref().unwrap(),
-        name.as_deref().unwrap(),
-    ) {
+    if let Err(error) = run(address.as_deref().unwrap(), name.as_deref().unwrap()) {
         eprintln!("Error: {error}");
         std::process::exit(1);
     }

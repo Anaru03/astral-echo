@@ -84,12 +84,11 @@ impl ServerEventQueue {
 pub use client::GameClient;
 
 pub use protocol::{
-    decode_client, decode_server, encode, ClientMessage, NetworkPlayerId, ProtocolError,
-    Mission5ContentProjection, Mission5DestinationProjection, Mission5ObjectiveProjection,
-    Mission5DiscoveryProjection, Mission5ShooterProjection, Mission5DestinationTypeProjection,
-    MissionRecoveryOutcome, MissionStateProjection, ObjectiveStateProjection, ServerMessage,
-    EnemyProjection, InventoryItemProjection, SharedInventoryProjection,
-    MAX_PLAYERS, PROTOCOL_VERSION,
+    decode_client, decode_server, encode, ClientMessage, EnemyProjection, InventoryItemProjection,
+    Mission5ContentProjection, Mission5DestinationProjection, Mission5DestinationTypeProjection,
+    Mission5DiscoveryProjection, Mission5ObjectiveProjection, Mission5ShooterProjection,
+    MissionRecoveryOutcome, MissionStateProjection, NetworkPlayerId, ObjectiveStateProjection,
+    ProtocolError, ServerMessage, SharedInventoryProjection, MAX_PLAYERS, PROTOCOL_VERSION,
 };
 
 pub use remote_players::{RemotePlayer, RemotePlayers};

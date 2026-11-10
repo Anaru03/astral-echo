@@ -102,10 +102,7 @@ pub enum SnapshotId {
     Derelict(u32),
     Hazard(u32),
     VisualEvent(u64),
-    ModelPart {
-        parent: u64,
-        part: u32,
-    },
+    ModelPart { parent: u64, part: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

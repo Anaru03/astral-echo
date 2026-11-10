@@ -1,4 +1,3 @@
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,6 +11,13 @@ pub struct DecodedTexture {
     pub pixels: Arc<[u8]>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextureAddressMode {
+    #[default]
+    Clamp,
+    Repeat,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TextureResource {
     path: PathBuf,
@@ -21,6 +27,7 @@ struct TextureResource {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MaterialTextureRegistry {
     textures: BTreeMap<MaterialHandle, TextureResource>,
+    modes: BTreeMap<MaterialHandle, TextureAddressMode>,
 }
 
 impl MaterialTextureRegistry {
@@ -29,11 +36,7 @@ impl MaterialTextureRegistry {
     }
 
     /// Asocia una imagen PNG con un material.
-    pub fn register(
-        &mut self,
-        material: MaterialHandle,
-        path: impl Into<PathBuf>,
-    ) {
+    pub fn register(&mut self, material: MaterialHandle, path: impl Into<PathBuf>) {
         if let Err(error) = self.try_register(material, path) {
             eprintln!("textura no cargada: {error}");
         }
@@ -50,6 +53,14 @@ impl MaterialTextureRegistry {
             .get(&material)
             .is_some_and(|texture| texture.path == path)
         {
+            return Ok(());
+        }
+        if let Some((_, resource)) = self
+            .textures
+            .iter()
+            .find(|(_, resource)| resource.path == path)
+        {
+            self.textures.insert(material, resource.clone());
             return Ok(());
         }
         let bytes = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
@@ -91,39 +102,45 @@ impl MaterialTextureRegistry {
             height: info.height,
             pixels: Arc::from(rgba),
         });
-        self.textures.insert(material, TextureResource { path, image });
+        self.textures
+            .insert(material, TextureResource { path, image });
         Ok(())
     }
 
+    pub fn set_address_mode(&mut self, material: MaterialHandle, mode: TextureAddressMode) {
+        self.modes.insert(material, mode);
+    }
+
+    pub fn address_mode(&self, material: MaterialHandle) -> TextureAddressMode {
+        self.modes.get(&material).copied().unwrap_or_default()
+    }
+
     /// Obtiene la ruta de la textura de un material.
-    pub fn get(
-        &self,
-        material: MaterialHandle,
-    ) -> Option<&Path> {
-        self.textures.get(&material).map(|texture| texture.path.as_path())
+    pub fn get(&self, material: MaterialHandle) -> Option<&Path> {
+        self.textures
+            .get(&material)
+            .map(|texture| texture.path.as_path())
     }
 
     pub fn image(&self, material: MaterialHandle) -> Option<Arc<DecodedTexture>> {
-        self.textures.get(&material).map(|texture| texture.image.clone())
+        self.textures
+            .get(&material)
+            .map(|texture| texture.image.clone())
     }
 
     pub fn image_ref(&self, material: MaterialHandle) -> Option<&DecodedTexture> {
-        self.textures.get(&material).map(|texture| texture.image.as_ref())
+        self.textures
+            .get(&material)
+            .map(|texture| texture.image.as_ref())
     }
 
     /// Elimina una textura registrada.
-    pub fn remove(
-        &mut self,
-        material: MaterialHandle,
-    ) -> Option<PathBuf> {
+    pub fn remove(&mut self, material: MaterialHandle) -> Option<PathBuf> {
         self.textures.remove(&material).map(|texture| texture.path)
     }
 
     /// Comprueba si un material tiene textura.
-    pub fn contains(
-        &self,
-        material: MaterialHandle,
-    ) -> bool {
+    pub fn contains(&self, material: MaterialHandle) -> bool {
         self.textures.contains_key(&material)
     }
 
@@ -137,9 +154,7 @@ impl MaterialTextureRegistry {
     }
 
     /// Itera sobre las texturas registradas.
-    pub fn iter(
-        &self,
-    ) -> impl Iterator<Item = (MaterialHandle, &Path)> {
+    pub fn iter(&self) -> impl Iterator<Item = (MaterialHandle, &Path)> {
         self.textures
             .iter()
             .map(|(handle, texture)| (*handle, texture.path.as_path()))
@@ -151,7 +166,8 @@ mod tests {
     use super::*;
 
     fn texture_path(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("astral-echo-{name}-{}.png", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("astral-echo-{name}-{}.png", std::process::id()));
         let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 1, 1);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
@@ -176,15 +192,9 @@ mod tests {
         assert!(registry.contains(wings));
         assert!(registry.contains(core));
 
-        assert_eq!(
-            registry.get(wings),
-            Some(path.as_path())
-        );
+        assert_eq!(registry.get(wings), Some(path.as_path()));
 
-        assert_eq!(
-            registry.get(core),
-            Some(path.as_path())
-        );
+        assert_eq!(registry.get(core), Some(path.as_path()));
         std::fs::remove_file(path).unwrap();
     }
 
@@ -204,15 +214,15 @@ mod tests {
 
     #[test]
     fn repeated_requests_reuse_decoded_texture_data() {
-        let path = std::env::temp_dir().join(format!(
-            "astral-echo-texture-{}.png",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("astral-echo-texture-{}.png", std::process::id()));
         let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 2, 1);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(&[255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
+        writer
+            .write_image_data(&[255, 0, 0, 255, 0, 255, 0, 255])
+            .unwrap();
         writer.finish().unwrap();
 
         let material = MaterialHandle::new(101);

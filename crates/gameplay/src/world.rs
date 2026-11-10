@@ -2,56 +2,50 @@ use engine::{Duration, EntityId, EntityRegistry, GameTime};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
+    collectible::{Collectible, CollectibleError, ItemDefinition, ItemDefinitionError},
+    combat::{Combatant, EnemyConfiguration},
     companion::{
         Companion, CompanionActionMode, CompanionBehavior, CompanionError, CompanionRecommendation,
-        ExplorationAction, ExplorationAssessment, ExplorationPriority,
-        ExplorationRecommendation, ExplorationRecommendationReason, ExplorationTargetCategory,
-        FuelCondition, HullCondition, MaintenancePriority, MaintenanceRecommendation,
-        NavigationAdvice, NavigationAlternativeRecommendation, NavigationAssessment,
-        NavigationRecommendationReason, NavigationRisk, NavigationRouteComparison,
-        NavigationRouteOption, NavigationRouteRisk, NavigationRouteRiskClassification,
-        NavigationRouteRiskSource, OperationalAssessment, PreparationAction,
-        PreparationAssessment, PreparationCategory, PreparationPriority, PreparationReason,
-        PreparationRequirement, CooperativeTacticalAssessment,
-        PlayerTacticalRecommendation, TacticalAction, TacticalAssignmentEvidence,
-        TacticalAssignmentReason, TacticalAssignmentStatus, TacticalPriority,
-        TacticalRecommendation,
-        CooperativeEncounterReadinessAssessment, CooperativeEncounterReadinessStatus,
-        CooperativePreparationAction, ReadinessBlocker, ReadinessRequirement,
-        CooperativeNavigationAction, CooperativeNavigationRiskAssessment,
-        CooperativeNavigationRiskStatus,
-        CooperativeNavigationContingencyAction,
-        CooperativeNavigationContingencyAssessment,
-        CooperativeNavigationContingencyStatus,
+        ConsistencyAuditState, ConsistencyEvidence, Contradiction, ContradictionCategory,
+        ContradictionReason, ContradictionSeverity, CooperativeEncounterReadinessAssessment,
+        CooperativeEncounterReadinessStatus, CooperativeNavigationAction,
+        CooperativeNavigationContingencyAction, CooperativeNavigationContingencyAssessment,
+        CooperativeNavigationContingencyStatus, CooperativeNavigationRiskAssessment,
+        CooperativeNavigationRiskStatus, CooperativePreparationAction,
         CooperativeRecoveryAssignmentAssessment, CooperativeRecoveryAssignmentStatus,
         CooperativeRecoveryPlanAssessment, CooperativeRecoveryPlanDependency,
         CooperativeRecoveryPlanStatus, CooperativeRecoveryPlanTask,
         CooperativeRecoveryPlanTaskStatus, CooperativeRecoveryTask, CooperativeRecoveryTaskAction,
-        CooperativeRecoveryTaskStatus,
+        CooperativeRecoveryTaskStatus, CooperativeSupportAssessment, CooperativeTacticalAssessment,
         CooperativeTaskCompatibility, CooperativeTaskCompatibilityAssessment,
-        CooperativeTaskCompatibilityReason, CooperativeTaskCompatibilityStatus,
-        CooperativeSupportAssessment, PlayerSupportRecommendation, SupportEvidence,
-        SupportRecommendationReason, SupportRecommendationStatus,
-        CoordinationAction, CoordinationAssessment, CoordinationCategory, CoordinationPriority,
-        CoordinationReason, CoordinationStep, CoordinationStepStatus,
-        RecoveryAction, RecoveryAlternative, RecoveryAssessment, RecoveryBlocker,
-        RecoveryCategory, RecoveryReason, RecoveryStatus,
-        ConsistencyAuditState, ConsistencyEvidence, Contradiction,
-        ContradictionCategory, ContradictionReason, ContradictionSeverity,
-        ExplainedAlternative, ExplanationEvidence, ExplanationEvidenceKind, ExplanationReason,
-        ExplanationStatus, RecommendationExplanation,
+        CooperativeTaskCompatibilityReason, CooperativeTaskCompatibilityStatus, CoordinationAction,
+        CoordinationAssessment, CoordinationCategory, CoordinationPriority, CoordinationReason,
+        CoordinationStep, CoordinationStepStatus, ExplainedAlternative, ExplanationEvidence,
+        ExplanationEvidenceKind, ExplanationReason, ExplanationStatus, ExplorationAction,
+        ExplorationAssessment, ExplorationPriority, ExplorationRecommendation,
+        ExplorationRecommendationReason, ExplorationTargetCategory, FuelCondition, HullCondition,
+        MaintenancePriority, MaintenanceRecommendation, NavigationAdvice,
+        NavigationAlternativeRecommendation, NavigationAssessment, NavigationRecommendationReason,
+        NavigationRisk, NavigationRouteComparison, NavigationRouteOption, NavigationRouteRisk,
+        NavigationRouteRiskClassification, NavigationRouteRiskSource, OperationalAssessment,
+        PlayerSupportRecommendation, PlayerTacticalRecommendation, PreparationAction,
+        PreparationAssessment, PreparationCategory, PreparationPriority, PreparationReason,
+        PreparationRequirement, ReadinessBlocker, ReadinessRequirement, RecommendationExplanation,
+        RecoveryAction, RecoveryAlternative, RecoveryAssessment, RecoveryBlocker, RecoveryCategory,
+        RecoveryReason, RecoveryStatus, SupportEvidence, SupportRecommendationReason,
+        SupportRecommendationStatus, TacticalAction, TacticalAssignmentEvidence,
+        TacticalAssignmentReason, TacticalAssignmentStatus, TacticalPriority,
+        TacticalRecommendation,
     },
-    collectible::{Collectible, CollectibleError, ItemDefinition, ItemDefinitionError},
-    combat::{Combatant, EnemyConfiguration},
     components::{Inventory, InventoryError},
-    door::{Door, DoorAccessRequirement},
     derelict::{Derelict, DerelictError, DerelictId, DerelictState},
+    door::{Door, DoorAccessRequirement},
     electrical::{ElectricalPanel, ElectricalPanelConfiguration, ElectricalPanelRegistrationError},
     encounter::{EncounterId, SpatialEncounter, SpatialEncounterError, SpatialEncounterKind},
     events::EventLog,
+    guidance::{GuidanceAction, GuidanceRequirement},
     hazard::{EnvironmentalHazard, EnvironmentalHazardError, HazardId},
     healing::{HealingError, HealingResult},
-    guidance::{GuidanceAction, GuidanceRequirement},
     integrity::{
         IntegrityError, ShipIntegrity, ShipRepairConfiguration, ShipRepairError, StructuralState,
     },
@@ -60,25 +54,23 @@ use crate::{
     life_support::{LifeSupportConfiguration, LifeSupportPanel, LifeSupportRegistrationError},
     mission::{Mission, MissionRegistrationError},
     navigation::{
-        AutopilotState, Destination, DestinationId, NavigationInitializationError, NavigationRegistrationError,
-        NavigationState, PlanetFlightState, PlanetPhysics, TravelProgress, TravelState,
+        AutopilotState, Destination, DestinationId, NavigationInitializationError,
+        NavigationRegistrationError, NavigationState, PlanetFlightState, PlanetPhysics,
+        TravelProgress, TravelState,
+    },
+    persistence::{
+        CollectibleSaveState, CombatantSaveState, GameplaySaveState, InventorySaveState,
+        LifeSupportSaveState, MissionSaveState, PlayerSaveState, SaveError,
     },
     player::Player,
     resources::{FuelError, FuelTank, ShipResources, ShipUpgrade},
-    persistence::{
-        CombatantSaveState, CollectibleSaveState, GameplaySaveState, InventorySaveState,
-        LifeSupportSaveState,
-        MissionSaveState, PlayerSaveState, SaveError,
-    },
     revival::{RevivalError, ReviveResult},
     reward::{EnemyReward, RewardDistributionPolicy, RewardError},
     scaling::{GameplayScaling, GroupSize, ScalingError},
     station::{Station, StationType},
     types::{GameplayState, SimulationPhase},
     visual_events::{GameplayVisualEvent, GameplayVisualEventKind, VISUAL_EVENT_DURATION},
-    world_activity::{
-        FunctionalWorld, FunctionalWorldError, WorldActivity, WorldActivityError,
-    },
+    world_activity::{FunctionalWorld, FunctionalWorldError, WorldActivity, WorldActivityError},
 };
 
 pub const MAX_LOCAL_PLAYERS: usize = 3;
@@ -173,13 +165,15 @@ impl GameplayWorld {
                 .inventories
                 .iter()
                 .filter(|(owner, _)| {
-                    !self.shared_inventory_mode
-                        || self.shared_inventory_owner() == Some(**owner)
+                    !self.shared_inventory_mode || self.shared_inventory_owner() == Some(**owner)
                 })
                 .map(|(owner, inventory)| InventorySaveState {
                     owner: *owner,
                     capacity: inventory.capacity(),
-                    entries: inventory.entries().filter(|(_, quantity)| *quantity > 0).collect(),
+                    entries: inventory
+                        .entries()
+                        .filter(|(_, quantity)| *quantity > 0)
+                        .collect(),
                 })
                 .collect(),
             combatants: self
@@ -200,7 +194,11 @@ impl GameplayWorld {
                     last_attack_at: combatant.last_attack_at,
                 })
                 .collect(),
-            currencies: self.currencies.iter().map(|(id, value)| (*id, *value)).collect(),
+            currencies: self
+                .currencies
+                .iter()
+                .map(|(id, value)| (*id, *value))
+                .collect(),
             missions: self
                 .missions
                 .values()
@@ -214,7 +212,11 @@ impl GameplayWorld {
                         .collect(),
                 })
                 .collect(),
-            knowledge: self.knowledge.iter().map(|(target, state)| (*target, *state)).collect(),
+            knowledge: self
+                .knowledge
+                .iter()
+                .map(|(target, state)| (*target, *state))
+                .collect(),
             collectibles: self
                 .collectibles
                 .values()
@@ -266,7 +268,10 @@ impl GameplayWorld {
                 .iter()
                 .flat_map(|(ship, upgrades)| upgrades.iter().map(move |upgrade| (*ship, *upgrade)))
                 .collect(),
-            ship_position: self.navigation.ship_id().map(|_| self.navigation.current_position()),
+            ship_position: self
+                .navigation
+                .ship_id()
+                .map(|_| self.navigation.current_position()),
             destinations: self.navigation.destinations().cloned().collect(),
             routes: self.navigation.routes().cloned().collect(),
             item_definitions: self.item_definitions.values().copied().collect(),
@@ -296,7 +301,10 @@ impl GameplayWorld {
         let mut item_definitions = BTreeMap::new();
         for definition in &save.item_definitions {
             definition.validate().map_err(|_| SaveError::InvalidState)?;
-            if item_definitions.insert(definition.id, *definition).is_some() {
+            if item_definitions
+                .insert(definition.id, *definition)
+                .is_some()
+            {
                 return Err(SaveError::DuplicateRecord);
             }
         }
@@ -315,7 +323,11 @@ impl GameplayWorld {
             {
                 return Err(SaveError::InvalidState);
             }
-            let mut player = self.players.get(&saved.id).copied().unwrap_or_else(|| Player::new(saved.id));
+            let mut player = self
+                .players
+                .get(&saved.id)
+                .copied()
+                .unwrap_or_else(|| Player::new(saved.id));
             player.position = saved.position;
             player.orientation.yaw_degrees = saved.yaw;
             player.orientation.pitch_degrees = saved.pitch;
@@ -352,25 +364,45 @@ impl GameplayWorld {
             {
                 return Err(SaveError::InvalidState);
             }
-            if saved.is_player && !players.contains_key(&saved.id) { return Err(SaveError::InvalidReference); }
+            if saved.is_player && !players.contains_key(&saved.id) {
+                return Err(SaveError::InvalidReference);
+            }
             if saved.is_player != saved.archetype.is_none()
-                || saved.is_player != players.get(&saved.id).is_some_and(|player| player.is_active == saved.active)
-                || (saved.is_player && saved.active != registry.snapshot().active.contains(&saved.id))
-            { return Err(SaveError::InvalidState); }
-            combatants.insert(saved.id, Combatant {
-                entity: saved.id, is_player: saved.is_player, active: saved.active,
-                maximum_health: saved.maximum_health, current_health: saved.current_health,
-                archetype: saved.archetype, position: saved.position, weapon: saved.weapon,
-                equipped_weapon: saved.equipped_weapon, shield: saved.shield,
-                mobility: saved.mobility, last_attack_at: saved.last_attack_at,
-            });
+                || saved.is_player
+                    != players
+                        .get(&saved.id)
+                        .is_some_and(|player| player.is_active == saved.active)
+                || (saved.is_player
+                    && saved.active != registry.snapshot().active.contains(&saved.id))
+            {
+                return Err(SaveError::InvalidState);
+            }
+            combatants.insert(
+                saved.id,
+                Combatant {
+                    entity: saved.id,
+                    is_player: saved.is_player,
+                    active: saved.active,
+                    maximum_health: saved.maximum_health,
+                    current_health: saved.current_health,
+                    archetype: saved.archetype,
+                    position: saved.position,
+                    weapon: saved.weapon,
+                    equipped_weapon: saved.equipped_weapon,
+                    shield: saved.shield,
+                    mobility: saved.mobility,
+                    last_attack_at: saved.last_attack_at,
+                },
+            );
         }
         for saved in &save.collectibles {
             if !registry.snapshot().known.contains(&saved.entity)
                 || !item_definitions.contains_key(&saved.item)
                 || (saved.active && saved.amount == 0)
                 || (!saved.active && saved.amount != 0)
-                || saved.owner.is_some_and(|owner| !players.contains_key(&owner))
+                || saved
+                    .owner
+                    .is_some_and(|owner| !players.contains_key(&owner))
                 || !saved.position.x.is_finite()
                 || !saved.position.y.is_finite()
                 || !saved.position.z.is_finite()
@@ -380,15 +412,20 @@ impl GameplayWorld {
         }
         let mut ship_resources = BTreeMap::new();
         for (ship, current, capacity) in &save.ship_fuel {
-            if !registry.snapshot().known.contains(ship) { return Err(SaveError::InvalidReference); }
+            if !registry.snapshot().known.contains(ship) {
+                return Err(SaveError::InvalidReference);
+            }
             ship_resources.insert(
                 *ship,
-                ShipResources::new(*ship, *capacity, *current).map_err(|_| SaveError::InvalidState)?,
+                ShipResources::new(*ship, *capacity, *current)
+                    .map_err(|_| SaveError::InvalidState)?,
             );
         }
         let mut ship_integrity = BTreeMap::new();
         for (ship, current, maximum, threshold, _) in &save.ship_integrity {
-            if !registry.snapshot().known.contains(ship) { return Err(SaveError::InvalidReference); }
+            if !registry.snapshot().known.contains(ship) {
+                return Err(SaveError::InvalidReference);
+            }
             ship_integrity.insert(
                 *ship,
                 ShipIntegrity::new(*ship, *maximum, *current, *threshold)
@@ -399,7 +436,9 @@ impl GameplayWorld {
         if !self.life_support_panels.is_empty() {
             for saved in &save.life_support {
                 if !registry.snapshot().known.contains(&saved.panel)
-                    || life_support.insert(saved.panel, saved.allocations.clone()).is_some()
+                    || life_support
+                        .insert(saved.panel, saved.allocations.clone())
+                        .is_some()
                 {
                     return Err(SaveError::DuplicateRecord);
                 }
@@ -410,7 +449,10 @@ impl GameplayWorld {
                 let mut total = 0_u32;
                 for (id, allocation) in &saved.allocations {
                     if !seen.insert(*id)
-                        || panel.compartments().iter().all(|value| value.id.value() != *id)
+                        || panel
+                            .compartments()
+                            .iter()
+                            .all(|value| value.id.value() != *id)
                         || panel
                             .compartments()
                             .iter()
@@ -419,9 +461,12 @@ impl GameplayWorld {
                     {
                         return Err(SaveError::InvalidState);
                     }
-                    total = total.checked_add(*allocation).ok_or(SaveError::InvalidState)?;
+                    total = total
+                        .checked_add(*allocation)
+                        .ok_or(SaveError::InvalidState)?;
                 }
-                if saved.allocations.len() != panel.compartments().len() || total > panel.capacity() {
+                if saved.allocations.len() != panel.compartments().len() || total > panel.capacity()
+                {
                     return Err(SaveError::InvalidState);
                 }
             }
@@ -460,8 +505,12 @@ impl GameplayWorld {
             }
             if let crate::companion::CompanionBehavior::Investigate(target) = saved.behavior {
                 let known = match target {
-                    KnowledgeTarget::Destination(destination) => restored_navigation.destination(destination).is_some(),
-                    KnowledgeTarget::Enemy(enemy) => combatants.get(&enemy).is_some_and(|value| !value.is_player),
+                    KnowledgeTarget::Destination(destination) => {
+                        restored_navigation.destination(destination).is_some()
+                    }
+                    KnowledgeTarget::Enemy(enemy) => {
+                        combatants.get(&enemy).is_some_and(|value| !value.is_player)
+                    }
                     KnowledgeTarget::Item(item) => item_definitions.contains_key(&item),
                 };
                 let discovered = save
@@ -472,13 +521,19 @@ impl GameplayWorld {
                     return Err(SaveError::InvalidReference);
                 }
             }
-            if companions.insert(saved.entity, Companion {
-                entity: saved.entity,
-                followed_player: saved.followed_player,
-                position: saved.position,
-                behavior: saved.behavior,
-                active: saved.active,
-            }).is_some() {
+            if companions
+                .insert(
+                    saved.entity,
+                    Companion {
+                        entity: saved.entity,
+                        followed_player: saved.followed_player,
+                        position: saved.position,
+                        behavior: saved.behavior,
+                        active: saved.active,
+                    },
+                )
+                .is_some()
+            {
                 return Err(SaveError::DuplicateRecord);
             }
         }
@@ -494,15 +549,20 @@ impl GameplayWorld {
                     .iter()
                     .find(|objective| objective.id == *objective_id)
                     .ok_or(SaveError::InvalidReference)?;
-                if !objective_ids.insert(*objective_id) || *progress > objective.required_progress() {
+                if !objective_ids.insert(*objective_id) || *progress > objective.required_progress()
+                {
                     return Err(SaveError::InvalidState);
                 }
             }
         }
         for (target, _) in &save.knowledge {
             let valid = match target {
-                KnowledgeTarget::Destination(destination) => restored_navigation.destination(*destination).is_some(),
-                KnowledgeTarget::Enemy(enemy) => combatants.get(enemy).is_some_and(|combatant| !combatant.is_player),
+                KnowledgeTarget::Destination(destination) => {
+                    restored_navigation.destination(*destination).is_some()
+                }
+                KnowledgeTarget::Enemy(enemy) => combatants
+                    .get(enemy)
+                    .is_some_and(|combatant| !combatant.is_player),
                 KnowledgeTarget::Item(item) => item_definitions.contains_key(item),
             };
             if !valid {
@@ -521,58 +581,153 @@ impl GameplayWorld {
         {
             return Err(SaveError::DuplicateRecord);
         }
-        if save.currencies.iter().any(|(entity, _)| !players.contains_key(entity)) {
+        if save
+            .currencies
+            .iter()
+            .any(|(entity, _)| !players.contains_key(entity))
+        {
             return Err(SaveError::InvalidReference);
         }
         let mut enemy_rewards = BTreeMap::new();
         for reward in &save.enemy_rewards {
             reward.validate().map_err(|_| SaveError::InvalidState)?;
-            if enemy_rewards.insert(reward.archetype, reward.clone()).is_some() {
+            if enemy_rewards
+                .insert(reward.archetype, reward.clone())
+                .is_some()
+            {
                 return Err(SaveError::DuplicateRecord);
             }
-            if reward.entries.iter().any(|entry| !item_definitions.contains_key(&entry.item)) {
+            if reward
+                .entries
+                .iter()
+                .any(|entry| !item_definitions.contains_key(&entry.item))
+            {
                 return Err(SaveError::InvalidReference);
             }
         }
-        let processed_enemy_rewards = save.processed_enemy_rewards.iter().copied().collect::<BTreeSet<_>>();
+        let processed_enemy_rewards = save
+            .processed_enemy_rewards
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
         if processed_enemy_rewards.len() != save.processed_enemy_rewards.len()
-            || processed_enemy_rewards.iter().any(|enemy| !combatants.get(enemy).is_some_and(|combatant| !combatant.is_player && combatant.is_defeated()))
-        { return Err(SaveError::InvalidState); }
+            || processed_enemy_rewards.iter().any(|enemy| {
+                !combatants
+                    .get(enemy)
+                    .is_some_and(|combatant| !combatant.is_player && combatant.is_defeated())
+            })
+        {
+            return Err(SaveError::InvalidState);
+        }
         let mut hazards = BTreeMap::new();
         for hazard in &save.hazards {
             hazard.validate().map_err(|_| SaveError::InvalidState)?;
-            if hazards.insert(hazard.id, *hazard).is_some() { return Err(SaveError::DuplicateRecord); }
+            if hazards.insert(hazard.id, *hazard).is_some() {
+                return Err(SaveError::DuplicateRecord);
+            }
         }
         let mut encounters = BTreeMap::new();
         for encounter in &save.encounters {
             encounter.validate().map_err(|_| SaveError::InvalidState)?;
-            if encounters.insert(encounter.id, *encounter).is_some() { return Err(SaveError::DuplicateRecord); }
+            if encounters.insert(encounter.id, *encounter).is_some() {
+                return Err(SaveError::DuplicateRecord);
+            }
         }
         for encounter in encounters.values() {
             match encounter.kind {
-                crate::encounter::SpatialEncounterKind::Signal { destination } if !restored_navigation.destinations().any(|value| value.id == destination) => return Err(SaveError::InvalidReference),
-                crate::encounter::SpatialEncounterKind::Hazard { hazard } if !hazards.contains_key(&hazard) => return Err(SaveError::InvalidReference),
-                crate::encounter::SpatialEncounterKind::Resource { item, .. } if !item_definitions.contains_key(&item) => return Err(SaveError::InvalidReference),
+                crate::encounter::SpatialEncounterKind::Signal { destination }
+                    if !restored_navigation
+                        .destinations()
+                        .any(|value| value.id == destination) =>
+                {
+                    return Err(SaveError::InvalidReference)
+                }
+                crate::encounter::SpatialEncounterKind::Hazard { hazard }
+                    if !hazards.contains_key(&hazard) =>
+                {
+                    return Err(SaveError::InvalidReference)
+                }
+                crate::encounter::SpatialEncounterKind::Resource { item, .. }
+                    if !item_definitions.contains_key(&item) =>
+                {
+                    return Err(SaveError::InvalidReference)
+                }
                 _ => {}
             }
-            if encounter.spawned_enemy.is_some_and(|enemy| !combatants.get(&enemy).is_some_and(|combatant| !combatant.is_player)) { return Err(SaveError::InvalidReference); }
+            if encounter.spawned_enemy.is_some_and(|enemy| {
+                !combatants
+                    .get(&enemy)
+                    .is_some_and(|combatant| !combatant.is_player)
+            }) {
+                return Err(SaveError::InvalidReference);
+            }
         }
         let mut derelicts = BTreeMap::new();
         for derelict in &save.derelicts {
             derelict.validate().map_err(|_| SaveError::InvalidState)?;
-            if derelict.rewards.iter().any(|reward| !item_definitions.contains_key(&reward.item)) { return Err(SaveError::InvalidReference); }
-            if derelict.associated_encounter.is_some_and(|id| !encounters.contains_key(&id)) { return Err(SaveError::InvalidReference); }
-            if derelict.spawned_enemy.is_some_and(|enemy| !combatants.get(&enemy).is_some_and(|combatant| !combatant.is_player)) { return Err(SaveError::InvalidReference); }
-            if derelict.reward_collectibles.iter().any(|collectible| !save.collectibles.iter().any(|value| value.entity == *collectible)) { return Err(SaveError::InvalidReference); }
-            if derelicts.insert(derelict.id, derelict.clone()).is_some() { return Err(SaveError::DuplicateRecord); }
+            if derelict
+                .rewards
+                .iter()
+                .any(|reward| !item_definitions.contains_key(&reward.item))
+            {
+                return Err(SaveError::InvalidReference);
+            }
+            if derelict
+                .associated_encounter
+                .is_some_and(|id| !encounters.contains_key(&id))
+            {
+                return Err(SaveError::InvalidReference);
+            }
+            if derelict.spawned_enemy.is_some_and(|enemy| {
+                !combatants
+                    .get(&enemy)
+                    .is_some_and(|combatant| !combatant.is_player)
+            }) {
+                return Err(SaveError::InvalidReference);
+            }
+            if derelict.reward_collectibles.iter().any(|collectible| {
+                !save
+                    .collectibles
+                    .iter()
+                    .any(|value| value.entity == *collectible)
+            }) {
+                return Err(SaveError::InvalidReference);
+            }
+            if derelicts.insert(derelict.id, derelict.clone()).is_some() {
+                return Err(SaveError::DuplicateRecord);
+            }
         }
         let mut functional_worlds = BTreeMap::new();
         for functional_world in &save.functional_worlds {
-            if !restored_navigation.destinations().any(|value| value.id == functional_world.destination) { return Err(SaveError::InvalidReference); }
+            if !restored_navigation
+                .destinations()
+                .any(|value| value.id == functional_world.destination)
+            {
+                return Err(SaveError::InvalidReference);
+            }
             crate::persistence::validate_persisted_functional_world(functional_world)?;
-            if functional_world.activities.iter().any(|activity| match activity { WorldActivity::Trade(market) => market.offers.iter().any(|offer| !item_definitions.contains_key(&offer.item)), WorldActivity::Resource(site) => !item_definitions.contains_key(&site.item), WorldActivity::Combat(zone) => zone.configuration.validate().is_err(), WorldActivity::Story(site) => !self.knowledge_target_exists(site.target) }) { return Err(SaveError::InvalidReference); }
+            if functional_world
+                .activities
+                .iter()
+                .any(|activity| match activity {
+                    WorldActivity::Trade(market) => market
+                        .offers
+                        .iter()
+                        .any(|offer| !item_definitions.contains_key(&offer.item)),
+                    WorldActivity::Resource(site) => !item_definitions.contains_key(&site.item),
+                    WorldActivity::Combat(zone) => zone.configuration.validate().is_err(),
+                    WorldActivity::Story(site) => !self.knowledge_target_exists(site.target),
+                })
+            {
+                return Err(SaveError::InvalidReference);
+            }
             if functional_world.activities.iter().any(|activity| matches!(activity, WorldActivity::Combat(zone) if zone.active_enemy.is_some_and(|enemy| !combatants.get(&enemy).is_some_and(|combatant| !combatant.is_player)))) { return Err(SaveError::InvalidReference); }
-            if functional_worlds.insert(functional_world.destination, functional_world.clone()).is_some() { return Err(SaveError::DuplicateRecord); }
+            if functional_worlds
+                .insert(functional_world.destination, functional_world.clone())
+                .is_some()
+            {
+                return Err(SaveError::DuplicateRecord);
+            }
         }
         self.entities = registry;
         self.item_definitions = item_definitions;
@@ -618,7 +773,10 @@ impl GameplayWorld {
             })
             .collect();
         for mission_save in save.missions {
-            let mission = self.missions.get_mut(&mission_save.id).ok_or(SaveError::InvalidReference)?;
+            let mission = self
+                .missions
+                .get_mut(&mission_save.id)
+                .ok_or(SaveError::InvalidReference)?;
             mission.restore_state(mission_save.state);
             for (objective_id, state, progress) in mission_save.objectives {
                 let objective = mission
@@ -671,11 +829,7 @@ impl GameplayWorld {
     pub fn player(&self, entity: EntityId) -> Option<&Player> {
         self.players.get(&entity)
     }
-    pub fn initialize_player_position(
-        &mut self,
-        player: EntityId,
-        position: engine::Vec3,
-    ) -> bool {
+    pub fn initialize_player_position(&mut self, player: EntityId, position: engine::Vec3) -> bool {
         let Some(value) = self.players.get_mut(&player) else {
             return false;
         };
@@ -701,8 +855,12 @@ impl GameplayWorld {
             return Err(CompanionError::PlayerInactive);
         }
         let entity = self.entities.create();
-        self.companions.insert(entity, Companion::new(entity, followed_player, position));
-        self.publish(crate::events::GameplayEvent::CompanionCreated { companion: entity, followed_player });
+        self.companions
+            .insert(entity, Companion::new(entity, followed_player, position));
+        self.publish(crate::events::GameplayEvent::CompanionCreated {
+            companion: entity,
+            followed_player,
+        });
         Ok(entity)
     }
     pub fn set_companion_behavior(
@@ -716,12 +874,13 @@ impl GameplayWorld {
         if !companion.active {
             return Err(CompanionError::CompanionInactive);
         }
-        let player_active = self.players.get(&companion.followed_player).is_some_and(|player| {
-            player.is_active && self.entities.contains(companion.followed_player)
-        });
-        if !matches!(behavior, CompanionBehavior::Unavailable)
-            && !player_active
-        {
+        let player_active = self
+            .players
+            .get(&companion.followed_player)
+            .is_some_and(|player| {
+                player.is_active && self.entities.contains(companion.followed_player)
+            });
+        if !matches!(behavior, CompanionBehavior::Unavailable) && !player_active {
             return Err(CompanionError::PlayerInactive);
         }
         if let CompanionBehavior::Investigate(target) = behavior {
@@ -738,14 +897,23 @@ impl GameplayWorld {
         });
         Ok(())
     }
-    pub fn companion_decision(&self, entity: EntityId) -> Result<CompanionBehavior, CompanionError> {
-        let companion = self.companion(entity).ok_or(CompanionError::CompanionNotFound)?;
+    pub fn companion_decision(
+        &self,
+        entity: EntityId,
+    ) -> Result<CompanionBehavior, CompanionError> {
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
         if !companion.active {
             return Err(CompanionError::CompanionInactive);
         }
-        if !self.players.get(&companion.followed_player).is_some_and(|player| {
-            player.is_active && self.entities.contains(companion.followed_player)
-        }) {
+        if !self
+            .players
+            .get(&companion.followed_player)
+            .is_some_and(|player| {
+                player.is_active && self.entities.contains(companion.followed_player)
+            })
+        {
             return Ok(CompanionBehavior::Unavailable);
         }
         Ok(companion.behavior)
@@ -754,13 +922,19 @@ impl GameplayWorld {
         &self,
         entity: EntityId,
     ) -> Result<CompanionBehavior, CompanionError> {
-        let companion = self.companion(entity).ok_or(CompanionError::CompanionNotFound)?;
+        let companion = self
+            .companion(entity)
+            .ok_or(CompanionError::CompanionNotFound)?;
         if !companion.active {
             return Err(CompanionError::CompanionInactive);
         }
-        if !self.players.get(&companion.followed_player).is_some_and(|player| {
-            player.is_active && self.entities.contains(companion.followed_player)
-        }) {
+        if !self
+            .players
+            .get(&companion.followed_player)
+            .is_some_and(|player| {
+                player.is_active && self.entities.contains(companion.followed_player)
+            })
+        {
             return Ok(CompanionBehavior::Unavailable);
         }
         let guidance = self
@@ -770,9 +944,9 @@ impl GameplayWorld {
             Some(crate::guidance::GuidanceAction::StudyKnowledge(target)) => {
                 Some(CompanionBehavior::Investigate(target))
             }
-            Some(crate::guidance::GuidanceAction::IdentifySignal(Some(destination))) => {
-                Some(CompanionBehavior::Investigate(KnowledgeTarget::Destination(destination)))
-            }
+            Some(crate::guidance::GuidanceAction::IdentifySignal(Some(destination))) => Some(
+                CompanionBehavior::Investigate(KnowledgeTarget::Destination(destination)),
+            ),
             Some(crate::guidance::GuidanceAction::DefeatEnemy(Some(_))) => {
                 Some(CompanionBehavior::CombatSupport)
             }
@@ -839,7 +1013,9 @@ impl GameplayWorld {
             if !enemy.active || enemy.is_defeated() || !finite_vec3(enemy.position) {
                 continue;
             }
-            let Some(distance_squared) = crate::encounter::distance_squared(player.position, enemy.position) else {
+            let Some(distance_squared) =
+                crate::encounter::distance_squared(player.position, enemy.position)
+            else {
                 continue;
             };
             let priority = if distance_squared <= f64::from(enemy.weapon.range).powi(2) {
@@ -861,7 +1037,9 @@ impl GameplayWorld {
         }
         if let Some(ship_position) = self.ship_position() {
             for hazard in self.active_environmental_hazards() {
-                let Some(distance_squared) = crate::hazard::distance_squared(ship_position, hazard.position) else {
+                let Some(distance_squared) =
+                    crate::hazard::distance_squared(ship_position, hazard.position)
+                else {
                     continue;
                 };
                 if distance_squared <= f64::from(hazard.radius).powi(2) {
@@ -886,13 +1064,16 @@ impl GameplayWorld {
                 ) {
                     continue;
                 }
-                let Some(distance_squared) = crate::encounter::distance_squared(ship_position, encounter.position) else {
+                let Some(distance_squared) =
+                    crate::encounter::distance_squared(ship_position, encounter.position)
+                else {
                     continue;
                 };
                 if distance_squared > f64::from(encounter.activation_radius).powi(2) {
                     continue;
                 }
-                let priority = if encounter.state == crate::encounter::SpatialEncounterState::Active {
+                let priority = if encounter.state == crate::encounter::SpatialEncounterState::Active
+                {
                     TacticalPriority::High
                 } else {
                     TacticalPriority::Normal
@@ -924,7 +1105,10 @@ impl GameplayWorld {
             ));
         }
         candidates.sort_by_key(|(priority, category, target, _)| (*priority, *category, *target));
-        Ok(candidates.into_iter().next().map(|(_, _, _, recommendation)| recommendation))
+        Ok(candidates
+            .into_iter()
+            .next()
+            .map(|(_, _, _, recommendation)| recommendation))
     }
     pub fn companion_cooperative_tactical_assessment(
         &self,
@@ -986,7 +1170,8 @@ impl GameplayWorld {
                 let Some(player_state) = self.player(*player) else {
                     continue;
                 };
-                let distance = crate::encounter::distance_squared(player_state.position, enemy.position);
+                let distance =
+                    crate::encounter::distance_squared(player_state.position, enemy.position);
                 let Some(weapon) = self.equipped_weapon(*player) else {
                     candidates.push((
                         false,
@@ -1063,7 +1248,8 @@ impl GameplayWorld {
                                 ammunition.item, ammunition.amount_per_attack, available
                             )],
                             vec![TacticalAssignmentEvidence {
-                                description: "La munición disponible no alcanza para un ataque".to_string(),
+                                description: "La munición disponible no alcanza para un ataque"
+                                    .to_string(),
                                 confirmed: true,
                             }],
                         ));
@@ -1083,7 +1269,8 @@ impl GameplayWorld {
                         TacticalAssignmentReason::AttackCooldown,
                         vec!["Enfriamiento de ataque pendiente".to_string()],
                         vec![TacticalAssignmentEvidence {
-                            description: "El comando de ataque rechazaria la acción por cooldown".to_string(),
+                            description: "El comando de ataque rechazaria la acción por cooldown"
+                                .to_string(),
                             confirmed: true,
                         }],
                     ));
@@ -1098,7 +1285,9 @@ impl GameplayWorld {
                         TacticalAssignmentReason::MissingAmmunition,
                         vec!["El arma no está lista para atacar".to_string()],
                         vec![TacticalAssignmentEvidence {
-                            description: "La validación pública de preparación de arma rechazó la acción".to_string(),
+                            description:
+                                "La validación pública de preparación de arma rechazó la acción"
+                                    .to_string(),
                             confirmed: true,
                         }],
                     ));
@@ -1112,21 +1301,29 @@ impl GameplayWorld {
                     TacticalAssignmentReason::AssignedByDistance,
                     Vec::new(),
                     vec![TacticalAssignmentEvidence {
-                        description: "Jugador activo, armado, dentro de alcance y con munición válida".to_string(),
+                        description:
+                            "Jugador activo, armado, dentro de alcance y con munición válida"
+                                .to_string(),
                         confirmed: true,
                     }],
                 ));
             }
-            let Some((best_index, best)) = candidates.iter().enumerate().max_by(
-                |(_, left), (_, right)| {
-                    left.0
-                        .cmp(&right.0)
-                        .then_with(|| {
-                            right.1.partial_cmp(&left.1).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .then_with(|| right.2.value().cmp(&left.2.value()))
-                },
-            ) else {
+            let Some((best_index, best)) =
+                candidates
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, left), (_, right)| {
+                        left.0
+                            .cmp(&right.0)
+                            .then_with(|| {
+                                right
+                                    .1
+                                    .partial_cmp(&left.1)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .then_with(|| right.2.value().cmp(&left.2.value()))
+                    })
+            else {
                 unassigned_threats.push(*threat);
                 continue;
             };
@@ -1160,27 +1357,31 @@ impl GameplayWorld {
         let recommendations = active_players
             .iter()
             .map(|player| {
-                assignments.remove(player).unwrap_or_else(|| PlayerTacticalRecommendation {
-                    player: *player,
-                    threat: None,
-                    action: None,
-                    status: if threats.is_empty() {
-                        TacticalAssignmentStatus::NotEvaluable
-                    } else {
-                        TacticalAssignmentStatus::NotEvaluable
-                    },
-                    reason: if threats.is_empty() {
-                        TacticalAssignmentReason::NoThreatAvailable
-                    } else {
-                        TacticalAssignmentReason::NoAvailablePlayer
-                    },
-                    preferred: false,
-                    evidence: vec![TacticalAssignmentEvidence {
-                        description: "No hay una tarea táctica adicional asignada a este jugador".to_string(),
-                        confirmed: !threats.is_empty(),
-                    }],
-                    missing_requirements: Vec::new(),
-                })
+                assignments
+                    .remove(player)
+                    .unwrap_or_else(|| PlayerTacticalRecommendation {
+                        player: *player,
+                        threat: None,
+                        action: None,
+                        status: if threats.is_empty() {
+                            TacticalAssignmentStatus::NotEvaluable
+                        } else {
+                            TacticalAssignmentStatus::NotEvaluable
+                        },
+                        reason: if threats.is_empty() {
+                            TacticalAssignmentReason::NoThreatAvailable
+                        } else {
+                            TacticalAssignmentReason::NoAvailablePlayer
+                        },
+                        preferred: false,
+                        evidence: vec![TacticalAssignmentEvidence {
+                            description:
+                                "No hay una tarea táctica adicional asignada a este jugador"
+                                    .to_string(),
+                            confirmed: !threats.is_empty(),
+                        }],
+                        missing_requirements: Vec::new(),
+                    })
             })
             .collect::<Vec<_>>();
         let conclusive = !threats.is_empty() && unassigned_threats.is_empty();
@@ -1215,7 +1416,9 @@ impl GameplayWorld {
             || !self.entities.contains(followed_player.entity_id)
             || !self
                 .combatant(followed_player.entity_id)
-                .is_some_and(|combatant| combatant.is_player && combatant.active && !combatant.is_defeated())
+                .is_some_and(|combatant| {
+                    combatant.is_player && combatant.active && !combatant.is_defeated()
+                })
         {
             return Ok(None);
         }
@@ -1312,7 +1515,8 @@ impl GameplayWorld {
                     status: SupportRecommendationStatus::Blocked,
                     reason: SupportRecommendationReason::ItemDefinitionMissing,
                     evidence: vec![SupportEvidence {
-                        description: "La munición equipada no tiene una definición registrada".to_string(),
+                        description: "La munición equipada no tiene una definición registrada"
+                            .to_string(),
                         confirmed: true,
                     }],
                     missing_requirements: vec!["Definicion de objeto válida".to_string()],
@@ -1323,7 +1527,10 @@ impl GameplayWorld {
                 continue;
             };
             if needed > definition.max_stack
-                || receiver.quantity(ammunition.item).checked_add(needed).is_none_or(|quantity| quantity > definition.max_stack)
+                || receiver
+                    .quantity(ammunition.item)
+                    .checked_add(needed)
+                    .is_none_or(|quantity| quantity > definition.max_stack)
             {
                 recommendations.push(PlayerSupportRecommendation {
                     needy_player: *needy_player,
@@ -1334,7 +1541,8 @@ impl GameplayWorld {
                     status: SupportRecommendationStatus::Blocked,
                     reason: SupportRecommendationReason::StackExceeded,
                     evidence: vec![SupportEvidence {
-                        description: "La cantidad requerida excede el limite de pila del objeto".to_string(),
+                        description: "La cantidad requerida excede el limite de pila del objeto"
+                            .to_string(),
                         confirmed: true,
                     }],
                     missing_requirements: vec!["Espacio de pila suficiente".to_string()],
@@ -1351,10 +1559,13 @@ impl GameplayWorld {
                     status: SupportRecommendationStatus::Blocked,
                     reason: SupportRecommendationReason::ReceiverCapacityExceeded,
                     evidence: vec![SupportEvidence {
-                        description: "La capacidad libre del receptor no alcanza la transferencia".to_string(),
+                        description: "La capacidad libre del receptor no alcanza la transferencia"
+                            .to_string(),
                         confirmed: true,
                     }],
-                    missing_requirements: vec!["Capacidad libre en el inventario receptor".to_string()],
+                    missing_requirements: vec![
+                        "Capacidad libre en el inventario receptor".to_string()
+                    ],
                 });
                 continue;
             }
@@ -1382,14 +1593,17 @@ impl GameplayWorld {
                 })
                 .collect::<Vec<_>>();
             providers.sort_by(|left, right| {
-                right.1.cmp(&left.1).then_with(|| left.0.value().cmp(&right.0.value()))
+                right
+                    .1
+                    .cmp(&left.1)
+                    .then_with(|| left.0.value().cmp(&right.0.value()))
             });
             let Some((provider, quantity)) = providers.first().copied() else {
                 let has_quantity = active_players.iter().any(|candidate| {
                     *candidate != *needy_player
-                        && self.inventory(*candidate).is_some_and(|inventory| {
-                            inventory.quantity(ammunition.item) > 0
-                        })
+                        && self
+                            .inventory(*candidate)
+                            .is_some_and(|inventory| inventory.quantity(ammunition.item) > 0)
                 });
                 recommendations.push(PlayerSupportRecommendation {
                     needy_player: *needy_player,
@@ -1429,7 +1643,8 @@ impl GameplayWorld {
                         confirmed: true,
                     },
                     SupportEvidence {
-                        description: "La cantidad respeta capacidad, pila y definición del objeto".to_string(),
+                        description: "La cantidad respeta capacidad, pila y definición del objeto"
+                            .to_string(),
                         confirmed: true,
                     },
                 ],
@@ -1474,9 +1689,9 @@ impl GameplayWorld {
         };
         if !player.is_active
             || !self.entities.contains(player.entity_id)
-            || !self
-                .combatant(player.entity_id)
-                .is_some_and(|combatant| combatant.is_player && combatant.active && !combatant.is_defeated())
+            || !self.combatant(player.entity_id).is_some_and(|combatant| {
+                combatant.is_player && combatant.active && !combatant.is_defeated()
+            })
         {
             return Ok(None);
         }
@@ -1543,7 +1758,10 @@ impl GameplayWorld {
                     description: format!("Requisito de preparación faltante: {requirement:?}"),
                     support: None,
                     evidence: vec![SupportEvidence {
-                        description: format!("La evaluación de preparación informo {:?}", preparation.reason),
+                        description: format!(
+                            "La evaluación de preparación informo {:?}",
+                            preparation.reason
+                        ),
                         confirmed: true,
                     }],
                 });
@@ -1570,24 +1788,28 @@ impl GameplayWorld {
                     });
                 }
                 TacticalAssignmentStatus::Blocked => {
-                    let requirement = if recommendation.reason == TacticalAssignmentReason::MissingAmmunition {
-                        self.equipped_weapon(recommendation.player)
-                            .and_then(|weapon| weapon.ammunition)
-                            .map(|ammunition| PreparationRequirement::Ammunition {
-                                item: Some(ammunition.item),
-                                required: ammunition.amount_per_attack,
-                                available: self
-                                    .inventory(recommendation.player)
-                                    .map_or(0, |inventory| inventory.quantity(ammunition.item)),
-                            })
-                    } else {
-                        None
-                    };
+                    let requirement =
+                        if recommendation.reason == TacticalAssignmentReason::MissingAmmunition {
+                            self.equipped_weapon(recommendation.player)
+                                .and_then(|weapon| weapon.ammunition)
+                                .map(|ammunition| PreparationRequirement::Ammunition {
+                                    item: Some(ammunition.item),
+                                    required: ammunition.amount_per_attack,
+                                    available: self
+                                        .inventory(recommendation.player)
+                                        .map_or(0, |inventory| inventory.quantity(ammunition.item)),
+                                })
+                        } else {
+                            None
+                        };
                     blockers.push(ReadinessBlocker {
                         player: recommendation.player,
                         threat: recommendation.threat,
                         requirement,
-                        description: format!("La tarea táctica está bloqueada por {:?}", recommendation.reason),
+                        description: format!(
+                            "La tarea táctica está bloqueada por {:?}",
+                            recommendation.reason
+                        ),
                         support: None,
                         evidence: recommendation
                             .evidence
@@ -1621,7 +1843,9 @@ impl GameplayWorld {
         if let Some(support) = support {
             for recommendation in support.recommendations {
                 if recommendation.status == SupportRecommendationStatus::Actionable {
-                    if let (Some(provider), Some(item)) = (recommendation.provider, recommendation.item) {
+                    if let (Some(provider), Some(item)) =
+                        (recommendation.provider, recommendation.item)
+                    {
                         actions.push(CooperativePreparationAction::TransferInventory {
                             from: provider,
                             to: recommendation.needy_player,
@@ -1632,10 +1856,13 @@ impl GameplayWorld {
                     support_opportunities.push(recommendation.clone());
                     if let Some(blocker) = blockers.iter_mut().find(|blocker| {
                         blocker.player == recommendation.needy_player
-                            && blocker.threat == recommendation.blocked_action.and_then(|action| match action {
-                                TacticalAction::DefeatEnemy(enemy) => Some(enemy),
-                                _ => None,
-                            })
+                            && blocker.threat
+                                == recommendation
+                                    .blocked_action
+                                    .and_then(|action| match action {
+                                        TacticalAction::DefeatEnemy(enemy) => Some(enemy),
+                                        _ => None,
+                                    })
                     }) {
                         blocker.support = Some(recommendation);
                     }
@@ -1643,31 +1870,41 @@ impl GameplayWorld {
                     if !blockers.iter().any(|blocker| {
                         blocker.player == recommendation.needy_player
                             && blocker.requirement.is_some_and(|requirement| {
-                                requirement == PreparationRequirement::Ammunition {
-                                    item: recommendation.item,
-                                    required: recommendation.amount,
-                                    available: self
-                                        .inventory(recommendation.needy_player)
-                                        .map_or(0, |inventory| {
-                                            recommendation.item.map_or(0, |item| inventory.quantity(item))
-                                        }),
-                                }
+                                requirement
+                                    == PreparationRequirement::Ammunition {
+                                        item: recommendation.item,
+                                        required: recommendation.amount,
+                                        available: self
+                                            .inventory(recommendation.needy_player)
+                                            .map_or(0, |inventory| {
+                                                recommendation
+                                                    .item
+                                                    .map_or(0, |item| inventory.quantity(item))
+                                            }),
+                                    }
                             })
                     }) {
                         blockers.push(ReadinessBlocker {
                             player: recommendation.needy_player,
-                            threat: recommendation.blocked_action.and_then(|action| match action {
-                                TacticalAction::DefeatEnemy(enemy) => Some(enemy),
-                                _ => None,
+                            threat: recommendation
+                                .blocked_action
+                                .and_then(|action| match action {
+                                    TacticalAction::DefeatEnemy(enemy) => Some(enemy),
+                                    _ => None,
+                                }),
+                            requirement: recommendation.item.map(|item| {
+                                PreparationRequirement::Ammunition {
+                                    item: Some(item),
+                                    required: recommendation.amount,
+                                    available: self
+                                        .inventory(recommendation.needy_player)
+                                        .map_or(0, |inventory| inventory.quantity(item)),
+                                }
                             }),
-                            requirement: recommendation.item.map(|item| PreparationRequirement::Ammunition {
-                                item: Some(item),
-                                required: recommendation.amount,
-                                available: self
-                                    .inventory(recommendation.needy_player)
-                                    .map_or(0, |inventory| inventory.quantity(item)),
-                            }),
-                            description: format!("El apoyo no puede cubrir el bloqueo: {:?}", recommendation.reason),
+                            description: format!(
+                                "El apoyo no puede cubrir el bloqueo: {:?}",
+                                recommendation.reason
+                            ),
                             support: None,
                             evidence: recommendation
                                 .evidence
@@ -1683,11 +1920,9 @@ impl GameplayWorld {
             }
         }
         let status = if blockers.is_empty() {
-            if tactical
-                .recommendations
-                .iter()
-                .any(|recommendation| recommendation.status == TacticalAssignmentStatus::NotEvaluable)
-            {
+            if tactical.recommendations.iter().any(|recommendation| {
+                recommendation.status == TacticalAssignmentStatus::NotEvaluable
+            }) {
                 CooperativeEncounterReadinessStatus::PreparedWithReservations
             } else {
                 CooperativeEncounterReadinessStatus::Prepared
@@ -1765,7 +2000,9 @@ impl GameplayWorld {
         };
         let mut risks = Vec::new();
         let current_position = self.ship_position();
-        let destination_position = destination.and_then(|id| self.destination(id)).map(|value| value.position);
+        let destination_position = destination
+            .and_then(|id| self.destination(id))
+            .map(|value| value.position);
         for hazard in self.active_environmental_hazards() {
             if [current_position, destination_position]
                 .into_iter()
@@ -1782,7 +2019,9 @@ impl GameplayWorld {
             if [current_position, destination_position]
                 .into_iter()
                 .flatten()
-                .any(|position| within_radius(position, encounter.position, encounter.activation_radius))
+                .any(|position| {
+                    within_radius(position, encounter.position, encounter.activation_radius)
+                })
             {
                 risks.push(NavigationRisk::KnownEncounter(encounter.id));
             }
@@ -1823,12 +2062,16 @@ impl GameplayWorld {
             }
             match route_risk.source {
                 NavigationRouteRiskSource::Hazard(id)
-                    if !risks.iter().any(|risk| *risk == NavigationRisk::KnownHazard(id)) =>
+                    if !risks
+                        .iter()
+                        .any(|risk| *risk == NavigationRisk::KnownHazard(id)) =>
                 {
                     risks.push(NavigationRisk::KnownHazard(id));
                 }
                 NavigationRouteRiskSource::Encounter(id)
-                    if !risks.iter().any(|risk| *risk == NavigationRisk::KnownEncounter(id)) =>
+                    if !risks
+                        .iter()
+                        .any(|risk| *risk == NavigationRisk::KnownEncounter(id)) =>
                 {
                     risks.push(NavigationRisk::KnownEncounter(id));
                 }
@@ -1858,7 +2101,10 @@ impl GameplayWorld {
         });
         let recommendation = match autopilot {
             crate::navigation::AutopilotState::Planned { destination, .. } => {
-                if fuel_required.zip(fuel_available).is_some_and(|(required, available)| required > available) {
+                if fuel_required
+                    .zip(fuel_available)
+                    .is_some_and(|(required, available)| required > available)
+                {
                     Some(NavigationAdvice::ReplanAutopilot { destination })
                 } else if let Some(NavigationRisk::KnownHazard(id)) = risks.first() {
                     Some(NavigationAdvice::InspectHazard(*id))
@@ -1871,7 +2117,10 @@ impl GameplayWorld {
                 }
             }
             crate::navigation::AutopilotState::InTransit { destination, .. } => {
-                if fuel_required.zip(fuel_available).is_some_and(|(required, available)| required > available) {
+                if fuel_required
+                    .zip(fuel_available)
+                    .is_some_and(|(required, available)| required > available)
+                {
                     Some(NavigationAdvice::ReplanAutopilot { destination })
                 } else if let Some(NavigationRisk::KnownHazard(id)) = risks.first() {
                     Some(NavigationAdvice::InspectHazard(*id))
@@ -1922,9 +2171,9 @@ impl GameplayWorld {
         };
         if !player.is_active
             || !self.entities.contains(player.entity_id)
-            || !self
-                .combatant(player.entity_id)
-                .is_some_and(|combatant| combatant.is_player && combatant.active && !combatant.is_defeated())
+            || !self.combatant(player.entity_id).is_some_and(|combatant| {
+                combatant.is_player && combatant.active && !combatant.is_defeated()
+            })
         {
             return Ok(None);
         }
@@ -1976,7 +2225,9 @@ impl GameplayWorld {
                     vec!["No hay un viaje o ruta activa que evaluar".to_string()]
                 },
                 evidence: vec![SupportEvidence {
-                    description: "La ausencia de viaje no permite evaluar el riesgo de un trayecto concreto".to_string(),
+                    description:
+                        "La ausencia de viaje no permite evaluar el riesgo de un trayecto concreto"
+                            .to_string(),
                     confirmed: true,
                 }],
                 conclusive: ship_blocked,
@@ -1984,17 +2235,23 @@ impl GameplayWorld {
         }
 
         let comparison = self.companion_navigation_comparison(entity)?;
-        let alternative = comparison.as_ref().and_then(|value| value.recommendation.clone());
+        let alternative = comparison
+            .as_ref()
+            .and_then(|value| value.recommendation.clone());
         let in_transit = matches!(navigation.autopilot, AutopilotState::InTransit { .. });
-        let fuel_blocked = navigation.risks.iter().any(|risk| {
-            matches!(risk, NavigationRisk::InsufficientFuel { .. })
-        });
+        let fuel_blocked = navigation
+            .risks
+            .iter()
+            .any(|risk| matches!(risk, NavigationRisk::InsufficientFuel { .. }));
         let operational_blocked = ship_operational != Some(true);
         let active_route_risks = navigation
             .route_risks
             .iter()
             .filter(|risk| {
-                matches!(risk.classification, NavigationRouteRiskClassification::NearSegment { .. })
+                matches!(
+                    risk.classification,
+                    NavigationRouteRiskClassification::NearSegment { .. }
+                )
             })
             .copied()
             .collect::<Vec<_>>();
@@ -2009,15 +2266,23 @@ impl GameplayWorld {
         if fuel_blocked {
             blockers.push("El combustible disponible no alcanza el coste de la ruta".to_string());
             if let (Some(required), Some(available)) = (navigation.fuel_required, fuel_available) {
-                actions.push(CooperativeNavigationAction::ManageFuel { required, available });
+                actions.push(CooperativeNavigationAction::ManageFuel {
+                    required,
+                    available,
+                });
                 evidence.push(SupportEvidence {
-                    description: format!("Combustible requerido {required}, disponible {available}"),
+                    description: format!(
+                        "Combustible requerido {required}, disponible {available}"
+                    ),
                     confirmed: true,
                 });
             }
-        } else if let (Some(required), Some(available)) = (navigation.fuel_required, fuel_available) {
+        } else if let (Some(required), Some(available)) = (navigation.fuel_required, fuel_available)
+        {
             evidence.push(SupportEvidence {
-                description: format!("Combustible suficiente: requerido {required}, disponible {available}"),
+                description: format!(
+                    "Combustible suficiente: requerido {required}, disponible {available}"
+                ),
                 confirmed: true,
             });
         }
@@ -2027,7 +2292,9 @@ impl GameplayWorld {
                 actions.push(CooperativeNavigationAction::RepairShip(ship));
             }
             evidence.push(SupportEvidence {
-                description: "La validación pública de operatividad de la nave rechazó la continuación".to_string(),
+                description:
+                    "La validación pública de operatividad de la nave rechazó la continuación"
+                        .to_string(),
                 confirmed: true,
             });
         } else if let (Some(current), Some(maximum)) = (integrity, maximum_integrity) {
@@ -2038,13 +2305,18 @@ impl GameplayWorld {
         }
         if !active_route_risks.is_empty() {
             evidence.push(SupportEvidence {
-                description: format!("Se identificaron {} riesgos activos en segmentos de la ruta", active_route_risks.len()),
+                description: format!(
+                    "Se identificaron {} riesgos activos en segmentos de la ruta",
+                    active_route_risks.len()
+                ),
                 confirmed: true,
             });
         }
         if unknown_risks > 0 {
             evidence.push(SupportEvidence {
-                description: format!("{unknown_risks} riesgos de ruta no son evaluables con la evidencia actual"),
+                description: format!(
+                    "{unknown_risks} riesgos de ruta no son evaluables con la evidencia actual"
+                ),
                 confirmed: false,
             });
         } else {
@@ -2054,21 +2326,26 @@ impl GameplayWorld {
             });
         }
 
-        let preparation = if navigation.risks.iter().any(|risk| {
-            matches!(risk, NavigationRisk::KnownEncounter(_))
-        }) || self.enemies().any(|enemy| enemy.active && !enemy.is_defeated()) {
+        let preparation = if navigation
+            .risks
+            .iter()
+            .any(|risk| matches!(risk, NavigationRisk::KnownEncounter(_)))
+            || self
+                .enemies()
+                .any(|enemy| enemy.active && !enemy.is_defeated())
+        {
             self.companion_cooperative_encounter_readiness(entity)?
         } else {
             None
         };
         if let Some(preparation) = preparation.as_ref() {
             if preparation.status == CooperativeEncounterReadinessStatus::Blocked {
-                blockers.extend(
-                    preparation
-                        .blockers
-                        .iter()
-                        .map(|blocker| format!("Preparacion de {:?} bloqueada: {}", blocker.player, blocker.description)),
-                );
+                blockers.extend(preparation.blockers.iter().map(|blocker| {
+                    format!(
+                        "Preparacion de {:?} bloqueada: {}",
+                        blocker.player, blocker.description
+                    )
+                }));
                 actions.push(CooperativeNavigationAction::PrepareEncounter);
             }
             if !preparation.support_opportunities.is_empty() {
@@ -2169,9 +2446,9 @@ impl GameplayWorld {
         };
         if !player.is_active
             || !self.entities.contains(player.entity_id)
-            || !self
-                .combatant(player.entity_id)
-                .is_some_and(|combatant| combatant.is_player && combatant.active && !combatant.is_defeated())
+            || !self.combatant(player.entity_id).is_some_and(|combatant| {
+                combatant.is_player && combatant.active && !combatant.is_defeated()
+            })
         {
             return Ok(None);
         }
@@ -2241,34 +2518,46 @@ impl GameplayWorld {
         if let Some(assessment) = risk.as_ref() {
             evidence.extend(assessment.evidence.clone());
             if assessment.status == CooperativeNavigationRiskStatus::Blocked {
-                if assessment.actions.iter().any(|action| {
-                    matches!(action, CooperativeNavigationAction::ManageFuel { .. })
-                }) {
+                if assessment
+                    .actions
+                    .iter()
+                    .any(|action| matches!(action, CooperativeNavigationAction::ManageFuel { .. }))
+                {
                     reason = Some(RecoveryReason::FuelInsufficient);
-                    blockers.push("El combustible impide continuar o reiniciar el viaje".to_string());
+                    blockers
+                        .push("El combustible impide continuar o reiniciar el viaje".to_string());
                 }
-                if assessment.actions.iter().any(|action| {
-                    matches!(action, CooperativeNavigationAction::RepairShip(_))
-                }) {
+                if assessment
+                    .actions
+                    .iter()
+                    .any(|action| matches!(action, CooperativeNavigationAction::RepairShip(_)))
+                {
                     let destroyed = assessment.integrity == Some(0);
                     reason = Some(if destroyed {
                         RecoveryReason::ShipDestroyed
                     } else {
                         RecoveryReason::ShipNotOperational
                     });
-                    blockers.push("La nave no puede continuar hasta recuperar su operatividad".to_string());
+                    blockers.push(
+                        "La nave no puede continuar hasta recuperar su operatividad".to_string(),
+                    );
                 }
             }
         }
         if let Some(recovery) = recovery.as_ref() {
             if let Some(step) = recovery.attempted.as_ref() {
                 match step.action {
-                    CoordinationAction::Exploration(ExplorationAction::ResolveEncounter(encounter))
+                    CoordinationAction::Exploration(ExplorationAction::ResolveEncounter(
+                        encounter,
+                    ))
                     | CoordinationAction::Tactical(TacticalAction::AddressEncounter(encounter)) => {
                         reason = Some(RecoveryReason::ActiveEncounter);
-                        actions.push(CooperativeNavigationContingencyAction::AddressEncounter(encounter));
+                        actions.push(CooperativeNavigationContingencyAction::AddressEncounter(
+                            encounter,
+                        ));
                         evidence.push(SupportEvidence {
-                            description: "El encuentro activo requiere atencion antes de continuar".to_string(),
+                            description: "El encuentro activo requiere atencion antes de continuar"
+                                .to_string(),
                             confirmed: true,
                         });
                     }
@@ -2307,14 +2596,20 @@ impl GameplayWorld {
         if interrupted {
             if current_origin.is_none() || destination.is_none() {
                 reason = Some(RecoveryReason::NoKnownRoute);
-                blockers.push("La posicion actual o el destino no permiten calcular una ruta fiable".to_string());
+                blockers.push(
+                    "La posicion actual o el destino no permiten calcular una ruta fiable"
+                        .to_string(),
+                );
                 evidence.push(SupportEvidence {
                     description: "No existe evidencia suficiente para identificar el origen de una contingencia".to_string(),
                     confirmed: false,
                 });
             } else if alternatives.is_empty() {
                 reason = Some(RecoveryReason::NoKnownRoute);
-                blockers.push("No hay rutas registradas conocidas desde la posicion actual al destino".to_string());
+                blockers.push(
+                    "No hay rutas registradas conocidas desde la posicion actual al destino"
+                        .to_string(),
+                );
                 evidence.push(SupportEvidence {
                     description: "La ausencia de una ruta registrada no demuestra que no existan rutas desconocidas".to_string(),
                     confirmed: true,
@@ -2322,7 +2617,10 @@ impl GameplayWorld {
             } else if viable_alternative.is_none() {
                 if let (Some(available), Some(required)) = (
                     fuel_available,
-                    alternatives.iter().map(|alternative| alternative.fuel_required).min(),
+                    alternatives
+                        .iter()
+                        .map(|alternative| alternative.fuel_required)
+                        .min(),
                 ) {
                     if available < required {
                         reason = Some(RecoveryReason::FuelInsufficient);
@@ -2337,7 +2635,10 @@ impl GameplayWorld {
                 }
                 if reason.is_none() {
                     reason = Some(RecoveryReason::NoKnownRoute);
-                    blockers.push("Las rutas registradas al destino no son viables con el estado actual".to_string());
+                    blockers.push(
+                        "Las rutas registradas al destino no son viables con el estado actual"
+                            .to_string(),
+                    );
                 }
             } else if let Some(route) = recommended_route.as_ref() {
                 if let Some(destination) = route.last().copied() {
@@ -2354,10 +2655,14 @@ impl GameplayWorld {
         } else if in_transit {
             if reason.is_none() {
                 if let Some(destination) = destination {
-                    actions.push(CooperativeNavigationContingencyAction::MonitorAutopilot(destination));
+                    actions.push(CooperativeNavigationContingencyAction::MonitorAutopilot(
+                        destination,
+                    ));
                 }
                 evidence.push(SupportEvidence {
-                    description: "El viaje ya está en transito y no admite una replanificacion incompatible".to_string(),
+                    description:
+                        "El viaje ya está en transito y no admite una replanificacion incompatible"
+                            .to_string(),
                     confirmed: true,
                 });
             }
@@ -2370,38 +2675,52 @@ impl GameplayWorld {
                     });
                 }
             }
-            if assessment.actions.iter().any(|action| {
-                matches!(action, CooperativeNavigationAction::InspectHazard(_))
-            }) {
+            if assessment
+                .actions
+                .iter()
+                .any(|action| matches!(action, CooperativeNavigationAction::InspectHazard(_)))
+            {
                 if let Some(NavigationAdvice::InspectHazard(hazard)) = navigation.recommendation {
-                    actions.push(CooperativeNavigationContingencyAction::InspectHazard(hazard));
+                    actions.push(CooperativeNavigationContingencyAction::InspectHazard(
+                        hazard,
+                    ));
                 }
             }
-            if assessment.actions.iter().any(|action| {
-                matches!(action, CooperativeNavigationAction::AddressEncounter(_))
-            }) {
-                if let Some(NavigationAdvice::AddressEncounter(encounter)) = navigation.recommendation {
-                    actions.push(CooperativeNavigationContingencyAction::AddressEncounter(encounter));
+            if assessment
+                .actions
+                .iter()
+                .any(|action| matches!(action, CooperativeNavigationAction::AddressEncounter(_)))
+            {
+                if let Some(NavigationAdvice::AddressEncounter(encounter)) =
+                    navigation.recommendation
+                {
+                    actions.push(CooperativeNavigationContingencyAction::AddressEncounter(
+                        encounter,
+                    ));
                 }
             }
         }
         let status = if reason.is_some() {
             CooperativeNavigationContingencyStatus::Blocked
         } else if interrupted && viable_alternative.is_some() {
-            if viable_alternative.is_some_and(|value| value.active_risks > 0 || value.unevaluable_risks > 0) {
+            if viable_alternative
+                .is_some_and(|value| value.active_risks > 0 || value.unevaluable_risks > 0)
+            {
                 CooperativeNavigationContingencyStatus::RestrictedRecovery
             } else {
                 CooperativeNavigationContingencyStatus::KnownRecovery
             }
         } else if in_transit {
             CooperativeNavigationContingencyStatus::KnownRecovery
-        } else if risk.as_ref().is_some_and(|value| {
-            value.status == CooperativeNavigationRiskStatus::KnownRisk
-        }) {
+        } else if risk
+            .as_ref()
+            .is_some_and(|value| value.status == CooperativeNavigationRiskStatus::KnownRisk)
+        {
             CooperativeNavigationContingencyStatus::RestrictedRecovery
-        } else if risk.as_ref().is_some_and(|value| {
-            value.status == CooperativeNavigationRiskStatus::NotEvaluable
-        }) {
+        } else if risk
+            .as_ref()
+            .is_some_and(|value| value.status == CooperativeNavigationRiskStatus::NotEvaluable)
+        {
             CooperativeNavigationContingencyStatus::NotEvaluable
         } else {
             CooperativeNavigationContingencyStatus::KnownRecovery
@@ -2457,9 +2776,9 @@ impl GameplayWorld {
         };
         if !player.is_active
             || !self.entities.contains(player.entity_id)
-            || !self
-                .combatant(player.entity_id)
-                .is_some_and(|combatant| combatant.is_player && combatant.active && !combatant.is_defeated())
+            || !self.combatant(player.entity_id).is_some_and(|combatant| {
+                combatant.is_player && combatant.active && !combatant.is_defeated()
+            })
         {
             return Ok(None);
         }
@@ -2632,9 +2951,10 @@ impl GameplayWorld {
                 };
                 let status = match recommendation.status {
                     TacticalAssignmentStatus::Actionable
-                        if active_players.contains(&recommendation.player) => {
-                            CooperativeRecoveryTaskStatus::Actionable
-                        }
+                        if active_players.contains(&recommendation.player) =>
+                    {
+                        CooperativeRecoveryTaskStatus::Actionable
+                    }
                     TacticalAssignmentStatus::Blocked => CooperativeRecoveryTaskStatus::Blocked,
                     _ => CooperativeRecoveryTaskStatus::NotEvaluable,
                 };
@@ -2712,7 +3032,8 @@ impl GameplayWorld {
         &self,
         entity: EntityId,
     ) -> Result<Option<CooperativeRecoveryPlanAssessment>, CompanionError> {
-        let Some(assignment) = self.companion_cooperative_recovery_assignment_assessment(entity)? else {
+        let Some(assignment) = self.companion_cooperative_recovery_assignment_assessment(entity)?
+        else {
             return Ok(None);
         };
         let mut dependencies = Vec::new();
@@ -2793,9 +3114,10 @@ impl GameplayWorld {
             if task.status != CooperativeRecoveryPlanTaskStatus::Ready {
                 continue;
             }
-            for dependency in dependencies.iter().filter(|dependency| {
-                dependency.dependent == task.task.order
-            }) {
+            for dependency in dependencies
+                .iter()
+                .filter(|dependency| dependency.dependent == task.task.order)
+            {
                 if let Some((_, prerequisite_status)) = task_statuses
                     .iter()
                     .find(|(order, _)| *order == dependency.prerequisite)
@@ -2833,42 +3155,47 @@ impl GameplayWorld {
             } else {
                 CooperativeRecoveryPlanStatus::NotEvaluable
             }
-        } else if tasks.iter().any(|task| {
-            task.status == CooperativeRecoveryPlanTaskStatus::Ready
-        }) && tasks.iter().any(|task| {
-            matches!(
-                task.status,
-                CooperativeRecoveryPlanTaskStatus::Blocked
-                    | CooperativeRecoveryPlanTaskStatus::NotEvaluable
-            )
-        }) {
+        } else if tasks
+            .iter()
+            .any(|task| task.status == CooperativeRecoveryPlanTaskStatus::Ready)
+            && tasks.iter().any(|task| {
+                matches!(
+                    task.status,
+                    CooperativeRecoveryPlanTaskStatus::Blocked
+                        | CooperativeRecoveryPlanTaskStatus::NotEvaluable
+                )
+            })
+        {
             CooperativeRecoveryPlanStatus::Partial
         } else if tasks
             .iter()
             .any(|task| task.status == CooperativeRecoveryPlanTaskStatus::Ready)
         {
             CooperativeRecoveryPlanStatus::Actionable
-        } else if tasks.iter().any(|task| {
-            task.status == CooperativeRecoveryPlanTaskStatus::Blocked
-        }) {
+        } else if tasks
+            .iter()
+            .any(|task| task.status == CooperativeRecoveryPlanTaskStatus::Blocked)
+        {
             CooperativeRecoveryPlanStatus::Blocked
         } else {
             CooperativeRecoveryPlanStatus::NotEvaluable
         };
         let mut evidence = assignment.evidence.clone();
         evidence.extend(dependencies.iter().flat_map(|dependency| {
-            dependency.evidence.iter().cloned().chain(std::iter::once(
-                SupportEvidence {
+            dependency
+                .evidence
+                .iter()
+                .cloned()
+                .chain(std::iter::once(SupportEvidence {
                     description: dependency.reason.clone(),
                     confirmed: dependency.confirmed,
-                },
-            ))
+                }))
         }));
         let conclusive = assignment.conclusive
             && dependencies.iter().all(|dependency| dependency.confirmed)
-            && !tasks.iter().any(|task| {
-                task.status == CooperativeRecoveryPlanTaskStatus::NotEvaluable
-            });
+            && !tasks
+                .iter()
+                .any(|task| task.status == CooperativeRecoveryPlanTaskStatus::NotEvaluable);
         Ok(Some(CooperativeRecoveryPlanAssessment {
             companion: assignment.companion,
             player: assignment.player,
@@ -2903,14 +3230,14 @@ impl GameplayWorld {
                         CooperativeTaskCompatibilityStatus::NotApplicable,
                         CooperativeTaskCompatibilityReason::TaskNotActionable,
                         vec![SupportEvidence {
-                            description: "Una de las tareas no está lista para comenzar".to_string(),
+                            description: "Una de las tareas no está lista para comenzar"
+                                .to_string(),
                             confirmed: true,
                         }],
                     )
                 } else if plan.dependencies.iter().any(|dependency| {
                     dependency.confirmed
-                        && ((dependency.prerequisite == pair.0
-                            && dependency.dependent == pair.1)
+                        && ((dependency.prerequisite == pair.0 && dependency.dependent == pair.1)
                             || (dependency.prerequisite == pair.1
                                 && dependency.dependent == pair.0))
                 }) {
@@ -2918,7 +3245,9 @@ impl GameplayWorld {
                         CooperativeTaskCompatibilityStatus::Sequential,
                         CooperativeTaskCompatibilityReason::ConfirmedDependency,
                         vec![SupportEvidence {
-                            description: "El plan contiene una dependencia confirmada entre ambas tareas".to_string(),
+                            description:
+                                "El plan contiene una dependencia confirmada entre ambas tareas"
+                                    .to_string(),
                             confirmed: true,
                         }],
                     )
@@ -3087,16 +3416,13 @@ impl GameplayWorld {
             .collect::<Vec<_>>();
         let unevaluable_pairs = relations
             .iter()
-            .filter(|relation| {
-                relation.status == CooperativeTaskCompatibilityStatus::NotEvaluable
-            })
+            .filter(|relation| relation.status == CooperativeTaskCompatibilityStatus::NotEvaluable)
             .map(|relation| (relation.first_task, relation.second_task))
             .collect::<Vec<_>>();
         let status = if relations.is_empty()
             || relations.iter().all(|relation| {
                 relation.status == CooperativeTaskCompatibilityStatus::NotApplicable
-            })
-        {
+            }) {
             CooperativeTaskCompatibilityStatus::NotApplicable
         } else if !conflict_pairs.is_empty() {
             CooperativeTaskCompatibilityStatus::ConflictConfirmed
@@ -3254,7 +3580,11 @@ impl GameplayWorld {
         let fuel_required = route_comparison
             .as_ref()
             .map(|comparison| comparison.current.fuel_required)
-            .or_else(|| navigation.as_ref().and_then(|assessment| assessment.fuel_required));
+            .or_else(|| {
+                navigation
+                    .as_ref()
+                    .and_then(|assessment| assessment.fuel_required)
+            });
         let fuel_available = fuel.current();
         let fuel_condition = match fuel_required {
             Some(required) if fuel_available < required => FuelCondition::Insufficient,
@@ -3337,7 +3667,9 @@ impl GameplayWorld {
         let ship_operational = ship
             .and_then(|value| self.ship_is_operational(value))
             .unwrap_or(false);
-        let fuel = ship.and_then(|value| self.ship_fuel(value)).map(|value| value.current());
+        let fuel = ship
+            .and_then(|value| self.ship_fuel(value))
+            .map(|value| value.current());
         let current_position = self.navigation().current_position();
         let route_is_viable = |destination: DestinationId| {
             let Some(origin) = self
@@ -3353,8 +3685,11 @@ impl GameplayWorld {
             route.state == crate::navigation::NavigationRouteState::Available
                 && ship_operational
                 && fuel.is_some_and(|available| {
-                    crate::navigation::discounted_fuel_cost(route.fuel_cost, self.ship_fuel_discount_percent())
-                        .is_some_and(|required| available >= required)
+                    crate::navigation::discounted_fuel_cost(
+                        route.fuel_cost,
+                        self.ship_fuel_discount_percent(),
+                    )
+                    .is_some_and(|required| available >= required)
                 })
         };
         let player_can_reach = |position: engine::Vec3, range: f32| {
@@ -3370,7 +3705,11 @@ impl GameplayWorld {
             .map_err(|_| CompanionError::GuidanceUnavailable)?;
         let mut recommendations = Vec::new();
         if let Some(current_id) = guidance.current_objective {
-            if let Some(objective) = guidance.objectives.iter().find(|value| value.id == current_id) {
+            if let Some(objective) = guidance
+                .objectives
+                .iter()
+                .find(|value| value.id == current_id)
+            {
                 if let Some(action) = objective.recommended_action {
                     let destination = match action {
                         GuidanceAction::TravelTo(value)
@@ -3381,25 +3720,31 @@ impl GameplayWorld {
                     let accessible = match action {
                         GuidanceAction::TravelTo(value) => {
                             self.destination(value).is_some_and(|destination| {
-                                destination.discovery == crate::navigation::DiscoveryState::Discovered
+                                destination.discovery
+                                    == crate::navigation::DiscoveryState::Discovered
                             }) && route_is_viable(value)
                         }
-                        GuidanceAction::DiscoverDestination(value) => self.destination(value).is_some(),
+                        GuidanceAction::DiscoverDestination(value) => {
+                            self.destination(value).is_some()
+                        }
                         GuidanceAction::IdentifySignal(Some(value)) => {
                             self.destination(value).is_some()
-                                && self.guidance_action_is_available(companion.followed_player, action)
+                                && self
+                                    .guidance_action_is_available(companion.followed_player, action)
                         }
                         GuidanceAction::RepairShip => ship_operational,
                         GuidanceAction::CompleteObjective(_) => false,
                         _ => self.guidance_action_is_available(companion.followed_player, action),
                     };
                     if accessible && action != GuidanceAction::CompleteObjective(current_id) {
-                        let mut fulfilled = vec![GuidanceRequirement::MissionActive(objective.mission)];
+                        let mut fulfilled =
+                            vec![GuidanceRequirement::MissionActive(objective.mission)];
                         if let Some(destination) = destination {
                             if self.destination(destination).is_some_and(|value| {
                                 value.discovery == crate::navigation::DiscoveryState::Discovered
                             }) {
-                                fulfilled.push(GuidanceRequirement::DestinationDiscovered(destination));
+                                fulfilled
+                                    .push(GuidanceRequirement::DestinationDiscovered(destination));
                             }
                         }
                         recommendations.push(ExplorationRecommendation {
@@ -3452,8 +3797,10 @@ impl GameplayWorld {
             });
         }
         for derelict in self.derelicts() {
-            if !matches!(derelict.state, DerelictState::Discovered | DerelictState::Exploring)
-                || !ship_operational
+            if !matches!(
+                derelict.state,
+                DerelictState::Discovered | DerelictState::Exploring
+            ) || !ship_operational
                 || !player_can_reach(derelict.position, derelict.interaction_range)
             {
                 continue;
@@ -3497,7 +3844,9 @@ impl GameplayWorld {
                 .activities
                 .iter()
                 .find(|activity| match activity {
-                    WorldActivity::Trade(market) => market.offers.iter().any(|offer| offer.stock > 0),
+                    WorldActivity::Trade(market) => {
+                        market.offers.iter().any(|offer| offer.stock > 0)
+                    }
                     WorldActivity::Resource(site) => site.available > 0,
                     WorldActivity::Combat(zone) => !zone.resolved,
                     WorldActivity::Story(story) => !story.interacted,
@@ -3588,7 +3937,9 @@ impl GameplayWorld {
                 .and_then(|objective| objective.recommended_action)
         });
         let ship = self.navigation().ship_id();
-        let fuel_available = ship.and_then(|value| self.ship_fuel(value)).map(|value| value.current());
+        let fuel_available = ship
+            .and_then(|value| self.ship_fuel(value))
+            .map(|value| value.current());
         let current_position = self.navigation().current_position();
         let route_requirement = |destination: DestinationId| {
             let origin = self
@@ -3619,7 +3970,10 @@ impl GameplayWorld {
             });
         if let Some(destination) = target_destination {
             if let Some((required, available)) = route_requirement(destination) {
-                let requirement = PreparationRequirement::Fuel { required, available };
+                let requirement = PreparationRequirement::Fuel {
+                    required,
+                    available,
+                };
                 if available >= required {
                     satisfied.push(requirement);
                 } else {
@@ -3695,7 +4049,9 @@ impl GameplayWorld {
         if let Some(inventory) = self.inventory(companion.followed_player) {
             for collectible in self.collectibles() {
                 if !collectible.active
-                    || collectible.owner.is_some_and(|owner| owner != companion.followed_player)
+                    || collectible
+                        .owner
+                        .is_some_and(|owner| owner != companion.followed_player)
                 {
                     continue;
                 }
@@ -3815,9 +4171,18 @@ impl GameplayWorld {
             .as_ref()
             .and_then(|value| value.objective)
             .or(guidance.current_objective);
-        let mission = primary_exploration.as_ref().and_then(|value| value.mission).or_else(|| {
-            objective.and_then(|id| guidance.objectives.iter().find(|value| value.id == id).map(|value| value.mission))
-        });
+        let mission = primary_exploration
+            .as_ref()
+            .and_then(|value| value.mission)
+            .or_else(|| {
+                objective.and_then(|id| {
+                    guidance
+                        .objectives
+                        .iter()
+                        .find(|value| value.id == id)
+                        .map(|value| value.mission)
+                })
+            });
         let mut steps = Vec::new();
         let mut add_step = |category: CoordinationCategory,
                             action: CoordinationAction,
@@ -3846,9 +4211,15 @@ impl GameplayWorld {
         if let Some(preparation) = preparation.as_ref().filter(|value| !value.prepared) {
             add_step(
                 CoordinationCategory::Preparation,
-                CoordinationAction::Preparation(preparation.action.unwrap_or(PreparationAction::PlayerRequired)),
+                CoordinationAction::Preparation(
+                    preparation
+                        .action
+                        .unwrap_or(PreparationAction::PlayerRequired),
+                ),
                 objective,
-                primary_exploration.as_ref().and_then(|value| value.destination),
+                primary_exploration
+                    .as_ref()
+                    .and_then(|value| value.destination),
                 primary_exploration.as_ref().and_then(|value| value.entity),
                 CoordinationStepStatus::Blocked,
                 preparation.missing_requirements.clone(),
@@ -3860,7 +4231,10 @@ impl GameplayWorld {
                 },
                 "Preparar los recursos necesarios antes de continuar",
             );
-        } else if operational.as_ref().is_some_and(|value| value.hull == HullCondition::Destroyed) {
+        } else if operational
+            .as_ref()
+            .is_some_and(|value| value.hull == HullCondition::Destroyed)
+        {
             add_step(
                 CoordinationCategory::Preparation,
                 CoordinationAction::PlayerRequired,
@@ -3873,7 +4247,10 @@ impl GameplayWorld {
                 CoordinationPriority::Critical,
                 "La nave no puede continuar en su estado actual",
             );
-        } else if let Some(tactical) = tactical.as_ref().filter(|value| value.priority == TacticalPriority::Critical) {
+        } else if let Some(tactical) = tactical
+            .as_ref()
+            .filter(|value| value.priority == TacticalPriority::Critical)
+        {
             let (action, category, entity, description) = match tactical.action {
                 TacticalAction::DefeatEnemy(enemy) => (
                     CoordinationAction::Tactical(tactical.action),
@@ -3916,9 +4293,16 @@ impl GameplayWorld {
             match target.action {
                 ExplorationAction::Guidance(GuidanceAction::TravelTo(destination)) => {
                     let action = match self.autopilot_state() {
-                        crate::navigation::AutopilotState::InTransit { destination: current, .. }
-                        | crate::navigation::AutopilotState::Planned { destination: current, .. }
-                            if *current == destination => CoordinationAction::MonitorAutopilot(destination),
+                        crate::navigation::AutopilotState::InTransit {
+                            destination: current,
+                            ..
+                        }
+                        | crate::navigation::AutopilotState::Planned {
+                            destination: current,
+                            ..
+                        } if *current == destination => {
+                            CoordinationAction::MonitorAutopilot(destination)
+                        }
                         _ => CoordinationAction::StartAutopilot(destination),
                     };
                     add_step(
@@ -3928,7 +4312,9 @@ impl GameplayWorld {
                         Some(destination),
                         target.entity,
                         CoordinationStepStatus::Recommended,
-                        preparation.as_ref().map_or_else(Vec::new, |value| value.missing_requirements.clone()),
+                        preparation
+                            .as_ref()
+                            .map_or_else(Vec::new, |value| value.missing_requirements.clone()),
                         CoordinationReason::RouteToObjective,
                         CoordinationPriority::Normal,
                         "Continuar la ruta hacia el objetivo activo",
@@ -3949,9 +4335,8 @@ impl GameplayWorld {
                 action => add_step(
                     match target.category {
                         ExplorationTargetCategory::WorldActivity => CoordinationCategory::Activity,
-                        ExplorationTargetCategory::Encounter | ExplorationTargetCategory::Derelict => {
-                            CoordinationCategory::Exploration
-                        }
+                        ExplorationTargetCategory::Encounter
+                        | ExplorationTargetCategory::Derelict => CoordinationCategory::Exploration,
                         _ => CoordinationCategory::Mission,
                     },
                     CoordinationAction::Exploration(action),
@@ -3985,9 +4370,8 @@ impl GameplayWorld {
                     order: 0,
                     category: match target.category {
                         ExplorationTargetCategory::WorldActivity => CoordinationCategory::Activity,
-                        ExplorationTargetCategory::Encounter | ExplorationTargetCategory::Derelict => {
-                            CoordinationCategory::Exploration
-                        }
+                        ExplorationTargetCategory::Encounter
+                        | ExplorationTargetCategory::Derelict => CoordinationCategory::Exploration,
                         _ => CoordinationCategory::Mission,
                     },
                     action: match target.action {
@@ -4073,7 +4457,9 @@ impl GameplayWorld {
             player: companion.followed_player,
             objective,
             mission,
-            blocked: next_step.as_ref().is_some_and(|step| step.status == CoordinationStepStatus::Blocked),
+            blocked: next_step
+                .as_ref()
+                .is_some_and(|step| step.status == CoordinationStepStatus::Blocked),
             ready: next_step.is_none(),
             next_step,
             later_steps: steps.into_iter().skip(1).collect(),
@@ -4131,7 +4517,10 @@ impl GameplayWorld {
         }
         if let Some(operational) = operational.as_ref() {
             if !matches!(
-                operational.navigation.as_ref().map(|value| &value.autopilot),
+                operational
+                    .navigation
+                    .as_ref()
+                    .map(|value| &value.autopilot),
                 Some(crate::navigation::AutopilotState::InTransit { .. })
             ) {
                 if let Some(comparison) = operational.route_comparison.as_ref() {
@@ -4205,38 +4594,48 @@ impl GameplayWorld {
                 missing_requirements: Vec::new(),
                 evidence: "La integridad autoritativa de la nave está destruida".to_string(),
             });
-        } else if let Some(tactical) = tactical.as_ref().filter(|value| {
-            value.priority == TacticalPriority::Critical
-        }) {
+        } else if let Some(tactical) = tactical
+            .as_ref()
+            .filter(|value| value.priority == TacticalPriority::Critical)
+        {
             let (category, reason, entity) = match tactical.action {
-                TacticalAction::DefeatEnemy(enemy) => {
-                    (RecoveryCategory::Combat, RecoveryReason::ActiveThreat, Some(enemy))
-                }
-                TacticalAction::AddressEncounter(_) => {
-                    (RecoveryCategory::Encounter, RecoveryReason::ActiveEncounter, None)
-                }
-                TacticalAction::WithdrawFromHazard(_) => {
-                    (RecoveryCategory::Navigation, RecoveryReason::ActiveEncounter, None)
-                }
-                TacticalAction::PlayerAction(_) => {
-                    (RecoveryCategory::Mission, RecoveryReason::PlayerDecisionRequired, None)
-                }
+                TacticalAction::DefeatEnemy(enemy) => (
+                    RecoveryCategory::Combat,
+                    RecoveryReason::ActiveThreat,
+                    Some(enemy),
+                ),
+                TacticalAction::AddressEncounter(_) => (
+                    RecoveryCategory::Encounter,
+                    RecoveryReason::ActiveEncounter,
+                    None,
+                ),
+                TacticalAction::WithdrawFromHazard(_) => (
+                    RecoveryCategory::Navigation,
+                    RecoveryReason::ActiveEncounter,
+                    None,
+                ),
+                TacticalAction::PlayerAction(_) => (
+                    RecoveryCategory::Mission,
+                    RecoveryReason::PlayerDecisionRequired,
+                    None,
+                ),
             };
             blocker = Some(RecoveryBlocker {
                 category,
                 reason,
-                action: Some(RecoveryAction::Coordination(
-                    CoordinationAction::Tactical(tactical.action),
-                )),
+                action: Some(RecoveryAction::Coordination(CoordinationAction::Tactical(
+                    tactical.action,
+                ))),
                 objective: coordination.objective,
                 destination: None,
                 entity,
                 missing_requirements: Vec::new(),
                 evidence: "Existe una amenaza activa con prioridad critica".to_string(),
             });
-        } else if let Some(step) = attempted.as_ref().filter(|value| {
-            value.status == CoordinationStepStatus::Blocked
-        }) {
+        } else if let Some(step) = attempted
+            .as_ref()
+            .filter(|value| value.status == CoordinationStepStatus::Blocked)
+        {
             blocker = Some(RecoveryBlocker {
                 category: coordination_category(step.category),
                 reason: RecoveryReason::PlayerDecisionRequired,
@@ -4245,9 +4644,13 @@ impl GameplayWorld {
                 destination: step.destination,
                 entity: step.entity,
                 missing_requirements: step.requirements.clone(),
-                evidence: "El siguiente paso existe pero sus requisitos no estan satisfechos".to_string(),
+                evidence: "El siguiente paso existe pero sus requisitos no estan satisfechos"
+                    .to_string(),
             });
-        } else if let Some(target) = exploration.as_ref().and_then(|value| value.primary.as_ref()) {
+        } else if let Some(target) = exploration
+            .as_ref()
+            .and_then(|value| value.primary.as_ref())
+        {
             if target.missing_requirements.iter().any(|requirement| {
                 matches!(requirement, GuidanceRequirement::KnowledgeAtLeast { .. })
             }) {
@@ -4272,21 +4675,19 @@ impl GameplayWorld {
                         !matches!(
                             action,
                             RecoveryAction::PlayerRequired
-                                | RecoveryAction::Coordination(
-                                    CoordinationAction::PlayerRequired
-                                )
-                                | RecoveryAction::Coordination(
-                                    CoordinationAction::Preparation(
-                                        PreparationAction::PlayerRequired
-                                    )
-                                )
+                                | RecoveryAction::Coordination(CoordinationAction::PlayerRequired)
+                                | RecoveryAction::Coordination(CoordinationAction::Preparation(
+                                    PreparationAction::PlayerRequired
+                                ))
                         )
                     }) =>
-            (
-                RecoveryStatus::Recoverable,
-                true,
-                "Existe una acción real conocida para recuperar la progresion".to_string(),
-            ),
+            {
+                (
+                    RecoveryStatus::Recoverable,
+                    true,
+                    "Existe una acción real conocida para recuperar la progresion".to_string(),
+                )
+            }
             Some(_) => (
                 RecoveryStatus::Blocked,
                 false,
@@ -4366,7 +4767,9 @@ impl GameplayWorld {
             | Some(RecoveryReason::ShipNotOperational)
             | Some(RecoveryReason::ActiveEncounter)
             | Some(RecoveryReason::NoKnownRoute)
-            | Some(RecoveryReason::PlayerDecisionRequired) => ExplanationReason::PreparationRequired,
+            | Some(RecoveryReason::PlayerDecisionRequired) => {
+                ExplanationReason::PreparationRequired
+            }
             Some(RecoveryReason::ObjectiveSatisfied) => ExplanationReason::ObjectiveCompleted,
             None if status == ExplanationStatus::Satisfied => ExplanationReason::ObjectiveCompleted,
             None => ExplanationReason::ObjectiveAction,
@@ -4387,7 +4790,10 @@ impl GameplayWorld {
                 kind: ExplanationEvidenceKind::Objective,
                 description: "Existe un objetivo real asociado a la recomendacion".to_string(),
                 objective: Some(objective),
-                destination: coordination.next_step.as_ref().and_then(|step| step.destination),
+                destination: coordination
+                    .next_step
+                    .as_ref()
+                    .and_then(|step| step.destination),
                 entity: coordination.next_step.as_ref().and_then(|step| step.entity),
                 satisfied: status == ExplanationStatus::Satisfied,
             });
@@ -4422,13 +4828,19 @@ impl GameplayWorld {
                 });
             }
         }
-        if let Some(target) = exploration.as_ref().and_then(|value| value.primary.as_ref()) {
-            if matches!(target.action, ExplorationAction::Guidance(GuidanceAction::TravelTo(_)))
-                && target.accessible
+        if let Some(target) = exploration
+            .as_ref()
+            .and_then(|value| value.primary.as_ref())
+        {
+            if matches!(
+                target.action,
+                ExplorationAction::Guidance(GuidanceAction::TravelTo(_))
+            ) && target.accessible
             {
                 evidence.push(ExplanationEvidence {
                     kind: ExplanationEvidenceKind::Route,
-                    description: "Existe una ruta registrada y accesible hacia el objetivo".to_string(),
+                    description: "Existe una ruta registrada y accesible hacia el objetivo"
+                        .to_string(),
                     objective: target.objective,
                     destination: target.destination,
                     entity: target.entity,
@@ -4442,7 +4854,8 @@ impl GameplayWorld {
                     evidence.push(ExplanationEvidence {
                         kind: ExplanationEvidenceKind::Route,
                         description: if navigation.route.is_empty() {
-                            "El destino existe, pero no hay una ruta activa en el autopilot".to_string()
+                            "El destino existe, pero no hay una ruta activa en el autopilot"
+                                .to_string()
                         } else {
                             "Existe una ruta registrada para el destino recomendado".to_string()
                         },
@@ -4457,7 +4870,9 @@ impl GameplayWorld {
                 {
                     evidence.push(ExplanationEvidence {
                         kind: ExplanationEvidenceKind::Fuel,
-                        description: format!("Combustible disponible {available}, requerido {required}"),
+                        description: format!(
+                            "Combustible disponible {available}, requerido {required}"
+                        ),
                         objective: coordination.objective,
                         destination: navigation.destination,
                         entity: Some(operational.ship),
@@ -4501,7 +4916,10 @@ impl GameplayWorld {
                 satisfied: false,
             });
         }
-        if let Some(target) = exploration.as_ref().and_then(|value| value.primary.as_ref()) {
+        if let Some(target) = exploration
+            .as_ref()
+            .and_then(|value| value.primary.as_ref())
+        {
             for requirement in &target.missing_requirements {
                 if matches!(requirement, GuidanceRequirement::KnowledgeAtLeast { .. }) {
                     evidence.push(ExplanationEvidence {
@@ -4595,9 +5013,10 @@ impl GameplayWorld {
             )
             .then_some(step)
         });
-        let fuel_blocked = recovery.blocker.as_ref().is_some_and(|blocker| {
-            matches!(blocker.reason, RecoveryReason::FuelInsufficient)
-        });
+        let fuel_blocked = recovery
+            .blocker
+            .as_ref()
+            .is_some_and(|blocker| matches!(blocker.reason, RecoveryReason::FuelInsufficient));
         if fuel_blocked
             && travel_action.is_some_and(|step| step.status == CoordinationStepStatus::Recommended)
         {
@@ -4642,12 +5061,13 @@ impl GameplayWorld {
                 });
             }
         }
-        if matches!(recovery.status, RecoveryStatus::Blocked | RecoveryStatus::Recoverable)
-            && matches!(
-                explanation.status,
-                ExplanationStatus::Actionable | ExplanationStatus::Satisfied
-            )
-            && explanation.blocker.is_none()
+        if matches!(
+            recovery.status,
+            RecoveryStatus::Blocked | RecoveryStatus::Recoverable
+        ) && matches!(
+            explanation.status,
+            ExplanationStatus::Actionable | ExplanationStatus::Satisfied
+        ) && explanation.blocker.is_none()
         {
             contradictions.push(Contradiction {
                 severity: ContradictionSeverity::Important,
@@ -4665,12 +5085,13 @@ impl GameplayWorld {
             });
         }
         if let Some(objective) = coordination.objective {
-            let completed_recommendation = self.objective(objective).is_some_and(|value| {
-                value.state() == crate::domains::objective::ObjectiveState::Completed
-            }) && coordination.next_step.as_ref().is_some_and(|step| {
-                step.objective == Some(objective)
-                    && step.status != CoordinationStepStatus::Satisfied
-            });
+            let completed_recommendation =
+                self.objective(objective).is_some_and(|value| {
+                    value.state() == crate::domains::objective::ObjectiveState::Completed
+                }) && coordination.next_step.as_ref().is_some_and(|step| {
+                    step.objective == Some(objective)
+                        && step.status != CoordinationStepStatus::Satisfied
+                });
             if completed_recommendation {
                 contradictions.push(Contradiction {
                     severity: ContradictionSeverity::Important,
@@ -4715,7 +5136,9 @@ impl GameplayWorld {
             if operational.route_comparison.is_none() && travel_action.is_some() {
                 informational.push(ConsistencyEvidence {
                     category: ContradictionCategory::InsufficientEvidence,
-                    description: "No existe comparacion de rutas suficiente para evaluar alternativas".to_string(),
+                    description:
+                        "No existe comparacion de rutas suficiente para evaluar alternativas"
+                            .to_string(),
                     objective: coordination.objective,
                     destination: travel_action.and_then(|step| step.destination),
                     entity: Some(operational.ship),
@@ -4725,16 +5148,18 @@ impl GameplayWorld {
         } else {
             informational.push(ConsistencyEvidence {
                 category: ContradictionCategory::InsufficientEvidence,
-                description: "No existe evaluación operativa suficiente para contrastar navegación".to_string(),
+                description: "No existe evaluación operativa suficiente para contrastar navegación"
+                    .to_string(),
                 objective: coordination.objective,
                 destination: travel_action.and_then(|step| step.destination),
                 entity: None,
                 confirmed: false,
             });
         }
-        let state = if contradictions.iter().any(|value| {
-            value.severity != ContradictionSeverity::Informational
-        }) {
+        let state = if contradictions
+            .iter()
+            .any(|value| value.severity != ContradictionSeverity::Informational)
+        {
             ConsistencyAuditState::Contradictory
         } else if !contradictions.is_empty() || !informational.is_empty() {
             ConsistencyAuditState::Informational
@@ -4794,10 +5219,8 @@ impl GameplayWorld {
                 let range = f64::from(interactable.interaction_range);
                 distance_squared.is_finite() && distance_squared <= range * range
             }
-            crate::guidance::GuidanceAction::CollectItem { item, amount } => self
-                .collectibles
-                .values()
-                .any(|collectible| {
+            crate::guidance::GuidanceAction::CollectItem { item, amount } => {
+                self.collectibles.values().any(|collectible| {
                     let Some(actor) = self.player(player) else {
                         return false;
                     };
@@ -4819,7 +5242,8 @@ impl GameplayWorld {
                     let distance_squared = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
                     let range = f64::from(collectible.interaction_range);
                     distance_squared.is_finite() && distance_squared <= range * range
-                }),
+                })
+            }
             crate::guidance::GuidanceAction::StudyKnowledge(target) => {
                 self.knowledge(target).can_study() && !self.knowledge(target).is_studied()
             }
@@ -4867,12 +5291,16 @@ impl GameplayWorld {
                     self.move_companion_towards_player(companion.entity, player.position, max_step);
                 }
                 CompanionBehavior::Investigate(target) => {
-                    if !self.knowledge_target_exists(target) || !self.knowledge(target).is_detected() {
+                    if !self.knowledge_target_exists(target)
+                        || !self.knowledge(target).is_detected()
+                    {
                         self.transition_companion(companion.entity, CompanionBehavior::Accompany);
                     }
                 }
                 CompanionBehavior::CombatSupport => {
-                    let combat_exists = self.enemies().any(|enemy| enemy.active && !enemy.is_defeated());
+                    let combat_exists = self
+                        .enemies()
+                        .any(|enemy| enemy.active && !enemy.is_defeated());
                     if !combat_exists {
                         self.transition_companion(companion.entity, CompanionBehavior::Accompany);
                     }
@@ -4905,7 +5333,12 @@ impl GameplayWorld {
         let (direction_x, direction_y, direction_z, remaining) = if distance == 0.0 {
             (1.0, 0.0, 0.0, desired)
         } else {
-            (-dx / distance, -dy / distance, -dz / distance, distance - desired)
+            (
+                -dx / distance,
+                -dy / distance,
+                -dz / distance,
+                distance - desired,
+            )
         };
         let step = remaining.min(max_step);
         let position = engine::Vec3 {
@@ -4920,7 +5353,10 @@ impl GameplayWorld {
         if let Some(updated) = self.companions.get_mut(&entity) {
             updated.position = position;
         }
-        self.publish(crate::events::GameplayEvent::CompanionMoved { companion: entity, position });
+        self.publish(crate::events::GameplayEvent::CompanionMoved {
+            companion: entity,
+            position,
+        });
     }
     fn transition_companion(&mut self, entity: EntityId, behavior: CompanionBehavior) {
         if let Some(companion) = self.companions.get_mut(&entity) {
@@ -4928,7 +5364,10 @@ impl GameplayWorld {
                 return;
             }
             companion.behavior = behavior;
-            self.publish(crate::events::GameplayEvent::CompanionBehaviorChanged { companion: entity, behavior });
+            self.publish(crate::events::GameplayEvent::CompanionBehaviorChanged {
+                companion: entity,
+                behavior,
+            });
         }
     }
     pub fn guidance_for_player(
@@ -4957,10 +5396,7 @@ impl GameplayWorld {
     pub fn current_group_scaling(&self) -> GameplayScaling {
         GameplayScaling::for_group_size(self.group_size())
     }
-    pub fn scaling_for_player(
-        &self,
-        player: EntityId,
-    ) -> Result<GameplayScaling, ScalingError> {
+    pub fn scaling_for_player(&self, player: EntityId) -> Result<GameplayScaling, ScalingError> {
         let Some(player_state) = self.player(player) else {
             return Err(ScalingError::PlayerNotFound);
         };
@@ -5311,13 +5747,19 @@ impl GameplayWorld {
             .landing_available(destination, self.time().elapsed)
     }
     pub fn request_planet_landing(&mut self, destination: DestinationId) -> bool {
-        if !self.navigation.landing_available(destination, self.time().elapsed) {
+        if !self
+            .navigation
+            .landing_available(destination, self.time().elapsed)
+        {
             return false;
         }
         let Some(ship) = self.navigation.ship_id() else {
             return false;
         };
-        if !self.navigation.request_landing(destination, self.time().elapsed) {
+        if !self
+            .navigation
+            .request_landing(destination, self.time().elapsed)
+        {
             return false;
         }
         self.publish(crate::events::GameplayEvent::PlanetLandingRequested {
@@ -5409,13 +5851,19 @@ impl GameplayWorld {
         })
     }
     pub fn ship_speed_limit(&self) -> Option<f32> {
-        self.navigation.ship_id().map(|_| self.navigation.speed_limit())
+        self.navigation
+            .ship_id()
+            .map(|_| self.navigation.speed_limit())
     }
     pub fn ship_shield_active(&self, ship: EntityId) -> bool {
         self.ship_shields.contains(&ship)
     }
     pub(crate) fn set_ship_shield_active(&mut self, ship: EntityId, active: bool) -> bool {
-        if active { self.ship_shields.insert(ship) } else { self.ship_shields.remove(&ship) }
+        if active {
+            self.ship_shields.insert(ship)
+        } else {
+            self.ship_shields.remove(&ship)
+        }
     }
     pub(crate) fn set_ship_boost_active(&mut self, active: bool) -> bool {
         self.navigation.set_boost_active(active)
@@ -5539,20 +5987,30 @@ impl GameplayWorld {
         destination: DestinationId,
         item: crate::types::ItemId,
     ) -> Option<crate::world_activity::TradeOffer> {
-        self.functional_world(destination)?.activities.iter().find_map(|activity| {
-            if let WorldActivity::Trade(market) = activity {
-                market.offers.iter().find(|offer| offer.item == item).cloned()
-            } else {
-                None
-            }
-        })
+        self.functional_world(destination)?
+            .activities
+            .iter()
+            .find_map(|activity| {
+                if let WorldActivity::Trade(market) = activity {
+                    market
+                        .offers
+                        .iter()
+                        .find(|offer| offer.item == item)
+                        .cloned()
+                } else {
+                    None
+                }
+            })
     }
     pub fn register_functional_world(
         &mut self,
         functional_world: FunctionalWorld,
     ) -> Result<(), FunctionalWorldError> {
         functional_world.validate()?;
-        if self.functional_worlds.contains_key(&functional_world.destination) {
+        if self
+            .functional_worlds
+            .contains_key(&functional_world.destination)
+        {
             return Err(FunctionalWorldError::DuplicateDestination);
         }
         let Some(destination) = self.destination(functional_world.destination) else {
@@ -5639,12 +6097,12 @@ impl GameplayWorld {
             {
                 return Err(SpatialEncounterError::DestinationNotFound)
             }
-            SpatialEncounterKind::Hazard { hazard } if self.environmental_hazard(hazard).is_none() => {
+            SpatialEncounterKind::Hazard { hazard }
+                if self.environmental_hazard(hazard).is_none() =>
+            {
                 return Err(SpatialEncounterError::HazardNotFound)
             }
-            SpatialEncounterKind::Resource { item, .. }
-                if self.item_definition(item).is_none() =>
-            {
+            SpatialEncounterKind::Resource { item, .. } if self.item_definition(item).is_none() => {
                 return Err(SpatialEncounterError::ItemDefinitionNotFound)
             }
             _ => {}
@@ -5791,7 +6249,9 @@ impl GameplayWorld {
             .navigation
             .ship_id()
             .filter(|ship| self.ship_has_upgrade(*ship, ShipUpgrade::WeaponCalibrationI))
-            .map_or(0, |_| ShipUpgrade::WeaponCalibrationI.weapon_damage_bonus_percent());
+            .map_or(0, |_| {
+                ShipUpgrade::WeaponCalibrationI.weapon_damage_bonus_percent()
+            });
         let scaled = u64::from(amount).checked_mul(u64::from(100 + bonus))?;
         u32::try_from(scaled.checked_add(99)? / 100).ok()
     }
@@ -5800,7 +6260,9 @@ impl GameplayWorld {
         self.navigation
             .ship_id()
             .filter(|ship| self.ship_has_upgrade(*ship, ShipUpgrade::EngineEfficiencyI))
-            .map_or(0, |_| ShipUpgrade::EngineEfficiencyI.fuel_discount_percent())
+            .map_or(0, |_| {
+                ShipUpgrade::EngineEfficiencyI.fuel_discount_percent()
+            })
     }
     pub fn ship_fuel(&self, ship: EntityId) -> Option<FuelTank> {
         self.ship_resources
@@ -6125,8 +6587,12 @@ impl GameplayWorld {
             }
             return Ok(());
         }
-        let sender = self.player(from).ok_or(InventoryTransferError::PlayerNotFound)?;
-        let receiver = self.player(to).ok_or(InventoryTransferError::PlayerNotFound)?;
+        let sender = self
+            .player(from)
+            .ok_or(InventoryTransferError::PlayerNotFound)?;
+        let receiver = self
+            .player(to)
+            .ok_or(InventoryTransferError::PlayerNotFound)?;
         if from == to {
             return Err(InventoryTransferError::SamePlayer);
         }
@@ -6173,7 +6639,9 @@ impl GameplayWorld {
         updated_source
             .try_remove(item, amount)
             .map_err(|error| match error {
-                InventoryError::InsufficientQuantity => InventoryTransferError::InsufficientQuantity,
+                InventoryError::InsufficientQuantity => {
+                    InventoryTransferError::InsufficientQuantity
+                }
                 InventoryError::InvalidQuantity => InventoryTransferError::InvalidQuantity,
                 _ => InventoryTransferError::ArithmeticOverflow,
             })?;
@@ -6183,7 +6651,8 @@ impl GameplayWorld {
                 InventoryError::CapacityExceeded => InventoryTransferError::CapacityExceeded,
                 InventoryError::InvalidQuantity => InventoryTransferError::InvalidQuantity,
                 InventoryError::ArithmeticOverflow => InventoryTransferError::ArithmeticOverflow,
-                InventoryError::InsufficientQuantity | InventoryError::PlayerNotFound
+                InventoryError::InsufficientQuantity
+                | InventoryError::PlayerNotFound
                 | InventoryError::AlreadyInitialized
                 | InventoryError::InvalidCapacity => InventoryTransferError::ArithmeticOverflow,
             })?;
@@ -6307,17 +6776,14 @@ impl GameplayWorld {
             .map(|player| player.entity_id)
             .collect();
         for player in players {
-            let defeated = self
-                .combatants
-                .get_mut(&player)
-                .is_some_and(|combatant| {
-                    if !combatant.is_player || combatant.is_defeated() {
-                        return false;
-                    }
-                    combatant.current_health = 0;
-                    combatant.active = false;
-                    true
-                });
+            let defeated = self.combatants.get_mut(&player).is_some_and(|combatant| {
+                if !combatant.is_player || combatant.is_defeated() {
+                    return false;
+                }
+                combatant.current_health = 0;
+                combatant.active = false;
+                true
+            });
             if defeated {
                 self.deactivate_entity(player);
                 self.publish(crate::events::GameplayEvent::PlayerDefeated { player });
@@ -6344,19 +6810,29 @@ impl GameplayWorld {
 
     fn record_visual_event(&mut self, event: &crate::events::GameplayEvent) {
         let (kind, source, target, position) = match event {
-            crate::events::GameplayEvent::AttackExecuted { attacker, target, .. } => (
+            crate::events::GameplayEvent::AttackExecuted {
+                attacker, target, ..
+            } => (
                 GameplayVisualEventKind::Attack,
                 Some(*attacker),
                 Some(*target),
-                self.combatants.get(target).map(|combatant| combatant.position),
+                self.combatants
+                    .get(target)
+                    .map(|combatant| combatant.position),
             ),
             crate::events::GameplayEvent::EnemyDefeated { enemy, .. } => (
                 GameplayVisualEventKind::EnemyDefeated,
                 Some(*enemy),
                 None,
-                self.combatants.get(enemy).map(|combatant| combatant.position),
+                self.combatants
+                    .get(enemy)
+                    .map(|combatant| combatant.position),
             ),
-            crate::events::GameplayEvent::ItemCollected { player, collectible, .. } => (
+            crate::events::GameplayEvent::ItemCollected {
+                player,
+                collectible,
+                ..
+            } => (
                 GameplayVisualEventKind::ItemCollected,
                 Some(*player),
                 Some(*collectible),
@@ -6829,13 +7305,12 @@ impl GameplayWorld {
         let Some(position) = self.ship_position() else {
             return Err(WorldActivityError::OutOfRange);
         };
-        let Some(distance) = crate::encounter::distance_squared(position, destination_data.position)
+        let Some(distance) =
+            crate::encounter::distance_squared(position, destination_data.position)
         else {
             return Err(WorldActivityError::OutOfRange);
         };
-        if distance
-            > f64::from(world.interaction_range) * f64::from(world.interaction_range)
-        {
+        if distance > f64::from(world.interaction_range) * f64::from(world.interaction_range) {
             return Err(WorldActivityError::OutOfRange);
         }
         Ok(world)
@@ -6855,7 +7330,9 @@ impl GameplayWorld {
             .activities
             .iter()
             .find_map(|activity| match activity {
-                WorldActivity::Trade(market) => market.offers.iter().find(|offer| offer.item == item),
+                WorldActivity::Trade(market) => {
+                    market.offers.iter().find(|offer| offer.item == item)
+                }
                 _ => None,
             })
             .cloned()
@@ -6923,24 +7400,33 @@ impl GameplayWorld {
         if self.navigation.ship_id() != Some(ship) {
             return Err(WorldActivityError::ShipNotOperational);
         }
-        if !world.activities.iter().any(|activity| matches!(activity, WorldActivity::Trade(_))) {
+        if !world
+            .activities
+            .iter()
+            .any(|activity| matches!(activity, WorldActivity::Trade(_)))
+        {
             return Err(WorldActivityError::ActivityNotFound);
         }
         if self.ship_has_upgrade(ship, upgrade) {
             return Err(WorldActivityError::UpgradeAlreadyInstalled);
         }
-        let balance = self.player_currency(player).ok_or(WorldActivityError::PlayerNotFound)?;
+        let balance = self
+            .player_currency(player)
+            .ok_or(WorldActivityError::PlayerNotFound)?;
         if balance < upgrade.credit_cost() {
             return Err(WorldActivityError::InsufficientFunds);
         }
-        let inventory = self.inventory(player).ok_or(WorldActivityError::InventoryInsufficient)?;
+        let inventory = self
+            .inventory(player)
+            .ok_or(WorldActivityError::InventoryInsufficient)?;
         let mut inventory_after = inventory.clone();
         inventory_after
             .try_remove(upgrade.material(), upgrade.material_cost())
             .map_err(|_| WorldActivityError::InventoryInsufficient)?;
         self.ship_upgrades.entry(ship).or_default().insert(upgrade);
         self.replace_inventory(player, inventory_after);
-        self.currencies.insert(player, balance - upgrade.credit_cost());
+        self.currencies
+            .insert(player, balance - upgrade.credit_cost());
         self.publish(crate::events::GameplayEvent::ShipUpgradeInstalled {
             player,
             ship,
@@ -6966,7 +7452,9 @@ impl GameplayWorld {
             .activities
             .iter()
             .find_map(|activity| match activity {
-                WorldActivity::Trade(market) => market.offers.iter().find(|offer| offer.item == item),
+                WorldActivity::Trade(market) => {
+                    market.offers.iter().find(|offer| offer.item == item)
+                }
                 _ => None,
             })
             .cloned()
@@ -7380,7 +7868,8 @@ impl GameplayWorld {
         let Some(resources) = self.ship_resources.get_mut(&ship) else {
             return Err(crate::navigation::NavigationStartError::ResourcesNotInitialized);
         };
-        self.navigation.start_travel(now, resources.fuel_mut(), discount_percent)
+        self.navigation
+            .start_travel(now, resources.fuel_mut(), discount_percent)
     }
     pub(crate) fn start_free_navigation(
         &mut self,
@@ -7429,14 +7918,26 @@ impl GameplayWorld {
         let Some(resources) = self.ship_resources.get_mut(&ship) else {
             return Err(crate::navigation::AutopilotError::DestinationNotFound);
         };
-        self.navigation
-            .start_autopilot(now, resources.fuel_mut(), player, pilot_station, discount_percent)
+        self.navigation.start_autopilot(
+            now,
+            resources.fuel_mut(),
+            player,
+            pilot_station,
+            discount_percent,
+        )
     }
     pub(crate) fn advance_autopilot_leg(
         &mut self,
         now: engine::Duration,
     ) -> Result<
-        Option<(EntityId, EntityId, DestinationId, engine::Duration, u32, u32)>,
+        Option<(
+            EntityId,
+            EntityId,
+            DestinationId,
+            engine::Duration,
+            u32,
+            u32,
+        )>,
         crate::navigation::AutopilotError,
     > {
         let Some(ship) = self.navigation.ship_id() else {
@@ -7543,13 +8044,19 @@ fn classify_position_on_route(
     }
     let mut nearest: Option<(usize, f64)> = None;
     for segment in 0..route.len() - 1 {
-        let Some(from) = world.destination(route[segment]).map(|value| value.position) else {
+        let Some(from) = world
+            .destination(route[segment])
+            .map(|value| value.position)
+        else {
             return NavigationRouteRisk {
                 source,
                 classification: NavigationRouteRiskClassification::NotEvaluable,
             };
         };
-        let Some(to) = world.destination(route[segment + 1]).map(|value| value.position) else {
+        let Some(to) = world
+            .destination(route[segment + 1])
+            .map(|value| value.position)
+        else {
             return NavigationRouteRisk {
                 source,
                 classification: NavigationRouteRiskClassification::NotEvaluable,
@@ -7584,7 +8091,10 @@ fn classify_position_on_route(
     } else {
         NavigationRouteRiskClassification::OutsideMargin { segment, distance }
     };
-    NavigationRouteRisk { source, classification }
+    NavigationRouteRisk {
+        source,
+        classification,
+    }
 }
 
 fn point_segment_distance_squared(
@@ -7617,9 +8127,7 @@ fn point_segment_distance_squared(
     distance_squared.is_finite().then_some(distance_squared)
 }
 
-fn navigation_route_risk_sort_key(
-    risk: &NavigationRouteRisk,
-) -> (u8, u64, u8, usize) {
+fn navigation_route_risk_sort_key(risk: &NavigationRouteRisk) -> (u8, u64, u8, usize) {
     let (source_kind, source_id) = match risk.source {
         NavigationRouteRiskSource::Hazard(id) => (0_u8, u64::from(id.value())),
         NavigationRouteRiskSource::Encounter(id) => (1_u8, u64::from(id.value())),
@@ -7630,7 +8138,12 @@ fn navigation_route_risk_sort_key(
         NavigationRouteRiskClassification::NotEvaluable => (2_u8, usize::MAX),
         NavigationRouteRiskClassification::Resolved => (3_u8, usize::MAX),
     };
-    (source_kind, source_id, classification_kind.0, classification_kind.1)
+    (
+        source_kind,
+        source_id,
+        classification_kind.0,
+        classification_kind.1,
+    )
 }
 
 fn summarize_route(
@@ -7696,7 +8209,8 @@ fn summarize_route(
         critical_risks,
         active_risks,
         unevaluable_risks,
-        viable: ship_operational && fuel_available.is_some_and(|available| available >= fuel_required),
+        viable: ship_operational
+            && fuel_available.is_some_and(|available| available >= fuel_required),
     })
 }
 
@@ -7720,7 +8234,10 @@ fn enumerate_navigation_paths(
     }
     let next_destinations = world
         .navigation_routes()
-        .filter(|route| route.from == current && route.state == crate::navigation::NavigationRouteState::Available)
+        .filter(|route| {
+            route.from == current
+                && route.state == crate::navigation::NavigationRouteState::Available
+        })
         .map(|route| route.to)
         .collect::<Vec<_>>();
     for next in next_destinations {
@@ -7737,13 +8254,18 @@ fn enumerate_navigation_paths(
 fn route_risk_is_critical(world: &GameplayWorld, source: NavigationRouteRiskSource) -> bool {
     match source {
         NavigationRouteRiskSource::Hazard(_) => true,
-        NavigationRouteRiskSource::Encounter(id) => world
-            .spatial_encounter(id)
-            .is_some_and(|encounter| matches!(encounter.kind, SpatialEncounterKind::Hostile { .. })),
+        NavigationRouteRiskSource::Encounter(id) => {
+            world.spatial_encounter(id).is_some_and(|encounter| {
+                matches!(encounter.kind, SpatialEncounterKind::Hostile { .. })
+            })
+        }
     }
 }
 
-fn compare_route_options(left: &NavigationRouteOption, right: &NavigationRouteOption) -> std::cmp::Ordering {
+fn compare_route_options(
+    left: &NavigationRouteOption,
+    right: &NavigationRouteOption,
+) -> std::cmp::Ordering {
     left.critical_risks
         .cmp(&right.critical_risks)
         .then_with(|| left.active_risks.cmp(&right.active_risks))
@@ -7763,22 +8285,27 @@ fn build_alternative_recommendation(
     alternative: &NavigationRouteOption,
 ) -> Option<NavigationAlternativeRecommendation> {
     let mut current_sources = current.risks.iter().filter_map(|risk| {
-        if matches!(risk.classification, NavigationRouteRiskClassification::NearSegment { .. }) {
+        if matches!(
+            risk.classification,
+            NavigationRouteRiskClassification::NearSegment { .. }
+        ) {
             Some(risk.source)
         } else {
             None
         }
     });
     let alternative_sources = alternative.risks.iter().filter_map(|risk| {
-        if matches!(risk.classification, NavigationRouteRiskClassification::NearSegment { .. }) {
+        if matches!(
+            risk.classification,
+            NavigationRouteRiskClassification::NearSegment { .. }
+        ) {
             Some(risk.source)
         } else {
             None
         }
     });
     let alternative_sources = alternative_sources.collect::<BTreeSet<_>>();
-    let avoided_risk = current_sources
-        .find(|source| !alternative_sources.contains(source));
+    let avoided_risk = current_sources.find(|source| !alternative_sources.contains(source));
     let reason = if let Some(source) = avoided_risk {
         NavigationRecommendationReason::AvoidsKnownRisk(source)
     } else if alternative.critical_risks < current.critical_risks

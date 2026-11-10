@@ -9,30 +9,29 @@ use engine::{Duration, EntityId, Vec3 as GameplayVec3};
 use game::ProjectEchoSession;
 use gameplay::types::ItemId;
 use gameplay::{
-    AttackType, BreakerId, BreakerState, Destination, DestinationId, DestinationType,
-    DiscoveryState, ElectricalBreakerConfiguration, ElectricalPanelConfiguration,
-    EnemyArchetype, EnemyConfiguration, EncounterId, EnvironmentalHazard, GameplayCommand, GameplayEvent,
+    AttackType, BreakerId, BreakerState, Derelict, DerelictId, DerelictReward, Destination,
+    DestinationId, DestinationType, DiscoveryState, ElectricalBreakerConfiguration,
+    ElectricalPanelConfiguration, EncounterId, EnemyArchetype, EnemyConfiguration,
+    EnvironmentalHazard, GameplayCommand, GameplayEvent, InteractionBehavior,
     LifeSupportConfiguration, NavigationRoute, NavigationRouteState,
-    OxygenCompartmentConfiguration, PlanetPhysics, SpatialEncounter, SpatialEncounterKind,
-    Derelict, DerelictId, DerelictReward, InteractionBehavior, RewardDistributionPolicy,
-    StationType, WeaponAmmunition, WeaponConfiguration,
+    OxygenCompartmentConfiguration, PlanetPhysics, RewardDistributionPolicy, SpatialEncounter,
+    SpatialEncounterKind, StationType, WeaponAmmunition, WeaponConfiguration,
 };
 use render_core::{
     GpuAssetState, LightingMode, LodLevel, MaterialHandle, MaterialInfo, MeshHandle,
-    VisualAssetRequest, VisualAssetState,
-    VisualAssets,
+    VisualAssetRequest, VisualAssetState, VisualAssets,
 };
 use render_present::{
     run_hot_swap_window_with_input_and_scene_and_focus_and_assets, visual_asset_channel,
     ElementState, GraphicsDebugConfig, KeyCode, Preset, VisualAssetClient, WindowConfig,
 };
 
-#[path = "gamepad.rs"]
-mod gamepad;
 #[path = "audio.rs"]
 mod audio;
-use gamepad::{ControllerButton, GamepadInput, HapticEvent};
+#[path = "gamepad.rs"]
+mod gamepad;
 use audio::{AudioEvent, AudioManager, SoundEffect};
+use gamepad::{ControllerButton, GamepadInput, HapticEvent};
 
 const ORIGIN: DestinationId = DestinationId::new(9_001);
 const DESTINATION: DestinationId = DestinationId::new(9_002);
@@ -44,9 +43,84 @@ const NARETH_POSITION: GameplayVec3 = GameplayVec3 {
     y: 18.0,
     z: -123.30,
 };
+
+fn echo7_pick_ray(
+    model: &render_core::TexturedModel,
+    origin: render_core::Vec3,
+    direction: render_core::Vec3,
+    transform: render_core::Transform,
+) -> Option<(String, String, f32)> {
+    let inverse = transform.matrix().inverse();
+    let local_origin = inverse.transform_point3(origin);
+    let local_direction = inverse.transform_vector3(direction).normalize_or_zero();
+    let mut best: Option<(String, String, f32)> = None;
+    for part in &model.meshes {
+        let material = part
+            .material_index
+            .and_then(|index| model.materials.get(index))
+            .map(|value| value.name.as_str())
+            .unwrap_or("<sin material>");
+        for triangle in part.mesh.indices.chunks_exact(3) {
+            let a = part.mesh.vertices[triangle[0] as usize].position;
+            let b = part.mesh.vertices[triangle[1] as usize].position;
+            let c = part.mesh.vertices[triangle[2] as usize].position;
+            let edge1 = b - a;
+            let edge2 = c - a;
+            let h = local_direction.cross(edge2);
+            let determinant = edge1.dot(h);
+            if determinant.abs() < 1e-6 {
+                continue;
+            }
+            let inverse_determinant = determinant.recip();
+            let s = local_origin - a;
+            let u = inverse_determinant * s.dot(h);
+            if !(0.0..=1.0).contains(&u) {
+                continue;
+            }
+            let q = s.cross(edge1);
+            let v = inverse_determinant * local_direction.dot(q);
+            if v < 0.0 || u + v > 1.0 {
+                continue;
+            }
+            let distance = inverse_determinant * edge2.dot(q);
+            if distance <= 0.0 {
+                continue;
+            }
+            let world_point = transform
+                .matrix()
+                .transform_point3(local_origin + local_direction * distance);
+            let world_distance = world_point.distance(origin);
+            if best
+                .as_ref()
+                .is_none_or(|current| world_distance < current.2)
+            {
+                best = Some((part.name.clone(), material.to_owned(), world_distance));
+            }
+        }
+    }
+    best
+}
+
+fn echo7_viewport_ray(
+    camera: render_core::Camera,
+    pixel_x: f32,
+    pixel_y: f32,
+    width: f32,
+    height: f32,
+) -> (render_core::Vec3, render_core::Vec3) {
+    let ndc_x = (2.0 * (pixel_x + 0.5) / width) - 1.0;
+    let ndc_y = 1.0 - (2.0 * (pixel_y + 0.5) / height);
+    let inverse = (camera.projection_matrix() * camera.view_matrix()).inverse();
+    let near = inverse * render_core::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+    let far = inverse * render_core::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+    let near = near.truncate() / near.w;
+    let far = far.truncate() / far.w;
+    (near, (far - near).normalize_or_zero())
+}
 const NARETH_RESOURCE_ID: &str = "planet.nareth";
 const NARETH_MODEL_RELATIVE_PATH: &str = "../../assets/models/seraphim/Seraphim_planet.obj";
-const NARETH_MODEL_SHA256: &str = "E7CF257E50AE7A51DA3D09E2D69F3313F780616AA23F5026D1649C0783486B93";
+const NARETH_MODEL_SHA256: &str =
+    "E7CF257E50AE7A51DA3D09E2D69F3313F780616AA23F5026D1649C0783486B93";
 const TESSARA_POSITION: GameplayVec3 = GameplayVec3 {
     x: -49.17,
     y: 8.0,
@@ -145,8 +219,11 @@ impl FeedbackAggregate {
                 .get(index)
                 .map(|value| format!("{value:?}"))
                 .unwrap_or_else(|| "comando_desconocido".to_owned());
-            self.steps
-                .push(format!("paso{}={command}:{:?}", self.evaluated - results.len() + index + 1, result.status));
+            self.steps.push(format!(
+                "paso{}={command}:{:?}",
+                self.evaluated - results.len() + index + 1,
+                result.status
+            ));
         }
         self.events.extend(events);
     }
@@ -280,6 +357,7 @@ struct VisualBridge {
     visual_asset_states: BTreeMap<String, VisualAssetState>,
     gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, u64, GpuAssetState)>,
     nareth_diag_snapshot_mesh: Option<MeshHandle>,
+    echo7_pick_requested: bool,
 }
 
 impl VisualBridge {
@@ -324,7 +402,11 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_010),
-                    exterior_position(GameplayVec3 { x: 70.0, y: 0.0, z: 70.0 }),
+                    exterior_position(GameplayVec3 {
+                        x: 70.0,
+                        y: 0.0,
+                        z: 70.0,
+                    }),
                     3.5,
                 )
                 .with_rewards(
@@ -338,7 +420,11 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_011),
-                    exterior_position(GameplayVec3 { x: -80.0, y: 0.0, z: 40.0 }),
+                    exterior_position(GameplayVec3 {
+                        x: -80.0,
+                        y: 0.0,
+                        z: 40.0,
+                    }),
                     3.5,
                 )
                 .with_rewards(
@@ -352,33 +438,54 @@ impl VisualBridge {
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_012),
-                    exterior_position(GameplayVec3 { x: 55.0, y: 0.0, z: -85.0 }),
+                    exterior_position(GameplayVec3 {
+                        x: 55.0,
+                        y: 0.0,
+                        z: -85.0,
+                    }),
                     3.5,
                 )
                 .with_rewards(
-                    vec![DerelictReward { item: gameplay::FUEL_RESOURCE_ITEM, amount: 4 }],
+                    vec![DerelictReward {
+                        item: gameplay::FUEL_RESOURCE_ITEM,
+                        amount: 4,
+                    }],
                     RewardDistributionPolicy::Shared,
                 ),
             },
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_013),
-                    exterior_position(GameplayVec3 { x: -70.0, y: 0.0, z: -65.0 }),
+                    exterior_position(GameplayVec3 {
+                        x: -70.0,
+                        y: 0.0,
+                        z: -65.0,
+                    }),
                     3.5,
                 )
                 .with_rewards(
-                    vec![DerelictReward { item: gameplay::OXYGEN_RESOURCE_ITEM, amount: 4 }],
+                    vec![DerelictReward {
+                        item: gameplay::OXYGEN_RESOURCE_ITEM,
+                        amount: 4,
+                    }],
                     RewardDistributionPolicy::Shared,
                 ),
             },
             GameplayCommand::RegisterDerelict {
                 derelict: Derelict::new(
                     DerelictId::new(9_014),
-                    exterior_position(GameplayVec3 { x: 95.0, y: 0.0, z: 35.0 }),
+                    exterior_position(GameplayVec3 {
+                        x: 95.0,
+                        y: 0.0,
+                        z: 35.0,
+                    }),
                     3.5,
                 )
                 .with_rewards(
-                    vec![DerelictReward { item: gameplay::types::ItemId(1), amount: 2 }],
+                    vec![DerelictReward {
+                        item: gameplay::types::ItemId(1),
+                        amount: 2,
+                    }],
                     RewardDistributionPolicy::Shared,
                 ),
             },
@@ -513,7 +620,11 @@ impl VisualBridge {
             },
             orbit_radius: game::render_bridge::PLANET_ORBIT_RADIUS,
             orbit_start: GameplayVec3::ZERO,
-            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
+            orbit_axis: GameplayVec3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
             orbit_phase: 0.0,
             orbit_angular_speed: game::render_bridge::PLANET_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
@@ -533,7 +644,11 @@ impl VisualBridge {
             },
             orbit_radius: game::render_bridge::TESSARA_ORBIT_RADIUS,
             orbit_start: TESSARA_POSITION,
-            orbit_axis: GameplayVec3 { x: 49.17, y: 0.0, z: 49.17 },
+            orbit_axis: GameplayVec3 {
+                x: 49.17,
+                y: 0.0,
+                z: 49.17,
+            },
             orbit_phase: 0.0,
             orbit_angular_speed: game::render_bridge::TESSARA_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
@@ -553,7 +668,11 @@ impl VisualBridge {
             },
             orbit_radius: game::render_bridge::KHARVEX_ORBIT_RADIUS,
             orbit_start: KHARVEX_POSITION,
-            orbit_axis: GameplayVec3 { x: 70.2, y: 0.0, z: -70.2 },
+            orbit_axis: GameplayVec3 {
+                x: 70.2,
+                y: 0.0,
+                z: -70.2,
+            },
             orbit_phase: game::render_bridge::KHARVEX_ORBIT_PHASE_RAD,
             orbit_angular_speed: game::render_bridge::KHARVEX_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
             surface_radius: game::render_bridge::KHARVEX_SURFACE_RADIUS,
@@ -590,22 +709,26 @@ impl VisualBridge {
         }
         if initial_ship_position != GameplayVec3::ZERO
             && !session.world_mut().configure_solar_physics(PlanetPhysics {
-            destination: gameplay::SUN_DESTINATION_ID,
-            orbit_center: GameplayVec3 {
-                x: 0.0,
-                y: 0.0,
-                z: -18.0,
-            },
-            orbit_radius: 0.0,
-            orbit_start: GameplayVec3::ZERO,
-            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
-            orbit_phase: 0.0,
-            orbit_angular_speed: 0.0,
-            surface_radius: 12.0,
-            ship_radius: 1.0,
-            gravity_influence_radius: 80.0,
-            gravitational_parameter: 500.0,
-            atmosphere_height: 0.0,
+                destination: gameplay::SUN_DESTINATION_ID,
+                orbit_center: GameplayVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -18.0,
+                },
+                orbit_radius: 0.0,
+                orbit_start: GameplayVec3::ZERO,
+                orbit_axis: GameplayVec3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+                orbit_phase: 0.0,
+                orbit_angular_speed: 0.0,
+                surface_radius: 12.0,
+                ship_radius: 1.0,
+                gravity_influence_radius: 80.0,
+                gravitational_parameter: 500.0,
+                atmosphere_height: 0.0,
             })
         {
             return Err("configurar la física solar visual".to_owned());
@@ -632,14 +755,22 @@ impl VisualBridge {
         };
         let pilot_station = session
             .create_station(
-                interior_position(GameplayVec3 { x: 0.0, y: 0.0, z: 1.5 }),
+                interior_position(GameplayVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.5,
+                }),
                 3.0,
                 StationType::Piloting,
             )
             .map_err(|error| format!("crear estación visual: {error:?}"))?;
         let engineering_station = session
             .create_station(
-                interior_position(GameplayVec3 { x: 2.5, y: 0.0, z: 0.0 }),
+                interior_position(GameplayVec3 {
+                    x: 2.5,
+                    y: 0.0,
+                    z: 0.0,
+                }),
                 3.0,
                 StationType::Engineering,
             )
@@ -706,8 +837,8 @@ impl VisualBridge {
                 3.0,
             )
             .map_err(|error| format!("crear puerta del puente visual: {error:?}"))?;
-        
-            let enemy_position = if interior_mode && safe_interior_enemy_start {
+
+        let enemy_position = if interior_mode && safe_interior_enemy_start {
             interior_position(GameplayVec3 {
                 x: 24.0,
                 y: 0.0,
@@ -720,10 +851,8 @@ impl VisualBridge {
                 z: -18.0,
             }
         };
-        let enemy_configuration = EnemyConfiguration::for_archetype(
-            EnemyArchetype::Shooter,
-            enemy_position,
-        );
+        let enemy_configuration =
+            EnemyConfiguration::for_archetype(EnemyArchetype::Shooter, enemy_position);
         session.update([
             GameplayCommand::ConfigureSignalScanner {
                 ship,
@@ -857,15 +986,13 @@ impl VisualBridge {
             visual_asset_states: BTreeMap::new(),
             gpu_asset_states: BTreeMap::new(),
             nareth_diag_snapshot_mesh: None,
+            echo7_pick_requested: false,
         })
     }
 
     fn new_visual_runtime() -> Result<Self, String> {
-        let mut bridge = Self::new_with_mode_and_enemy_distance(
-            true,
-            true,
-            VISUAL_INITIAL_SHIP_POSITION,
-        )?;
+        let mut bridge =
+            Self::new_with_mode_and_enemy_distance(true, true, VISUAL_INITIAL_SHIP_POSITION)?;
         bridge.started = false;
         bridge.feedback = "ASTRAL ECHO - PULSA ENTER PARA COMENZAR".to_owned();
         Ok(bridge)
@@ -1011,7 +1138,9 @@ impl VisualBridge {
 
     fn request_nareth_visual_asset(&mut self) {
         let request = nareth_visual_asset_request();
-        let size = std::fs::metadata(&request.path).map(|metadata| metadata.len()).ok();
+        let size = std::fs::metadata(&request.path)
+            .map(|metadata| metadata.len())
+            .ok();
         let resource_id = request.resource_id.clone();
         let path = request.path.clone();
         let requested = self.request_visual_asset(
@@ -1055,7 +1184,8 @@ impl VisualBridge {
         if !self.started || self.player_defeated {
             return;
         }
-        self.session.update([GameplayCommand::AdvanceTime { delta }]);
+        self.session
+            .update([GameplayCommand::AdvanceTime { delta }]);
         self.update_planet_surface_transition();
         self.activate_introductory_threat_if_ready();
         self.refresh_player_defeat_state();
@@ -1082,9 +1212,9 @@ impl VisualBridge {
         let results = self.session.update(commands.clone());
         self.activate_introductory_threat_if_ready();
         self.refresh_player_defeat_state();
-        let accepted = results.iter().all(|result| {
-            matches!(result.status, gameplay::CommandStatus::Success { .. })
-        });
+        let accepted = results
+            .iter()
+            .all(|result| matches!(result.status, gameplay::CommandStatus::Success { .. }));
         let events = self
             .session
             .world()
@@ -1178,21 +1308,23 @@ impl VisualBridge {
             self.inventory_open = !self.inventory_open;
             return;
         }
+        if state == ElementState::Pressed && key == KeyCode::F4 {
+            self.echo7_pick_requested = true;
+            return;
+        }
         if self.controls_panel_open {
             return;
         }
         if self.pilot_mode && state == ElementState::Pressed {
             match key {
                 KeyCode::PageUp | KeyCode::Equal => {
-                    self.pilot_camera_distance =
-                        (self.pilot_camera_distance - 2.0)
-                            .max(game::render_bridge::PILOT_CAMERA_MIN_DISTANCE);
+                    self.pilot_camera_distance = (self.pilot_camera_distance - 2.0)
+                        .max(game::render_bridge::PILOT_CAMERA_MIN_DISTANCE);
                     return;
                 }
                 KeyCode::PageDown | KeyCode::Minus => {
-                    self.pilot_camera_distance =
-                        (self.pilot_camera_distance + 2.0)
-                            .min(game::render_bridge::PILOT_CAMERA_MAX_DISTANCE);
+                    self.pilot_camera_distance = (self.pilot_camera_distance + 2.0)
+                        .min(game::render_bridge::PILOT_CAMERA_MAX_DISTANCE);
                     return;
                 }
                 _ => {}
@@ -1239,18 +1371,18 @@ impl VisualBridge {
             if state == ElementState::Pressed {
                 match key {
                     KeyCode::KeyO => self.toggle_observation(),
-                    KeyCode::ArrowLeft => {
-                        self.observation.adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0)
-                    }
+                    KeyCode::ArrowLeft => self
+                        .observation
+                        .adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0),
                     KeyCode::ArrowRight => {
                         self.observation.adjust_orbit(OBSERVATION_AZIMUTH_STEP, 0.0)
                     }
-                    KeyCode::ArrowUp => {
-                        self.observation.adjust_orbit(0.0, OBSERVATION_ELEVATION_STEP)
-                    }
-                    KeyCode::ArrowDown => {
-                        self.observation.adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP)
-                    }
+                    KeyCode::ArrowUp => self
+                        .observation
+                        .adjust_orbit(0.0, OBSERVATION_ELEVATION_STEP),
+                    KeyCode::ArrowDown => self
+                        .observation
+                        .adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP),
                     _ => {}
                 }
             }
@@ -1379,36 +1511,50 @@ impl VisualBridge {
             KeyCode::KeyO => self.toggle_observation(),
             KeyCode::ArrowLeft if self.interior_mode || self.pilot_mode => {
                 self.look_left = true;
-                if self.interior_mode { self.rotate_player(-6.0, 0.0); }
+                if self.interior_mode {
+                    self.rotate_player(-6.0, 0.0);
+                }
                 if self.pilot_mode {
                     self.rotate_ship_from_input(1.0, 0.0);
                 }
             }
             KeyCode::ArrowRight if self.interior_mode || self.pilot_mode => {
                 self.look_right = true;
-                if self.interior_mode { self.rotate_player(6.0, 0.0); }
+                if self.interior_mode {
+                    self.rotate_player(6.0, 0.0);
+                }
                 if self.pilot_mode {
                     self.rotate_ship_from_input(-1.0, 0.0);
                 }
             }
             KeyCode::ArrowUp if self.interior_mode || self.pilot_mode => {
                 self.look_up = true;
-                if self.interior_mode { self.rotate_player(0.0, -4.0); }
+                if self.interior_mode {
+                    self.rotate_player(0.0, -4.0);
+                }
                 if self.pilot_mode {
                     self.rotate_ship_from_input(0.0, -1.0);
                 }
             }
             KeyCode::ArrowDown if self.interior_mode || self.pilot_mode => {
                 self.look_down = true;
-                if self.interior_mode { self.rotate_player(0.0, 4.0); }
+                if self.interior_mode {
+                    self.rotate_player(0.0, 4.0);
+                }
                 if self.pilot_mode {
                     self.rotate_ship_from_input(0.0, 1.0);
                 }
             }
-            KeyCode::ArrowLeft => self.observation.adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0),
+            KeyCode::ArrowLeft => self
+                .observation
+                .adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0),
             KeyCode::ArrowRight => self.observation.adjust_orbit(OBSERVATION_AZIMUTH_STEP, 0.0),
-            KeyCode::ArrowUp => self.observation.adjust_orbit(0.0, OBSERVATION_ELEVATION_STEP),
-            KeyCode::ArrowDown => self.observation.adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP),
+            KeyCode::ArrowUp => self
+                .observation
+                .adjust_orbit(0.0, OBSERVATION_ELEVATION_STEP),
+            KeyCode::ArrowDown => self
+                .observation
+                .adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP),
             _ => {}
         }
     }
@@ -1438,9 +1584,11 @@ impl VisualBridge {
         {
             self.issue_into([GameplayCommand::UnlockMission { mission }], &mut aggregate);
         }
-        if self.session.mission_progress(mission).is_some_and(|value| {
-            value.state == gameplay::domains::mission::MissionState::Available
-        }) {
+        if self
+            .session
+            .mission_progress(mission)
+            .is_some_and(|value| value.state == gameplay::domains::mission::MissionState::Available)
+        {
             if mission == crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA
                 && !self.mission_two_destinations_compatible()
             {
@@ -1455,7 +1603,8 @@ impl VisualBridge {
                 println!("visual gameplay: {}", self.feedback);
                 return;
             }
-            let started = self.issue_into([GameplayCommand::StartMission { mission }], &mut aggregate);
+            let started =
+                self.issue_into([GameplayCommand::StartMission { mission }], &mut aggregate);
             if started && mission == crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA {
                 if !self.prepare_mission_two(&mut aggregate) {
                     self.feedback = "MISSION 2 PREPARACION FALLIDA".to_owned();
@@ -1484,15 +1633,19 @@ impl VisualBridge {
                     return;
                 }
             }
-        } else if self.session.mission_progress(mission).is_some_and(|value| {
-            value.state == gameplay::domains::mission::MissionState::Active
-        }) {
+        } else if self
+            .session
+            .mission_progress(mission)
+            .is_some_and(|value| value.state == gameplay::domains::mission::MissionState::Active)
+        {
             self.feedback = "MISION YA ACTIVA".to_owned();
             println!("visual gameplay: {}", self.feedback);
             return;
-        } else if self.session.mission_progress(mission).is_some_and(|value| {
-            value.state == gameplay::domains::mission::MissionState::Completed
-        }) {
+        } else if self
+            .session
+            .mission_progress(mission)
+            .is_some_and(|value| value.state == gameplay::domains::mission::MissionState::Completed)
+        {
             self.feedback = "MISION YA COMPLETADA".to_owned();
             println!("visual gameplay: {}", self.feedback);
             return;
@@ -1536,9 +1689,7 @@ impl VisualBridge {
     fn destination_is_compatible(existing: &Destination, expected: &Destination) -> bool {
         let discovery_compatible = match expected.discovery {
             DiscoveryState::Unknown => true,
-            DiscoveryState::Known => {
-                !matches!(existing.discovery, DiscoveryState::Unknown)
-            }
+            DiscoveryState::Known => !matches!(existing.discovery, DiscoveryState::Unknown),
             DiscoveryState::Discovered => existing.discovery == DiscoveryState::Discovered,
         };
         existing.id == expected.id
@@ -1620,14 +1771,9 @@ impl VisualBridge {
         {
             self.enemy = enemy;
         }
-        self.session
-            .world()
-            .enemies()
-            .any(|value| {
-                value.active
-                    && value.archetype == Some(EnemyArchetype::Shooter)
-                    && !value.is_defeated()
-            })
+        self.session.world().enemies().any(|value| {
+            value.active && value.archetype == Some(EnemyArchetype::Shooter) && !value.is_defeated()
+        })
     }
 
     fn mission_three_destination() -> Destination {
@@ -1649,7 +1795,10 @@ impl VisualBridge {
         EnvironmentalHazard::new(
             crate::tormenta_gravitacional::HAZARD,
             gameplay::EnvironmentalHazardType::GravitationalAnomaly,
-            self.session.world().ship_position().unwrap_or(GameplayVec3::ZERO),
+            self.session
+                .world()
+                .ship_position()
+                .unwrap_or(GameplayVec3::ZERO),
             5.0,
             80,
             Duration(1_000),
@@ -2021,20 +2170,29 @@ impl VisualBridge {
                 .interactable(target)
                 .map(|value| value.behavior);
             if target == self.bridge_door {
-                self.issue_into([GameplayCommand::UnlockDoor {
-                    door: self.bridge_door,
-                }], &mut aggregate);
+                self.issue_into(
+                    [GameplayCommand::UnlockDoor {
+                        door: self.bridge_door,
+                    }],
+                    &mut aggregate,
+                );
             }
             if target == self.pilot_station {
-                self.issue_into([GameplayCommand::ReleaseStation {
-                    station: self.pilot_station,
-                    player: self.player,
-                }], &mut aggregate);
+                self.issue_into(
+                    [GameplayCommand::ReleaseStation {
+                        station: self.pilot_station,
+                        player: self.player,
+                    }],
+                    &mut aggregate,
+                );
             }
-            let interaction_accepted = self.issue_into([GameplayCommand::Interact {
-                player: self.player,
-                target,
-            }], &mut aggregate);
+            let interaction_accepted = self.issue_into(
+                [GameplayCommand::Interact {
+                    player: self.player,
+                    target,
+                }],
+                &mut aggregate,
+            );
 
             // Panel interactions authorize the corresponding gameplay systems;
             // the follow-up commands still perform all normal range,
@@ -2042,26 +2200,35 @@ impl VisualBridge {
             if interaction_accepted {
                 match behavior {
                     Some(InteractionBehavior::ElectricalPanel) => {
-                        self.issue_into([GameplayCommand::SetElectricalBreakerState {
-                            player: self.player,
-                            panel: target,
-                            breaker: BreakerId::new(1),
-                            state: BreakerState::On,
-                        }], &mut aggregate);
+                        self.issue_into(
+                            [GameplayCommand::SetElectricalBreakerState {
+                                player: self.player,
+                                panel: target,
+                                breaker: BreakerId::new(1),
+                                state: BreakerState::On,
+                            }],
+                            &mut aggregate,
+                        );
                     }
                     Some(InteractionBehavior::LifeSupportPanel) => {
-                        self.issue_into([GameplayCommand::SetOxygenAllocation {
-                            player: self.player,
-                            panel: target,
-                            compartment: gameplay::CompartmentId::new(1),
-                            allocation: 3,
-                        }], &mut aggregate);
-                        self.issue_into([GameplayCommand::SetOxygenAllocation {
-                            player: self.player,
-                            panel: target,
-                            compartment: gameplay::CompartmentId::new(2),
-                            allocation: 2,
-                        }], &mut aggregate);
+                        self.issue_into(
+                            [GameplayCommand::SetOxygenAllocation {
+                                player: self.player,
+                                panel: target,
+                                compartment: gameplay::CompartmentId::new(1),
+                                allocation: 3,
+                            }],
+                            &mut aggregate,
+                        );
+                        self.issue_into(
+                            [GameplayCommand::SetOxygenAllocation {
+                                player: self.player,
+                                panel: target,
+                                compartment: gameplay::CompartmentId::new(2),
+                                allocation: 2,
+                            }],
+                            &mut aggregate,
+                        );
                     }
                     _ => {}
                 }
@@ -2123,7 +2290,6 @@ impl VisualBridge {
             .world()
             .ship_position()
             .unwrap_or(GameplayVec3::ZERO);
-        let on_upper_deck = player.position.y > 1.0;
         let yaw = player.orientation.yaw_degrees.to_radians();
         let (sin_yaw, cos_yaw) = yaw.sin_cos();
         let mut direction = GameplayVec3 {
@@ -2284,9 +2450,8 @@ impl VisualBridge {
     }
 
     fn contextual_prompt(&self) -> Option<String> {
-        self.contextual_action().map(|action| {
-            format!("{} [{}] {}", action.object, action.key, action.action)
-        })
+        self.contextual_action()
+            .map(|action| format!("{} [{}] {}", action.object, action.key, action.action))
     }
 
     fn contextual_action(&self) -> Option<render_core::HudContextualAction> {
@@ -2294,10 +2459,7 @@ impl VisualBridge {
             if let Some(planet) = self.surface_planet {
                 if let (Some(player), Some(ship_position)) = (
                     self.session.world().player(self.player),
-                    game::render_bridge::surface_ship_position(
-                        self.session.world(),
-                        planet,
-                    ),
+                    game::render_bridge::surface_ship_position(self.session.world(), planet),
                 ) {
                     let dx = player.position.x - ship_position.x;
                     let dy = player.position.y - ship_position.y;
@@ -2360,8 +2522,8 @@ impl VisualBridge {
                 key: "I".to_owned(),
             });
         }
-        self.selected_weapon_collectible().map(|collectible| {
-            render_core::HudContextualAction {
+        self.selected_weapon_collectible()
+            .map(|collectible| render_core::HudContextualAction {
                 target: collectible.entity.value(),
                 object: match collectible.item {
                     gameplay::ENERGY_WEAPON_ITEM => "ARMA DE ENERGIA",
@@ -2371,21 +2533,22 @@ impl VisualBridge {
                 .to_owned(),
                 action: "RECOGER".to_owned(),
                 key: "I".to_owned(),
-            }
-        })
-        .or_else(|| self.selected_resource_collectible().map(|collectible| {
-            render_core::HudContextualAction {
-                target: collectible.entity.value(),
-                object: match collectible.item {
-                    gameplay::FUEL_RESOURCE_ITEM => "COMBUSTIBLE",
-                    gameplay::OXYGEN_RESOURCE_ITEM => "OXIGENO",
-                    _ => "SUMINISTROS",
-                }
-                .to_owned(),
-                action: "RECOGER".to_owned(),
-                key: "I".to_owned(),
-            }
-        }))
+            })
+            .or_else(|| {
+                self.selected_resource_collectible().map(|collectible| {
+                    render_core::HudContextualAction {
+                        target: collectible.entity.value(),
+                        object: match collectible.item {
+                            gameplay::FUEL_RESOURCE_ITEM => "COMBUSTIBLE",
+                            gameplay::OXYGEN_RESOURCE_ITEM => "OXIGENO",
+                            _ => "SUMINISTROS",
+                        }
+                        .to_owned(),
+                        action: "RECOGER".to_owned(),
+                        key: "I".to_owned(),
+                    }
+                })
+            })
     }
 
     fn selected_derelict(&self) -> Option<&gameplay::Derelict> {
@@ -2462,7 +2625,10 @@ impl VisualBridge {
             .filter(|value| {
                 value.active
                     && matches!(
-                        self.session.world().item_definition(value.item).map(|definition| definition.category),
+                        self.session
+                            .world()
+                            .item_definition(value.item)
+                            .map(|definition| definition.category),
                         Some(gameplay::ItemCategory::Fuel)
                             | Some(gameplay::ItemCategory::Oxygen)
                             | Some(gameplay::ItemCategory::RepairMaterial)
@@ -2539,14 +2705,16 @@ impl VisualBridge {
                 .free_navigation_destination()
                 .map(Self::navigation_destination_label)
                 .unwrap_or("NINGUNO");
-            let proposal = self
-                .free_navigation_proposal_status();
+            let proposal = self.free_navigation_proposal_status();
             let autopilot = match self.session.world().autopilot_state() {
                 gameplay::AutopilotState::InTransit { .. }
                     if matches!(
                         self.session.world().travel_state(),
                         gameplay::TravelState::InProgress { .. }
-                    ) => "EN TRANSITO",
+                    ) =>
+                {
+                    "EN TRANSITO"
+                }
                 gameplay::AutopilotState::Completed { .. } => "COMPLETADO",
                 gameplay::AutopilotState::Interrupted { .. } => "CANCELADO",
                 _ => "INACTIVO",
@@ -2576,15 +2744,17 @@ impl VisualBridge {
 
     fn guidance_prompt(&self) -> Option<String> {
         let guidance = self.session.world().guidance_for_player(self.player).ok()?;
-        let objective = guidance.current_objective.and_then(|id| {
-            guidance.objectives.iter().find(|value| value.id == id)
-        });
+        let objective = guidance
+            .current_objective
+            .and_then(|id| guidance.objectives.iter().find(|value| value.id == id));
         let Some(objective) = objective else {
             return self
                 .session
                 .world()
                 .missions()
-                .find(|mission| mission.state() == gameplay::domains::mission::MissionState::Available)
+                .find(|mission| {
+                    mission.state() == gameplay::domains::mission::MissionState::Available
+                })
                 .map(|_| "M INICIAR MISION DISPONIBLE".to_owned())
                 .or_else(|| {
                     self.session
@@ -2626,7 +2796,9 @@ impl VisualBridge {
         } else if self
             .session
             .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
-            .is_some_and(|mission| mission.state == gameplay::domains::mission::MissionState::Active)
+            .is_some_and(|mission| {
+                mission.state == gameplay::domains::mission::MissionState::Active
+            })
         {
             "Q ESCANEAR | P VIAJAR | F ATACAR | E RECOGER | T RECUPERAR".to_owned()
         } else {
@@ -2678,7 +2850,9 @@ impl VisualBridge {
             if self
                 .session
                 .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
-                .is_some_and(|mission| mission.state == gameplay::domains::mission::MissionState::Active)
+                .is_some_and(|mission| {
+                    mission.state == gameplay::domains::mission::MissionState::Active
+                })
             {
                 entries.push("T RECUPERAR - COOPERACION".to_owned());
             }
@@ -2688,16 +2862,22 @@ impl VisualBridge {
 
     fn restore_energy(&mut self) {
         let mut aggregate = FeedbackAggregate::default();
-        self.issue_into([GameplayCommand::Interact {
-            player: self.player,
-            target: self.electrical_panel,
-        }], &mut aggregate);
-        self.issue_into([GameplayCommand::SetElectricalBreakerState {
-            player: self.player,
-            panel: self.electrical_panel,
-            breaker: BreakerId::new(1),
-            state: BreakerState::On,
-        }], &mut aggregate);
+        self.issue_into(
+            [GameplayCommand::Interact {
+                player: self.player,
+                target: self.electrical_panel,
+            }],
+            &mut aggregate,
+        );
+        self.issue_into(
+            [GameplayCommand::SetElectricalBreakerState {
+                player: self.player,
+                panel: self.electrical_panel,
+                breaker: BreakerId::new(1),
+                state: BreakerState::On,
+            }],
+            &mut aggregate,
+        );
         self.finish_issue(aggregate);
     }
 
@@ -2708,49 +2888,65 @@ impl VisualBridge {
             item: gameplay::FUEL_RESOURCE_ITEM,
             amount: 1,
         }]);
-        self.feedback = format!("ABASTECIMIENTO DE COMBUSTIBLE: {:?}", result.first().map(|value| value.status));
+        self.feedback = format!(
+            "ABASTECIMIENTO DE COMBUSTIBLE: {:?}",
+            result.first().map(|value| value.status)
+        );
         println!("visual gameplay: {}", self.feedback);
     }
 
     fn restore_life_support(&mut self) {
         let mut aggregate = FeedbackAggregate::default();
-        self.issue_into([GameplayCommand::Interact {
-            player: self.player,
-            target: self.life_support_panel,
-        }], &mut aggregate);
-        self.issue_into([GameplayCommand::SetOxygenAllocation {
-            player: self.player,
-            panel: self.life_support_panel,
-            compartment: gameplay::CompartmentId::new(1),
-            allocation: 3,
-        }], &mut aggregate);
-        self.issue_into([GameplayCommand::SetOxygenAllocation {
-            player: self.player,
-            panel: self.life_support_panel,
-            compartment: gameplay::CompartmentId::new(2),
-            allocation: 2,
-        }], &mut aggregate);
+        self.issue_into(
+            [GameplayCommand::Interact {
+                player: self.player,
+                target: self.life_support_panel,
+            }],
+            &mut aggregate,
+        );
+        self.issue_into(
+            [GameplayCommand::SetOxygenAllocation {
+                player: self.player,
+                panel: self.life_support_panel,
+                compartment: gameplay::CompartmentId::new(1),
+                allocation: 3,
+            }],
+            &mut aggregate,
+        );
+        self.issue_into(
+            [GameplayCommand::SetOxygenAllocation {
+                player: self.player,
+                panel: self.life_support_panel,
+                compartment: gameplay::CompartmentId::new(2),
+                allocation: 2,
+            }],
+            &mut aggregate,
+        );
         self.finish_issue(aggregate);
     }
 
     fn accelerate_ship(&mut self, player: EntityId, pilot_station: EntityId, input: GameplayVec3) {
         let mut aggregate = FeedbackAggregate::default();
-        self.issue_into([
-            GameplayCommand::AccelerateShip {
-                player,
-                pilot_station,
-                input,
-            },
-            GameplayCommand::AdvanceTime {
-                delta: Duration(100),
-            },
-        ], &mut aggregate);
+        self.issue_into(
+            [
+                GameplayCommand::AccelerateShip {
+                    player,
+                    pilot_station,
+                    input,
+                },
+                GameplayCommand::AdvanceTime {
+                    delta: Duration(100),
+                },
+            ],
+            &mut aggregate,
+        );
         self.finish_issue(aggregate);
     }
 
     fn enter_pilot(&mut self) {
         if self.pilot_mode && !self.mission_one_completed() {
-            self.feedback = "ERICK: primero debo completar la Misión 1 para preparar la nave.".to_owned();
+            self.feedback =
+                "ERICK: primero debo completar la Misión 1 para preparar la nave.".to_owned();
             return;
         }
         let mut aggregate = FeedbackAggregate::default();
@@ -2793,7 +2989,8 @@ impl VisualBridge {
                 &mut aggregate,
             )
         {
-            self.feedback = "ERICK: no puedo abandonar la estación mientras el viaje siga activo.".to_owned();
+            self.feedback =
+                "ERICK: no puedo abandonar la estación mientras el viaje siga activo.".to_owned();
             println!("visual gameplay: {}", self.feedback);
             return;
         }
@@ -2824,7 +3021,8 @@ impl VisualBridge {
                     pilot_station: self.pilot_station,
                     active: true,
                 }]);
-                self.feedback = "ERICK: el viaje fue cancelado, pero no puedo liberar la estación.".to_owned();
+                self.feedback =
+                    "ERICK: el viaje fue cancelado, pero no puedo liberar la estación.".to_owned();
                 println!("visual gameplay: {}", self.feedback);
                 return;
             }
@@ -2841,7 +3039,8 @@ impl VisualBridge {
             self.boost_pressed = false;
             self.shield_active = false;
             self.feedback = if free_autopilot_active {
-                "ERICK: viaje cancelado por abandono de la estación. PILOTAJE FINALIZADO.".to_owned()
+                "ERICK: viaje cancelado por abandono de la estación. PILOTAJE FINALIZADO."
+                    .to_owned()
             } else {
                 "PILOTAJE FINALIZADO - CONTROL DE PERSONAJE RESTAURADO".to_owned()
             };
@@ -2901,8 +3100,7 @@ impl VisualBridge {
         let local = GameplayVec3 {
             // Keyboard A/D steer the ship; lateral thrust is reserved for
             // gamepad input so WASD has one clear meaning.
-            x: ((if self.pilot_mode { 0.0 } else { keyboard.x })
-                + self.gamepad_flight.x)
+            x: ((if self.pilot_mode { 0.0 } else { keyboard.x }) + self.gamepad_flight.x)
                 .clamp(-1.0, 1.0),
             y: keyboard.y,
             z: (keyboard.z + self.gamepad_flight.z).clamp(-1.0, 1.0),
@@ -3026,13 +3224,17 @@ impl VisualBridge {
             }
             self.haptic_event_cursor = self.haptic_event_cursor.max(event.id);
             let haptic = match event.kind {
-                gameplay::GameplayVisualEventKind::Attack
-                    if event.source == Some(self.player) => Some(HapticEvent::AttackExecuted),
+                gameplay::GameplayVisualEventKind::Attack if event.source == Some(self.player) => {
+                    Some(HapticEvent::AttackExecuted)
+                }
                 gameplay::GameplayVisualEventKind::EnemyDefeated => {
                     Some(HapticEvent::EnemyDefeated)
                 }
                 gameplay::GameplayVisualEventKind::ItemCollected
-                    if event.source == Some(self.player) => Some(HapticEvent::ItemCollected),
+                    if event.source == Some(self.player) =>
+                {
+                    Some(HapticEvent::ItemCollected)
+                }
                 _ => None,
             };
             if let Some(haptic) = haptic {
@@ -3053,17 +3255,24 @@ impl VisualBridge {
         let events: Vec<_> = self.session.world().visual_events().copied().collect();
         for event in events {
             let effect = match event.kind {
-                gameplay::GameplayVisualEventKind::Attack
-                    if event.source == Some(self.player) => Some(SoundEffect::PlayerAttack),
+                gameplay::GameplayVisualEventKind::Attack if event.source == Some(self.player) => {
+                    Some(SoundEffect::PlayerAttack)
+                }
                 gameplay::GameplayVisualEventKind::EnemyDefeated => {
                     Some(SoundEffect::EnemyDefeated)
                 }
                 gameplay::GameplayVisualEventKind::ItemCollected
-                    if event.source == Some(self.player) => Some(SoundEffect::Collect),
+                    if event.source == Some(self.player) =>
+                {
+                    Some(SoundEffect::Collect)
+                }
                 _ => None,
             };
             if let Some(effect) = effect {
-                self.audio.dispatch_event(AudioEvent { id: event.id, effect });
+                self.audio.dispatch_event(AudioEvent {
+                    id: event.id,
+                    effect,
+                });
             }
         }
 
@@ -3103,7 +3312,8 @@ impl VisualBridge {
 
     fn toggle_observation(&mut self) {
         if self.interior_mode {
-            self.feedback = "ERICK: sal al exterior o entra en pilotaje para observar los planetas.".to_owned();
+            self.feedback =
+                "ERICK: sal al exterior o entra en pilotaje para observar los planetas.".to_owned();
             return;
         }
         let now = self.session.world().time().elapsed.0;
@@ -3225,7 +3435,10 @@ impl VisualBridge {
             .free_navigation_candidate
             .filter(|destination| candidates.contains(destination))
             .unwrap_or(candidates[0]);
-        let index = candidates.iter().position(|value| *value == current).unwrap_or(0) as i32;
+        let index = candidates
+            .iter()
+            .position(|value| *value == current)
+            .unwrap_or(0) as i32;
         let next = (index + direction).rem_euclid(candidates.len() as i32) as usize;
         self.free_navigation_candidate = Some(candidates[next]);
     }
@@ -3234,20 +3447,24 @@ impl VisualBridge {
         let Some(destination) = self.free_navigation_candidate else {
             return;
         };
-        let results = self.session.update([GameplayCommand::ConfirmFreeNavigationDestination {
-            player: self.player,
-            pilot_station: self.pilot_station,
-            destination,
-        }]);
+        let results = self
+            .session
+            .update([GameplayCommand::ConfirmFreeNavigationDestination {
+                player: self.player,
+                pilot_station: self.pilot_station,
+                destination,
+            }]);
         let status = results.first().map(|result| result.status);
         match status {
             Some(gameplay::CommandStatus::Success { .. }) => {
                 self.navigation_selector_open = false;
                 self.free_navigation_candidate = None;
-                let evaluation = self.session.update([GameplayCommand::EvaluateFreeNavigation {
-                    player: self.player,
-                    pilot_station: self.pilot_station,
-                }]);
+                let evaluation = self
+                    .session
+                    .update([GameplayCommand::EvaluateFreeNavigation {
+                        player: self.player,
+                        pilot_station: self.pilot_station,
+                    }]);
                 if matches!(
                     evaluation.first().map(|result| result.status),
                     Some(gameplay::CommandStatus::Success { .. })
@@ -3281,7 +3498,8 @@ impl VisualBridge {
 
     fn free_navigation_proposal_feedback(&self) -> String {
         let Some(proposal) = self.session.world().free_navigation_proposal() else {
-            return "ERICK: no puedo validar la trayectoria con la información disponible.".to_owned();
+            return "ERICK: no puedo validar la trayectoria con la información disponible."
+                .to_owned();
         };
         let evaluation = match proposal.evaluation {
             gameplay::FreeNavigationEvaluation::Viable => "VIABLE",
@@ -3297,8 +3515,12 @@ impl VisualBridge {
                 .map(|risk| match risk {
                     gameplay::FreeNavigationRisk::SolarCollision => "IMPACTO SOLAR",
                     gameplay::FreeNavigationRisk::PlanetCollision(_) => "COLISIÓN PLANETARIA",
-                    gameplay::FreeNavigationRisk::InsufficientFuel { .. } => "COMBUSTIBLE INSUFICIENTE",
-                    gameplay::FreeNavigationRisk::IncompleteBodyData(_) => "DATOS GEOMÉTRICOS INCOMPLETOS",
+                    gameplay::FreeNavigationRisk::InsufficientFuel { .. } => {
+                        "COMBUSTIBLE INSUFICIENTE"
+                    }
+                    gameplay::FreeNavigationRisk::IncompleteBodyData(_) => {
+                        "DATOS GEOMÉTRICOS INCOMPLETOS"
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -3392,22 +3614,25 @@ impl VisualBridge {
             _ => (ORIGIN, DESTINATION),
         };
         let mut aggregate = FeedbackAggregate::default();
-        self.issue_into([
-            GameplayCommand::Interact {
-                player,
-                target: pilot_station,
-            },
-            GameplayCommand::PlanAutopilot {
-                player,
-                pilot_station,
-                origin,
-                destination,
-            },
-            GameplayCommand::StartAutopilot {
-                player,
-                pilot_station,
-            },
-        ], &mut aggregate);
+        self.issue_into(
+            [
+                GameplayCommand::Interact {
+                    player,
+                    target: pilot_station,
+                },
+                GameplayCommand::PlanAutopilot {
+                    player,
+                    pilot_station,
+                    origin,
+                    destination,
+                },
+                GameplayCommand::StartAutopilot {
+                    player,
+                    pilot_station,
+                },
+            ],
+            &mut aggregate,
+        );
         self.finish_issue(aggregate);
     }
 
@@ -3418,9 +3643,7 @@ impl VisualBridge {
             .chain(
                 world
                     .destinations()
-                    .filter(|destination| {
-                        destination.destination_type == DestinationType::Planet
-                    })
+                    .filter(|destination| destination.destination_type == DestinationType::Planet)
                     .map(|destination| destination.id),
             )
             .find(|destination| {
@@ -3456,10 +3679,7 @@ impl VisualBridge {
         let now = self.session.world().time().elapsed.0;
         if let (Some(started), Some(planet)) = (
             self.landing_cinematic_started_at,
-            self.session
-                .world()
-                .planet_flight_state()
-                .landed_planet(),
+            self.session.world().planet_flight_state().landed_planet(),
         ) {
             if now.saturating_sub(started) >= game::render_bridge::LANDING_CINEMATIC_DURATION_MS {
                 self.landing_cinematic_started_at = None;
@@ -3467,10 +3687,9 @@ impl VisualBridge {
                 self.surface_planet = Some(planet);
                 self.interior_mode = false;
                 self.legacy_exterior_controls = false;
-                if let Some(origin) = game::render_bridge::planet_surface_origin(
-                    self.session.world(),
-                    planet,
-                ) {
+                if let Some(origin) =
+                    game::render_bridge::planet_surface_origin(self.session.world(), planet)
+                {
                     let origin = GameplayVec3 {
                         x: origin.x,
                         y: origin.y,
@@ -3487,18 +3706,15 @@ impl VisualBridge {
         if let Some(started) = self.takeoff_cinematic_started_at {
             if now.saturating_sub(started) >= game::render_bridge::TAKEOFF_CINEMATIC_DURATION_MS {
                 if let Some(planet) = self.surface_planet {
-                    if let Some(origin) = game::render_bridge::planet_surface_origin(
-                        self.session.world(),
-                        planet,
-                    ) {
+                    if let Some(origin) =
+                        game::render_bridge::planet_surface_origin(self.session.world(), planet)
+                    {
                         let origin = GameplayVec3 {
                             x: origin.x,
                             y: origin.y,
                             z: origin.z + 10.0,
                         };
-                        let _ = self.session.world_mut().restore_ship_position(
-                            origin,
-                        );
+                        let _ = self.session.world_mut().restore_ship_position(origin);
                     }
                 }
                 self.session.world_mut().resume_ship_from_landing();
@@ -3515,10 +3731,9 @@ impl VisualBridge {
         let Some(planet) = self.surface_planet else {
             return;
         };
-        let Some(ship_position) = game::render_bridge::surface_ship_position(
-            self.session.world(),
-            planet,
-        ) else {
+        let Some(ship_position) =
+            game::render_bridge::surface_ship_position(self.session.world(), planet)
+        else {
             return;
         };
         let Some(player) = self.session.world().player(self.player) else {
@@ -3556,6 +3771,42 @@ impl VisualBridge {
 
     fn camera(&self, aspect: f32) -> Result<render_core::Camera, render_core::CameraError> {
         let world = self.session.world();
+        let despertar = matches!(
+            std::env::var("ASTRAL_ECHO_DESPERTAR_INSPECTION").as_deref(),
+            Ok("1") | Ok("true")
+        );
+        let clonacion = matches!(
+            std::env::var("ASTRAL_ECHO_CLONACION_INSPECTION").as_deref(),
+            Ok("1") | Ok("true")
+        );
+        if despertar && clonacion {
+            println!("ECHO7 inspection conflict=despertar,clonacion effective=despertar");
+        }
+        if despertar {
+            static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            REPORTED.get_or_init(|| println!("ECHO7 inspection mode=despertar"));
+            return game::render_bridge::despertar_inspection_camera(world, aspect);
+        }
+        if matches!(
+            std::env::var("ASTRAL_ECHO_CLONACION_INSPECTION").as_deref(),
+            Ok("1") | Ok("true")
+        ) {
+            static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            REPORTED.get_or_init(|| println!("ECHO7 inspection mode=clonacion"));
+            return game::render_bridge::cloning_inspection_camera(world, aspect);
+        }
+        if matches!(
+            std::env::var("ASTRAL_ECHO_LOWER_CORRIDOR_INSPECTION").as_deref(),
+            Ok("1") | Ok("true")
+        ) {
+            return game::render_bridge::lower_corridor_inspection_camera(world, aspect);
+        }
+        if matches!(
+            std::env::var("ASTRAL_ECHO_UPPER_CORRIDOR_INSPECTION").as_deref(),
+            Ok("1") | Ok("true")
+        ) {
+            return game::render_bridge::upper_corridor_inspection_camera(world, aspect);
+        }
         if let Some(started) = self.landing_cinematic_started_at {
             let progress = (world.time().elapsed.0.saturating_sub(started) as f32
                 / game::render_bridge::LANDING_CINEMATIC_DURATION_MS as f32)
@@ -3566,23 +3817,14 @@ impl VisualBridge {
                 _ => self.landing_target(),
             };
             return game::render_bridge::observation_camera_for_destination(
-                world,
-                aspect,
-                progress,
-                0.0,
-                0.2,
-                target,
+                world, aspect, progress, 0.0, 0.2, target,
             );
         }
         if self.surface_mode {
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
         }
         if self.pilot_mode {
-            return game::render_bridge::pilot_camera(
-                world,
-                aspect,
-                self.pilot_camera_distance,
-            );
+            return game::render_bridge::pilot_camera(world, aspect, self.pilot_camera_distance);
         }
         if self.interior_mode {
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
@@ -3610,7 +3852,9 @@ fn nareth_visual_asset_request() -> VisualAssetRequest {
 pub fn run() -> Result<(), String> {
     let runtime = Rc::new(RefCell::new(VisualBridge::new_visual_runtime()?));
     let (asset_client, asset_host) = visual_asset_channel();
-    runtime.borrow_mut().attach_visual_asset_client(asset_client);
+    runtime
+        .borrow_mut()
+        .attach_visual_asset_client(asset_client);
     let snapshot_runtime = Rc::clone(&runtime);
     let input_runtime = Rc::clone(&runtime);
     let focus_runtime = Rc::clone(&runtime);
@@ -3620,6 +3864,10 @@ pub fn run() -> Result<(), String> {
         Rc::new(RefCell::new(BTreeMap::new()));
     let parts_for_snapshot = Rc::clone(&model_parts);
     let parts_for_setup = Rc::clone(&model_parts);
+    let inspection_model: Rc<RefCell<Option<render_core::TexturedModel>>> =
+        Rc::new(RefCell::new(None));
+    let inspection_model_for_snapshot = Rc::clone(&inspection_model);
+    let inspection_model_for_setup = Rc::clone(&inspection_model);
     let config = WindowConfig {
         title: "Astral Echo — CPU propio".into(),
         preset: Preset::Low,
@@ -3647,6 +3895,64 @@ pub fn run() -> Result<(), String> {
                 bridge.pilot_mode,
                 bridge.surface_planet,
             );
+            if bridge.echo7_pick_requested {
+                bridge.echo7_pick_requested = false;
+                let result = snapshot
+                    .nodes
+                    .iter()
+                    .find(|node| node.mesh == render_core::MeshHandle::SHIP_PLACEHOLDER)
+                    .and_then(|node| {
+                        let models = inspection_model_for_snapshot.borrow();
+                        models
+                            .as_ref()
+                            .and_then(|model| {
+                                let sample_y = (height as f32 * 0.12).max(1.0);
+                                let sample_x = [
+                                    width as f32 * 0.25,
+                                    width as f32 * 0.50,
+                                    width as f32 * 0.75,
+                                ];
+                                let mut hits = Vec::new();
+                                for pixel_x in sample_x {
+                                    let (origin, direction) = echo7_viewport_ray(
+                                        camera,
+                                        pixel_x,
+                                        sample_y,
+                                        width as f32,
+                                        height.max(1) as f32,
+                                    );
+                                    let hit = echo7_pick_ray(model, origin, direction, node.transform);
+                                    hits.push((pixel_x, origin, direction, hit));
+                                }
+                                for (pixel_x, _, direction, hit) in &hits {
+                                    println!(
+                                        "ECHO7 PICK roof-sample pixel=({pixel_x:.1},{sample_y:.1}) ray=({:.4},{:.4},{:.4}) upward={:.4} hit={:?}",
+                                        direction.x,
+                                        direction.y,
+                                        direction.z,
+                                        direction.y,
+                                        hit.as_ref().map(|(object, material, distance)| (object, material, distance))
+                                    );
+                                }
+                                hits.into_iter()
+                                    .find_map(|(_, _, _, hit)| hit)
+                            })
+                    });
+                bridge.feedback = match result {
+                    Some((object, material, distance)) => format!(
+                        "ECHO7 PICK camera=({:.2},{:.2},{:.2}) target=({:.2},{:.2},{:.2}) object={} material={} distance={:.3}",
+                        camera.position().x, camera.position().y, camera.position().z,
+                        camera.target().x, camera.target().y, camera.target().z,
+                        object, material, distance
+                    ),
+                    None => format!(
+                        "ECHO7 PICK sin intersecciÃ³n camera=({:.2},{:.2},{:.2}) target=({:.2},{:.2},{:.2})",
+                        camera.position().x, camera.position().y, camera.position().z,
+                        camera.target().x, camera.target().y, camera.target().z
+                    ),
+                };
+                println!("{}", bridge.feedback);
+            }
             if bridge.hud_visible {
                 snapshot.overlay.hud.inventory_open = bridge.inventory_open;
                 if bridge.inventory_open {
@@ -3716,9 +4022,18 @@ pub fn run() -> Result<(), String> {
                 snapshot.overlay.hud.instructions = Some(bridge.instructions_hint());
                 snapshot.overlay.hud.feedback = Some(bridge.feedback.clone());
             }
+            if matches!(
+                std::env::var("ASTRAL_ECHO_CLONACION_INSPECTION").as_deref(),
+                Ok("1") | Ok("true")
+            ) || matches!(
+                std::env::var("ASTRAL_ECHO_DESPERTAR_INSPECTION").as_deref(),
+                Ok("1") | Ok("true")
+            ) {
+                snapshot.overlay.hud = Default::default();
+            }
             Ok(snapshot)
         }),
-        true,
+        false,
         move |key, state| input_runtime.borrow_mut().handle_key(key, state),
         move |focused| {
             let mut bridge = focus_runtime.borrow_mut();
@@ -3728,7 +4043,15 @@ pub fn run() -> Result<(), String> {
             }
         },
         move |scene| {
-            scene.set_lighting_mode(LightingMode::Pbr);
+            let diagnostic_unlit = matches!(
+                std::env::var("ASTRAL_ECHO_INTERIOR_DIAGNOSTIC").as_deref(),
+                Ok("1") | Ok("true")
+            );
+            scene.set_lighting_mode(if diagnostic_unlit {
+                LightingMode::Unlit
+            } else {
+                LightingMode::Pbr
+            });
             let assets_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");
             // Registra modelos completos, incluyendo todas sus submallas y texturas.
             // Si falta un archivo, conserva los modelos procedurales existentes.
@@ -3743,6 +4066,12 @@ pub fn run() -> Result<(), String> {
                 let first_id = 100_000u32 + (model_index as u32) * 20_000;
                 match render_core::register_textured_model(scene, &path, first_id, first_id) {
                     Ok(parts) if !parts.is_empty() => {
+                        if relative_path == "echo_7/montajes/ECHO7_Completa_DosCubiertas.obj" {
+                            match render_core::load_textured_obj(&path) {
+                                Ok(model) => *inspection_model_for_setup.borrow_mut() = Some(model),
+                                Err(error) => eprintln!("diagnÃ³stico ECHO-7 no disponible: {error}"),
+                            }
+                        }
                         if relative_path == "sun/sun.obj" {
                             for part in &parts {
                                 scene.set_material(
@@ -3840,7 +4169,9 @@ fn guidance_action_label(action: Option<gameplay::GuidanceAction>) -> String {
         Some(gameplay::GuidanceAction::StudyKnowledge(_)) => "Q ESCANEAR Y ESTUDIAR".to_owned(),
         Some(gameplay::GuidanceAction::RepairShip) => "I REPARAR EN LA ESTACION".to_owned(),
         Some(gameplay::GuidanceAction::Interact(_)) => "I INTERACTUAR CON EL OBJETO".to_owned(),
-        Some(gameplay::GuidanceAction::CompleteObjective(_)) => "SIGUE LOS REQUISITOS DEL OBJETIVO".to_owned(),
+        Some(gameplay::GuidanceAction::CompleteObjective(_)) => {
+            "SIGUE LOS REQUISITOS DEL OBJETIVO".to_owned()
+        }
         None => "SIN ACCION RECOMENDADA".to_owned(),
     }
 }
@@ -3848,15 +4179,27 @@ fn guidance_action_label(action: Option<gameplay::GuidanceAction>) -> String {
 fn guidance_requirement_label(requirement: gameplay::GuidanceRequirement) -> String {
     match requirement {
         gameplay::GuidanceRequirement::MissionActive(_) => "INICIA LA MISION CON M".to_owned(),
-        gameplay::GuidanceRequirement::MissionCompleted(_) => "COMPLETA LA MISION PREVIA".to_owned(),
-        gameplay::GuidanceRequirement::ObjectiveCompleted(_) => "COMPLETA EL OBJETIVO PREVIO".to_owned(),
+        gameplay::GuidanceRequirement::MissionCompleted(_) => {
+            "COMPLETA LA MISION PREVIA".to_owned()
+        }
+        gameplay::GuidanceRequirement::ObjectiveCompleted(_) => {
+            "COMPLETA EL OBJETIVO PREVIO".to_owned()
+        }
         gameplay::GuidanceRequirement::KnowledgeAtLeast { .. } => "USA Q PARA ESCANEAR".to_owned(),
-        gameplay::GuidanceRequirement::DestinationDiscovered(_) => "DESCUBRE EL DESTINO CON P".to_owned(),
+        gameplay::GuidanceRequirement::DestinationDiscovered(_) => {
+            "DESCUBRE EL DESTINO CON P".to_owned()
+        }
         gameplay::GuidanceRequirement::DestinationArrived(_) => "LLEGA AL DESTINO CON P".to_owned(),
         gameplay::GuidanceRequirement::EnemyDefeated(_) => "DERROTA LA AMENAZA CON F".to_owned(),
-        gameplay::GuidanceRequirement::ResourceObtained { .. } => "RECOGE EL RECURSO CON E".to_owned(),
-        gameplay::GuidanceRequirement::WorldActivityCompleted(_) => "COMPLETA LA ACTIVIDAD DEL MUNDO".to_owned(),
-        gameplay::GuidanceRequirement::DerelictResolved(_) => "RESUELVE LA ESTACION ABANDONADA".to_owned(),
+        gameplay::GuidanceRequirement::ResourceObtained { .. } => {
+            "RECOGE EL RECURSO CON E".to_owned()
+        }
+        gameplay::GuidanceRequirement::WorldActivityCompleted(_) => {
+            "COMPLETA LA ACTIVIDAD DEL MUNDO".to_owned()
+        }
+        gameplay::GuidanceRequirement::DerelictResolved(_) => {
+            "RESUELVE LA ESTACION ABANDONADA".to_owned()
+        }
     }
 }
 
@@ -3867,7 +4210,8 @@ mod tests {
 
     #[test]
     fn visual_runtime_requires_explicit_start_and_preserves_initial_campaign_state() {
-        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        let mut bridge =
+            VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         assert!(!bridge.started);
         assert!(bridge.feedback.contains("ASTRAL ECHO"));
         assert_eq!(bridge.session.world().time().elapsed.0, 0);
@@ -3879,13 +4223,20 @@ mod tests {
         assert!(bridge.started);
         assert!(bridge.feedback.contains("ECHO-7"));
         assert_eq!(bridge.session.world().time().elapsed.0, 0);
-        assert_eq!(bridge.session.mission_progress(game::campaign::CAMPAIGN_ORDER[0]).unwrap().state,
-            gameplay::domains::mission::MissionState::Locked);
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(game::campaign::CAMPAIGN_ORDER[0])
+                .unwrap()
+                .state,
+            gameplay::domains::mission::MissionState::Locked
+        );
     }
 
     #[test]
     fn visual_runtime_advances_gameplay_time_while_active() {
-        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        let mut bridge =
+            VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.advance_visual_time_by(Duration(100));
         assert_eq!(bridge.session.world().time().elapsed.0, 100);
@@ -3896,7 +4247,9 @@ mod tests {
     fn visual_runtime_starts_echo7_in_clear_space() {
         let bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         let world = bridge.session.world();
-        let ship = world.ship_position().expect("visual runtime should have a ship");
+        let ship = world
+            .ship_position()
+            .expect("visual runtime should have a ship");
         let distance_squared = |left: GameplayVec3, right: GameplayVec3| {
             let delta = GameplayVec3 {
                 x: left.x - right.x,
@@ -3907,38 +4260,57 @@ mod tests {
         };
 
         assert_eq!(ship, VISUAL_INITIAL_SHIP_POSITION);
-        assert_eq!(world.destination(ORIGIN).map(|value| value.position), Some(ship));
         assert_eq!(
-            world.destination(TESSARA_DESTINATION).map(|value| value.position),
+            world.destination(ORIGIN).map(|value| value.position),
+            Some(ship)
+        );
+        assert_eq!(
+            world
+                .destination(TESSARA_DESTINATION)
+                .map(|value| value.position),
             Some(TESSARA_POSITION)
         );
         assert_eq!(
-            world.destination(KHARVEX_DESTINATION).map(|value| value.position),
+            world
+                .destination(KHARVEX_DESTINATION)
+                .map(|value| value.position),
             Some(KHARVEX_POSITION)
         );
         assert_eq!(
-            world.destination(NARETH_DESTINATION).map(|value| value.position),
+            world
+                .destination(NARETH_DESTINATION)
+                .map(|value| value.position),
             Some(NARETH_POSITION)
         );
         let tessara_physics = world
             .navigation()
             .planet_physics(TESSARA_DESTINATION)
             .expect("Tessara should have independent planet physics");
-        assert_eq!(tessara_physics.orbit_radius, game::render_bridge::TESSARA_ORBIT_RADIUS);
+        assert_eq!(
+            tessara_physics.orbit_radius,
+            game::render_bridge::TESSARA_ORBIT_RADIUS
+        );
         assert_eq!(
             tessara_physics.orbit_angular_speed,
             game::render_bridge::TESSARA_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND
         );
         assert_eq!(
             tessara_physics.orbit_center,
-            GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }
+            GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0
+            }
         );
         assert_eq!(tessara_physics.orbit_start, TESSARA_POSITION);
         let kharvex_physics = world
             .navigation()
             .planet_physics(KHARVEX_DESTINATION)
             .expect("Kharvex should have independent planet physics");
-        assert_eq!(kharvex_physics.orbit_radius, game::render_bridge::KHARVEX_ORBIT_RADIUS);
+        assert_eq!(
+            kharvex_physics.orbit_radius,
+            game::render_bridge::KHARVEX_ORBIT_RADIUS
+        );
         assert_eq!(
             kharvex_physics.orbit_angular_speed,
             game::render_bridge::KHARVEX_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND
@@ -3949,13 +4321,20 @@ mod tests {
         );
         assert_eq!(
             kharvex_physics.orbit_center,
-            GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }
+            GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -18.0
+            }
         );
         let nareth_physics = world
             .navigation()
             .planet_physics(NARETH_DESTINATION)
             .expect("Nareth should have independent planet physics");
-        assert_eq!(nareth_physics.orbit_radius, game::render_bridge::NARETH_ORBIT_RADIUS);
+        assert_eq!(
+            nareth_physics.orbit_radius,
+            game::render_bridge::NARETH_ORBIT_RADIUS
+        );
         assert_eq!(
             nareth_physics.orbit_angular_speed,
             game::render_bridge::NARETH_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND
@@ -3979,34 +4358,59 @@ mod tests {
             world.planet_position_at(NARETH_DESTINATION, Duration(0)),
             world.planet_position_at(NARETH_DESTINATION, Duration(10_000))
         );
-        assert!(distance_squared(ship, GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }) > 100.0 * 100.0);
-        assert!(world.destinations().filter(|value| value.id != ORIGIN).all(|value| {
-            distance_squared(ship, value.position) > 30.0 * 30.0
-        }));
+        assert!(
+            distance_squared(
+                ship,
+                GameplayVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -18.0
+                }
+            ) > 100.0 * 100.0
+        );
+        assert!(world
+            .destinations()
+            .filter(|value| value.id != ORIGIN)
+            .all(|value| { distance_squared(ship, value.position) > 30.0 * 30.0 }));
         let enemy = world
             .combatant(bridge.enemy)
             .expect("visual runtime should have its enemy");
         let enemy_distance_squared = distance_squared(ship, enemy.position);
         assert!(enemy_distance_squared > (enemy.weapon.range as f32).powi(2));
-        assert!(enemy_distance_squared <= gameplay::EnemyAiSystem::DETECTION_RADIUS as f32
-            * gameplay::EnemyAiSystem::DETECTION_RADIUS as f32);
-        assert!(distance_squared(enemy.position, GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }) > 80.0 * 80.0);
-        assert!(world.destinations().all(|value| {
-            distance_squared(enemy.position, value.position) > 10.0 * 10.0
-        }));
-        assert!(world.derelicts().all(|value| {
-            distance_squared(enemy.position, value.position) > 10.0 * 10.0
-        }));
-        assert!(world.collectibles().all(|value| {
-            distance_squared(enemy.position, value.position) > 10.0 * 10.0
-        }));
-        assert!(world.enemies().filter(|value| value.entity != bridge.enemy).all(|value| {
-            distance_squared(ship, value.position) > 30.0 * 30.0
-        }));
-        assert!(world.derelicts().all(|derelict| distance_squared(ship, derelict.position) > 30.0 * 30.0));
-        assert!(world.collectibles().all(|collectible| {
-            distance_squared(ship, collectible.position) > 30.0 * 30.0
-        }));
+        assert!(
+            enemy_distance_squared
+                <= gameplay::EnemyAiSystem::DETECTION_RADIUS as f32
+                    * gameplay::EnemyAiSystem::DETECTION_RADIUS as f32
+        );
+        assert!(
+            distance_squared(
+                enemy.position,
+                GameplayVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -18.0
+                }
+            ) > 80.0 * 80.0
+        );
+        assert!(world
+            .destinations()
+            .all(|value| { distance_squared(enemy.position, value.position) > 10.0 * 10.0 }));
+        assert!(world
+            .derelicts()
+            .all(|value| { distance_squared(enemy.position, value.position) > 10.0 * 10.0 }));
+        assert!(world
+            .collectibles()
+            .all(|value| { distance_squared(enemy.position, value.position) > 10.0 * 10.0 }));
+        assert!(world
+            .enemies()
+            .filter(|value| value.entity != bridge.enemy)
+            .all(|value| { distance_squared(ship, value.position) > 30.0 * 30.0 }));
+        assert!(world
+            .derelicts()
+            .all(|derelict| distance_squared(ship, derelict.position) > 30.0 * 30.0));
+        assert!(world
+            .collectibles()
+            .all(|collectible| { distance_squared(ship, collectible.position) > 30.0 * 30.0 }));
 
         let checkpoint = bridge.session.save_state().serialize();
         let mut restored = ProjectEchoSession::new();
@@ -4033,14 +4437,20 @@ mod tests {
     #[test]
     fn kharvex_is_observable_but_not_a_free_navigation_candidate() {
         let bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
-        assert!(game::render_bridge::observable_planets(bridge.session.world())
-            .contains(&KHARVEX_DESTINATION));
-        assert_eq!(bridge.free_navigation_candidates(), vec![DESTINATION, TESSARA_DESTINATION]);
+        assert!(
+            game::render_bridge::observable_planets(bridge.session.world())
+                .contains(&KHARVEX_DESTINATION)
+        );
+        assert_eq!(
+            bridge.free_navigation_candidates(),
+            vec![DESTINATION, TESSARA_DESTINATION]
+        );
     }
 
     #[test]
     fn observation_target_labels_cover_registered_planets_and_unknown_fallback() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
 
         bridge.observation_target = Some(DESTINATION);
         assert_eq!(bridge.observation_target_label(), "VEYRA");
@@ -4057,35 +4467,51 @@ mod tests {
 
     #[test]
     fn solar_impact_defeats_the_player_and_stops_visual_gameplay() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
-        assert!(bridge.session.world_mut().configure_solar_physics(PlanetPhysics {
-            destination: gameplay::SUN_DESTINATION_ID,
-            orbit_center: GameplayVec3::ZERO,
-            orbit_radius: 0.0,
-            orbit_start: GameplayVec3::ZERO,
-            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
-            orbit_phase: 0.0,
-            orbit_angular_speed: 0.0,
-            surface_radius: 12.0,
-            ship_radius: 1.0,
-            gravity_influence_radius: 80.0,
-            gravitational_parameter: 6_000.0,
-            atmosphere_height: 0.0,
-        }));
-        let results = bridge.session.update([GameplayCommand::SetShipControlActive {
-            player: bridge.player,
-            pilot_station: bridge.pilot_station,
-            active: true,
-        }]);
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        assert!(bridge
+            .session
+            .world_mut()
+            .configure_solar_physics(PlanetPhysics {
+                destination: gameplay::SUN_DESTINATION_ID,
+                orbit_center: GameplayVec3::ZERO,
+                orbit_radius: 0.0,
+                orbit_start: GameplayVec3::ZERO,
+                orbit_axis: GameplayVec3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0
+                },
+                orbit_phase: 0.0,
+                orbit_angular_speed: 0.0,
+                surface_radius: 12.0,
+                ship_radius: 1.0,
+                gravity_influence_radius: 80.0,
+                gravitational_parameter: 6_000.0,
+                atmosphere_height: 0.0,
+            }));
+        let results = bridge
+            .session
+            .update([GameplayCommand::SetShipControlActive {
+                player: bridge.player,
+                pilot_station: bridge.pilot_station,
+                active: true,
+            }]);
         assert!(matches!(
             results.first().map(|result| &result.status),
             Some(gameplay::CommandStatus::Success { .. })
         ));
 
-        bridge.session.update([GameplayCommand::AdvanceTime { delta: Duration(100) }]);
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        }]);
         bridge.refresh_player_defeat_state();
         assert!(bridge.session.world().ship_is_destroyed(bridge.ship) == Some(true));
-        assert!(bridge.session.world().combatant(bridge.player).is_some_and(|value| value.is_defeated()));
+        assert!(bridge
+            .session
+            .world()
+            .combatant(bridge.player)
+            .is_some_and(|value| value.is_defeated()));
         assert!(bridge
             .session
             .world()
@@ -4118,7 +4544,8 @@ mod tests {
 
     #[test]
     fn visual_runtime_pauses_time_after_player_defeat() {
-        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        let mut bridge =
+            VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.advance_visual_time_by(Duration(100));
         bridge.player_defeated = true;
@@ -4129,11 +4556,15 @@ mod tests {
 
     #[test]
     fn controls_panel_is_modal_and_uses_real_mode_assignments() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         let elapsed_before = bridge.session.world().time().elapsed.0;
         bridge.handle_key(KeyCode::F1, ElementState::Pressed);
         assert!(bridge.controls_panel_open);
-        assert!(bridge.controls_panel_entries().iter().any(|entry| entry == "WASD MOVER - EXPLORACION"));
+        assert!(bridge
+            .controls_panel_entries()
+            .iter()
+            .any(|entry| entry == "WASD MOVER - EXPLORACION"));
 
         bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
         assert!(!bridge.flight_keys.forward);
@@ -4147,7 +4578,8 @@ mod tests {
 
     #[test]
     fn observation_target_starts_at_veyra_and_cycles_to_tessara_only_in_pilot_observation() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         assert_eq!(bridge.observation_target, Some(DESTINATION));
 
         bridge.handle_key(KeyCode::BracketRight, ElementState::Pressed);
@@ -4169,7 +4601,8 @@ mod tests {
 
     #[test]
     fn nareth_observation_requests_deferred_asset_and_keeps_fallback() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         let (client, _host) = visual_asset_channel();
         bridge.attach_visual_asset_client(client);
         bridge.pilot_mode = true;
@@ -4197,24 +4630,29 @@ mod tests {
         let nareth = snapshot
             .nodes
             .iter()
-            .find(|node| node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value()))
+            .find(|node| {
+                node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value())
+            })
             .expect("Nareth should remain in the snapshot while loading");
         assert_eq!(nareth.mesh, render_core::MeshHandle::PLANET_SPHERE);
 
         bridge
             .visual_asset_states
             .insert(NARETH_RESOURCE_ID.to_owned(), VisualAssetState::Ready);
-        let ready_snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth(
-            bridge.session.world(),
-            Default::default(),
-            &render_core::Camera::demo(),
-            false,
-            true,
-        );
+        let ready_snapshot =
+            game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth(
+                bridge.session.world(),
+                Default::default(),
+                &render_core::Camera::demo(),
+                false,
+                true,
+            );
         let ready_nareth = ready_snapshot
             .nodes
             .iter()
-            .find(|node| node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value()))
+            .find(|node| {
+                node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value())
+            })
             .expect("Nareth should remain in the snapshot after loading");
         assert_eq!(ready_nareth.mesh, render_core::MeshHandle::NARETH_PLANET);
     }
@@ -4233,7 +4671,8 @@ mod tests {
 
     #[test]
     fn nareth_mesh_requires_gpu_ready_and_ignores_older_generations() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         let (client, mut host) = visual_asset_channel();
         bridge.attach_visual_asset_client(client);
         bridge
@@ -4310,23 +4749,37 @@ mod tests {
 
     #[test]
     fn observation_target_selection_does_not_change_navigation_or_missions() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         bridge.pilot_mode = true;
         bridge.observation.from = 1.0;
         bridge.observation.to = 1.0;
         let navigation_before = format!("{:?}", bridge.session.world().travel_state());
-        let missions_before = format!("{:?}", bridge.session.world().missions().collect::<Vec<_>>());
+        let missions_before = format!(
+            "{:?}",
+            bridge.session.world().missions().collect::<Vec<_>>()
+        );
 
         bridge.handle_key(KeyCode::BracketRight, ElementState::Pressed);
 
         assert_eq!(bridge.observation_target, Some(TESSARA_DESTINATION));
-        assert_eq!(navigation_before, format!("{:?}", bridge.session.world().travel_state()));
-        assert_eq!(missions_before, format!("{:?}", bridge.session.world().missions().collect::<Vec<_>>()));
+        assert_eq!(
+            navigation_before,
+            format!("{:?}", bridge.session.world().travel_state())
+        );
+        assert_eq!(
+            missions_before,
+            format!(
+                "{:?}",
+                bridge.session.world().missions().collect::<Vec<_>>()
+            )
+        );
     }
 
     #[test]
     fn free_navigation_selector_confirms_planet_without_starting_travel() {
-        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        let mut bridge =
+            VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         for _ in 0..6 {
@@ -4344,10 +4797,7 @@ mod tests {
         bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
         assert!(bridge.navigation_selector_open);
         bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
-        assert_eq!(
-            bridge.free_navigation_candidate,
-            Some(TESSARA_DESTINATION)
-        );
+        assert_eq!(bridge.free_navigation_candidate, Some(TESSARA_DESTINATION));
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
 
         assert_eq!(
@@ -4365,7 +4815,10 @@ mod tests {
                 .current(),
             fuel_before
         );
-        assert_eq!(bridge.session.world().travel_state(), gameplay::TravelState::Idle);
+        assert_eq!(
+            bridge.session.world().travel_state(),
+            gameplay::TravelState::Idle
+        );
         assert_eq!(
             bridge.session.world().autopilot_state(),
             &gameplay::AutopilotState::Inactive
@@ -4384,7 +4837,8 @@ mod tests {
 
     #[test]
     fn free_navigation_selector_does_not_open_outside_pilot_mode() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
         assert!(!bridge.navigation_selector_open);
         assert_eq!(bridge.session.world().free_navigation_destination(), None);
@@ -4392,7 +4846,8 @@ mod tests {
 
     #[test]
     fn free_navigation_proposal_starts_and_can_cancel_authoritatively() {
-        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        let mut bridge =
+            VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         for _ in 0..6 {
@@ -4403,7 +4858,11 @@ mod tests {
         bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
         bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
-        let position_before = bridge.session.world().ship_position().expect("ship position should exist");
+        let position_before = bridge
+            .session
+            .world()
+            .ship_position()
+            .expect("ship position should exist");
         let fuel_before = bridge
             .session
             .world()
@@ -4414,43 +4873,63 @@ mod tests {
         bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
         assert!(matches!(
             bridge.session.world().travel_state(),
-            gameplay::TravelState::InProgress { destination: TESSARA_DESTINATION, .. }
+            gameplay::TravelState::InProgress {
+                destination: TESSARA_DESTINATION,
+                ..
+            }
         ));
         assert!(matches!(
             bridge.session.world().autopilot_state(),
-            gameplay::AutopilotState::InTransit { destination: TESSARA_DESTINATION, .. }
+            gameplay::AutopilotState::InTransit {
+                destination: TESSARA_DESTINATION,
+                ..
+            }
         ));
-        assert!(bridge
-            .session
-            .world()
-            .ship_fuel(bridge.ship)
-            .expect("ship fuel should exist")
-            .current() < fuel_before);
+        assert!(
+            bridge
+                .session
+                .world()
+                .ship_fuel(bridge.ship)
+                .expect("ship fuel should exist")
+                .current()
+                < fuel_before
+        );
 
         bridge.session.update([GameplayCommand::AdvanceTime {
             delta: Duration(500),
         }]);
-        assert_ne!(bridge.session.world().ship_position(), Some(position_before));
+        assert_ne!(
+            bridge.session.world().ship_position(),
+            Some(position_before)
+        );
 
         bridge.handle_key(KeyCode::Escape, ElementState::Pressed);
         assert!(matches!(
             bridge.session.world().travel_state(),
-            gameplay::TravelState::Cancelled { destination: TESSARA_DESTINATION }
+            gameplay::TravelState::Cancelled {
+                destination: TESSARA_DESTINATION
+            }
         ));
         assert!(matches!(
             bridge.session.world().autopilot_state(),
-            gameplay::AutopilotState::Interrupted { destination: TESSARA_DESTINATION }
+            gameplay::AutopilotState::Interrupted {
+                destination: TESSARA_DESTINATION
+            }
         ));
         let position_after_cancel = bridge.session.world().ship_position();
         bridge.session.update([GameplayCommand::AdvanceTime {
             delta: Duration(500),
         }]);
-        assert_eq!(bridge.session.world().ship_position(), position_after_cancel);
+        assert_eq!(
+            bridge.session.world().ship_position(),
+            position_after_cancel
+        );
     }
 
     #[test]
     fn leaving_pilot_during_free_autopilot_cancels_before_releasing_station() {
-        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        let mut bridge =
+            VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         for _ in 0..6 {
@@ -4479,11 +4958,15 @@ mod tests {
         assert!(!bridge.pilot_station_occupied_by(bridge.player));
         assert!(matches!(
             bridge.session.world().travel_state(),
-            gameplay::TravelState::Cancelled { destination: TESSARA_DESTINATION }
+            gameplay::TravelState::Cancelled {
+                destination: TESSARA_DESTINATION
+            }
         ));
         assert!(matches!(
             bridge.session.world().autopilot_state(),
-            gameplay::AutopilotState::Interrupted { destination: TESSARA_DESTINATION }
+            gameplay::AutopilotState::Interrupted {
+                destination: TESSARA_DESTINATION
+            }
         ));
         assert_eq!(bridge.session.world().ship_position(), position_at_exit);
         assert_eq!(
@@ -4504,7 +4987,8 @@ mod tests {
 
     #[test]
     fn free_navigation_confirmation_requires_mission_one_completion() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         bridge.pilot_mode = true;
         bridge.handle_key(KeyCode::KeyN, ElementState::Pressed);
         bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
@@ -4512,7 +4996,10 @@ mod tests {
 
         assert_eq!(bridge.session.world().free_navigation_destination(), None);
         assert!(bridge.feedback.contains("preparar la nave"));
-        assert_eq!(bridge.session.world().travel_state(), gameplay::TravelState::Idle);
+        assert_eq!(
+            bridge.session.world().travel_state(),
+            gameplay::TravelState::Idle
+        );
         assert_eq!(
             bridge.session.world().autopilot_state(),
             &gameplay::AutopilotState::Inactive
@@ -4521,7 +5008,8 @@ mod tests {
 
     #[test]
     fn initial_playable_cycle_keeps_one_session_through_pilot_and_return() {
-        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        let mut bridge =
+            VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         let session_address = (&bridge.session as *const ProjectEchoSession) as usize;
 
         bridge.advance_visual_time_by(Duration(100));
@@ -4584,7 +5072,10 @@ mod tests {
         assert!(bridge.interior_mode);
         assert_eq!(bridge.session.world().ship_control_active(), Some(false));
         assert!(bridge.controls_hint().contains("MOVER"));
-        assert_eq!(session_address, (&bridge.session as *const ProjectEchoSession) as usize);
+        assert_eq!(
+            session_address,
+            (&bridge.session as *const ProjectEchoSession) as usize
+        );
         assert_eq!(
             bridge
                 .session
@@ -4633,8 +5124,7 @@ mod tests {
         bridge.flight_keys.backward = true;
         assert!(bridge.current_flight_input().z > 0.0);
         for _ in 0..100 {
-            bridge.last_interior_update =
-                Instant::now() - std::time::Duration::from_millis(50);
+            bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(50);
             bridge.update_interior_motion();
         }
         let upper = bridge
@@ -4648,8 +5138,7 @@ mod tests {
         bridge.flight_keys.backward = false;
         bridge.flight_keys.forward = true;
         for _ in 0..100 {
-            bridge.last_interior_update =
-                Instant::now() - std::time::Duration::from_millis(50);
+            bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(50);
             bridge.update_interior_motion();
         }
         let lower = bridge
@@ -4665,7 +5154,10 @@ mod tests {
     fn pilot_mode_is_entered_from_the_pilot_console_and_exits_to_character_control() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         bridge.guided_interaction();
-        assert!(bridge.pilot_mode, "the nearby piloting console should enter pilot mode");
+        assert!(
+            bridge.pilot_mode,
+            "the nearby piloting console should enter pilot mode"
+        );
         assert!(!bridge.interior_mode);
         assert_eq!(bridge.session.world().ship_control_active(), Some(true));
 
@@ -4677,8 +5169,14 @@ mod tests {
         let heading_after_exit = bridge.session.world().ship_orientation().unwrap();
         bridge.guided_interaction();
         assert!(bridge.pilot_mode);
-        assert_eq!(bridge.session.world().ship_position(), Some(ship_after_exit));
-        assert_eq!(bridge.session.world().ship_orientation(), Some(heading_after_exit));
+        assert_eq!(
+            bridge.session.world().ship_position(),
+            Some(ship_after_exit)
+        );
+        assert_eq!(
+            bridge.session.world().ship_orientation(),
+            Some(heading_after_exit)
+        );
     }
 
     #[test]
@@ -4686,7 +5184,12 @@ mod tests {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         bridge.guided_interaction();
         assert!(bridge.pilot_mode);
-        let player_before = bridge.session.world().player(bridge.player).unwrap().position;
+        let player_before = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .unwrap()
+            .position;
         let ship_before = bridge.session.world().ship_position().unwrap();
         let orientation_before = bridge.session.world().ship_orientation().unwrap();
 
@@ -4695,30 +5198,71 @@ mod tests {
         bridge.update_pilot_motion();
 
         assert_ne!(bridge.session.world().ship_position().unwrap(), ship_before);
-        assert_ne!(bridge.session.world().ship_orientation().unwrap(), orientation_before);
-        assert_eq!(bridge.session.world().player(bridge.player).unwrap().position, player_before);
+        assert_ne!(
+            bridge.session.world().ship_orientation().unwrap(),
+            orientation_before
+        );
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .unwrap()
+                .position,
+            player_before
+        );
     }
 
     #[test]
     fn pilot_shield_mitigates_damage_and_resets_when_disabled() {
-        let mut bridge = VisualBridge::new_with_mode(false).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(false).expect("visual bridge should initialize");
         assert_eq!(bridge.session.world().ship_control_active(), Some(true));
-        let shield = bridge.session.update([GameplayCommand::SetShipShieldActive {
-            player: bridge.player,
-            ship: bridge.ship,
-            active: true,
-        }]);
-        assert!(matches!(shield.first().map(|result| &result.status), Some(gameplay::CommandStatus::Success { changed: true })));
+        let shield = bridge
+            .session
+            .update([GameplayCommand::SetShipShieldActive {
+                player: bridge.player,
+                ship: bridge.ship,
+                active: true,
+            }]);
+        assert!(matches!(
+            shield.first().map(|result| &result.status),
+            Some(gameplay::CommandStatus::Success { changed: true })
+        ));
         assert!(bridge.session.world().ship_shield_active(bridge.ship));
-        bridge.session.update([GameplayCommand::DamageShip { ship: bridge.ship, amount: 10 }]);
-        assert_eq!(bridge.session.world().ship_integrity(bridge.ship).unwrap().current(), 95);
-        bridge.session.update([GameplayCommand::SetShipShieldActive {
-            player: bridge.player,
+        bridge.session.update([GameplayCommand::DamageShip {
             ship: bridge.ship,
-            active: false,
+            amount: 10,
         }]);
-        bridge.session.update([GameplayCommand::DamageShip { ship: bridge.ship, amount: 10 }]);
-        assert_eq!(bridge.session.world().ship_integrity(bridge.ship).unwrap().current(), 85);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .ship_integrity(bridge.ship)
+                .unwrap()
+                .current(),
+            95
+        );
+        bridge
+            .session
+            .update([GameplayCommand::SetShipShieldActive {
+                player: bridge.player,
+                ship: bridge.ship,
+                active: false,
+            }]);
+        bridge.session.update([GameplayCommand::DamageShip {
+            ship: bridge.ship,
+            amount: 10,
+        }]);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .ship_integrity(bridge.ship)
+                .unwrap()
+                .current(),
+            85
+        );
     }
 
     #[test]
@@ -4775,7 +5319,9 @@ mod tests {
     #[test]
     fn guidance_prompt_uses_guidance_and_real_controls() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
-        assert!(bridge.guidance_prompt().is_some_and(|value| value.contains("M")));
+        assert!(bridge
+            .guidance_prompt()
+            .is_some_and(|value| value.contains("M")));
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         assert!(bridge
             .guidance_prompt()
@@ -4811,7 +5357,10 @@ mod tests {
             .player(bridge.player)
             .expect("visual player should exist")
             .position;
-        assert!(position.x < 8.4, "player crossed the interior clearance: {position:?}");
+        assert!(
+            position.x < 8.4,
+            "player crossed the interior clearance: {position:?}"
+        );
     }
 
     #[test]
@@ -4828,17 +5377,29 @@ mod tests {
             .player(bridge.player)
             .expect("visual player should still exist")
             .position;
-        assert!(position.x.abs() <= 7.8, "player escaped ECHO-7 width: {position:?}");
-        assert!(position.z.abs() <= 5.8, "player escaped ECHO-7 depth: {position:?}");
+        assert!(
+            position.x.abs() <= 7.8,
+            "player escaped ECHO-7 width: {position:?}"
+        );
+        assert!(
+            position.z.abs() <= 5.8,
+            "player escaped ECHO-7 depth: {position:?}"
+        );
     }
 
     #[test]
     fn character_camera_follows_the_validated_player_position() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
-        let before = bridge.camera(16.0 / 9.0).expect("character camera should be valid").position();
+        let before = bridge
+            .camera(16.0 / 9.0)
+            .expect("character camera should be valid")
+            .position();
         bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
         bridge.update_interior_motion();
-        let after = bridge.camera(16.0 / 9.0).expect("character camera should remain valid").position();
+        let after = bridge
+            .camera(16.0 / 9.0)
+            .expect("character camera should remain valid")
+            .position();
         assert_ne!(before, after);
         assert!(after.y > -1.2 && after.y < 6.4);
     }
@@ -4846,45 +5407,100 @@ mod tests {
     #[test]
     fn echo7_uses_ship_representation_and_not_station_model() {
         let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
-        let camera = bridge.camera(16.0 / 9.0).expect("character camera should be valid");
+        let camera = bridge
+            .camera(16.0 / 9.0)
+            .expect("character camera should be valid");
         let snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
             bridge.session.world(),
             Default::default(),
             &camera,
             true,
         );
-        let echo7 = snapshot.nodes.iter().find(|node| node.entity == render_core::SnapshotId::Entity(bridge.ship));
-        assert_eq!(echo7.map(|node| node.mesh), Some(game::render_bridge::ECHO7_MESH));
-        assert_ne!(game::render_bridge::ECHO7_MESH, game::render_bridge::STATION_MESH);
-        assert_eq!(snapshot.nodes.iter().filter(|node| node.mesh == game::render_bridge::STATION_MESH).count(), 0);
-        assert!(snapshot.nodes.iter().filter(|node| node.mesh == game::render_bridge::PLACEHOLDER_MESH).count() >= 2);
+        let echo7 = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == render_core::SnapshotId::Entity(bridge.ship));
+        assert_eq!(
+            echo7.map(|node| node.mesh),
+            Some(game::render_bridge::ECHO7_MESH)
+        );
+        assert_ne!(
+            game::render_bridge::ECHO7_MESH,
+            game::render_bridge::STATION_MESH
+        );
+        assert_eq!(
+            snapshot
+                .nodes
+                .iter()
+                .filter(|node| node.mesh == game::render_bridge::STATION_MESH)
+                .count(),
+            0
+        );
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .filter(|node| node.mesh == game::render_bridge::PLACEHOLDER_MESH)
+                .count()
+                >= 2
+        );
     }
 
     #[test]
     fn controller_bindings_reuse_existing_keyboard_actions() {
         assert_eq!(controller_key(ControllerButton::South), Some(KeyCode::KeyF));
-        assert_eq!(controller_key(ControllerButton::RightTrigger), Some(KeyCode::KeyF));
+        assert_eq!(
+            controller_key(ControllerButton::RightTrigger),
+            Some(KeyCode::KeyF)
+        );
         assert_eq!(controller_key(ControllerButton::West), Some(KeyCode::KeyQ));
         assert_eq!(controller_key(ControllerButton::North), Some(KeyCode::KeyO));
-        assert_eq!(controller_key(ControllerButton::DPadLeft), Some(KeyCode::ArrowLeft));
+        assert_eq!(
+            controller_key(ControllerButton::DPadLeft),
+            Some(KeyCode::ArrowLeft)
+        );
     }
 
     #[test]
     fn feedback_aggregate_classifies_all_result_combinations() {
         let success = gameplay::CommandResult::success(true);
-        let failure = gameplay::CommandResult::rejected(gameplay::CommandRejection::InvalidDuration);
+        let failure =
+            gameplay::CommandResult::rejected(gameplay::CommandRejection::InvalidDuration);
 
         let cases = [
-            (&[success, success][..], FeedbackOutcome::Complete, true, "OPERACION COMPLETADA"),
-            (&[failure, failure][..], FeedbackOutcome::Failed, false, "OPERACION FALLIDA"),
-            (&[success, failure][..], FeedbackOutcome::Partial, false, "PARCIALMENTE COMPLETADA"),
-            (&[][..], FeedbackOutcome::Empty, false, "SIN RESULTADO EVALUABLE"),
+            (
+                &[success, success][..],
+                FeedbackOutcome::Complete,
+                true,
+                "OPERACION COMPLETADA",
+            ),
+            (
+                &[failure, failure][..],
+                FeedbackOutcome::Failed,
+                false,
+                "OPERACION FALLIDA",
+            ),
+            (
+                &[success, failure][..],
+                FeedbackOutcome::Partial,
+                false,
+                "PARCIALMENTE COMPLETADA",
+            ),
+            (
+                &[][..],
+                FeedbackOutcome::Empty,
+                false,
+                "SIN RESULTADO EVALUABLE",
+            ),
         ];
         for (results, outcome, complete, label) in cases {
             let mut aggregate = FeedbackAggregate::default();
-            let commands = vec![GameplayCommand::AdvanceTime {
-                delta: Duration(100),
-            }; results.len()];
+            let commands = vec![
+                GameplayCommand::AdvanceTime {
+                    delta: Duration(100),
+                };
+                results.len()
+            ];
             aggregate.record(&commands, results, ["evento".to_owned()]);
             assert_eq!(aggregate.outcome(), outcome);
             assert_eq!(aggregate.is_complete(), complete);
@@ -4949,18 +5565,23 @@ mod tests {
         bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
         bridge.handle_key(KeyCode::Space, ElementState::Pressed);
-        bridge.set_gamepad_flight(GameplayVec3 { x: 1.0, y: 0.0, z: -1.0 });
+        bridge.set_gamepad_flight(GameplayVec3 {
+            x: 1.0,
+            y: 0.0,
+            z: -1.0,
+        });
         bridge.poll_gamepad();
 
         assert_eq!(bridge.session.world().time(), defeated_time);
         assert_eq!(bridge.gamepad_flight, GameplayVec3::ZERO);
         assert_eq!(bridge.feedback, defeated_feedback);
-        let snapshot = game::render_bridge::snapshot_from_world(
-            bridge.session.world(),
-            Default::default(),
-        );
+        let snapshot =
+            game::render_bridge::snapshot_from_world(bridge.session.world(), Default::default());
         assert!(snapshot.overlay.game_over);
-        assert_eq!(snapshot.overlay.hud.feedback.as_deref(), Some("JUGADOR DERROTADO"));
+        assert_eq!(
+            snapshot.overlay.hud.feedback.as_deref(),
+            Some("JUGADOR DERROTADO")
+        );
         assert!(snapshot.nodes.iter().all(|node| {
             node.transform.translation.is_finite()
                 && node.transform.rotation.is_finite()
@@ -4970,12 +5591,9 @@ mod tests {
 
     #[test]
     fn interior_start_keeps_enemy_outside_immediate_weapon_range() {
-        let mut bridge = VisualBridge::new_with_mode_and_enemy_distance(
-            true,
-            true,
-            GameplayVec3::ZERO,
-        )
-            .expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode_and_enemy_distance(true, true, GameplayVec3::ZERO)
+                .expect("visual bridge should initialize");
         let enemy = bridge
             .session
             .world()
@@ -5001,7 +5619,12 @@ mod tests {
 
         assert!(!bridge.player_defeated);
         assert_eq!(
-            bridge.session.world().combatant(bridge.enemy).unwrap().position,
+            bridge
+                .session
+                .world()
+                .combatant(bridge.enemy)
+                .unwrap()
+                .position,
             enemy.position
         );
         assert!(!bridge.session.world().events().iter().any(|event| {
@@ -5011,10 +5634,18 @@ mod tests {
 
     #[test]
     fn introductory_threat_activates_once_after_mission_one_completion() {
-        let mut bridge = VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        let mut bridge =
+            VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
-        assert!(!bridge.session.world().combatant(bridge.enemy).unwrap().active);
+        assert!(
+            !bridge
+                .session
+                .world()
+                .combatant(bridge.enemy)
+                .unwrap()
+                .active
+        );
 
         for _ in 0..6 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
@@ -5028,7 +5659,14 @@ mod tests {
                 .state,
             gameplay::domains::mission::MissionState::Completed
         );
-        assert!(bridge.session.world().combatant(bridge.enemy).unwrap().active);
+        assert!(
+            bridge
+                .session
+                .world()
+                .combatant(bridge.enemy)
+                .unwrap()
+                .active
+        );
         assert_eq!(
             bridge
                 .session
@@ -5043,10 +5681,20 @@ mod tests {
         );
         assert!(!bridge.introductory_threat_pending);
 
-        let position_before = bridge.session.world().combatant(bridge.enemy).unwrap().position;
+        let position_before = bridge
+            .session
+            .world()
+            .combatant(bridge.enemy)
+            .unwrap()
+            .position;
         bridge.advance_visual_time_by(Duration(1_000));
         assert_ne!(
-            bridge.session.world().combatant(bridge.enemy).unwrap().position,
+            bridge
+                .session
+                .world()
+                .combatant(bridge.enemy)
+                .unwrap()
+                .position,
             position_before
         );
         for _ in 0..5 {
@@ -5116,11 +5764,19 @@ mod tests {
         }]);
         bridge.handle_key(KeyCode::KeyT, ElementState::Pressed);
         assert!(bridge.feedback.contains("PREPARADA"));
-        assert_eq!(bridge.session.world().combatants().filter(|value| {
-            !value.is_player
-                && value.active
-                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
-        }).count(), 1);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .combatants()
+                .filter(|value| {
+                    !value.is_player
+                        && value.active
+                        && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+                })
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -5134,10 +5790,38 @@ mod tests {
     #[test]
     fn flight_keys_produce_distinct_individual_directions() {
         let cases = [
-            (KeyCode::KeyW, GameplayVec3 { x: 0.0, y: 0.0, z: -1.0 }),
-            (KeyCode::KeyS, GameplayVec3 { x: 0.0, y: 0.0, z: 1.0 }),
-            (KeyCode::KeyA, GameplayVec3 { x: -1.0, y: 0.0, z: 0.0 }),
-            (KeyCode::KeyD, GameplayVec3 { x: 1.0, y: 0.0, z: 0.0 }),
+            (
+                KeyCode::KeyW,
+                GameplayVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -1.0,
+                },
+            ),
+            (
+                KeyCode::KeyS,
+                GameplayVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+            ),
+            (
+                KeyCode::KeyA,
+                GameplayVec3 {
+                    x: -1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                KeyCode::KeyD,
+                GameplayVec3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
         ];
 
         for (key, expected) in cases {
@@ -5152,15 +5836,36 @@ mod tests {
         let mut keys = FlightKeys::default();
         keys.set(KeyCode::KeyW, true);
         keys.set(KeyCode::KeyD, true);
-        assert_eq!(keys.input(), GameplayVec3 { x: 1.0, y: 0.0, z: -1.0 });
+        assert_eq!(
+            keys.input(),
+            GameplayVec3 {
+                x: 1.0,
+                y: 0.0,
+                z: -1.0
+            }
+        );
 
         keys.set(KeyCode::KeyW, false);
         keys.set(KeyCode::KeyA, true);
-        assert_eq!(keys.input(), GameplayVec3 { x: 0.0, y: 0.0, z: 0.0 });
+        assert_eq!(
+            keys.input(),
+            GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            }
+        );
 
         keys.set(KeyCode::KeyD, false);
         keys.set(KeyCode::KeyS, true);
-        assert_eq!(keys.input(), GameplayVec3 { x: -1.0, y: 0.0, z: 1.0 });
+        assert_eq!(
+            keys.input(),
+            GameplayVec3 {
+                x: -1.0,
+                y: 0.0,
+                z: 1.0
+            }
+        );
     }
 
     #[test]
@@ -5181,7 +5886,14 @@ mod tests {
         keys.set(KeyCode::KeyW, true);
         keys.set(KeyCode::KeyA, true);
         keys.set(KeyCode::KeyW, false);
-        assert_eq!(keys.input(), GameplayVec3 { x: -1.0, y: 0.0, z: 0.0 });
+        assert_eq!(
+            keys.input(),
+            GameplayVec3 {
+                x: -1.0,
+                y: 0.0,
+                z: 0.0
+            }
+        );
 
         keys.set(KeyCode::KeyA, false);
         assert_eq!(keys.input(), GameplayVec3::ZERO);
@@ -5193,25 +5905,53 @@ mod tests {
         keys.set(KeyCode::KeyD, true);
         keys.set(KeyCode::KeyW, true);
         keys.set(KeyCode::KeyD, false);
-        assert_eq!(keys.input(), GameplayVec3 { x: 0.0, y: 0.0, z: -1.0 });
+        assert_eq!(
+            keys.input(),
+            GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -1.0
+            }
+        );
 
         keys = FlightKeys::default();
         keys.set(KeyCode::KeyD, true);
         keys.set(KeyCode::KeyS, true);
         keys.set(KeyCode::KeyD, false);
-        assert_eq!(keys.input(), GameplayVec3 { x: 0.0, y: 0.0, z: 1.0 });
+        assert_eq!(
+            keys.input(),
+            GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0
+            }
+        );
 
         keys = FlightKeys::default();
         keys.set(KeyCode::KeyW, true);
         keys.set(KeyCode::KeyD, true);
         keys.set(KeyCode::KeyD, false);
-        assert_eq!(keys.input(), GameplayVec3 { x: 0.0, y: 0.0, z: -1.0 });
+        assert_eq!(
+            keys.input(),
+            GameplayVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -1.0
+            }
+        );
 
         keys = FlightKeys::default();
         keys.set(KeyCode::KeyS, true);
         keys.set(KeyCode::KeyD, true);
         keys.set(KeyCode::KeyS, false);
-        assert_eq!(keys.input(), GameplayVec3 { x: 1.0, y: 0.0, z: 0.0 });
+        assert_eq!(
+            keys.input(),
+            GameplayVec3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0
+            }
+        );
     }
 
     #[test]
@@ -5220,7 +5960,14 @@ mod tests {
         for _ in 0..3 {
             keys.set(KeyCode::KeyD, true);
         }
-        assert_eq!(keys.input(), GameplayVec3 { x: 1.0, y: 0.0, z: 0.0 });
+        assert_eq!(
+            keys.input(),
+            GameplayVec3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0
+            }
+        );
         keys.set(KeyCode::KeyD, false);
         assert_eq!(keys.input(), GameplayVec3::ZERO);
 
@@ -5330,11 +6077,17 @@ mod tests {
     #[test]
     fn arrow_keys_change_flight_camera_without_observation_transition() {
         let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
-        let before = bridge.camera(1.0).expect("camera should be valid").position();
+        let before = bridge
+            .camera(1.0)
+            .expect("camera should be valid")
+            .position();
 
         bridge.handle_key(KeyCode::ArrowLeft, ElementState::Pressed);
 
-        let after = bridge.camera(1.0).expect("camera should remain valid").position();
+        let after = bridge
+            .camera(1.0)
+            .expect("camera should remain valid")
+            .position();
         assert_ne!(after, before);
         assert!(after.is_finite());
     }
@@ -5373,7 +6126,11 @@ mod tests {
             orbit_center: GameplayVec3::ZERO,
             orbit_radius: 5.0,
             orbit_start: GameplayVec3::ZERO,
-            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
+            orbit_axis: GameplayVec3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
             surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
@@ -5452,10 +6209,8 @@ mod tests {
             gameplay::domains::mission::MissionState::Completed
         );
 
-        let snapshot = game::render_bridge::snapshot_from_world(
-            bridge.session.world(),
-            Default::default(),
-        );
+        let snapshot =
+            game::render_bridge::snapshot_from_world(bridge.session.world(), Default::default());
         assert_eq!(
             snapshot.overlay.hud.mission_name.as_deref(),
             Some("Ecos de la anomalía")
@@ -5502,7 +6257,8 @@ mod tests {
 
     #[test]
     fn mission_two_starts_with_real_visual_content_and_guided_travel() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         for _ in 0..5 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
@@ -5550,7 +6306,8 @@ mod tests {
 
     #[test]
     fn mission_two_rejects_incompatible_existing_destination_without_mutating_it() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         for _ in 0..5 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
@@ -5560,7 +6317,11 @@ mod tests {
             .register_destination(Destination {
                 id: crate::ecos_anomalia::PLANET_DESTINATION,
                 destination_type: DestinationType::SpacePoint,
-                position: GameplayVec3 { x: 99.0, y: 0.0, z: 99.0 },
+                position: GameplayVec3 {
+                    x: 99.0,
+                    y: 0.0,
+                    z: 99.0,
+                },
                 travel_duration: Duration(1000),
                 fuel_cost: 1,
                 discovery: DiscoveryState::Known,
@@ -5578,11 +6339,18 @@ mod tests {
             gameplay::domains::mission::MissionState::Available
         );
         assert_eq!(
-            bridge.session.world().destination(crate::ecos_anomalia::PLANET_DESTINATION),
+            bridge
+                .session
+                .world()
+                .destination(crate::ecos_anomalia::PLANET_DESTINATION),
             Some(&Destination {
                 id: crate::ecos_anomalia::PLANET_DESTINATION,
                 destination_type: DestinationType::SpacePoint,
-                position: GameplayVec3 { x: 99.0, y: 0.0, z: 99.0 },
+                position: GameplayVec3 {
+                    x: 99.0,
+                    y: 0.0,
+                    z: 99.0
+                },
                 travel_duration: Duration(1000),
                 fuel_cost: 1,
                 discovery: DiscoveryState::Known,
@@ -5593,7 +6361,8 @@ mod tests {
 
     #[test]
     fn mission_two_completes_all_objectives_through_real_gameplay_systems() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         for _ in 0..5 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
@@ -5607,9 +6376,9 @@ mod tests {
         bridge.session.update([GameplayCommand::AdvanceTime {
             delta: Duration(1_000),
         }]);
-        bridge.session.update([GameplayCommand::AdvanceTime {
-            delta: Duration(1),
-        }]);
+        bridge
+            .session
+            .update([GameplayCommand::AdvanceTime { delta: Duration(1) }]);
 
         let progress = bridge
             .session
@@ -5715,10 +6484,16 @@ mod tests {
             collectible: reward.entity,
             amount: 1,
         }]);
-        assert!(matches!(
-            collected.first().map(|value| &value.status),
-            Some(gameplay::CommandStatus::Success { changed: true })
-        ), "collect result: {:?}, player: {:?}, reward: {:?}", collected, bridge.session.world().player(bridge.player), bridge.session.world().collectible(reward.entity));
+        assert!(
+            matches!(
+                collected.first().map(|value| &value.status),
+                Some(gameplay::CommandStatus::Success { changed: true })
+            ),
+            "collect result: {:?}, player: {:?}, reward: {:?}",
+            collected,
+            bridge.session.world().player(bridge.player),
+            bridge.session.world().collectible(reward.entity)
+        );
         assert_eq!(
             bridge
                 .session
@@ -5731,7 +6506,8 @@ mod tests {
 
     #[test]
     fn mission_three_completes_all_objectives_through_real_gameplay_systems() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         for _ in 0..5 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
@@ -5744,9 +6520,9 @@ mod tests {
         bridge.session.update([GameplayCommand::AdvanceTime {
             delta: Duration(100),
         }]);
-        bridge.session.update([GameplayCommand::AdvanceTime {
-            delta: Duration(1),
-        }]);
+        bridge
+            .session
+            .update([GameplayCommand::AdvanceTime { delta: Duration(1) }]);
 
         let enemy = bridge.enemy;
         for _ in 0..20 {
@@ -5839,24 +6615,39 @@ mod tests {
             .session
             .mission_progress(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
             .expect("Mission2 should exist");
-        assert_eq!(mission_two.state, gameplay::domains::mission::MissionState::Completed);
+        assert_eq!(
+            mission_two.state,
+            gameplay::domains::mission::MissionState::Completed
+        );
         let mission_three = bridge
             .session
             .mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL)
             .expect("Mission3 should exist");
-        assert_eq!(mission_three.state, gameplay::domains::mission::MissionState::Available);
+        assert_eq!(
+            mission_three.state,
+            gameplay::domains::mission::MissionState::Available
+        );
 
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         let mission_three = bridge
             .session
             .mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL)
             .expect("Mission3 should exist after start");
-        assert_eq!(mission_three.state, gameplay::domains::mission::MissionState::Active);
+        assert_eq!(
+            mission_three.state,
+            gameplay::domains::mission::MissionState::Active
+        );
         let destination_count = bridge.session.world().destinations().count();
         let hazard_count = bridge.session.world().environmental_hazards().count();
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
-        assert_eq!(bridge.session.world().destinations().count(), destination_count);
-        assert_eq!(bridge.session.world().environmental_hazards().count(), hazard_count);
+        assert_eq!(
+            bridge.session.world().destinations().count(),
+            destination_count
+        );
+        assert_eq!(
+            bridge.session.world().environmental_hazards().count(),
+            hazard_count
+        );
         assert!(bridge
             .session
             .world()
@@ -5871,12 +6662,12 @@ mod tests {
         bridge.session.update([GameplayCommand::AdvanceTime {
             delta: Duration(1_000),
         }]);
-        bridge.session.update([GameplayCommand::AdvanceTime {
-            delta: Duration(1),
-        }]);
-        bridge.session.update([GameplayCommand::AdvanceTime {
-            delta: Duration(1),
-        }]);
+        bridge
+            .session
+            .update([GameplayCommand::AdvanceTime { delta: Duration(1) }]);
+        bridge
+            .session
+            .update([GameplayCommand::AdvanceTime { delta: Duration(1) }]);
         assert_eq!(
             bridge
                 .session
@@ -5933,12 +6724,12 @@ mod tests {
         bridge.session.update([GameplayCommand::AdvanceTime {
             delta: Duration(100),
         }]);
-        bridge.session.update([GameplayCommand::AdvanceTime {
-            delta: Duration(1),
-        }]);
-        bridge.session.update([GameplayCommand::AdvanceTime {
-            delta: Duration(1),
-        }]);
+        bridge
+            .session
+            .update([GameplayCommand::AdvanceTime { delta: Duration(1) }]);
+        bridge
+            .session
+            .update([GameplayCommand::AdvanceTime { delta: Duration(1) }]);
         assert_eq!(
             bridge
                 .session
@@ -5947,7 +6738,9 @@ mod tests {
                 .state,
             gameplay::domains::mission::MissionState::Completed,
             "progress={:?}, travel={:?}, position={:?}, events={:?}",
-            bridge.session.mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL),
+            bridge
+                .session
+                .mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL),
             bridge.session.world().travel_state(),
             bridge.session.world().ship_position(),
             bridge.session.world().events()
@@ -5955,7 +6748,8 @@ mod tests {
     }
 
     fn completed_campaign_bridge() -> VisualBridge {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         for _ in 0..5 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
@@ -5969,9 +6763,9 @@ mod tests {
         bridge.session.update([GameplayCommand::AdvanceTime {
             delta: Duration(1_000),
         }]);
-        bridge.session.update([GameplayCommand::AdvanceTime {
-            delta: Duration(1),
-        }]);
+        bridge
+            .session
+            .update([GameplayCommand::AdvanceTime { delta: Duration(1) }]);
         for _ in 0..20 {
             let enemy_position = bridge
                 .session
@@ -6035,9 +6829,9 @@ mod tests {
         bridge.session.update([GameplayCommand::AdvanceTime {
             delta: Duration(1_000),
         }]);
-        bridge.session.update([GameplayCommand::AdvanceTime {
-            delta: Duration(1),
-        }]);
+        bridge
+            .session
+            .update([GameplayCommand::AdvanceTime { delta: Duration(1) }]);
         bridge.handle_key(KeyCode::KeyE, ElementState::Pressed);
         let engineering_position = bridge
             .session
@@ -6076,18 +6870,21 @@ mod tests {
         bridge.session.update([GameplayCommand::AdvanceTime {
             delta: Duration(100),
         }]);
-        bridge.session.update([GameplayCommand::AdvanceTime {
-            delta: Duration(1),
-        }]);
-        bridge.session.update([GameplayCommand::AdvanceTime {
-            delta: Duration(1),
-        }]);
+        bridge
+            .session
+            .update([GameplayCommand::AdvanceTime { delta: Duration(1) }]);
+        bridge
+            .session
+            .update([GameplayCommand::AdvanceTime { delta: Duration(1) }]);
 
         let mission_three = bridge
             .session
             .mission_progress(crate::tormenta_gravitacional::TORMENTA_GRAVITACIONAL)
             .expect("Mission3 should exist");
-        assert_eq!(mission_three.state, gameplay::domains::mission::MissionState::Completed);
+        assert_eq!(
+            mission_three.state,
+            gameplay::domains::mission::MissionState::Completed
+        );
         assert_eq!(
             bridge
                 .session
@@ -6169,13 +6966,19 @@ mod tests {
             .session
             .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
             .expect("Mission5 should exist");
-        assert_eq!(mission_five.state, gameplay::domains::mission::MissionState::Available);
+        assert_eq!(
+            mission_five.state,
+            gameplay::domains::mission::MissionState::Available
+        );
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
         let mission_five = bridge
             .session
             .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
             .expect("Mission5 should exist after start");
-        assert_eq!(mission_five.state, gameplay::domains::mission::MissionState::Active);
+        assert_eq!(
+            mission_five.state,
+            gameplay::domains::mission::MissionState::Active
+        );
         assert!(bridge
             .session
             .world()
@@ -6334,7 +7137,10 @@ mod tests {
             .cloned()
             .expect("campaign player inventory should exist");
         let before_item_three = before_inventory.quantity(ItemId(3));
-        assert!(before_item_three > 0, "Mission5 should preserve its ItemId(3) reward");
+        assert!(
+            before_item_three > 0,
+            "Mission5 should preserve its ItemId(3) reward"
+        );
         let defeated_enemies: Vec<_> = bridge
             .session
             .world()
@@ -6402,7 +7208,10 @@ mod tests {
         }
         for (collectible, active, amount) in consumed_collectibles {
             assert_eq!(
-                restored.world().collectible(collectible).map(|value| (value.active, value.amount)),
+                restored
+                    .world()
+                    .collectible(collectible)
+                    .map(|value| (value.active, value.amount)),
                 Some((active, amount))
             );
         }
@@ -6423,9 +7232,8 @@ mod tests {
             gameplay::domains::mission::MissionState::Completed
         );
 
-        let continuation_results = restored.update([GameplayCommand::AdvanceTime {
-            delta: Duration(1),
-        }]);
+        let continuation_results =
+            restored.update([GameplayCommand::AdvanceTime { delta: Duration(1) }]);
         assert!(matches!(
             continuation_results.first().map(|result| &result.status),
             Some(gameplay::CommandStatus::Success { .. })
@@ -6439,9 +7247,16 @@ mod tests {
             )
             .expect("post-campaign continuation save should restore");
         assert_eq!(continued_restored.save_state().serialize(), continued);
-        assert_eq!(continued_restored.world().inventory(player), Some(&before_inventory));
         assert_eq!(
-            mission_state(&continued_restored, crate::cooperacion::PROGRESION_COOPERATIVA).state,
+            continued_restored.world().inventory(player),
+            Some(&before_inventory)
+        );
+        assert_eq!(
+            mission_state(
+                &continued_restored,
+                crate::cooperacion::PROGRESION_COOPERATIVA
+            )
+            .state,
             gameplay::domains::mission::MissionState::Completed
         );
     }
@@ -6496,7 +7311,11 @@ mod tests {
                 GameplayCommand::AccelerateShip {
                     player,
                     pilot_station: bridge.pilot_station,
-                    input: GameplayVec3 { x: 1.0, y: 0.0, z: 0.0 },
+                    input: GameplayVec3 {
+                        x: 1.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
                 },
                 GameplayCommand::AdvanceTime {
                     delta: Duration(1_000),
@@ -6511,10 +7330,17 @@ mod tests {
 
         bridge.guided_interaction();
         assert_eq!(
-            bridge.session.world().derelict(derelict).map(|value| value.state),
+            bridge
+                .session
+                .world()
+                .derelict(derelict)
+                .map(|value| value.state),
             Some(gameplay::DerelictState::Exploring)
         );
-        assert_eq!(bridge.contextual_action().map(|value| value.object), Some("ARMA DE ENERGIA".to_owned()));
+        assert_eq!(
+            bridge.contextual_action().map(|value| value.object),
+            Some("ARMA DE ENERGIA".to_owned())
+        );
         assert!(bridge
             .session
             .world()
@@ -6533,14 +7359,21 @@ mod tests {
         );
         assert!(bridge.contextual_action().is_none());
         assert!(matches!(
-            bridge.session.update([GameplayCommand::EquipPlayerWeaponItem {
-                player,
-                item: gameplay::ENERGY_WEAPON_ITEM,
-            }])[0].status,
+            bridge
+                .session
+                .update([GameplayCommand::EquipPlayerWeaponItem {
+                    player,
+                    item: gameplay::ENERGY_WEAPON_ITEM,
+                }])[0]
+                .status,
             gameplay::CommandStatus::Success { changed: true }
         ));
         assert_eq!(
-            bridge.session.world().equipped_weapon(player).map(|value| value.attack_type),
+            bridge
+                .session
+                .world()
+                .equipped_weapon(player)
+                .map(|value| value.attack_type),
             Some(gameplay::AttackType::Energy)
         );
         bridge.session.update([GameplayCommand::AddInventoryItem {
@@ -6548,27 +7381,49 @@ mod tests {
             item: ItemId(3),
             amount: 1,
         }]);
-        let enemy_health = bridge.session.world().combatant(bridge.enemy).unwrap().current_health;
+        let enemy_health = bridge
+            .session
+            .world()
+            .combatant(bridge.enemy)
+            .unwrap()
+            .current_health;
         assert!(matches!(
             bridge.session.update([GameplayCommand::AttackEnemy {
                 player,
                 enemy: bridge.enemy,
-            }])[0].status,
+            }])[0]
+                .status,
             gameplay::CommandStatus::Success { changed: true }
         ));
-        assert!(bridge.session.world().combatant(bridge.enemy).unwrap().current_health < enemy_health);
+        assert!(
+            bridge
+                .session
+                .world()
+                .combatant(bridge.enemy)
+                .unwrap()
+                .current_health
+                < enemy_health
+        );
         assert!(matches!(
-            bridge.session.update([GameplayCommand::EquipPlayerWeaponItem {
-                player,
-                item: gameplay::PLASMA_WEAPON_ITEM,
-            }])[0].status,
+            bridge
+                .session
+                .update([GameplayCommand::EquipPlayerWeaponItem {
+                    player,
+                    item: gameplay::PLASMA_WEAPON_ITEM,
+                }])[0]
+                .status,
             gameplay::CommandStatus::Rejected {
                 reason: gameplay::CommandRejection::WeaponNotOwned
             }
         ));
-        let energy = gameplay::weapon_for_item(gameplay::ENERGY_WEAPON_ITEM).expect("energy weapon");
-        let plasma = gameplay::weapon_for_item(gameplay::PLASMA_WEAPON_ITEM).expect("plasma weapon");
-        assert_ne!((energy.damage, energy.range, energy.cooldown), (plasma.damage, plasma.range, plasma.cooldown));
+        let energy =
+            gameplay::weapon_for_item(gameplay::ENERGY_WEAPON_ITEM).expect("energy weapon");
+        let plasma =
+            gameplay::weapon_for_item(gameplay::PLASMA_WEAPON_ITEM).expect("plasma weapon");
+        assert_ne!(
+            (energy.damage, energy.range, energy.cooldown),
+            (plasma.damage, plasma.range, plasma.cooldown)
+        );
 
         let save = bridge.session.save_state();
         let serialized = save.serialize();
@@ -6579,11 +7434,20 @@ mod tests {
             .expect("weapon state should restore");
         assert!(serialized.contains("item=",) || serialized.contains("inventory|"));
         assert_eq!(
-            restored.session.world().inventory(player).unwrap().quantity(gameplay::ENERGY_WEAPON_ITEM),
+            restored
+                .session
+                .world()
+                .inventory(player)
+                .unwrap()
+                .quantity(gameplay::ENERGY_WEAPON_ITEM),
             1
         );
         assert_eq!(
-            restored.session.world().equipped_weapon(player).map(|value| value.attack_type),
+            restored
+                .session
+                .world()
+                .equipped_weapon(player)
+                .map(|value| value.attack_type),
             Some(gameplay::AttackType::Energy)
         );
         assert!(!restored
@@ -6597,11 +7461,13 @@ mod tests {
     fn resource_derelicts_publish_collectible_resources_and_persist_consumption() {
         let mut bridge = VisualBridge::new().expect("resource scenario should initialize");
         bridge.session.update([GameplayCommand::RegisterDerelict {
-            derelict: Derelict::new(DerelictId::new(9_020), GameplayVec3::ZERO, 3.5)
-                .with_rewards(
-                    vec![DerelictReward { item: gameplay::FUEL_RESOURCE_ITEM, amount: 4 }],
-                    RewardDistributionPolicy::Shared,
-                ),
+            derelict: Derelict::new(DerelictId::new(9_020), GameplayVec3::ZERO, 3.5).with_rewards(
+                vec![DerelictReward {
+                    item: gameplay::FUEL_RESOURCE_ITEM,
+                    amount: 4,
+                }],
+                RewardDistributionPolicy::Shared,
+            ),
         }]);
         bridge.guided_interaction();
         let fuel_collectible = bridge
@@ -6617,9 +7483,24 @@ mod tests {
             collectible: fuel_collectible.entity,
             amount: fuel_collectible.amount,
         }]);
-        assert!(matches!(collect_result.first().map(|value| value.status), Some(gameplay::CommandStatus::Success { changed: true })));
-        assert!(!bridge.session.world().collectible(fuel_collectible.entity).unwrap().active);
-        let fuel_before = bridge.session.world().ship_fuel(bridge.ship).unwrap().current();
+        assert!(matches!(
+            collect_result.first().map(|value| value.status),
+            Some(gameplay::CommandStatus::Success { changed: true })
+        ));
+        assert!(
+            !bridge
+                .session
+                .world()
+                .collectible(fuel_collectible.entity)
+                .unwrap()
+                .active
+        );
+        let fuel_before = bridge
+            .session
+            .world()
+            .ship_fuel(bridge.ship)
+            .unwrap()
+            .current();
         bridge.session.update([GameplayCommand::AddInventoryItem {
             player: bridge.player,
             item: gameplay::FUEL_RESOURCE_ITEM,
@@ -6631,8 +7512,19 @@ mod tests {
             item: gameplay::FUEL_RESOURCE_ITEM,
             amount: 1,
         }]);
-        assert!(matches!(result.first().map(|value| value.status), Some(gameplay::CommandStatus::Success { changed: true })));
-        assert_eq!(bridge.session.world().ship_fuel(bridge.ship).unwrap().current(), fuel_before + 1);
+        assert!(matches!(
+            result.first().map(|value| value.status),
+            Some(gameplay::CommandStatus::Success { changed: true })
+        ));
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .ship_fuel(bridge.ship)
+                .unwrap()
+                .current(),
+            fuel_before + 1
+        );
         let restored = bridge.session.save_state().serialize();
         assert!(restored.contains("fuel|"));
         assert!(restored.contains("collectible|"));
@@ -6640,7 +7532,8 @@ mod tests {
 
     #[test]
     fn textual_save_restores_life_support_allocations_and_old_saves_default_them() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("interior scenario should initialize");
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("interior scenario should initialize");
         bridge.restore_life_support();
         let before = bridge
             .session
@@ -6652,72 +7545,167 @@ mod tests {
         let serialized = bridge.session.save_state().serialize();
         assert!(serialized.lines().any(|line| line.starts_with("oxygen|")));
 
-        let decoded = gameplay::GameplaySaveState::deserialize(&serialized).expect("oxygen save should parse");
-        let mut restored = VisualBridge::new_with_mode(true).expect("restored interior should initialize");
-        restored.session.restore_state(decoded).expect("oxygen save should restore");
+        let decoded = gameplay::GameplaySaveState::deserialize(&serialized)
+            .expect("oxygen save should parse");
+        let mut restored =
+            VisualBridge::new_with_mode(true).expect("restored interior should initialize");
+        restored
+            .session
+            .restore_state(decoded)
+            .expect("oxygen save should restore");
         assert_eq!(
-            restored.session.world().life_support_panel(restored.life_support_panel).unwrap().progress(),
+            restored
+                .session
+                .world()
+                .life_support_panel(restored.life_support_panel)
+                .unwrap()
+                .progress(),
             before
         );
         let repeated = restored.session.save_state().serialize();
-        let repeated_decoded = gameplay::GameplaySaveState::deserialize(&repeated).expect("repeated save should parse");
-        restored.session.restore_state(repeated_decoded).expect("repeated oxygen save should restore");
-        assert_eq!(restored.session.world().life_support_panel(restored.life_support_panel).unwrap().progress(), before);
+        let repeated_decoded = gameplay::GameplaySaveState::deserialize(&repeated)
+            .expect("repeated save should parse");
+        restored
+            .session
+            .restore_state(repeated_decoded)
+            .expect("repeated oxygen save should restore");
+        assert_eq!(
+            restored
+                .session
+                .world()
+                .life_support_panel(restored.life_support_panel)
+                .unwrap()
+                .progress(),
+            before
+        );
 
         let old_text = serialized
             .lines()
             .filter(|line| !line.starts_with("oxygen|"))
             .collect::<Vec<_>>()
             .join("\n");
-        let old_decoded = gameplay::GameplaySaveState::deserialize(&old_text).expect("old save should parse");
-        let mut old_restored = VisualBridge::new_with_mode(true).expect("old restored interior should initialize");
-        old_restored.session.restore_state(old_decoded).expect("old save should restore");
-        assert_eq!(old_restored.session.world().life_support_panel(old_restored.life_support_panel).unwrap().allocated_total(), 0);
+        let old_decoded =
+            gameplay::GameplaySaveState::deserialize(&old_text).expect("old save should parse");
+        let mut old_restored =
+            VisualBridge::new_with_mode(true).expect("old restored interior should initialize");
+        old_restored
+            .session
+            .restore_state(old_decoded)
+            .expect("old save should restore");
+        assert_eq!(
+            old_restored
+                .session
+                .world()
+                .life_support_panel(old_restored.life_support_panel)
+                .unwrap()
+                .allocated_total(),
+            0
+        );
         let invalid_text = serialized
             .lines()
-            .map(|line| if line.starts_with("oxygen|") { "oxygen|6|1:99,2:2" } else { line })
+            .map(|line| {
+                if line.starts_with("oxygen|") {
+                    "oxygen|6|1:99,2:2"
+                } else {
+                    line
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
-        let invalid_decoded = gameplay::GameplaySaveState::deserialize(&invalid_text).expect("invalid oxygen record should parse before domain validation");
-        let mut invalid_restored = VisualBridge::new_with_mode(true).expect("invalid restored interior should initialize");
-        assert!(invalid_restored.session.restore_state(invalid_decoded).is_err());
+        let invalid_decoded = gameplay::GameplaySaveState::deserialize(&invalid_text)
+            .expect("invalid oxygen record should parse before domain validation");
+        let mut invalid_restored =
+            VisualBridge::new_with_mode(true).expect("invalid restored interior should initialize");
+        assert!(invalid_restored
+            .session
+            .restore_state(invalid_decoded)
+            .is_err());
     }
 
     #[test]
     fn collected_supplies_repair_the_ship_once_and_invalid_repairs_are_atomic() {
         let mut bridge = VisualBridge::new().expect("repair scenario should initialize");
         bridge.session.update([GameplayCommand::RegisterDerelict {
-            derelict: Derelict::new(DerelictId::new(9_021), GameplayVec3::ZERO, 3.5)
-                .with_rewards(
-                    vec![DerelictReward { item: ItemId(1), amount: 1 }],
-                    RewardDistributionPolicy::Shared,
-                ),
+            derelict: Derelict::new(DerelictId::new(9_021), GameplayVec3::ZERO, 3.5).with_rewards(
+                vec![DerelictReward {
+                    item: ItemId(1),
+                    amount: 1,
+                }],
+                RewardDistributionPolicy::Shared,
+            ),
         }]);
         bridge.guided_interaction();
         bridge.guided_interaction();
-        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 1);
-        bridge.session.update([GameplayCommand::DamageShip { ship: bridge.ship, amount: 20 }]);
-        let before = bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1));
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .inventory(bridge.player)
+                .unwrap()
+                .quantity(ItemId(1)),
+            1
+        );
+        bridge.session.update([GameplayCommand::DamageShip {
+            ship: bridge.ship,
+            amount: 20,
+        }]);
+        let before = bridge
+            .session
+            .world()
+            .inventory(bridge.player)
+            .unwrap()
+            .quantity(ItemId(1));
         bridge.session.update([GameplayCommand::Interact {
             player: bridge.player,
             target: bridge.engineering_station,
         }]);
-        let repaired = bridge.session.update([GameplayCommand::RepairShipAtStation {
-            player: bridge.player,
-            ship: bridge.ship,
-            station: bridge.engineering_station,
-        }]);
-        assert!(matches!(repaired.first().map(|value| value.status), Some(gameplay::CommandStatus::Success { changed: true })));
-        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), before - 1);
-        let after = bridge.session.world().ship_integrity(bridge.ship).unwrap().current();
+        let repaired = bridge
+            .session
+            .update([GameplayCommand::RepairShipAtStation {
+                player: bridge.player,
+                ship: bridge.ship,
+                station: bridge.engineering_station,
+            }]);
+        assert!(matches!(
+            repaired.first().map(|value| value.status),
+            Some(gameplay::CommandStatus::Success { changed: true })
+        ));
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .inventory(bridge.player)
+                .unwrap()
+                .quantity(ItemId(1)),
+            before - 1
+        );
+        let after = bridge
+            .session
+            .world()
+            .ship_integrity(bridge.ship)
+            .unwrap()
+            .current();
         assert!(after > 80);
-        let rejected = bridge.session.update([GameplayCommand::RepairShipAtStation {
-            player: bridge.player,
-            ship: bridge.ship,
-            station: bridge.engineering_station,
-        }]);
-        assert!(matches!(rejected.first().map(|value| value.status), Some(gameplay::CommandStatus::Rejected { .. })));
-        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 0);
+        let rejected = bridge
+            .session
+            .update([GameplayCommand::RepairShipAtStation {
+                player: bridge.player,
+                ship: bridge.ship,
+                station: bridge.engineering_station,
+            }]);
+        assert!(matches!(
+            rejected.first().map(|value| value.status),
+            Some(gameplay::CommandStatus::Rejected { .. })
+        ));
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .inventory(bridge.player)
+                .unwrap()
+                .quantity(ItemId(1)),
+            0
+        );
     }
 
     #[test]
@@ -6729,8 +7717,7 @@ mod tests {
             "astral_echo_visual_asset_test_{}.obj",
             std::process::id()
         ));
-        std::fs::write(&path, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
-            .expect("write test OBJ");
+        std::fs::write(&path, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").expect("write test OBJ");
         let before_tick = bridge.session.world().time().tick;
         assert!(bridge.request_visual_asset(
             "fixture.visual_bridge",

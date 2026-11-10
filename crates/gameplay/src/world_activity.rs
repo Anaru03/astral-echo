@@ -1,7 +1,5 @@
 use crate::{
-    combat::EnemyConfiguration,
-    knowledge::KnowledgeTarget,
-    navigation::DestinationId,
+    combat::EnemyConfiguration, knowledge::KnowledgeTarget, navigation::DestinationId,
     types::ItemId,
 };
 
@@ -120,9 +118,7 @@ impl FunctionalWorld {
                     }
                 }
                 WorldActivity::Resource(site)
-                    if site.item.0 == 0
-                        || site.available == 0
-                        || site.extraction_amount == 0 =>
+                    if site.item.0 == 0 || site.available == 0 || site.extraction_amount == 0 =>
                 {
                     return Err(FunctionalWorldError::InvalidResource)
                 }

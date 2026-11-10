@@ -481,11 +481,7 @@ impl GameServerHandle {
         broadcast_all(&self.state, self.events.as_ref(), message, exclude);
     }
 
-    pub fn send_to(
-        &self,
-        player_id: NetworkPlayerId,
-        message: &ServerMessage,
-    ) -> io::Result<()> {
+    pub fn send_to(&self, player_id: NetworkPlayerId, message: &ServerMessage) -> io::Result<()> {
         let (mut stream, output, write_lock) = {
             let state = self
                 .state

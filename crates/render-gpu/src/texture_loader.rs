@@ -1,4 +1,3 @@
-
 use std::fmt;
 use std::fs::File;
 use std::io::BufReader;
@@ -49,22 +48,15 @@ impl TextureImage {
 
         let mut decoder = png::Decoder::new(reader);
 
-        decoder.set_transformations(
-            png::Transformations::EXPAND
-                | png::Transformations::STRIP_16,
-        );
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
 
         let mut reader = decoder.read_info()?;
 
         let mut buffer = vec![
             0;
-            reader
-                .output_buffer_size()
-                .ok_or_else(|| {
-                    TextureLoadError::Invalid(
-                        "PNG output buffer too large".into(),
-                    )
-                })?
+            reader.output_buffer_size().ok_or_else(|| {
+                TextureLoadError::Invalid("PNG output buffer too large".into())
+            })?
         ];
 
         let info = reader.next_frame(&mut buffer)?;
@@ -72,40 +64,28 @@ impl TextureImage {
 
         let pixel_count = (info.width as usize)
             .checked_mul(info.height as usize)
-            .ok_or_else(|| {
-                TextureLoadError::Invalid(
-                    "PNG dimensions overflow".into(),
-                )
-            })?;
+            .ok_or_else(|| TextureLoadError::Invalid("PNG dimensions overflow".into()))?;
 
         let mut pixels = Vec::with_capacity(
-            pixel_count.checked_mul(4).ok_or_else(|| {
-                TextureLoadError::Invalid(
-                    "RGBA buffer size overflow".into(),
-                )
-            })?,
+            pixel_count
+                .checked_mul(4)
+                .ok_or_else(|| TextureLoadError::Invalid("RGBA buffer size overflow".into()))?,
         );
 
         match info.color_type {
             png::ColorType::Rgb => {
                 if bytes.len() != pixel_count * 3 {
-                    return Err(TextureLoadError::Invalid(
-                        "invalid RGB data length".into(),
-                    ));
+                    return Err(TextureLoadError::Invalid("invalid RGB data length".into()));
                 }
 
                 for rgb in bytes.chunks_exact(3) {
-                    pixels.extend_from_slice(&[
-                        rgb[0], rgb[1], rgb[2], 255,
-                    ]);
+                    pixels.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
                 }
             }
 
             png::ColorType::Rgba => {
                 if bytes.len() != pixel_count * 4 {
-                    return Err(TextureLoadError::Invalid(
-                        "invalid RGBA data length".into(),
-                    ));
+                    return Err(TextureLoadError::Invalid("invalid RGBA data length".into()));
                 }
 
                 pixels.extend_from_slice(bytes);
@@ -119,9 +99,7 @@ impl TextureImage {
                 }
 
                 for &gray in bytes {
-                    pixels.extend_from_slice(&[
-                        gray, gray, gray, 255,
-                    ]);
+                    pixels.extend_from_slice(&[gray, gray, gray, 255]);
                 }
             }
 

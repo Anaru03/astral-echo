@@ -3,10 +3,23 @@ use render_core::{
 };
 
 use crate::{
-    Color, CpuPipeline, Framebuffer, FragmentShader, PipelineConfig, PipelineStats, RasterError,
-    RasterMode,
-    TileConfig, Topology, Viewport,
+    Color, CpuPipeline, FragmentShader, Framebuffer, PipelineConfig, PipelineStats, RasterError,
+    RasterMode, TileConfig, Topology, Viewport,
 };
+
+pub fn diagnostic_fragment_shader() -> Option<FragmentShader> {
+    let target = std::env::var("ASTRAL_ECHO_CPU_DIAGNOSTIC_HANDLE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(render_core::MaterialHandle::new)
+        .unwrap_or_else(|| render_core::MaterialHandle::new(100_830));
+    match std::env::var("ASTRAL_ECHO_CPU_DIAGNOSTIC").ok().as_deref() {
+        Some("magenta") => Some(FragmentShader::DiagnosticMagenta(target)),
+        Some("normalized") => Some(FragmentShader::DiagnosticTextureNormalized(target)),
+        Some("repeat") => Some(FragmentShader::DiagnosticTextureRepeat(target)),
+        _ => None,
+    }
+}
 
 pub fn render_snapshot_scene(
     framebuffer: &mut Framebuffer,
@@ -45,16 +58,23 @@ pub fn compose_hud_overlay(framebuffer: &mut Framebuffer, hud: &render_core::Hud
     for rect in std::iter::once(overlay.background).chain(overlay.glyphs) {
         for y in rect.y..rect.y.saturating_add(rect.height) {
             for x in rect.x..rect.x.saturating_add(rect.width) {
-                let Some(destination) = framebuffer.pixel(x, y) else { continue };
+                let Some(destination) = framebuffer.pixel(x, y) else {
+                    continue;
+                };
                 let alpha = f32::from(rect.color[3]) / 255.0;
                 let blend = |source: u8, target: u8| {
                     (f32::from(source) * alpha + f32::from(target) * (1.0 - alpha)) as u8
                 };
-                framebuffer.set_pixel(x, y, Color::new(
-                    blend(rect.color[0], destination.r),
-                    blend(rect.color[1], destination.g),
-                    blend(rect.color[2], destination.b), 255,
-                ));
+                framebuffer.set_pixel(
+                    x,
+                    y,
+                    Color::new(
+                        blend(rect.color[0], destination.r),
+                        blend(rect.color[1], destination.g),
+                        blend(rect.color[2], destination.b),
+                        255,
+                    ),
+                );
             }
         }
     }
@@ -96,13 +116,7 @@ pub fn render_snapshot_scene_with_shader_with_stats(
     shader: FragmentShader,
 ) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
     let time = (scene.snapshot().tick.0 % 4096) as f32;
-    render_snapshot_scene_with_shader_at_time_with_stats(
-        framebuffer,
-        scene,
-        mode,
-        shader,
-        time,
-    )
+    render_snapshot_scene_with_shader_at_time_with_stats(framebuffer, scene, mode, shader, time)
 }
 
 pub fn render_snapshot_scene_with_shader_at_time_with_stats(
@@ -156,12 +170,8 @@ pub fn render_snapshot_scene_with_shader(
     mode: RasterMode,
     shader: FragmentShader,
 ) -> Result<PipelineStats, RasterError> {
-    let (_, stats) = render_snapshot_scene_with_shader_with_stats(
-        framebuffer,
-        scene,
-        mode,
-        shader,
-    )?;
+    let (_, stats) =
+        render_snapshot_scene_with_shader_with_stats(framebuffer, scene, mode, shader)?;
     Ok(stats)
 }
 
@@ -238,7 +248,7 @@ fn render_prepared_scene_with_config(
         mode,
         clear,
         game_over,
-        FragmentShader::VertexColor,
+        diagnostic_fragment_shader().unwrap_or(FragmentShader::VertexColor),
         0.0,
         config,
     )

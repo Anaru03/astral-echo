@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::{MaterialHandle, MeshHandle};
 use crate::LodLevel;
+use crate::{MaterialHandle, MeshHandle};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VisualAssetRequest {

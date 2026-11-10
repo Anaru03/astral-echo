@@ -150,15 +150,7 @@ pub fn shade_surface_sanitized_normalized(
     position: Vec3,
     normal: Vec3,
 ) -> Vec4 {
-    shade_surface_impl(
-        environment,
-        material,
-        color,
-        position,
-        normal,
-        None,
-        true,
-    )
+    shade_surface_impl(environment, material, color, position, normal, None, true)
 }
 
 pub fn shade_surface_profiled(
@@ -168,13 +160,7 @@ pub fn shade_surface_profiled(
     position: Vec3,
     normal: Vec3,
 ) -> (Vec4, ShadeTimings) {
-    shade_surface_profiled_sanitized(
-        environment,
-        material.sanitized(),
-        color,
-        position,
-        normal,
-    )
+    shade_surface_profiled_sanitized(environment, material.sanitized(), color, position, normal)
 }
 
 pub fn shade_surface_profiled_sanitized(

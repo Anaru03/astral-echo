@@ -1,14 +1,14 @@
 use std::num::NonZeroU64;
 use std::ops::Range;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use render_core::{
     game_over_layout, hud_overlay, Camera, GpuAssetEvent, GpuAssetState, HudState, LodLevel, Mat4,
-    MaterialHandle, MeshHandle, PreparedScene, RasterMesh,
-    RasterVertex, SnapshotId, SnapshotScene, Transform, Vec3, Vec4, GAME_OVER_GLYPHS,
+    MaterialHandle, MeshHandle, PreparedScene, RasterMesh, RasterVertex, SnapshotId, SnapshotScene,
+    Transform, Vec3, Vec4, GAME_OVER_GLYPHS,
 };
 use wgpu::util::DeviceExt;
 
@@ -453,9 +453,11 @@ impl GpuRenderer {
     }
 
     pub fn gpu_asset_state(&self, mesh: MeshHandle, lod: LodLevel) -> GpuAssetState {
-        self.instanced.as_ref().map_or(GpuAssetState::Unavailable, |scene| {
-            scene.gpu_asset_state((mesh, lod))
-        })
+        self.instanced
+            .as_ref()
+            .map_or(GpuAssetState::Unavailable, |scene| {
+                scene.gpu_asset_state((mesh, lod))
+            })
     }
 
     pub fn ensure_shared_mesh(
@@ -654,7 +656,10 @@ impl GpuRenderer {
                     ops: wgpu::Operations {
                         load: match clear {
                             Some(clear) => wgpu::LoadOp::Clear(wgpu::Color {
-                                r: channel(clear[0]), g: channel(clear[1]), b: channel(clear[2]), a: 1.0,
+                                r: channel(clear[0]),
+                                g: channel(clear[1]),
+                                b: channel(clear[2]),
+                                a: 1.0,
                             }),
                             None => wgpu::LoadOp::Load,
                         },
@@ -876,7 +881,10 @@ mod tests {
             640,
             360,
         );
-        let depths: Vec<_> = scene.iter().map(|(mesh, _)| mesh.vertices[0].position.z).collect();
+        let depths: Vec<_> = scene
+            .iter()
+            .map(|(mesh, _)| mesh.vertices[0].position.z)
+            .collect();
         assert!(depths.len() > 2);
         assert!(depths.windows(2).all(|pair| pair[0] > pair[1]));
     }

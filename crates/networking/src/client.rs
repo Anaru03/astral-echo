@@ -1,6 +1,6 @@
 use crate::protocol::{
-    decode_server, encode, ClientMessage, Mission5ContentProjection, NetworkPlayerId,
-    EnemyProjection, ServerMessage, SharedInventoryProjection, PROTOCOL_VERSION,
+    decode_server, encode, ClientMessage, EnemyProjection, Mission5ContentProjection,
+    NetworkPlayerId, ServerMessage, SharedInventoryProjection, PROTOCOL_VERSION,
 };
 
 use std::collections::VecDeque;
@@ -97,12 +97,7 @@ impl GameClient {
         self.send(&ClientMessage::EquipWeapon { request_id, item })
     }
 
-    pub fn use_healing_item(
-        &mut self,
-        request_id: u64,
-        item: u32,
-        amount: u32,
-    ) -> io::Result<()> {
+    pub fn use_healing_item(&mut self, request_id: u64, item: u32, amount: u32) -> io::Result<()> {
         self.send(&ClientMessage::UseHealingItem {
             request_id,
             item,

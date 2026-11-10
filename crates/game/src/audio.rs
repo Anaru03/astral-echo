@@ -121,8 +121,8 @@ struct LoadedAudio {
 
 impl RodioOutput {
     fn open() -> Result<Self, AudioError> {
-        let mut device = DeviceSinkBuilder::open_default_sink()
-            .map_err(|_| AudioError::Unavailable)?;
+        let mut device =
+            DeviceSinkBuilder::open_default_sink().map_err(|_| AudioError::Unavailable)?;
         device.log_on_drop(false);
         Ok(Self {
             device,
@@ -183,18 +183,27 @@ impl AudioManager {
         Self {
             output: RodioOutput::open().ok(),
             resources: AudioResources {
-                music: [(MusicTrack::Exploration, PathBuf::from("assets/audio/exploration.ogg"))]
-                    .into_iter()
-                    .collect(),
+                music: [(
+                    MusicTrack::Exploration,
+                    PathBuf::from("assets/audio/exploration.ogg"),
+                )]
+                .into_iter()
+                .collect(),
                 effects: [
                     (SoundEffect::PlayerAttack, "assets/audio/attack.wav"),
-                    (SoundEffect::EnemyDefeated, "assets/audio/enemy_defeated.wav"),
+                    (
+                        SoundEffect::EnemyDefeated,
+                        "assets/audio/enemy_defeated.wav",
+                    ),
                     (SoundEffect::Collect, "assets/audio/collect.wav"),
                     (SoundEffect::Scan, "assets/audio/scan.wav"),
                     (SoundEffect::Landing, "assets/audio/landing.wav"),
                     (SoundEffect::PlayerImpacted, "assets/audio/impact.wav"),
                     (SoundEffect::GameOver, "assets/audio/game_over.wav"),
-                    (SoundEffect::ShipPropulsion, "assets/audio/ship_propulsion.wav"),
+                    (
+                        SoundEffect::ShipPropulsion,
+                        "assets/audio/ship_propulsion.wav",
+                    ),
                 ]
                 .into_iter()
                 .map(|(effect, path)| (effect, PathBuf::from(path)))
@@ -538,16 +547,25 @@ mod tests {
         );
         let expected_effects = [
             (SoundEffect::PlayerAttack, "assets/audio/attack.wav"),
-            (SoundEffect::EnemyDefeated, "assets/audio/enemy_defeated.wav"),
+            (
+                SoundEffect::EnemyDefeated,
+                "assets/audio/enemy_defeated.wav",
+            ),
             (SoundEffect::Collect, "assets/audio/collect.wav"),
             (SoundEffect::Scan, "assets/audio/scan.wav"),
             (SoundEffect::Landing, "assets/audio/landing.wav"),
             (SoundEffect::PlayerImpacted, "assets/audio/impact.wav"),
             (SoundEffect::GameOver, "assets/audio/game_over.wav"),
-            (SoundEffect::ShipPropulsion, "assets/audio/ship_propulsion.wav"),
+            (
+                SoundEffect::ShipPropulsion,
+                "assets/audio/ship_propulsion.wav",
+            ),
         ];
         for (effect, path) in expected_effects {
-            assert_eq!(audio.resources.effects.get(&effect), Some(&PathBuf::from(path)));
+            assert_eq!(
+                audio.resources.effects.get(&effect),
+                Some(&PathBuf::from(path))
+            );
         }
     }
 
@@ -576,10 +594,19 @@ mod tests {
             load_rx: mpsc::channel().1,
             event_cursor: AudioEventCursor::new(),
         };
-        assert_eq!(audio.play_music(MusicTrack::Exploration, true), Err(AudioError::MissingResource));
-        assert_eq!(audio.play_effect(SoundEffect::PlayerAttack), Err(AudioError::MissingResource));
+        assert_eq!(
+            audio.play_music(MusicTrack::Exploration, true),
+            Err(AudioError::MissingResource)
+        );
+        assert_eq!(
+            audio.play_effect(SoundEffect::PlayerAttack),
+            Err(AudioError::MissingResource)
+        );
         audio.register_music(MusicTrack::Exploration, "missing.wav");
-        assert_eq!(audio.play_music(MusicTrack::Exploration, true), Err(AudioError::Unavailable));
+        assert_eq!(
+            audio.play_music(MusicTrack::Exploration, true),
+            Err(AudioError::Unavailable)
+        );
     }
 
     #[test]

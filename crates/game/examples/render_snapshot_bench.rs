@@ -50,7 +50,10 @@ fn validate_scenario(
         })
         .count();
     assert_eq!(surface_count, if expects_surface_objects { 4 } else { 0 });
-    assert!(snapshot.nodes.iter().all(|node| node.transform.matrix().is_finite()));
+    assert!(snapshot
+        .nodes
+        .iter()
+        .all(|node| node.transform.matrix().is_finite()));
     black_box(snapshot);
 }
 

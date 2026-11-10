@@ -135,9 +135,8 @@ impl RasterMesh {
                     cos_latitude,
                     sin_latitude * longitude.sin(),
                 );
-                vertices.push(
-                    RasterVertex::new(center + normal * radius, color).with_normal(normal),
-                );
+                vertices
+                    .push(RasterVertex::new(center + normal * radius, color).with_normal(normal));
             }
         }
         let row = SEGMENTS + 1;
@@ -183,9 +182,8 @@ impl RasterMesh {
                 } else {
                     Vec4::new(0.04, 0.18, 0.62, 1.0)
                 };
-                vertices.push(
-                    RasterVertex::new(center + normal * radius, color).with_normal(normal),
-                );
+                vertices
+                    .push(RasterVertex::new(center + normal * radius, color).with_normal(normal));
             }
         }
         let row = SEGMENTS + 1;
@@ -268,11 +266,7 @@ impl RasterMesh {
             let latitude = next() * 2.0 - 1.0;
             let longitude = index as f32 * core::f32::consts::TAU / 8.0 + next() * 0.45;
             let ring = (1.0 - latitude * latitude).max(0.0).sqrt();
-            let direction = Vec3::new(
-                ring * longitude.cos(),
-                latitude,
-                ring * longitude.sin(),
-            );
+            let direction = Vec3::new(ring * longitude.cos(), latitude, ring * longitude.sin());
             let center = direction * field_radius * (0.35 + next() * 0.45);
             let size = field_radius * (0.06 + next() * 0.06);
             let scale = Vec3::new(
@@ -307,13 +301,13 @@ impl RasterMesh {
             let latitude = next() * 2.0 - 1.0;
             let longitude = next() * core::f32::consts::TAU;
             let ring = (1.0 - latitude * latitude).max(0.0).sqrt();
-            let direction = Vec3::new(
-                ring * longitude.cos(),
-                latitude,
-                ring * longitude.sin(),
-            )
-            .normalize_or_zero();
-            let reference = if direction.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
+            let direction = Vec3::new(ring * longitude.cos(), latitude, ring * longitude.sin())
+                .normalize_or_zero();
+            let reference = if direction.y.abs() < 0.9 {
+                Vec3::Y
+            } else {
+                Vec3::X
+            };
             let tangent = direction.cross(reference).normalize_or_zero();
             let bitangent = direction.cross(tangent).normalize_or_zero();
             let center = direction * shell_radius;
@@ -331,15 +325,25 @@ impl RasterMesh {
                 center + tangent * half_size + bitangent * half_size,
                 center - tangent * half_size + bitangent * half_size,
             ] {
-                result.vertices.push(
-                    RasterVertex::new(position, star_color).with_normal(direction),
-                );
+                result
+                    .vertices
+                    .push(RasterVertex::new(position, star_color).with_normal(direction));
             }
             // Keep both windings: the camera is inside the shell and the CPU
             // rasterizer performs winding culling for ordinary triangles.
             result.indices.extend([
-                base, base + 1, base + 2, base, base + 2, base + 3,
-                base, base + 2, base + 1, base, base + 3, base + 2,
+                base,
+                base + 1,
+                base + 2,
+                base,
+                base + 2,
+                base + 3,
+                base,
+                base + 2,
+                base + 1,
+                base,
+                base + 3,
+                base + 2,
             ]);
         }
         result
@@ -379,7 +383,12 @@ impl RasterMesh {
     }
 }
 
-fn append_station_part(target: &mut RasterMesh, mut part: RasterMesh, scale: Vec3, translation: Vec3) {
+fn append_station_part(
+    target: &mut RasterMesh,
+    mut part: RasterMesh,
+    scale: Vec3,
+    translation: Vec3,
+) {
     let base = target.vertices.len() as u32;
     for vertex in &mut part.vertices {
         vertex.position = vertex.position * scale + translation;

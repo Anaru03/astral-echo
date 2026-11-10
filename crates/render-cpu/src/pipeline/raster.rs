@@ -54,6 +54,9 @@ pub enum FragmentShader {
     VertexColor,
     /// Aplica bandas de iluminación deterministas en espacio de pantalla.
     SolarBands,
+    DiagnosticMagenta(MaterialHandle),
+    DiagnosticTextureNormalized(MaterialHandle),
+    DiagnosticTextureRepeat(MaterialHandle),
 }
 
 /// Resultado de una llamada de rasterización.
@@ -278,6 +281,26 @@ pub fn shade_fragment_with_time_and_textures(
 ) -> Color {
     let color = match shader {
         FragmentShader::VertexColor => fragment.color,
+        FragmentShader::DiagnosticMagenta(target) if fragment.material == Some(target) => {
+            Vec4::new(1.0, 0.0, 1.0, 1.0)
+        }
+        FragmentShader::DiagnosticTextureNormalized(target)
+            if fragment.material == Some(target) =>
+        {
+            let mut normalized = *fragment;
+            normalized.uv = fragment.uv.clamp(Vec2::ZERO, Vec2::ONE);
+            texture_color(
+                &normalized,
+                textures,
+                render_core::TextureAddressMode::Clamp,
+            )
+        }
+        FragmentShader::DiagnosticTextureRepeat(target) if fragment.material == Some(target) => {
+            texture_color(fragment, textures, render_core::TextureAddressMode::Repeat)
+        }
+        FragmentShader::DiagnosticMagenta(_)
+        | FragmentShader::DiagnosticTextureNormalized(_)
+        | FragmentShader::DiagnosticTextureRepeat(_) => fragment.color,
         FragmentShader::SolarBands => {
             let time = if time.is_finite() {
                 time.rem_euclid(4096.0)
@@ -296,21 +319,60 @@ pub fn shade_fragment_with_time_and_textures(
             )
         }
     };
+    if matches!(
+        shader,
+        FragmentShader::DiagnosticMagenta(target)
+            | FragmentShader::DiagnosticTextureNormalized(target)
+            | FragmentShader::DiagnosticTextureRepeat(target)
+            if fragment.material == Some(target)
+    ) {
+        return vec4_to_rgba8(color);
+    }
     let color = textures
         .and_then(|registry| {
-            fragment
-                .material
-                .and_then(|material| registry.image_ref(material))
+            fragment.material.and_then(|material| {
+                registry
+                    .image_ref(material)
+                    .map(|texture| (texture, registry.address_mode(material)))
+            })
         })
-        .map_or(color, |texture| {
-            color * sample_texture(texture, fragment.uv)
+        .map_or(color, |(texture, mode)| {
+            color * sample_texture_with_mode(texture, fragment.uv, mode)
         });
     vec4_to_rgba8(color)
 }
 
+fn texture_color(
+    fragment: &Fragment,
+    registry: Option<&MaterialTextureRegistry>,
+    mode: render_core::TextureAddressMode,
+) -> Vec4 {
+    registry
+        .and_then(|registry| fragment.material.map(|material| (registry, material)))
+        .and_then(|(registry, material)| {
+            registry
+                .image_ref(material)
+                .map(|texture| (texture, material))
+        })
+        .map(|(texture, _)| sample_texture_with_mode(texture, fragment.uv, mode))
+        .unwrap_or(fragment.color)
+}
+
 pub fn sample_texture(texture: &render_core::DecodedTexture, uv: Vec2) -> Vec4 {
-    let u = uv.x.clamp(0.0, 1.0);
-    let v = uv.y.clamp(0.0, 1.0);
+    sample_texture_with_mode(texture, uv, render_core::TextureAddressMode::Clamp)
+}
+
+pub fn sample_texture_with_mode(
+    texture: &render_core::DecodedTexture,
+    uv: Vec2,
+    mode: render_core::TextureAddressMode,
+) -> Vec4 {
+    let wrap = |value: f32| match mode {
+        render_core::TextureAddressMode::Clamp => value.clamp(0.0, 1.0),
+        render_core::TextureAddressMode::Repeat => value.rem_euclid(1.0),
+    };
+    let u = wrap(uv.x);
+    let v = wrap(uv.y);
     let x = (u * texture.width.saturating_sub(1) as f32).round() as u32;
     let y = ((1.0 - v) * texture.height.saturating_sub(1) as f32).round() as u32;
     let index = ((y * texture.width + x) * 4) as usize;
