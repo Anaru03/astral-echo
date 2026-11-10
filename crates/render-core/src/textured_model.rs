@@ -155,7 +155,7 @@ pub fn register_textured_model(
         let mesh_id = first_mesh_id
             .checked_add(offset)
             .ok_or_else(|| "mesh ID overflow".to_string())?;
-        let repeat_wall = part
+        let habitat_ring_wall = part
             .name
             .strip_prefix("ECHO7_30_Exterior_Unificado__Drum_doble_altura_")
             .and_then(|suffix| suffix.parse::<u32>().ok())
@@ -169,11 +169,35 @@ pub fn register_textured_model(
                         .file_name()
                         .is_some_and(|name| name == "base_marfil.png")
                 });
+        let lower_corridor_wall = part
+            .name
+            .strip_prefix("ECHO7_02_Pasillos__Pared_pasillo_")
+            .and_then(|suffix| suffix.parse::<u32>().ok())
+            .is_some_and(|segment| (1..=20).contains(&segment))
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let repeat_wall = habitat_ring_wall || lower_corridor_wall;
         if repeat_wall {
             for vertex in &mut part.mesh.vertices {
-                let angle = vertex.position.y.atan2(vertex.position.x);
-                let radius = vertex.position.x.hypot(vertex.position.y);
-                vertex.uv = crate::Vec2::new(angle * radius * 0.35, vertex.position.z * 0.35);
+                if habitat_ring_wall {
+                    let angle = vertex.position.y.atan2(vertex.position.x);
+                    let radius = vertex.position.x.hypot(vertex.position.y);
+                    vertex.uv = crate::Vec2::new(angle * radius * 0.35, vertex.position.z * 0.35);
+                } else {
+                    let longitudinal = if vertex.normal.x.abs() > vertex.normal.y.abs() {
+                        vertex.position.y
+                    } else {
+                        vertex.position.x
+                    };
+                    vertex.uv = crate::Vec2::new(longitudinal * 0.35, vertex.position.z * 0.35);
+                }
             }
         }
         let material_offset = if repeat_wall {
