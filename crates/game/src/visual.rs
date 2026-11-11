@@ -3895,6 +3895,15 @@ pub fn run() -> Result<(), String> {
                 bridge.pilot_mode,
                 bridge.surface_planet,
             );
+            let echo7_mount_ready = inspection_model_for_snapshot.borrow().is_some();
+            if echo7_mount_ready {
+                snapshot.nodes.retain(|node| {
+                    node.entity
+                        != render_core::SnapshotId::Entity(
+                            game::render_bridge::INTERIOR_RIGHT_WALL_ENTITY,
+                        )
+                });
+            }
             if bridge.echo7_pick_requested {
                 bridge.echo7_pick_requested = false;
                 let result = snapshot
