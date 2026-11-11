@@ -90,6 +90,7 @@ pub fn load_textured_obj(path: impl AsRef<Path>) -> Result<TexturedModel, ObjLoa
         let mesh = build_mesh(std::iter::once(model.mesh))?;
         if model.name == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_01"
             || model.name == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_02"
+            || model.name == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_03"
         {
             let mut upper = Vec::new();
             let mut lower = Vec::new();
@@ -106,9 +107,15 @@ pub fn load_textured_obj(path: impl AsRef<Path>) -> Result<TexturedModel, ObjLoa
                     && centroid.x <= -11.89
                     && centroid.y >= -21.11
                     && centroid.y <= -10.89;
+                let enfermeria_bounds = centroid.x >= -28.11
+                    && centroid.x <= 8.11
+                    && centroid.y >= 10.89
+                    && centroid.y <= 21.11;
                 if normal.z < -0.5
                     && (model.name != "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_02"
                         || awakening_bounds)
+                    && (model.name != "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_03"
+                        || enfermeria_bounds)
                 {
                     lower.extend_from_slice(triangle);
                 } else {
@@ -120,10 +127,14 @@ pub fn load_textured_obj(path: impl AsRef<Path>) -> Result<TexturedModel, ObjLoa
                 mesh: crate::RasterMesh::new(mesh.vertices.clone(), upper),
                 material_index,
             });
-            let suffix = if model.name == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_02" {
-                "__Cara_inferior_despertar"
-            } else {
-                "__Cara_inferior_clonacion"
+            let suffix = match model.name.as_str() {
+                "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_02" => {
+                    "__Cara_inferior_despertar"
+                }
+                "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_03" => {
+                    "__Cara_inferior_enfermeria"
+                }
+                _ => "__Cara_inferior_clonacion",
             };
             meshes.push(TexturedMesh {
                 name: format!("{}{}", model.name, suffix),
@@ -275,6 +286,17 @@ pub fn register_textured_model(
                         .file_name()
                         .is_some_and(|name| name == "base_marfil.png")
                 });
+        let enfermeria_losa_underface = part.name
+            == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_03__Cara_inferior_enfermeria"
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
         let cloning_cabinet = part.name == "ECHO7_16_Equipo_Clonacion__Banco_genetico_armario_01"
             && part
                 .material_index
@@ -366,6 +388,7 @@ pub fn register_textured_model(
             || cloning_wall
             || cloning_ceiling
             || cloning_losa_underface
+            || enfermeria_losa_underface
             || cloning_cabinet
             || cloning_green_panel
             || awakening_surface
@@ -379,7 +402,7 @@ pub fn register_textured_model(
                     let angle = vertex.position.y.atan2(vertex.position.x);
                     let radius = vertex.position.x.hypot(vertex.position.y);
                     vertex.uv = crate::Vec2::new(angle * radius * 0.35, vertex.position.z * 0.35);
-                } else if cloning_ceiling || cloning_losa_underface {
+                } else if cloning_ceiling || cloning_losa_underface || enfermeria_losa_underface {
                     vertex.uv =
                         crate::Vec2::new(vertex.position.x * 0.35, vertex.position.y * 0.35);
                 } else if cloning_cabinet || cloning_green_panel || awakening_door_leaf {

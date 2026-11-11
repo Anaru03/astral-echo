@@ -298,6 +298,43 @@ fn awakening_roof_uses_only_the_downward_face_of_shared_slab() {
 }
 
 #[test]
+fn enfermeria_roof_splits_only_the_downward_local_slab_region() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    let upper = model
+        .meshes
+        .iter()
+        .find(|mesh| mesh.name == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_03")
+        .unwrap();
+    let lower = model
+        .meshes
+        .iter()
+        .find(|mesh| {
+            mesh.name
+                == "ECHO7_30_Exterior_Unificado__Losa_entre_cubiertas_03__Cara_inferior_enfermeria"
+        })
+        .unwrap();
+    assert!(!upper.mesh.indices.is_empty());
+    assert!(!lower.mesh.indices.is_empty());
+    for triangle in lower.mesh.indices.chunks_exact(3) {
+        let normal = (lower.mesh.vertices[triangle[0] as usize].normal
+            + lower.mesh.vertices[triangle[1] as usize].normal
+            + lower.mesh.vertices[triangle[2] as usize].normal)
+            .normalize_or_zero();
+        let centroid = (lower.mesh.vertices[triangle[0] as usize].position
+            + lower.mesh.vertices[triangle[1] as usize].position
+            + lower.mesh.vertices[triangle[2] as usize].position)
+            / 3.0;
+        assert!(normal.z < -0.5);
+        assert!((-28.11..=8.11).contains(&centroid.x));
+        assert!((10.89..=21.11).contains(&centroid.y));
+    }
+    assert!(upper.mesh.indices.len() > lower.mesh.indices.len());
+    assert!(!upper.name.contains("Cara_inferior_enfermeria"));
+}
+
+#[test]
 fn cloning_cabinet_keeps_green_panels_and_metal_accessories_separate() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
