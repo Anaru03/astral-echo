@@ -175,6 +175,26 @@ pub struct TileStats {
     pub sequential_draws: u32,
 }
 
+#[derive(Default)]
+pub(crate) struct TileScratch {
+    bins: Vec<Vec<usize>>,
+    band_results: Vec<BandOutput>,
+    workers_seen: Vec<bool>,
+}
+
+impl TileScratch {
+    pub(crate) fn bytes(&self) -> usize {
+        self.bins.capacity() * std::mem::size_of::<Vec<usize>>()
+            + self
+                .bins
+                .iter()
+                .map(|bin| bin.capacity() * std::mem::size_of::<usize>())
+                .sum::<usize>()
+            + self.band_results.capacity() * std::mem::size_of::<BandOutput>()
+            + self.workers_seen.capacity()
+    }
+}
+
 /// Rasteriza triángulos usando tiling.
 /// Para cada tile, solo procesa los fragmentos que caen dentro del rectángulo del tile.
 pub fn rasterize_triangles_tiled(
@@ -211,13 +231,54 @@ pub(crate) fn rasterize_triangles_tiled_with_shader(
     textures: Option<&MaterialTextureRegistry>,
     trace_draw: Option<SnapshotId>,
 ) -> TileStats {
+    rasterize_triangles_tiled_with_shader_and_scratch(
+        triangles,
+        framebuffer,
+        fill_rule,
+        depth_test,
+        depth_write,
+        config,
+        fragment_shader,
+        fragment_time,
+        textures,
+        trace_draw,
+        &mut TileScratch::default(),
+    )
+}
+
+pub(crate) fn rasterize_triangles_tiled_with_shader_and_scratch(
+    triangles: &[(ScreenVertex, ScreenVertex, ScreenVertex)],
+    framebuffer: &mut Framebuffer,
+    fill_rule: FillRule,
+    depth_test: bool,
+    depth_write: bool,
+    config: TileConfig,
+    fragment_shader: FragmentShader,
+    fragment_time: f32,
+    textures: Option<&MaterialTextureRegistry>,
+    trace_draw: Option<SnapshotId>,
+    scratch: &mut TileScratch,
+) -> TileStats {
     let grid = TileGrid::new(framebuffer.width(), framebuffer.height(), config.tile_size);
     let mut stats = TileStats::default();
     if triangles.is_empty() {
         return stats;
     }
+    let TileScratch {
+        bins,
+        band_results,
+        workers_seen,
+    } = scratch;
     let start = Instant::now();
-    let mut bins = vec![Vec::new(); grid.tile_count() as usize];
+    let tile_count = grid.tile_count() as usize;
+    if bins.len() < tile_count {
+        bins.resize_with(tile_count, Vec::new);
+    } else {
+        bins.truncate(tile_count);
+    }
+    for bin in bins.iter_mut() {
+        bin.clear();
+    }
     for (index, (a, b, c)) in triangles.iter().enumerate() {
         let area = edge_function(a, b, c);
         if !area.is_finite() || area.abs() < 1e-8 {
@@ -275,7 +336,7 @@ pub(crate) fn rasterize_triangles_tiled_with_shader(
     stats.bin_ns = start.elapsed().as_nanos() as u64;
     let job = RasterJob {
         triangles,
-        bins: &bins,
+        bins,
         grid,
         fill_rule,
         depth_test,
@@ -289,22 +350,23 @@ pub(crate) fn rasterize_triangles_tiled_with_shader(
     let band_pixels = grid.framebuffer_w as usize * grid.tile_size.min(grid.framebuffer_h) as usize;
     let (color, depth) = framebuffer.color_depth_slices_mut();
     if stats.selected_mode == RasterMode::Paralelo {
-        let results: Vec<_> = color
+        color
             .par_chunks_mut(band_pixels * 4)
             .zip(depth.par_chunks_mut(band_pixels))
             .enumerate()
             .map(|(row, (color, depth))| job.draw_band(row as u32, color, depth))
-            .collect();
-        let mut seen = vec![false; rayon::current_num_threads()];
+            .collect_into_vec(band_results);
+        workers_seen.resize(rayon::current_num_threads(), false);
+        workers_seen.fill(false);
         stats.scratch_bytes +=
-            results.capacity() * std::mem::size_of::<BandOutput>() + seen.capacity();
-        for result in results {
+            band_results.capacity() * std::mem::size_of::<BandOutput>() + workers_seen.capacity();
+        for result in band_results.drain(..) {
             stats.accumulate(result);
             if let Some(worker) = result.worker {
-                seen[worker] = true;
+                workers_seen[worker] = true;
             }
         }
-        stats.workers_used = seen.into_iter().filter(|used| *used).count();
+        stats.workers_used = workers_seen.iter().filter(|used| **used).count();
     } else {
         for (row, (color, depth)) in color
             .chunks_mut(band_pixels * 4)

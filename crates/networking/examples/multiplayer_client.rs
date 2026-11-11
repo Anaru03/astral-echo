@@ -109,6 +109,24 @@ fn process_event(message: ServerMessage, players: &mut RemotePlayers) {
             );
         }
 
+        ServerMessage::PilotControlChanged { player_id } => {
+            println!(
+                "[Pilotaje] control de nave: {}",
+                player_id.map_or_else(|| "sin piloto".to_owned(), |id| format!("jugador {id}"))
+            );
+        }
+
+        ServerMessage::ShipMoved {
+            player_id,
+            sequence,
+            transform,
+        } => {
+            println!(
+                "[Nave] piloto {player_id} | secuencia {sequence} | posición ({:.2}, {:.2}, {:.2})",
+                transform.position.x, transform.position.y, transform.position.z
+            );
+        }
+
         ServerMessage::Pong => {
             println!("[Servidor] Pong recibido");
         }

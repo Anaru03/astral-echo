@@ -5787,6 +5787,22 @@ impl GameplayWorld {
     pub fn autopilot_state(&self) -> &crate::navigation::AutopilotState {
         self.navigation.autopilot_state()
     }
+    pub fn autopilot_waiting_for_encounter(&self) -> bool {
+        matches!(
+            self.navigation.autopilot_state(),
+            crate::navigation::AutopilotState::InTransit { .. }
+        ) && matches!(
+            self.navigation.travel_state(),
+            crate::navigation::TravelState::InProgress { .. }
+        ) && !self.navigation.autopilot_continuation_authorized()
+            && self.spatial_encounters().any(|encounter| {
+                encounter.state == crate::encounter::SpatialEncounterState::Active
+                    && matches!(
+                        encounter.kind,
+                        crate::encounter::SpatialEncounterKind::Hostile { .. }
+                    )
+            })
+    }
     pub fn travel_progress(&self) -> Option<TravelProgress> {
         self.navigation.travel_progress(self.time().elapsed)
     }
@@ -6181,6 +6197,19 @@ impl GameplayWorld {
         position: engine::Vec3,
     ) -> Result<(), crate::navigation::NavigationMovementError> {
         self.navigation.restore_position(position)
+    }
+
+    pub fn restore_ship_transform(
+        &mut self,
+        position: engine::Vec3,
+        orientation: crate::navigation::ShipOrientation,
+        velocity: engine::Vec3,
+    ) -> Result<(), crate::navigation::NavigationMovementError> {
+        if self.navigation.ship_id().is_none() {
+            return Err(crate::navigation::NavigationMovementError::InvalidInput);
+        }
+        self.navigation
+            .restore_transform(position, orientation, velocity)
     }
 
     pub fn resume_ship_from_landing(&mut self) -> bool {
@@ -6903,6 +6932,18 @@ impl GameplayWorld {
     }
     pub(crate) fn player_mut(&mut self, entity: EntityId) -> Option<&mut Player> {
         self.players.get_mut(&entity)
+    }
+    /// Adds a resource directly while preparing a new world, without emitting a pickup event.
+    pub fn seed_inventory_item(
+        &mut self,
+        player: EntityId,
+        item: crate::types::ItemId,
+        quantity: u32,
+    ) -> Result<(), crate::components::InventoryError> {
+        let Some(inventory) = self.inventory_mut(player) else {
+            return Err(crate::components::InventoryError::PlayerNotFound);
+        };
+        inventory.try_add(item, quantity)
     }
     pub(crate) fn combatant_mut(&mut self, entity: EntityId) -> Option<&mut Combatant> {
         self.combatants.get_mut(&entity)

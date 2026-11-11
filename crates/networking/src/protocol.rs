@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const MAX_PLAYERS: usize = 3;
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 pub type NetworkPlayerId = u64;
 
@@ -16,6 +16,11 @@ pub enum ClientMessage {
     Leave,
     Ping,
     PlayerMove {
+        sequence: u64,
+        transform: crate::sync::PlayerTransform,
+    },
+    SetPilotControl { active: bool },
+    ShipMove {
         sequence: u64,
         transform: crate::sync::PlayerTransform,
     },
@@ -172,6 +177,12 @@ pub enum ServerMessage {
     },
     Pong,
     PlayerMoved {
+        player_id: NetworkPlayerId,
+        sequence: u64,
+        transform: crate::sync::PlayerTransform,
+    },
+    PilotControlChanged { player_id: Option<NetworkPlayerId> },
+    ShipMoved {
         player_id: NetworkPlayerId,
         sequence: u64,
         transform: crate::sync::PlayerTransform,

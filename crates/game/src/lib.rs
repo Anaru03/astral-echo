@@ -39,7 +39,13 @@ pub struct ProjectEchoSession {
 }
 
 const INITIAL_FUEL_CAPACITY: u32 = 100;
-const INITIAL_FUEL: u32 = 60;
+const INITIAL_FUEL: u32 = INITIAL_FUEL_CAPACITY;
+const INITIAL_INVENTORY_CAPACITY: u32 = 250;
+const INITIAL_FUEL_RESERVE: u32 = 200;
+const INITIAL_OXYGEN_RESERVE: u32 = 5;
+const INITIAL_REPAIR_MATERIALS: u32 = 3;
+const INITIAL_KINETIC_AMMUNITION: u32 = 8;
+const INITIAL_ENERGY_AMMUNITION: u32 = 4;
 const INITIAL_HULL_MAXIMUM: u32 = 100;
 const INITIAL_HULL: u32 = 100;
 const CRITICAL_HULL_THRESHOLD: u32 = 25;
@@ -69,7 +75,7 @@ impl ProjectEchoSession {
             .create_player()
             .expect("el jugador inicial debe poder crearse");
         world
-            .initialize_inventory(first_player, 20)
+            .initialize_inventory(first_player, INITIAL_INVENTORY_CAPACITY)
             .expect("el inventario inicial del jugador debe ser válido");
         let repair_configuration = gameplay::ShipRepairConfiguration::default();
         world
@@ -97,7 +103,7 @@ impl ProjectEchoSession {
             .register_item_definition(gameplay::ItemDefinition::new(
                 gameplay::FUEL_RESOURCE_ITEM,
                 gameplay::ItemCategory::Fuel,
-                20,
+                INITIAL_FUEL_RESERVE,
             ))
             .expect("el combustible recuperable debe registrarse una sola vez");
         world
@@ -146,7 +152,7 @@ impl ProjectEchoSession {
                 gameplay::EnemyArchetype::Shooter,
                 vec![gameplay::RewardEntry {
                     item: gameplay::types::ItemId(3),
-                    amount: 1,
+                    amount: 3,
                 }],
             ))
             .expect("la recompensa del tirador debe ser válida");
@@ -201,14 +207,27 @@ impl ProjectEchoSession {
         processor.add_system(SpatialEncounterSystem::new());
         processor.add_system(DerelictSystem::new());
         processor.add_system(FunctionalWorldSystem::new());
-        Self {
+        let mut session = Self {
             ids: ProjectEchoIds {
                 first_player,
                 first_ship,
             },
             world,
             processor,
+        };
+        for (item, amount) in [
+            (repair_configuration.material, INITIAL_REPAIR_MATERIALS),
+            (gameplay::types::ItemId(2), INITIAL_KINETIC_AMMUNITION),
+            (gameplay::types::ItemId(3), INITIAL_ENERGY_AMMUNITION),
+            (gameplay::FUEL_RESOURCE_ITEM, INITIAL_FUEL_RESERVE),
+            (gameplay::OXYGEN_RESOURCE_ITEM, INITIAL_OXYGEN_RESERVE),
+        ] {
+            session
+                .world_mut()
+                .seed_inventory_item(first_player, item, amount)
+                .expect("los recursos iniciales deben caber en el inventario");
         }
+        session
     }
 
     pub fn world(&self) -> &GameplayWorld {
