@@ -1931,10 +1931,97 @@ pub fn despertar_inspection_camera(
         std::env::var("ASTRAL_ECHO_DESPERTAR_SIDE").as_deref(),
         Ok("reverse") | Ok("1") | Ok("true")
     );
-    let local_position = Vec3::new(-20.0, -15.0, 1.65 / ECHO7_VISUAL_SCALE.z);
+    let capsule = std::env::var("ASTRAL_ECHO_DESPERTAR_CAPSULE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| (1..=3).contains(value))
+        .unwrap_or(1);
+    let capsule_x = match capsule {
+        1 => -24.0,
+        2 => -20.0,
+        _ => -16.0,
+    };
+    let bench_view = matches!(
+        std::env::var("ASTRAL_ECHO_DESPERTAR_BANCO").as_deref(),
+        Ok("1") | Ok("true")
+    );
+    if bench_view {
+        let local_position = if reverse {
+            Vec3::new(-11.0, -10.0, 1.65 / ECHO7_VISUAL_SCALE.z)
+        } else {
+            Vec3::new(-20.0, -15.0, 1.65 / ECHO7_VISUAL_SCALE.z)
+        };
+        let local_target = Vec3::new(-15.4, -12.1, 0.15 / ECHO7_VISUAL_SCALE.z);
+        let rotation = Quat::from_rotation_y(
+            world
+                .ship_orientation()
+                .map(|orientation| orientation.yaw_degrees)
+                .unwrap_or_default()
+                .to_radians()
+                + ECHO7_MODEL_YAW_OFFSET_RAD,
+        );
+        let to_world = |local: Vec3| {
+            ship + rotation
+                * (echo7_local_to_world_rotation()
+                    * (ECHO7_VISUAL_SCALE * (local - ECHO7_MODEL_CENTER)))
+        };
+        return Camera::new(
+            to_world(local_position),
+            to_world(local_target),
+            Vec3::Y,
+            Projection::Perspective {
+                fov_y_rad: 60.0_f32.to_radians(),
+                aspect,
+                near: 0.05,
+                far: 150.0,
+            },
+        );
+    }
+    let local_position = Vec3::new(capsule_x - 3.0, -15.0, 1.65 / ECHO7_VISUAL_SCALE.z);
     let local_target = Vec3::new(
-        -20.0,
-        if reverse { -21.0 } else { -11.0 },
+        capsule_x,
+        if reverse { -12.5 } else { -18.0 },
+        1.25 / ECHO7_VISUAL_SCALE.z,
+    );
+    let rotation = Quat::from_rotation_y(
+        world
+            .ship_orientation()
+            .map(|orientation| orientation.yaw_degrees)
+            .unwrap_or_default()
+            .to_radians()
+            + ECHO7_MODEL_YAW_OFFSET_RAD,
+    );
+    let to_world = |local: Vec3| {
+        ship + rotation
+            * (echo7_local_to_world_rotation()
+                * (ECHO7_VISUAL_SCALE * (local - ECHO7_MODEL_CENTER)))
+    };
+    Camera::new(
+        to_world(local_position),
+        to_world(local_target),
+        Vec3::Y,
+        Projection::Perspective {
+            fov_y_rad: 60.0_f32.to_radians(),
+            aspect,
+            near: 0.05,
+            far: 150.0,
+        },
+    )
+}
+
+pub fn enfermeria_inspection_camera(
+    world: &GameplayWorld,
+    aspect: f32,
+) -> Result<Camera, CameraError> {
+    let ship = visual_ship_position(world).unwrap_or(Vec3::ZERO);
+    let reverse = matches!(
+        std::env::var("ASTRAL_ECHO_ENFERMERIA_SIDE").as_deref(),
+        Ok("reverse") | Ok("1") | Ok("true")
+    );
+    let local_position = Vec3::new(-4.0, 18.0, 1.65 / ECHO7_VISUAL_SCALE.z);
+    let local_target = Vec3::new(
+        if reverse { -4.0 } else { 4.0 },
+        13.0,
         1.65 / ECHO7_VISUAL_SCALE.z,
     );
     let rotation = Quat::from_rotation_y(

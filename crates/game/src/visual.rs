@@ -3771,6 +3771,32 @@ impl VisualBridge {
 
     fn camera(&self, aspect: f32) -> Result<render_core::Camera, render_core::CameraError> {
         let world = self.session.world();
+        if matches!(
+            std::env::var("ASTRAL_ECHO_ENFERMERIA_INSPECTION").as_deref(),
+            Ok("1") | Ok("true")
+        ) {
+            let conflicts = [
+                "ASTRAL_ECHO_CLONACION_INSPECTION",
+                "ASTRAL_ECHO_DESPERTAR_INSPECTION",
+                "ASTRAL_ECHO_LOWER_CORRIDOR_INSPECTION",
+                "ASTRAL_ECHO_UPPER_CORRIDOR_INSPECTION",
+            ]
+            .into_iter()
+            .filter(
+                |name| matches!(std::env::var(name), Ok(value) if value == "1" || value == "true"),
+            )
+            .collect::<Vec<_>>();
+            static REPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            REPORTED.get_or_init(move || {
+                println!(
+                    "ECHO7 inspection mode=enfermeria effective=enfermeria conflicts={conflicts:?} model=ECHO7_Completa_DosCubiertas.obj ready=true"
+                );
+                println!(
+                    "ECHO7 enfermeria camera-local position=(-4.00,18.00,2.538) target=(4.00,13.00,2.538) bounds=x[-28.11,8.11] y[10.89,21.11] z[0,3.35]"
+                );
+            });
+            return game::render_bridge::enfermeria_inspection_camera(world, aspect);
+        }
         let despertar = matches!(
             std::env::var("ASTRAL_ECHO_DESPERTAR_INSPECTION").as_deref(),
             Ok("1") | Ok("true")
@@ -3915,6 +3941,10 @@ pub fn run() -> Result<(), String> {
                         models
                             .as_ref()
                             .and_then(|model| {
+                                let center_pick = matches!(
+                                    std::env::var("ASTRAL_ECHO_PICK_CENTER").as_deref(),
+                                    Ok("1") | Ok("true")
+                                );
                                 let sample_y = (height as f32 * 0.12).max(1.0);
                                 let sample_x = [
                                     width as f32 * 0.25,
@@ -3922,7 +3952,30 @@ pub fn run() -> Result<(), String> {
                                     width as f32 * 0.75,
                                 ];
                                 let mut hits = Vec::new();
+                                if center_pick {
+                                    let (origin, direction) = echo7_viewport_ray(
+                                        camera,
+                                        width as f32 * 0.5,
+                                        height as f32 * 0.5,
+                                        width as f32,
+                                        height.max(1) as f32,
+                                    );
+                                    let hit = echo7_pick_ray(model, origin, direction, node.transform);
+                                    println!(
+                                        "ECHO7 PICK center pixel=({:.1},{:.1}) ray=({:.4},{:.4},{:.4}) hit={:?}",
+                                        width as f32 * 0.5,
+                                        height as f32 * 0.5,
+                                        direction.x,
+                                        direction.y,
+                                        direction.z,
+                                        hit.as_ref().map(|(object, material, distance)| (object, material, distance))
+                                    );
+                                    hits.push((width as f32 * 0.5, origin, direction, hit));
+                                }
                                 for pixel_x in sample_x {
+                                    if center_pick {
+                                        break;
+                                    }
                                     let (origin, direction) = echo7_viewport_ray(
                                         camera,
                                         pixel_x,
@@ -3933,15 +3986,17 @@ pub fn run() -> Result<(), String> {
                                     let hit = echo7_pick_ray(model, origin, direction, node.transform);
                                     hits.push((pixel_x, origin, direction, hit));
                                 }
-                                for (pixel_x, _, direction, hit) in &hits {
-                                    println!(
-                                        "ECHO7 PICK roof-sample pixel=({pixel_x:.1},{sample_y:.1}) ray=({:.4},{:.4},{:.4}) upward={:.4} hit={:?}",
-                                        direction.x,
-                                        direction.y,
-                                        direction.z,
-                                        direction.y,
-                                        hit.as_ref().map(|(object, material, distance)| (object, material, distance))
-                                    );
+                                if !center_pick {
+                                    for (pixel_x, _, direction, hit) in &hits {
+                                        println!(
+                                            "ECHO7 PICK roof-sample pixel=({pixel_x:.1},{sample_y:.1}) ray=({:.4},{:.4},{:.4}) upward={:.4} hit={:?}",
+                                            direction.x,
+                                            direction.y,
+                                            direction.z,
+                                            direction.y,
+                                            hit.as_ref().map(|(object, material, distance)| (object, material, distance))
+                                        );
+                                    }
                                 }
                                 hits.into_iter()
                                     .find_map(|(_, _, _, hit)| hit)
@@ -4036,6 +4091,9 @@ pub fn run() -> Result<(), String> {
                 Ok("1") | Ok("true")
             ) || matches!(
                 std::env::var("ASTRAL_ECHO_DESPERTAR_INSPECTION").as_deref(),
+                Ok("1") | Ok("true")
+            ) || matches!(
+                std::env::var("ASTRAL_ECHO_ENFERMERIA_INSPECTION").as_deref(),
                 Ok("1") | Ok("true")
             ) {
                 snapshot.overlay.hud = Default::default();

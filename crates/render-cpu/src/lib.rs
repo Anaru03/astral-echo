@@ -36,7 +36,9 @@ pub use pipeline::tiles::{
     TileStats,
 };
 pub use pipeline::vertex::VertexStage;
-pub use pipeline::CpuPipeline;
+pub use pipeline::{
+    reset_trace_pixel_writes, set_trace_pixel_target, trace_pixel_writes, CpuPipeline,
+};
 pub use rasterizer::{RasterConfig, RasterStats, Rasterizer, Winding};
 pub use scene::{
     demo_camera, demo_scene, grid_mesh, terrain_height, GRID_SUBDIVISIONS, TERRAIN_EXTENT,

@@ -937,15 +937,103 @@ impl Host {
         let _ = std::fs::create_dir_all(&directory);
         let internal_path =
             directory.join(format!("frame-{:04}-cpu-internal.png", self.debug_frame));
+        let capture_id = self.debug_frame;
         let scaled_path = directory.join(format!("frame-{:04}-cpu-scaled.png", self.debug_frame));
         self.debug_frame += 1;
-        let _ = render_snapshot_scene_with_shader(
+        let trace_pixel = std::env::var("ASTRAL_ECHO_TRACE_PIXEL")
+            .ok()
+            .filter(|value| value == "center");
+        let trace_target = (
+            state.framebuffer.width() / 2,
+            state.framebuffer.height() / 2,
+        );
+        if let Some(pixel) = trace_pixel.as_deref() {
+            render_cpu::set_trace_pixel_target(
+                state.framebuffer.width(),
+                state.framebuffer.height(),
+            );
+            println!(
+                "cpu-pixel-trace activation=1 pixel={} target={:?} framebuffer={}x{} requested_mode={:?} capture_mode=Secuencial",
+                pixel, trace_target, state.framebuffer.width(), state.framebuffer.height(), self.config.raster_mode
+            );
+        }
+        let capture_mode = if trace_pixel.is_some() {
+            render_cpu::RasterMode::Secuencial
+        } else {
+            self.config.raster_mode
+        };
+        let capture_shader = if trace_pixel.is_some() {
+            FragmentShader::VertexColor
+        } else {
+            render_cpu::diagnostic_fragment_shader().unwrap_or(FragmentShader::VertexColor)
+        };
+        if trace_pixel.is_some() {
+            render_cpu::reset_trace_pixel_writes();
+            state
+                .framebuffer
+                .clear(render_cpu::Color::new(8, 10, 18, 255));
+            println!(
+                "cpu-pixel-trace frame={} stage=before-render buffer=state.framebuffer pixel={:?} color={:?} depth={:?}",
+                capture_id,
+                trace_target,
+                state.framebuffer.pixel(trace_target.0, trace_target.1),
+                state.framebuffer.depth_at(trace_target.0, trace_target.1)
+            );
+        }
+        let render_result = render_snapshot_scene_with_shader(
             &mut state.framebuffer,
             &state.snapshot,
-            self.config.raster_mode,
-            render_cpu::diagnostic_fragment_shader().unwrap_or(FragmentShader::SolarBands),
+            capture_mode,
+            capture_shader,
         );
+        if trace_pixel.is_some() {
+            println!(
+                "cpu-pixel-trace frame={} stage=after-raster buffer=state.framebuffer pixel={:?} render_result={:?} color={:?} depth={:?} route=tiled-sequential writes={}",
+                capture_id,
+                trace_target,
+                render_result.as_ref().map(|_| "ok").map_err(|error| error.to_string()),
+                state.framebuffer.pixel(trace_target.0, trace_target.1),
+                state.framebuffer.depth_at(trace_target.0, trace_target.1),
+                render_cpu::trace_pixel_writes()
+            );
+        }
         let _ = write_png(&internal_path, &state.framebuffer);
+        if trace_pixel.is_some() {
+            println!(
+                "cpu-pixel-trace frame={} stage=after-save buffer={} pixel={:?} color={:?} depth={:?}",
+                capture_id,
+                internal_path.display(),
+                trace_target,
+                state.framebuffer.pixel(trace_target.0, trace_target.1),
+                state.framebuffer.depth_at(trace_target.0, trace_target.1)
+            );
+        }
+        if matches!(
+            std::env::var("ASTRAL_ECHO_FRAMEBUFFER_DIAGNOSTIC").as_deref(),
+            Ok("1") | Ok("true")
+        ) {
+            let fb_width = state.framebuffer.width();
+            let fb_height = state.framebuffer.height();
+            let window_width = size.width.max(1);
+            let window_height = size.height.max(1);
+            let px = ((window_width / 2) * fb_width / window_width).min(fb_width - 1);
+            let py = ((window_height / 2) * fb_height / window_height).min(fb_height - 1);
+            let pixel = state.framebuffer.pixel(px, py);
+            println!(
+                "cpu-framebuffer-diagnostic png={} format=RGBA8 stride={} framebuffer={}x{} window={}x{} window_pixel=({}, {}) framebuffer_pixel=({}, {}) rgba={:?}",
+                internal_path.display(),
+                fb_width * 4,
+                fb_width,
+                fb_height,
+                window_width,
+                window_height,
+                window_width / 2,
+                window_height / 2,
+                px,
+                py,
+                pixel.map(|color| (color.r, color.g, color.b, color.a)),
+            );
+        }
         let mut pixels = vec![0u32; (size.width as usize) * (size.height as usize)];
         if copy_nearest_rgba(
             state.framebuffer.color_bytes(),

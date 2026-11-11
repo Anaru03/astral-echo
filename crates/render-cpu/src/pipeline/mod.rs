@@ -5,6 +5,7 @@ pub mod tiles;
 pub mod vertex;
 
 use glam::Mat4;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -30,6 +31,34 @@ pub use tiles::{
     TileStats,
 };
 use vertex::VertexLighting;
+
+static TRACE_PIXEL_WRITES: AtomicU32 = AtomicU32::new(0);
+static TRACE_PIXEL_X: AtomicU32 = AtomicU32::new(320);
+static TRACE_PIXEL_Y: AtomicU32 = AtomicU32::new(180);
+
+pub fn reset_trace_pixel_writes() {
+    TRACE_PIXEL_WRITES.store(0, Ordering::Relaxed);
+}
+
+pub fn trace_pixel_writes() -> u32 {
+    TRACE_PIXEL_WRITES.load(Ordering::Relaxed)
+}
+
+pub fn set_trace_pixel_target(width: u32, height: u32) {
+    TRACE_PIXEL_X.store(width / 2, Ordering::Relaxed);
+    TRACE_PIXEL_Y.store(height / 2, Ordering::Relaxed);
+}
+
+pub(crate) fn trace_pixel_target() -> (u32, u32) {
+    (
+        TRACE_PIXEL_X.load(Ordering::Relaxed),
+        TRACE_PIXEL_Y.load(Ordering::Relaxed),
+    )
+}
+
+pub(crate) fn trace_pixel_write_committed() {
+    TRACE_PIXEL_WRITES.fetch_add(1, Ordering::Relaxed);
+}
 pub use vertex::VertexStage;
 
 /// Pipeline CPU por etapas: vertex, assembly, clipping, raster, fragment y depth.
@@ -49,6 +78,9 @@ pub struct CpuPipeline<'a> {
     fragment_shader: FragmentShader,
     fragment_time: f32,
     draw_material: Option<render_core::MaterialHandle>,
+    draw_entity: Option<render_core::SnapshotId>,
+    draw_triangle: usize,
+    draw_trace_id: Option<render_core::SnapshotId>,
     textures: Option<render_core::MaterialTextureRegistry>,
 }
 
@@ -74,6 +106,9 @@ impl<'a> CpuPipeline<'a> {
             fragment_shader: FragmentShader::VertexColor,
             fragment_time: 0.0,
             draw_material: None,
+            draw_entity: None,
+            draw_triangle: 0,
+            draw_trace_id: None,
             textures: None,
         }
     }
@@ -130,7 +165,7 @@ impl<'a> CpuPipeline<'a> {
         mvp: Mat4,
         topology: Topology,
     ) -> Result<PipelineStats, RasterError> {
-        self.draw_mesh_inner(mesh, mvp, topology, false, None, None)
+        self.draw_mesh_inner(mesh, mvp, topology, false, None, None, None)
     }
 
     pub fn draw_mesh_instances(
@@ -141,7 +176,7 @@ impl<'a> CpuPipeline<'a> {
     ) -> Result<PipelineStats, RasterError> {
         let mut reuse = false;
         for mvp in matrices {
-            self.draw_mesh_inner(mesh, mvp, topology, reuse, None, None)?;
+            self.draw_mesh_inner(mesh, mvp, topology, reuse, None, None, None)?;
             reuse = true;
         }
         Ok(self.stats)
@@ -164,6 +199,7 @@ impl<'a> CpuPipeline<'a> {
                 false,
                 None,
                 Some(draw.node.material),
+                Some(draw.node.entity),
             )?;
         }
         Ok(self.stats)
@@ -196,6 +232,7 @@ impl<'a> CpuPipeline<'a> {
                     reuse,
                     Some(&lighting),
                     Some(draw.node.material),
+                    Some(draw.node.entity),
                 )?;
                 reuse = true;
                 if !draws
@@ -218,10 +255,13 @@ impl<'a> CpuPipeline<'a> {
         reuse: bool,
         lighting: Option<&VertexLighting<'_>>,
         material: Option<render_core::MaterialHandle>,
+        entity: Option<render_core::SnapshotId>,
     ) -> Result<PipelineStats, RasterError> {
         self.stats.draws += 1;
         let stage = VertexStage::new(mvp);
         self.draw_material = material;
+        self.draw_entity = entity;
+        self.draw_trace_id = entity;
         self.stats.metrics.vertices_in += mesh.vertices.len() as u32;
         let t0 = self.timer();
         if let Some(lighting) = lighting {
@@ -270,6 +310,7 @@ impl<'a> CpuPipeline<'a> {
         } else {
             for i in 0..self.triangles.len() {
                 let triangle = self.triangles[i];
+                self.draw_triangle = i;
                 self.draw_assembled_triangle(&triangle);
             }
         }
@@ -367,6 +408,7 @@ impl<'a> CpuPipeline<'a> {
             self.fragment_shader,
             self.fragment_time,
             self.textures.as_ref(),
+            self.draw_trace_id,
         );
         let raster_ns = self.elapsed(t0);
 
@@ -495,6 +537,15 @@ impl<'a> CpuPipeline<'a> {
                 self.config.depth_write,
             ) {
                 Ok(true) => {
+                    trace_pixel_write(
+                        fragment,
+                        *color,
+                        self.fragment_shader,
+                        self.draw_entity,
+                        self.draw_material,
+                        self.textures.as_ref(),
+                        self.draw_triangle,
+                    );
                     self.stats.metrics.pixels_written += 1;
                 }
                 Ok(false) => {
@@ -509,4 +560,40 @@ impl<'a> CpuPipeline<'a> {
         self.stats.metrics.timings.fragment_ns += fragment_ns;
         self.stats.metrics.timings.depth_ns += depth_ns;
     }
+}
+
+fn trace_pixel_write(
+    fragment: &Fragment,
+    color: Color,
+    shader: FragmentShader,
+    entity: Option<render_core::SnapshotId>,
+    material: Option<render_core::MaterialHandle>,
+    textures: Option<&render_core::MaterialTextureRegistry>,
+    triangle: usize,
+) {
+    if std::env::var("ASTRAL_ECHO_TRACE_PIXEL").ok().as_deref() != Some("center")
+        || (fragment.x, fragment.y) != trace_pixel_target()
+    {
+        return;
+    }
+    let texture = material.and_then(|handle| {
+        textures.and_then(|registry| {
+            registry
+                .image_ref(handle)
+                .map(|image| (registry.get(handle), registry.address_mode(handle), image))
+        })
+    });
+    let sampled = texture.map(|(_, mode, image)| {
+        crate::pipeline::raster::sample_texture_with_mode(image, fragment.uv, mode)
+    });
+    eprintln!(
+        "cpu-pixel-trace pixel={:?} entity={entity:?} triangle={triangle} depth={:.8} shader={shader:?} material={material:?} texture={} address={:?} uv=({:.6},{:.6}) texel={sampled:?} output={:?}",
+        trace_pixel_target(),
+        fragment.depth,
+        texture.and_then(|(path, _, _)| path).map(|path| path.display().to_string()).unwrap_or_else(|| "<none>".into()),
+        texture.map(|(_, mode, _)| mode),
+        fragment.uv.x,
+        fragment.uv.y,
+        color,
+    );
 }

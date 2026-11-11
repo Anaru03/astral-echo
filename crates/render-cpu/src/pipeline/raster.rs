@@ -399,6 +399,11 @@ pub fn depth_resolve(
         }
     }
     framebuffer.set_pixel(fragment.x, fragment.y, color);
+    if (fragment.x, fragment.y) == crate::pipeline::trace_pixel_target()
+        && std::env::var("ASTRAL_ECHO_TRACE_PIXEL").ok().as_deref() == Some("center")
+    {
+        crate::pipeline::trace_pixel_write_committed();
+    }
     if depth_write {
         framebuffer.set_depth(fragment.x, fragment.y, fragment.depth);
     }
