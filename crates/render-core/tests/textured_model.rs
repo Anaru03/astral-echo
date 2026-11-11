@@ -388,3 +388,88 @@ fn awakening_walls_and_ceiling_exclude_capsules_and_fixtures() {
         assert!(!excluded.contains("__Pared_"));
     }
 }
+
+#[test]
+fn awakening_capsule_shells_keep_glass_and_accessories_separate() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    for name in [
+        "ECHO7_04_Despertar__Capsula_base_01",
+        "ECHO7_04_Despertar__Capsula_cabecero_01",
+        "ECHO7_04_Despertar__Capsula_lateral_01",
+        "ECHO7_04_Despertar__Capsula_pie_01",
+    ] {
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        let material = mesh.material_index.unwrap();
+        assert_eq!(model.materials[material].name, "Casco_Marfil");
+    }
+    for (name, expected) in [
+        ("ECHO7_04_Despertar__Cristal_tapa_capsula_01", "Vidrio_Azul"),
+        ("ECHO7_04_Despertar__Capsula_colchon_01", "Tela_Verde"),
+        ("ECHO7_04_Despertar__Bisagra_capsula_01", "Casco_Marfil"),
+        ("ECHO7_04_Despertar__Boton_acceso_01", "Acento_Coral"),
+    ] {
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        let material = mesh.material_index.unwrap();
+        assert_eq!(model.materials[material].name, expected);
+    }
+}
+
+#[test]
+fn awakening_furniture_selects_bases_and_planters_only() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    for name in [
+        "ECHO7_04_Despertar__Banco_base_01",
+        "ECHO7_04_Despertar__Banco_base_02",
+        "ECHO7_04_Despertar__Jardinera_01",
+        "ECHO7_04_Despertar__Jardinera_02",
+    ] {
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        let material = mesh.material_index.unwrap();
+        assert_eq!(model.materials[material].name, "Casco_Marfil");
+    }
+    for (name, expected) in [
+        ("ECHO7_04_Despertar__Banco_cojin_01", "Casco_Marfil"),
+        ("ECHO7_04_Despertar__Banco_respaldo_01", "Tela_Verde"),
+        ("ECHO7_04_Despertar__Sustrato_01", "Vegetacion"),
+        ("ECHO7_04_Despertar__Junta_suelo_01", "Metal_Oscuro"),
+    ] {
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        let material = mesh.material_index.unwrap();
+        assert_eq!(model.materials[material].name, expected);
+    }
+}
+
+#[test]
+fn awakening_door_leaves_select_only_panel_green() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    for name in [
+        "ECHO7_04_Despertar__Hoja_puerta_aparcada_01",
+        "ECHO7_04_Despertar__Hoja_puerta_aparcada_02",
+    ] {
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        let material = mesh.material_index.unwrap();
+        assert_eq!(model.materials[material].name, "Panel_Verde");
+        assert_eq!(
+            model.materials[material]
+                .diffuse_texture
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .unwrap(),
+            "panel_verde_original.png"
+        );
+    }
+    for excluded in [
+        "ECHO7_04_Despertar__Jamba_puerta_01",
+        "ECHO7_04_Despertar__Dintel_puerta_01",
+        "ECHO7_04_Despertar__Boton_acceso_01",
+    ] {
+        assert!(model.meshes.iter().any(|mesh| mesh.name == excluded));
+    }
+}

@@ -310,6 +310,56 @@ pub fn register_textured_model(
                         .file_name()
                         .is_some_and(|name| name == "base_marfil.png")
                 });
+        let awakening_capsule_shell = (part.name.starts_with("ECHO7_04_Despertar__Capsula_base_")
+            || part
+                .name
+                .starts_with("ECHO7_04_Despertar__Capsula_cabecero_")
+            || part
+                .name
+                .starts_with("ECHO7_04_Despertar__Capsula_lateral_")
+            || part.name.starts_with("ECHO7_04_Despertar__Capsula_pie_"))
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let awakening_bench_base = (part.name == "ECHO7_04_Despertar__Banco_base_01"
+            || part.name == "ECHO7_04_Despertar__Banco_base_02")
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let awakening_planter = (part.name == "ECHO7_04_Despertar__Jardinera_01"
+            || part.name == "ECHO7_04_Despertar__Jardinera_02")
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let awakening_door_leaf = (part.name == "ECHO7_04_Despertar__Hoja_puerta_aparcada_01"
+            || part.name == "ECHO7_04_Despertar__Hoja_puerta_aparcada_02")
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "panel_verde_original.png")
+                });
         let repeat_wall = habitat_ring_wall
             || lower_corridor_wall
             || upper_corridor_wall
@@ -318,7 +368,11 @@ pub fn register_textured_model(
             || cloning_losa_underface
             || cloning_cabinet
             || cloning_green_panel
-            || awakening_surface;
+            || awakening_surface
+            || awakening_capsule_shell
+            || awakening_bench_base
+            || awakening_planter
+            || awakening_door_leaf;
         if repeat_wall {
             for vertex in &mut part.mesh.vertices {
                 if habitat_ring_wall {
@@ -328,7 +382,7 @@ pub fn register_textured_model(
                 } else if cloning_ceiling || cloning_losa_underface {
                     vertex.uv =
                         crate::Vec2::new(vertex.position.x * 0.35, vertex.position.y * 0.35);
-                } else if cloning_cabinet || cloning_green_panel {
+                } else if cloning_cabinet || cloning_green_panel || awakening_door_leaf {
                     let normal = vertex.normal.abs();
                     let uv = if normal.z >= normal.x && normal.z >= normal.y {
                         crate::Vec2::new(vertex.position.x, vertex.position.y)
@@ -338,6 +392,34 @@ pub fn register_textured_model(
                         crate::Vec2::new(vertex.position.x, vertex.position.z)
                     };
                     vertex.uv = uv * 0.18;
+                } else if awakening_capsule_shell && part.name.contains("__Capsula_lateral_") {
+                    let angle = vertex.position.y.atan2(vertex.position.x);
+                    let radius = vertex.position.x.hypot(vertex.position.y);
+                    vertex.uv = crate::Vec2::new(angle * radius * 0.24, vertex.position.z * 0.24);
+                } else if awakening_capsule_shell {
+                    let normal = vertex.normal.abs();
+                    let uv = if normal.z >= normal.x && normal.z >= normal.y {
+                        crate::Vec2::new(vertex.position.x, vertex.position.y)
+                    } else if normal.x >= normal.y {
+                        crate::Vec2::new(vertex.position.y, vertex.position.z)
+                    } else {
+                        crate::Vec2::new(vertex.position.x, vertex.position.z)
+                    };
+                    vertex.uv = uv * 0.24;
+                } else if awakening_planter {
+                    let angle = vertex.position.y.atan2(vertex.position.x);
+                    let radius = vertex.position.x.hypot(vertex.position.y);
+                    vertex.uv = crate::Vec2::new(angle * radius * 0.20, vertex.position.z * 0.20);
+                } else if awakening_bench_base {
+                    let normal = vertex.normal.abs();
+                    let uv = if normal.z >= normal.x && normal.z >= normal.y {
+                        crate::Vec2::new(vertex.position.x, vertex.position.y)
+                    } else if normal.x >= normal.y {
+                        crate::Vec2::new(vertex.position.y, vertex.position.z)
+                    } else {
+                        crate::Vec2::new(vertex.position.x, vertex.position.z)
+                    };
+                    vertex.uv = uv * 0.20;
                 } else {
                     let longitudinal = if vertex.normal.x.abs() > vertex.normal.y.abs() {
                         vertex.position.y
@@ -364,7 +446,7 @@ pub fn register_textured_model(
             scene.set_material(material, model.materials[index].info);
             if let Some(texture) = model.materials[index].diffuse_texture.as_ref() {
                 let texture_path = if repeat_wall {
-                    if cloning_green_panel {
+                    if cloning_green_panel || awakening_door_leaf {
                         texture.with_file_name("panel_verde_seamless.png")
                     } else {
                         texture.with_file_name("base_marfil_seamless.png")
