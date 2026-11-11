@@ -9,6 +9,7 @@ use crate::{ObjLoadError, RasterMesh};
 pub struct TexturedMaterial {
     pub name: String,
     pub diffuse_texture: Option<PathBuf>,
+    pub info: crate::MaterialInfo,
 }
 
 /// Submalla asociada a un material.
@@ -57,9 +58,26 @@ pub fn load_textured_obj(
                 .filter(|name| !name.trim().is_empty())
                 .map(|name| base.join(name));
 
+            let diffuse = material.diffuse.unwrap_or([1.0, 1.0, 1.0]);
+            let emissive = material.emissive.unwrap_or([0.0, 0.0, 0.0]);
+            let alpha = material.dissolve.unwrap_or(1.0);
+            let shininess = material.shininess.unwrap_or(32.0).max(0.0);
+
+            let roughness = (2.0 / (shininess + 2.0)).sqrt();
+
+            let info = crate::MaterialInfo::new(
+                crate::Vec4::new(diffuse[0], diffuse[1], diffuse[2], alpha),
+                roughness,
+                0.0,
+            )
+            .with_emissive(crate::Vec3::new(
+                emissive[0], emissive[1], emissive[2],
+            ));
+
             TexturedMaterial {
                 name: material.name,
                 diffuse_texture,
+                info,
             }
         })
         .collect();
@@ -112,12 +130,14 @@ mod tests {
                     diffuse_texture: Some(
                         PathBuf::from("textures/wings.png"),
                     ),
+                    info: crate::MaterialInfo::fixture_metal(),
                 },
                 TexturedMaterial {
                     name: "Nucleo".into(),
                     diffuse_texture: Some(
                         PathBuf::from("textures/core.png"),
                     ),
+                    info: crate::MaterialInfo::fixture_rough(),
                 },
             ],
         };
@@ -160,6 +180,7 @@ pub fn register_textured_model(
         let mesh = crate::MeshHandle::new(mesh_id);
         let material = crate::MaterialHandle::new(material_id);
         if let Some(index) = part.material_index {
+            scene.set_material(material, model.materials[index].info);
             if let Some(texture) = model.materials[index].diffuse_texture.as_ref() {
                 if texture.is_file() {
                     scene.register_material_texture(material, texture.clone());

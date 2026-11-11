@@ -4369,6 +4369,26 @@ fn run_visual(lan_connection: Option<(String, String)>) -> Result<(), String> {
                 let first_id = 100_000u32 + (model_index as u32) * 20_000;
                 match render_core::register_textured_model(scene, &path, first_id, first_id) {
                     Ok(parts) if !parts.is_empty() => {
+                        if relative_path == "sun/sun.obj" {
+                            for part in &parts {
+                                scene.set_material(
+                                    part.material,
+                                    MaterialInfo::new(
+                                        render_core::Vec4::ONE,
+                                        0.85,
+                                        0.0,
+                                    )
+                                    .with_emissive(
+                                        render_core::Vec3::new(0.55, 0.22, 0.045),
+                                    ),
+                                );
+                            }
+                            println!(
+                                "Sol texturizado: {} submallas con material emisivo",
+                                parts.len()
+                            );
+                        }
+
                         println!("modelo cargado: {} ({} submallas)", path.display(), parts.len());
                         parts_for_setup.borrow_mut().insert((mesh, material), parts);
                     }
@@ -4383,7 +4403,6 @@ fn run_visual(lan_connection: Option<(String, String)>) -> Result<(), String> {
                 ("building/building_planet.obj", render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
                 ("clock/clock_planet.obj", render_core::MeshHandle::TESSARA_PLANET, VisualAssets::PLANET),
                 ("mecanic/mecanic_planet.obj", render_core::MeshHandle::KHARVEX_PLANET, VisualAssets::PLANET),
-                ("sun/sun.obj", render_core::MeshHandle::SUN_MODEL, VisualAssets::SUN),
             ] {
                 let path = assets_root.join(relative_path);
                 match render_core::load_obj(&path) {
