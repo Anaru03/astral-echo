@@ -81,6 +81,12 @@ Para agregar música, coloca archivos `.mp3` en `assets/audio/music`. El juego l
 
 El panel `F1` muestra los controles del modo actual. `F2` oculta o muestra el HUD y `F3` abre o cierra el inventario. Si el HUD está visible, las acciones urgentes aparecen en pantalla cuando corresponden.
 
+### Recursos iniciales y balance
+
+La nave comienza con el tanque de combustible lleno (100) y 200 unidades de reserva en el inventario, equivalente a tres tanques completos en total. Los saltos visuales cuestan entre 10 y 22 unidades según el destino; los restos recuperables dan 12 unidades de combustible. El inventario deja espacio para recoger recursos durante la exploración.
+
+El jugador comienza con 5 unidades de oxígeno, suficientes para restaurar el soporte vital actual. El oxígeno no se consume con el paso del tiempo, así que acumular 15 unidades al inicio no tendría un uso adicional en el sistema actual. También hay 3 materiales de reparación, 8 municiones cinéticas y 4 de energía.
+
 ### Inicio y exploración interior
 
 - `Enter`: comenzar la partida.
@@ -90,15 +96,13 @@ El panel `F1` muestra los controles del modo actual. `F2` oculta o muestra el HU
 - `M`: iniciar la misión disponible.
 - `R`: reparar el sistema eléctrico cuando el panel y la condición de gameplay lo permiten.
 - `Y`: restaurar el soporte vital cuando el panel y la condición de gameplay lo permiten.
-- `V`: equipar el arma de energía.
-- `B`: equipar el arma de plasma si ya fue encontrada.
-- `C`: equipar el arma cinética.
+- `Tab`: cambiar al siguiente arma disponible (cinética, energía y plasma cuando se haya encontrado).
 - `E`: recoger un coleccionable activo.
 
 ### Exterior, observación y navegación
 
 - `Q`: escanear señales.
-- `P`: iniciar o invertir un viaje/autopiloto válido.
+- `P`: iniciar el viaje/autopiloto válido o reanudarlo si se pausó por un encuentro.
 - `O`: iniciar o invertir la observación planetaria.
 - `[` / `]`: cambiar el planeta observado mientras la observación está activa.
 - `L`: solicitar aterrizaje cuando el planeta está dentro de la distancia válida.
@@ -120,9 +124,9 @@ El panel `F1` muestra los controles del modo actual. `F2` oculta o muestra el HU
 - `N`: abrir o cerrar el selector de destino libre.
 - En el selector: flechas izquierda/derecha cambian de planeta; `P` elige el planeta resaltado e inicia el autopiloto en un solo paso. No hace falta pulsar `Enter`.
 - Si el planeta se movió mientras elegías, el juego recalcula la ruta al iniciar y muestra el resultado en el HUD.
-- `U`: usar una unidad de combustible del inventario.
-- `B` / `V` / `C`: equipar plasma, energía o armamento cinético.
-- `P`: iniciar el autopiloto hacia el destino seleccionado o continuar la ruta de navegación guiada.
+- `U`: rellenar el tanque con la reserva disponible en una sola pulsación.
+- `Tab`: cambiar al siguiente arma disponible; el plasma entra en el ciclo después de recuperarlo.
+- `P`: iniciar o reanudar el autopiloto; si se pausa por una amenaza, vuelve a pulsarlo para continuar.
 - `I`: abandonar el pilotaje y devolver el control al personaje.
 - `PageUp` / `PageDown` o `=` / `-`: acercar o alejar la cámara de pilotaje.
 - La cámara sigue automáticamente a ECHO-7 durante el pilotaje.

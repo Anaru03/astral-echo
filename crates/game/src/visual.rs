@@ -3124,15 +3124,15 @@ impl VisualBridge {
         let right = GameplayVec3 {
             x: cos_yaw,
             y: 0.0,
-            z: sin_yaw,
+            z: -sin_yaw,
         };
         let up = GameplayVec3 {
-            x: sin_yaw * sin_pitch,
+            x: -sin_yaw * sin_pitch,
             y: cos_pitch,
             z: cos_yaw * sin_pitch,
         };
         let forward = GameplayVec3 {
-            x: sin_yaw * cos_pitch,
+            x: -sin_yaw * cos_pitch,
             y: sin_pitch,
             z: -cos_yaw * cos_pitch,
         };
@@ -5290,6 +5290,24 @@ mod tests {
         assert_ne!(bridge.session.world().ship_position().unwrap(), ship_before);
         assert_ne!(bridge.session.world().ship_orientation().unwrap(), orientation_before);
         assert_eq!(bridge.session.world().player(bridge.player).unwrap().position, player_before);
+    }
+
+    #[test]
+    fn pilot_thrust_follows_the_visible_ship_heading_after_yaw_rotation() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.guided_interaction();
+        bridge.issue([GameplayCommand::RotateShip {
+            player: bridge.player,
+            pilot_station: bridge.pilot_station,
+            yaw_input: 1.0,
+            pitch_input: 0.0,
+            delta: Duration(1_200),
+        }]);
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+
+        let thrust = bridge.current_flight_input();
+        assert!(thrust.x < -0.99, "W should thrust along the ship's visible nose: {thrust:?}");
+        assert!(thrust.z.abs() < 0.01, "a 90-degree yaw should point along X: {thrust:?}");
     }
 
     #[test]
