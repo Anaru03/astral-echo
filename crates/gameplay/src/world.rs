@@ -6441,6 +6441,18 @@ impl GameplayWorld {
     pub(crate) fn player_mut(&mut self, entity: EntityId) -> Option<&mut Player> {
         self.players.get_mut(&entity)
     }
+    /// Adds a resource directly while preparing a new world, without emitting a pickup event.
+    pub fn seed_inventory_item(
+        &mut self,
+        player: EntityId,
+        item: crate::types::ItemId,
+        quantity: u32,
+    ) -> Result<(), crate::components::InventoryError> {
+        let Some(inventory) = self.inventory_mut(player) else {
+            return Err(crate::components::InventoryError::PlayerNotFound);
+        };
+        inventory.try_add(item, quantity)
+    }
     pub(crate) fn combatant_mut(&mut self, entity: EntityId) -> Option<&mut Combatant> {
         self.combatants.get_mut(&entity)
     }
