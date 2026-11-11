@@ -382,6 +382,69 @@ pub fn register_textured_model(
                         .file_name()
                         .is_some_and(|name| name == "panel_verde_original.png")
                 });
+        let enfermeria_surface = (part
+            .name
+            .starts_with("ECHO7_05_Enfermeria_Laboratorio__Pared_presion_")
+            || part
+                .name
+                .starts_with("ECHO7_05_Enfermeria_Laboratorio__Pared_frente_")
+            || part.name == "ECHO7_05_Enfermeria_Laboratorio__Dintel_envolvente_01")
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let enfermeria_equipment_marfil = (part
+            .name
+            .starts_with("ECHO7_05_Enfermeria_Laboratorio__Mesa_")
+            || part
+                .name
+                .starts_with("ECHO7_05_Enfermeria_Laboratorio__Armario_")
+            || part
+                .name
+                .starts_with("ECHO7_05_Enfermeria_Laboratorio__Muestra_laboratorio_")
+            || part
+                .name
+                .starts_with("ECHO7_05_Enfermeria_Laboratorio__Tapa_muestra_")
+            || part.name == "ECHO7_05_Enfermeria_Laboratorio__Terminal_capsula_pie_01"
+            || part.name == "ECHO7_05_Enfermeria_Laboratorio__Terminal_capsula_pie_02")
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "base_marfil.png")
+                });
+        let enfermeria_equipment_green = (part
+            .name
+            .starts_with("ECHO7_05_Enfermeria_Laboratorio__CRT_carcasa_")
+            || part
+                .name
+                .starts_with("ECHO7_05_Enfermeria_Laboratorio__Puerta_armario_"))
+            && part
+                .material_index
+                .and_then(|index| model.materials.get(index))
+                .and_then(|material| material.diffuse_texture.as_ref())
+                .is_some_and(|texture| {
+                    texture
+                        .file_name()
+                        .is_some_and(|name| name == "panel_verde_original.png")
+                });
+        let panel_verde_original = part
+            .material_index
+            .and_then(|index| model.materials.get(index))
+            .and_then(|material| material.diffuse_texture.as_ref())
+            .is_some_and(|texture| {
+                texture
+                    .file_name()
+                    .is_some_and(|name| name == "panel_verde_original.png")
+            });
         let repeat_wall = habitat_ring_wall
             || lower_corridor_wall
             || upper_corridor_wall
@@ -395,7 +458,11 @@ pub fn register_textured_model(
             || awakening_capsule_shell
             || awakening_bench_base
             || awakening_planter
-            || awakening_door_leaf;
+            || awakening_door_leaf
+            || enfermeria_surface
+            || enfermeria_equipment_marfil
+            || enfermeria_equipment_green
+            || panel_verde_original;
         if repeat_wall {
             for vertex in &mut part.mesh.vertices {
                 if habitat_ring_wall {
@@ -406,6 +473,36 @@ pub fn register_textured_model(
                     vertex.uv =
                         crate::Vec2::new(vertex.position.x * 0.35, vertex.position.y * 0.35);
                 } else if cloning_cabinet || cloning_green_panel || awakening_door_leaf {
+                    let normal = vertex.normal.abs();
+                    let uv = if normal.z >= normal.x && normal.z >= normal.y {
+                        crate::Vec2::new(vertex.position.x, vertex.position.y)
+                    } else if normal.x >= normal.y {
+                        crate::Vec2::new(vertex.position.y, vertex.position.z)
+                    } else {
+                        crate::Vec2::new(vertex.position.x, vertex.position.z)
+                    };
+                    vertex.uv = uv * 0.18;
+                } else if enfermeria_equipment_marfil {
+                    let normal = vertex.normal.abs();
+                    let uv = if normal.z >= normal.x && normal.z >= normal.y {
+                        crate::Vec2::new(vertex.position.x, vertex.position.y)
+                    } else if normal.x >= normal.y {
+                        crate::Vec2::new(vertex.position.y, vertex.position.z)
+                    } else {
+                        crate::Vec2::new(vertex.position.x, vertex.position.z)
+                    };
+                    vertex.uv = uv * 0.20;
+                } else if enfermeria_equipment_green {
+                    let normal = vertex.normal.abs();
+                    let uv = if normal.z >= normal.x && normal.z >= normal.y {
+                        crate::Vec2::new(vertex.position.x, vertex.position.y)
+                    } else if normal.x >= normal.y {
+                        crate::Vec2::new(vertex.position.y, vertex.position.z)
+                    } else {
+                        crate::Vec2::new(vertex.position.x, vertex.position.z)
+                    };
+                    vertex.uv = uv * 0.18;
+                } else if panel_verde_original {
                     let normal = vertex.normal.abs();
                     let uv = if normal.z >= normal.x && normal.z >= normal.y {
                         crate::Vec2::new(vertex.position.x, vertex.position.y)
@@ -469,7 +566,7 @@ pub fn register_textured_model(
             scene.set_material(material, model.materials[index].info);
             if let Some(texture) = model.materials[index].diffuse_texture.as_ref() {
                 let texture_path = if repeat_wall {
-                    if cloning_green_panel || awakening_door_leaf {
+                    if cloning_green_panel || awakening_door_leaf || panel_verde_original {
                         texture.with_file_name("panel_verde_seamless.png")
                     } else {
                         texture.with_file_name("base_marfil_seamless.png")

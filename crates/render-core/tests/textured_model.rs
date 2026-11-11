@@ -510,3 +510,72 @@ fn awakening_door_leaves_select_only_panel_green() {
         assert!(model.meshes.iter().any(|mesh| mesh.name == excluded));
     }
 }
+
+#[test]
+fn enfermeria_walls_and_dintel_exclude_medical_fixtures() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    for name in [
+        "ECHO7_05_Enfermeria_Laboratorio__Pared_presion_01",
+        "ECHO7_05_Enfermeria_Laboratorio__Pared_presion_27",
+        "ECHO7_05_Enfermeria_Laboratorio__Pared_frente_01",
+        "ECHO7_05_Enfermeria_Laboratorio__Pared_frente_02",
+        "ECHO7_05_Enfermeria_Laboratorio__Dintel_envolvente_01",
+    ] {
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        assert_eq!(
+            model.materials[mesh.material_index.unwrap()].name,
+            "Casco_Marfil"
+        );
+    }
+    for (name, expected) in [
+        (
+            "ECHO7_05_Enfermeria_Laboratorio__Costilla_techo_01",
+            "Metal_Gris",
+        ),
+        (
+            "ECHO7_05_Enfermeria_Laboratorio__Conducto_superior_01",
+            "Metal_Oscuro",
+        ),
+        (
+            "ECHO7_05_Enfermeria_Laboratorio__Cristal_tapa_capsula_01",
+            "Vidrio_Azul",
+        ),
+        (
+            "ECHO7_05_Enfermeria_Laboratorio__CRT_pantalla_01",
+            "Pantalla_Verde",
+        ),
+        (
+            "ECHO7_05_Enfermeria_Laboratorio__Mesa_tablero_01",
+            "Casco_Marfil",
+        ),
+    ] {
+        let mesh = model.meshes.iter().find(|mesh| mesh.name == name).unwrap();
+        assert_eq!(model.materials[mesh.material_index.unwrap()].name, expected);
+    }
+}
+
+#[test]
+fn enfermeria_equipment_finishes_exclude_glass_and_controls() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el montaje ECHO-7");
+    for name in [
+        "ECHO7_05_Enfermeria_Laboratorio__Mesa_tablero_01",
+        "ECHO7_05_Enfermeria_Laboratorio__Mesa_pata_01",
+        "ECHO7_05_Enfermeria_Laboratorio__Armario_01",
+        "ECHO7_05_Enfermeria_Laboratorio__CRT_carcasa_01",
+        "ECHO7_05_Enfermeria_Laboratorio__Puerta_armario_01",
+    ] {
+        assert!(model.meshes.iter().any(|mesh| mesh.name == name));
+    }
+    for excluded in [
+        "ECHO7_05_Enfermeria_Laboratorio__Cristal_tapa_capsula_01",
+        "ECHO7_05_Enfermeria_Laboratorio__CRT_pantalla_01",
+        "ECHO7_05_Enfermeria_Laboratorio__CRT_dial_01",
+        "ECHO7_05_Enfermeria_Laboratorio__Tirador_armario_01",
+    ] {
+        assert!(model.meshes.iter().any(|mesh| mesh.name == excluded));
+    }
+}
