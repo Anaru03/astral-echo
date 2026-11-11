@@ -1,2 +1,103 @@
-# Blender 5.2.0 LTS MTL File: 'charger.blend'
-# www.blender.org
+# Materiales de Charger - Astral Echo
+
+newmtl Charger_Hull
+Ka 0.000 0.000 0.000
+Kd 0.32 0.36 0.42
+Ke 0 0 0
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/charger/charger_hull.png
+
+newmtl Charger_Hull_Solid
+Ka 0.000 0.000 0.000
+Kd 0.32 0.36 0.42
+Ke 0 0 0
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Charger_Armor
+Ka 0.000 0.000 0.000
+Kd 0.47 0.25 0.17
+Ke 0 0 0
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/charger/charger_armor.png
+
+newmtl Charger_Armor_Solid
+Ka 0.000 0.000 0.000
+Kd 0.47 0.25 0.17
+Ke 0 0 0
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Charger_Wings
+Ka 0.000 0.000 0.000
+Kd 0.46 0.50 0.56
+Ke 0 0 0
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/charger/charger_wings.png
+
+newmtl Charger_Wings_Solid
+Ka 0.000 0.000 0.000
+Kd 0.46 0.50 0.56
+Ke 0 0 0
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Charger_Glass
+Ka 0.000 0.000 0.000
+Kd 0.17 0.07 0.11
+Ke 0.02 0 0
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/charger/charger_glass.png
+
+newmtl Charger_Glass_Solid
+Ka 0.000 0.000 0.000
+Kd 0.17 0.07 0.11
+Ke 0.02 0 0
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Charger_Engine
+Ka 0.000 0.000 0.000
+Kd 0.88 0.36 0.1
+Ke 0.2 0.05 0
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/charger/charger_engine.png
+
+newmtl Charger_Engine_Solid
+Ka 0.000 0.000 0.000
+Kd 0.88 0.36 0.1
+Ke 0.2 0.05 0
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Charger_Emissive
+Ka 0.000 0.000 0.000
+Kd 0.96 0.21 0.1
+Ke 0.55 0.08 0.01
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/charger/charger_emissive.png
+
+newmtl Charger_Emissive_Solid
+Ka 0.000 0.000 0.000
+Kd 0.96 0.21 0.1
+Ke 0.55 0.08 0.01
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2

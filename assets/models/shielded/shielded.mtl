@@ -1,2 +1,211 @@
-# Blender 5.2.0 LTS MTL File: 'shielded.blend'
-# www.blender.org
+# Materiales Shielded - Astral Echo
+
+newmtl Shielded_Hull
+Ka 0.000 0.000 0.000
+Kd 0.19 0.23 0.28
+Ke 0.00 0.00 0.00
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_hull.png
+
+newmtl Shielded_Hull_Solid
+Ka 0.000 0.000 0.000
+Kd 0.19 0.23 0.28
+Ke 0.00 0.00 0.00
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Shielded_Armor
+Ka 0.000 0.000 0.000
+Kd 0.30 0.35 0.41
+Ke 0.00 0.00 0.00
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_armor.png
+
+newmtl Shielded_Armor_Solid
+Ka 0.000 0.000 0.000
+Kd 0.30 0.35 0.41
+Ke 0.00 0.00 0.00
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Shielded_Wings
+Ka 0.000 0.000 0.000
+Kd 0.33 0.39 0.44
+Ke 0.00 0.00 0.00
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_wings.png
+
+newmtl Shielded_Wings_Solid
+Ka 0.000 0.000 0.000
+Kd 0.33 0.39 0.44
+Ke 0.00 0.00 0.00
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Shielded_Glass
+Ka 0.000 0.000 0.000
+Kd 0.11 0.19 0.24
+Ke 0.01 0.02 0.03
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_glass.png
+
+newmtl Shielded_Glass_Solid
+Ka 0.000 0.000 0.000
+Kd 0.11 0.19 0.24
+Ke 0.01 0.02 0.03
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Shielded_Engine
+Ka 0.000 0.000 0.000
+Kd 0.14 0.36 0.41
+Ke 0.01 0.06 0.07
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_engine.png
+
+newmtl Shielded_Engine_Solid
+Ka 0.000 0.000 0.000
+Kd 0.14 0.36 0.41
+Ke 0.01 0.06 0.07
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Shielded_Shield
+Ka 0.000 0.000 0.000
+Kd 0.11 0.57 0.59
+Ke 0.02 0.16 0.18
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_shield.png
+
+newmtl Shielded_Shield_Solid
+Ka 0.000 0.000 0.000
+Kd 0.11 0.57 0.59
+Ke 0.02 0.16 0.18
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Original_01_Grafito_casi_negro_002
+Ka 0.000 0.000 0.000
+Kd 0.20 0.25 0.31
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_hull.png
+
+newmtl Original_02_Blindaje_gris_azulado_002
+Ka 0.000 0.000 0.000
+Kd 0.34 0.41 0.49
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_armor.png
+
+newmtl Original_03_Titanio_de_cantos_002
+Ka 0.000 0.000 0.000
+Kd 0.48 0.55 0.63
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_wings.png
+
+newmtl Original_04_Panel_negro_ceramico_002
+Ka 0.000 0.000 0.000
+Kd 0.13 0.17 0.22
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_hull.png
+
+newmtl Original_05_Circuitos_cian_brillante_002
+Ka 0.000 0.000 0.000
+Kd 0.005000 0.770000 0.930000
+Ke 0.016000 2.464000 2.976000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_shield.png
+
+newmtl Original_06_Luz_azul_hielo_002
+Ka 0.000 0.000 0.000
+Kd 0.150000 0.840000 1.000000
+Ke 0.345000 1.932000 2.300000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_shield.png
+
+newmtl Original_07_Cristal_azul_oscuro_002
+Ka 0.000 0.000 0.000
+Kd 0.015000 0.090000 0.150000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_glass.png
+
+newmtl Original_08_Luces_ambar_minimas_002
+Ka 0.000 0.000 0.000
+Kd 0.900000 0.240000 0.025000
+Ke 1.080000 0.288000 0.030000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_hull.png
+
+newmtl Original_09_Aqua_brillante_de_blindaje_001
+Ka 0.000 0.000 0.000
+Kd 0.040000 0.910000 0.790000
+Ke 0.096000 2.184000 1.896000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_shield.png
+
+newmtl Original_10_Aqua_hielo_reflectante_001
+Ka 0.000 0.000 0.000
+Kd 0.400000 0.960000 0.910000
+Ke 0.560000 1.344000 1.274000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_shield.png
+
+newmtl Original_11_Acero_azul_profundo_001
+Ka 0.000 0.000 0.000
+Kd 0.20 0.28 0.36
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_hull.png
+
+newmtl Original_12_Bordes_de_titanio_claro_001
+Ka 0.000 0.000 0.000
+Kd 0.390000 0.480000 0.560000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shielded/shielded_wings.png

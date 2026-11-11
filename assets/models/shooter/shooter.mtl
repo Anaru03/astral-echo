@@ -1,2 +1,223 @@
-# Blender 5.2.0 LTS MTL File: 'shooter.blend'
-# www.blender.org
+# Astral Echo - Shooter Materials
+
+newmtl Shooter_Hull
+Kd 0.22 0.28 0.34
+Ke 0.00 0.00 0.00
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
+
+newmtl Shooter_Metal
+Kd 0.58 0.66 0.72
+Ke 0.00 0.00 0.00
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
+
+newmtl Shooter_Wings
+Kd 0.30 0.43 0.53
+Ke 0.00 0.00 0.00
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
+
+newmtl Shooter_Glass
+Kd 0.05 0.20 0.32
+Ke 0.01 0.04 0.07
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
+
+newmtl Shooter_Engine
+Kd 0.08 0.38 0.58
+Ke 0.02 0.15 0.25
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
+
+newmtl Shooter_Emissive
+Kd 0.02 0.85 0.95
+Ke 0.02 0.45 0.55
+Ks 0.35 0.40 0.45
+Ns 120.0
+d 1.0
+
+newmtl Original_01_Porcelana_titanio_blanco_002
+Ka 0.000 0.000 0.000
+Kd 0.880000 0.910000 0.940000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_wings.png
+
+newmtl Original_01_Porcelana_titanio_blanco_002_Solid
+Ka 0.000 0.000 0.000
+Kd 0.880000 0.910000 0.940000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Original_02_Placas_blanco_perlado_002
+Ka 0.000 0.000 0.000
+Kd 0.700000 0.790000 0.830000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_armor.png
+
+newmtl Original_02_Placas_blanco_perlado_002_Solid
+Ka 0.000 0.000 0.000
+Kd 0.700000 0.790000 0.830000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Original_03_Bordes_titanio_plateado_002
+Ka 0.000 0.000 0.000
+Kd 0.420000 0.510000 0.580000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_wings.png
+
+newmtl Original_03_Bordes_titanio_plateado_002_Solid
+Ka 0.000 0.000 0.000
+Kd 0.420000 0.510000 0.580000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Original_04_Estructura_grafito_002
+Ka 0.000 0.000 0.000
+Kd 0.055000 0.073000 0.095000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_hull.png
+
+newmtl Original_04_Estructura_grafito_002_Solid
+Ka 0.000 0.000 0.000
+Kd 0.055000 0.073000 0.095000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Original_05_Cristal_cabina_negro_petroleo_002_Solid
+Ka 0.000 0.000 0.000
+Kd 0.012000 0.075000 0.098000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Original_06_Turquesa_brillante_002
+Ka 0.000 0.000 0.000
+Kd 0.030000 0.830000 0.890000
+Ke 0.027000 0.747000 0.801000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_emissive.png
+
+newmtl Original_06_Turquesa_brillante_002_Solid
+Ka 0.000 0.000 0.000
+Kd 0.030000 0.830000 0.890000
+Ke 0.027000 0.747000 0.801000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Original_07_Turquesa_palido_002_Solid
+Ka 0.000 0.000 0.000
+Kd 0.360000 0.840000 0.860000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Original_08_Acero_mecanico_002
+Ka 0.000 0.000 0.000
+Kd 0.180000 0.240000 0.290000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_hull.png
+
+newmtl Original_09_Propulsion_azul_hielo_002
+Ka 0.000 0.000 0.000
+Kd 0.200000 0.740000 1.000000
+Ke 0.640000 2.368000 3.200000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_engine.png
+
+newmtl Original_10_Juntas_oscuras_002
+Ka 0.000 0.000 0.000
+Kd 0.025000 0.034000 0.049000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_hull.png
+
+newmtl Original_11_Titanio_azul_gris_satinado_001
+Ka 0.000 0.000 0.000
+Kd 0.260000 0.390000 0.460000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_wings.png
+
+newmtl Original_12_Luz_hielo_electrico_001
+Ka 0.000 0.000 0.000
+Kd 0.160000 0.940000 1.000000
+Ke 0.368000 2.162000 2.300000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_emissive.png
+
+newmtl Original_13_Ceramica_azul_sombra_001_Solid
+Ka 0.000 0.000 0.000
+Kd 0.080000 0.150000 0.220000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Original_14_Titanio_bordes_pulidos_001
+Ka 0.000 0.000 0.000
+Kd 0.790000 0.860000 0.910000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_wings.png
+
+newmtl Original_14_Titanio_bordes_pulidos_001_Solid
+Ka 0.000 0.000 0.000
+Kd 0.790000 0.860000 0.910000
+Ke 0.000000 0.000000 0.000000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+
+newmtl Original_15_Avisos_ambar_001
+Ka 0.000 0.000 0.000
+Kd 0.980000 0.400000 0.080000
+Ke 1.470000 0.600000 0.120000
+Ks 0.350 0.350 0.350
+Ns 80.0
+illum 2
+map_Kd ../../textures/ships/shooter/shooter_hull.png
