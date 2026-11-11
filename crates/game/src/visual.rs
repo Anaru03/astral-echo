@@ -2676,7 +2676,14 @@ impl VisualBridge {
                 "PILOTAJE ACTIVO".to_owned()
             };
             let navigation_action = match self.session.world().travel_state() {
-                gameplay::TravelState::InProgress { .. } => "ESC CANCELAR AUTOPILOTO".to_owned(),
+                gameplay::TravelState::InProgress { .. }
+                    if self.session.world().autopilot_waiting_for_encounter() =>
+                {
+                    "AUTOPILOTO PAUSADO POR AMENAZA - P CONTINUAR | ESC CANCELAR".to_owned()
+                }
+                gameplay::TravelState::InProgress { .. } => {
+                    "P CONTINUAR | ESC CANCELAR AUTOPILOTO".to_owned()
+                }
                 gameplay::TravelState::Completed { .. } => "N ELEGIR SIGUIENTE DESTINO".to_owned(),
                 _ if self.session.world().free_navigation_destination().is_some() => {
                     match self.session.world().free_navigation_proposal() {
@@ -2826,7 +2833,7 @@ impl VisualBridge {
                 "N SELECCIONAR DESTINO; FLECHAS CAMBIAR; P ELEGIR Y AUTOPILOTO - PILOTAJE".to_owned(),
                 "U USAR COMBUSTIBLE - PILOTAJE".to_owned(),
                 "TAB CAMBIAR ARMA - PLASMA DISPONIBLE AL ENCONTRARLA".to_owned(),
-                "P INICIAR O REANUDAR AUTOPILOTO AL DESTINO SELECCIONADO - PILOTAJE".to_owned(),
+                "P INICIAR O REANUDAR AUTOPILOTO - PILOTAJE".to_owned(),
                 "I SALIR DEL PILOTAJE - PILOTAJE".to_owned(),
             ]);
         } else if self.surface_mode {
@@ -3881,15 +3888,27 @@ impl VisualBridge {
     }
 
     fn toggle_flight(&mut self, player: EntityId, pilot_station: EntityId) {
-        let free_destination = self.session.world().free_navigation_destination();
-        let free_navigation_active = matches!(
+        if matches!(
             self.session.world().travel_state(),
             gameplay::TravelState::InProgress { .. }
-        );
-        if free_destination.is_some() && free_navigation_active {
-            self.feedback = "AUTOPILOTO EN CURSO - USA ESC PARA CANCELAR".to_owned();
+        ) {
+            if matches!(
+                self.session.world().autopilot_state(),
+                gameplay::AutopilotState::InTransit { .. }
+            ) {
+                if self.issue([GameplayCommand::ContinueAutopilot {
+                    player,
+                    pilot_station,
+                }]) {
+                    self.feedback = "AUTOPILOTO REANUDADO - LA NAVE CONTINUA LA RUTA".to_owned();
+                    println!("visual gameplay: {}", self.feedback);
+                }
+            } else {
+                self.feedback = "VIAJE EN CURSO - USA ESC PARA CANCELAR".to_owned();
+            }
             return;
         }
+        let free_destination = self.session.world().free_navigation_destination();
         if free_destination.is_some()
             && !matches!(
                 self.session.world().travel_state(),
@@ -5916,6 +5935,7 @@ mod tests {
     #[test]
     fn p_starts_the_configured_autopilot_route() {
         let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let position_before = bridge.session.world().ship_position();
 
         bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
 
@@ -5927,6 +5947,19 @@ mod tests {
             bridge.session.world().travel_state(),
             gameplay::TravelState::InProgress { destination, .. } if destination == DESTINATION
         ));
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(500),
+        }]);
+        assert_eq!(bridge.session.world().ship_position(), position_before);
+        assert!(bridge.session.world().autopilot_waiting_for_encounter());
+
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        assert!(bridge.feedback.contains("AUTOPILOTO REANUDADO"));
+        assert!(!bridge.session.world().autopilot_waiting_for_encounter());
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(500),
+        }]);
+        assert_ne!(bridge.session.world().ship_position(), position_before);
     }
 
     #[test]

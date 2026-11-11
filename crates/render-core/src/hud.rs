@@ -304,7 +304,10 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     if let Some(value) = hud
         .feedback
         .as_deref()
-        .filter(|value| !value.is_empty() && (!hud.quick_actions.is_empty() || terminal))
+        .filter(|value| {
+            !value.is_empty()
+                && (!hud.quick_actions.is_empty() || terminal || value.starts_with("ERICK:"))
+        })
     {
         center_lines.push(format!("FEEDBACK: {value}"));
     }
@@ -546,6 +549,16 @@ mod tests {
         let hud = HudState { feedback: Some("JUGADOR DERROTADO".into()), ..Default::default() };
         let overlay = hud_overlay(&hud, 640, 360);
         assert!(overlay.glyphs.iter().all(|rect| rect.color[0] > rect.color[1]));
+    }
+
+    #[test]
+    fn erick_feedback_is_visible_without_quick_actions() {
+        let hud = HudState {
+            feedback: Some("ERICK: destino de navegación seleccionado.".into()),
+            ..Default::default()
+        };
+        let overlay = hud_overlay(&hud, 640, 360);
+        assert!(overlay.glyphs.iter().any(|glyph| glyph.y > 180));
     }
 
     #[test]

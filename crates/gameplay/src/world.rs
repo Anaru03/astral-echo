@@ -5345,6 +5345,22 @@ impl GameplayWorld {
     pub fn autopilot_state(&self) -> &crate::navigation::AutopilotState {
         self.navigation.autopilot_state()
     }
+    pub fn autopilot_waiting_for_encounter(&self) -> bool {
+        matches!(
+            self.navigation.autopilot_state(),
+            crate::navigation::AutopilotState::InTransit { .. }
+        ) && matches!(
+            self.navigation.travel_state(),
+            crate::navigation::TravelState::InProgress { .. }
+        ) && !self.navigation.autopilot_continuation_authorized()
+            && self.spatial_encounters().any(|encounter| {
+                encounter.state == crate::encounter::SpatialEncounterState::Active
+                    && matches!(
+                        encounter.kind,
+                        crate::encounter::SpatialEncounterKind::Hostile { .. }
+                    )
+            })
+    }
     pub fn travel_progress(&self) -> Option<TravelProgress> {
         self.navigation.travel_progress(self.time().elapsed)
     }

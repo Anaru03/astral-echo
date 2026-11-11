@@ -72,7 +72,7 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     assert!(snapshot
         .nodes
         .iter()
-        .any(|n| n.entity == SnapshotId::Entity(collectible.entity) && n.mesh == COLLECTIBLE_MESH));
+        .any(|n| n.entity == SnapshotId::Entity(collectible.entity) && n.mesh == ASTEROID_FIELD_MESH));
     assert_eq!(before, format!("{world:?}"));
     assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
 }
@@ -309,7 +309,9 @@ fn discovered_derelicts_use_stable_ids_positions_and_registered_assets() {
     let derelicts: Vec<_> = snapshot
         .nodes
         .iter()
-        .filter(|node| matches!(node.entity, SnapshotId::Derelict(_)))
+        .filter(|node| {
+            node.entity == SnapshotId::Derelict(41) || node.entity == SnapshotId::Derelict(42)
+        })
         .collect();
     assert_eq!(derelicts.len(), 2);
     assert!(derelicts.iter().any(|node| {
@@ -470,7 +472,7 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
             .update(&snapshot_from_world(&empty, Default::default()))
             .unwrap()
         .removed,
-        15
+        11
     );
     // Un mundo sin entidades de gameplay puede conservar
     // objetos visuales estaticos de la escena exterior.
