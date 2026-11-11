@@ -460,7 +460,7 @@ impl VisualBridge {
                     3.5,
                 )
                 .with_rewards(
-                    vec![DerelictReward { item: gameplay::FUEL_RESOURCE_ITEM, amount: 4 }],
+                    vec![DerelictReward { item: gameplay::FUEL_RESOURCE_ITEM, amount: 12 }],
                     RewardDistributionPolicy::Shared,
                 ),
             },
@@ -503,7 +503,7 @@ impl VisualBridge {
                 destination_type: DestinationType::SpacePoint,
                 position: initial_ship_position,
                 travel_duration: Duration(1_000),
-                fuel_cost: 1,
+                fuel_cost: 15,
                 discovery: DiscoveryState::Discovered,
             })
             .map_err(|error| format!("registrar origen visual: {error:?}"))?;
@@ -517,7 +517,7 @@ impl VisualBridge {
                     z: -18.0,
                 },
                 travel_duration: Duration(1_000),
-                fuel_cost: 1,
+                fuel_cost: 15,
                 discovery: DiscoveryState::Discovered,
             })
             .map_err(|error| format!("registrar destino visual: {error:?}"))?;
@@ -527,7 +527,7 @@ impl VisualBridge {
                 destination_type: DestinationType::Planet,
                 position: TESSARA_POSITION,
                 travel_duration: Duration(1_000),
-                fuel_cost: 1,
+                fuel_cost: 10,
                 discovery: DiscoveryState::Discovered,
             })
             .map_err(|error| format!("registrar Tessara: {error:?}"))?;
@@ -537,7 +537,7 @@ impl VisualBridge {
                 destination_type: DestinationType::Planet,
                 position: KHARVEX_POSITION,
                 travel_duration: Duration(1_000),
-                fuel_cost: 1,
+                fuel_cost: 18,
                 discovery: DiscoveryState::Discovered,
             })
             .map_err(|error| format!("registrar Kharvex: {error:?}"))?;
@@ -547,7 +547,7 @@ impl VisualBridge {
                 destination_type: DestinationType::Planet,
                 position: NARETH_POSITION,
                 travel_duration: Duration(1_000),
-                fuel_cost: 1,
+                fuel_cost: 22,
                 discovery: DiscoveryState::Discovered,
             })
             .map_err(|error| format!("registrar Nareth: {error:?}"))?;
@@ -561,7 +561,7 @@ impl VisualBridge {
                     z: -20.0,
                 },
                 travel_duration: Duration(1_000),
-                fuel_cost: 1,
+                fuel_cost: 15,
                 discovery: DiscoveryState::Unknown,
             })
             .map_err(|error| format!("registrar señal visual: {error:?}"))?;
@@ -575,7 +575,7 @@ impl VisualBridge {
                     144.2
                 },
                 duration: Duration(1_000),
-                fuel_cost: 1,
+                fuel_cost: 15,
                 state: NavigationRouteState::Available,
             },
         }]);
@@ -589,7 +589,7 @@ impl VisualBridge {
                     144.2
                 },
                 duration: Duration(1_000),
-                fuel_cost: 1,
+                fuel_cost: 15,
                 state: NavigationRouteState::Available,
             },
         }]);
@@ -603,7 +603,7 @@ impl VisualBridge {
                     to,
                     distance,
                     duration: Duration(1_000),
-                    fuel_cost: 1,
+                    fuel_cost: 10,
                     state: NavigationRouteState::Available,
                 },
             }]);
@@ -837,11 +837,6 @@ impl VisualBridge {
             GameplayCommand::SetSignalScannerEnabled {
                 ship,
                 enabled: true,
-            },
-            GameplayCommand::AddInventoryItem {
-                player,
-                item: ItemId(2),
-                amount: 8,
             },
             GameplayCommand::EquipPlayerWeapon {
                 player,
@@ -1510,9 +1505,7 @@ impl VisualBridge {
                     self.audio.request_effect(SoundEffect::Scan);
                 }
             }
-            KeyCode::KeyV => self.equip_energy_weapon(),
-            KeyCode::KeyB => self.equip_found_weapon(gameplay::PLASMA_WEAPON_ITEM),
-            KeyCode::KeyC => self.equip_kinetic_weapon(),
+            KeyCode::Tab => self.cycle_equipped_weapon(),
             KeyCode::KeyF => {
                 if self.landing_target().is_some() {
                     self.request_landing_from_current_position();
@@ -1953,6 +1946,34 @@ impl VisualBridge {
         }
     }
 
+    fn cycle_equipped_weapon(&mut self) {
+        let Some(inventory) = self.session.world().inventory(self.player) else {
+            return;
+        };
+        let mut available = vec![AttackType::Kinetic];
+        if inventory.quantity(ItemId(3)) > 0 {
+            available.push(AttackType::Energy);
+        }
+        if inventory.quantity(gameplay::PLASMA_WEAPON_ITEM) > 0 {
+            available.push(AttackType::Plasma);
+        }
+        let current = self
+            .session
+            .world()
+            .equipped_weapon(self.player)
+            .map(|weapon| weapon.attack_type)
+            .unwrap_or(AttackType::Kinetic);
+        let next_index = available
+            .iter()
+            .position(|attack_type| *attack_type == current)
+            .map_or(0, |index| (index + 1) % available.len());
+        match available[next_index] {
+            AttackType::Kinetic => self.equip_kinetic_weapon(),
+            AttackType::Energy => self.equip_energy_weapon(),
+            AttackType::Plasma => self.equip_found_weapon(gameplay::PLASMA_WEAPON_ITEM),
+        }
+    }
+
     fn equip_energy_weapon(&mut self) {
         let completed = self.issue([GameplayCommand::EquipPlayerWeapon {
             player: self.player,
@@ -2101,7 +2122,7 @@ impl VisualBridge {
                 collectible: collectible.entity,
                 amount: collectible.amount,
             }]) {
-                self.feedback = "ARMAMENTO RECUPERADO - USA B PARA EQUIPAR PLASMA".to_owned();
+                self.feedback = "ARMAMENTO RECUPERADO - USA TAB PARA CAMBIAR ARMA".to_owned();
                 println!("visual gameplay: {}", self.feedback);
             }
             return;
@@ -2655,7 +2676,14 @@ impl VisualBridge {
                 "PILOTAJE ACTIVO".to_owned()
             };
             let navigation_action = match self.session.world().travel_state() {
-                gameplay::TravelState::InProgress { .. } => "ESC CANCELAR AUTOPILOTO".to_owned(),
+                gameplay::TravelState::InProgress { .. }
+                    if self.session.world().autopilot_waiting_for_encounter() =>
+                {
+                    "AUTOPILOTO PAUSADO POR AMENAZA - P CONTINUAR | ESC CANCELAR".to_owned()
+                }
+                gameplay::TravelState::InProgress { .. } => {
+                    "P CONTINUAR | ESC CANCELAR AUTOPILOTO".to_owned()
+                }
                 gameplay::TravelState::Completed { .. } => "N ELEGIR SIGUIENTE DESTINO".to_owned(),
                 _ if self.session.world().free_navigation_destination().is_some() => {
                     match self.session.world().free_navigation_proposal() {
@@ -2804,8 +2832,8 @@ impl VisualBridge {
                 "[/] CAMBIAR PLANETA OBSERVADO - PILOTAJE".to_owned(),
                 "N SELECCIONAR DESTINO; FLECHAS CAMBIAR; P ELEGIR Y AUTOPILOTO - PILOTAJE".to_owned(),
                 "U USAR COMBUSTIBLE - PILOTAJE".to_owned(),
-                "B EQUIPAR PLASMA - ARMAMENTO ENCONTRADO".to_owned(),
-                "P INICIAR O REANUDAR AUTOPILOTO AL DESTINO SELECCIONADO - PILOTAJE".to_owned(),
+                "TAB CAMBIAR ARMA - PLASMA DISPONIBLE AL ENCONTRARLA".to_owned(),
+                "P INICIAR O REANUDAR AUTOPILOTO - PILOTAJE".to_owned(),
                 "I SALIR DEL PILOTAJE - PILOTAJE".to_owned(),
             ]);
         } else if self.surface_mode {
@@ -2854,11 +2882,30 @@ impl VisualBridge {
     }
 
     fn use_fuel_resource(&mut self) {
+        let Some(fuel) = self.session.world().ship_fuel(self.ship) else {
+            return;
+        };
+        let missing = fuel.capacity().saturating_sub(fuel.current());
+        let available = self
+            .session
+            .world()
+            .inventory(self.player)
+            .map_or(0, |inventory| inventory.quantity(gameplay::FUEL_RESOURCE_ITEM));
+        let amount = missing.min(available);
+        if amount == 0 {
+            self.feedback = if missing == 0 {
+                "TANQUE DE COMBUSTIBLE LLENO".to_owned()
+            } else {
+                "SIN RESERVA DE COMBUSTIBLE".to_owned()
+            };
+            println!("visual gameplay: {}", self.feedback);
+            return;
+        }
         let result = self.session.update([GameplayCommand::UseFuelResource {
             player: self.player,
             ship: self.ship,
             item: gameplay::FUEL_RESOURCE_ITEM,
-            amount: 1,
+            amount,
         }]);
         self.feedback = format!("ABASTECIMIENTO DE COMBUSTIBLE: {:?}", result.first().map(|value| value.status));
         println!("visual gameplay: {}", self.feedback);
@@ -3077,15 +3124,15 @@ impl VisualBridge {
         let right = GameplayVec3 {
             x: cos_yaw,
             y: 0.0,
-            z: sin_yaw,
+            z: -sin_yaw,
         };
         let up = GameplayVec3 {
-            x: sin_yaw * sin_pitch,
+            x: -sin_yaw * sin_pitch,
             y: cos_pitch,
             z: cos_yaw * sin_pitch,
         };
         let forward = GameplayVec3 {
-            x: sin_yaw * cos_pitch,
+            x: -sin_yaw * cos_pitch,
             y: sin_pitch,
             z: -cos_yaw * cos_pitch,
         };
@@ -3841,15 +3888,27 @@ impl VisualBridge {
     }
 
     fn toggle_flight(&mut self, player: EntityId, pilot_station: EntityId) {
-        let free_destination = self.session.world().free_navigation_destination();
-        let free_navigation_active = matches!(
+        if matches!(
             self.session.world().travel_state(),
             gameplay::TravelState::InProgress { .. }
-        );
-        if free_destination.is_some() && free_navigation_active {
-            self.feedback = "AUTOPILOTO EN CURSO - USA ESC PARA CANCELAR".to_owned();
+        ) {
+            if matches!(
+                self.session.world().autopilot_state(),
+                gameplay::AutopilotState::InTransit { .. }
+            ) {
+                if self.issue([GameplayCommand::ContinueAutopilot {
+                    player,
+                    pilot_station,
+                }]) {
+                    self.feedback = "AUTOPILOTO REANUDADO - LA NAVE CONTINUA LA RUTA".to_owned();
+                    println!("visual gameplay: {}", self.feedback);
+                }
+            } else {
+                self.feedback = "VIAJE EN CURSO - USA ESC PARA CANCELAR".to_owned();
+            }
             return;
         }
+        let free_destination = self.session.world().free_navigation_destination();
         if free_destination.is_some()
             && !matches!(
                 self.session.world().travel_state(),
@@ -4694,6 +4753,35 @@ mod tests {
     }
 
     #[test]
+    fn starting_supplies_and_tab_weapon_cycle_are_consistent() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        let inventory = bridge.session.world().inventory(bridge.player).expect("starting inventory");
+        assert_eq!(bridge.session.world().ship_fuel(bridge.ship).unwrap().current(), 100);
+        assert_eq!(inventory.quantity(gameplay::FUEL_RESOURCE_ITEM), 200);
+        assert_eq!(inventory.quantity(gameplay::OXYGEN_RESOURCE_ITEM), 5);
+        assert_eq!(inventory.quantity(ItemId(1)), 3);
+        assert_eq!(inventory.quantity(ItemId(2)), 8);
+        assert_eq!(inventory.quantity(ItemId(3)), 4);
+        bridge.session.update([GameplayCommand::RemoveShipFuel {
+            ship: bridge.ship,
+            amount: 37,
+        }]);
+        bridge.use_fuel_resource();
+        assert_eq!(bridge.session.world().ship_fuel(bridge.ship).unwrap().current(), 100);
+        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(gameplay::FUEL_RESOURCE_ITEM), 163);
+
+        bridge.handle_key(KeyCode::Tab, ElementState::Pressed);
+        assert_eq!(bridge.session.world().equipped_weapon(bridge.player).unwrap().attack_type, AttackType::Energy);
+        bridge.session.update([GameplayCommand::AddInventoryItem {
+            player: bridge.player,
+            item: gameplay::PLASMA_WEAPON_ITEM,
+            amount: 1,
+        }]);
+        bridge.handle_key(KeyCode::Tab, ElementState::Pressed);
+        assert_eq!(bridge.session.world().equipped_weapon(bridge.player).unwrap().attack_type, AttackType::Plasma);
+    }
+
+    #[test]
     fn observation_target_starts_at_veyra_and_cycles_to_tessara_only_in_pilot_observation() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
         assert_eq!(bridge.observation_target, Some(DESTINATION));
@@ -4912,7 +5000,7 @@ mod tests {
                 .ship_fuel(bridge.ship)
                 .expect("ship fuel should remain available")
                 .current(),
-            fuel_before - 1
+            fuel_before - 10
         );
         assert!(matches!(
             bridge.session.world().travel_state(),
@@ -5202,6 +5290,24 @@ mod tests {
         assert_ne!(bridge.session.world().ship_position().unwrap(), ship_before);
         assert_ne!(bridge.session.world().ship_orientation().unwrap(), orientation_before);
         assert_eq!(bridge.session.world().player(bridge.player).unwrap().position, player_before);
+    }
+
+    #[test]
+    fn pilot_thrust_follows_the_visible_ship_heading_after_yaw_rotation() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.guided_interaction();
+        bridge.issue([GameplayCommand::RotateShip {
+            player: bridge.player,
+            pilot_station: bridge.pilot_station,
+            yaw_input: 1.0,
+            pitch_input: 0.0,
+            delta: Duration(1_200),
+        }]);
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+
+        let thrust = bridge.current_flight_input();
+        assert!(thrust.x < -0.99, "W should thrust along the ship's visible nose: {thrust:?}");
+        assert!(thrust.z.abs() < 0.01, "a 90-degree yaw should point along X: {thrust:?}");
     }
 
     #[test]
@@ -5847,6 +5953,7 @@ mod tests {
     #[test]
     fn p_starts_the_configured_autopilot_route() {
         let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let position_before = bridge.session.world().ship_position();
 
         bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
 
@@ -5858,6 +5965,19 @@ mod tests {
             bridge.session.world().travel_state(),
             gameplay::TravelState::InProgress { destination, .. } if destination == DESTINATION
         ));
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(500),
+        }]);
+        assert_eq!(bridge.session.world().ship_position(), position_before);
+        assert!(bridge.session.world().autopilot_waiting_for_encounter());
+
+        bridge.handle_key(KeyCode::KeyP, ElementState::Pressed);
+        assert!(bridge.feedback.contains("AUTOPILOTO REANUDADO"));
+        assert!(!bridge.session.world().autopilot_waiting_for_encounter());
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(500),
+        }]);
+        assert_ne!(bridge.session.world().ship_position(), position_before);
     }
 
     #[test]
@@ -6658,7 +6778,7 @@ mod tests {
                 .required_completed,
             1
         );
-        bridge.handle_key(KeyCode::KeyV, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Tab, ElementState::Pressed);
         bridge.session.update([GameplayCommand::AdvanceTime {
             delta: Duration(1_000),
         }]);
@@ -6749,7 +6869,7 @@ mod tests {
             1
         );
 
-        bridge.handle_key(KeyCode::KeyC, ElementState::Pressed);
+        bridge.handle_key(KeyCode::Tab, ElementState::Pressed);
         let shooter = bridge.enemy;
         let pilot_position = bridge
             .session
@@ -7161,6 +7281,10 @@ mod tests {
         }]);
         assert!(matches!(collect_result.first().map(|value| value.status), Some(gameplay::CommandStatus::Success { changed: true })));
         assert!(!bridge.session.world().collectible(fuel_collectible.entity).unwrap().active);
+        bridge.session.update([GameplayCommand::RemoveShipFuel {
+            ship: bridge.ship,
+            amount: 1,
+        }]);
         let fuel_before = bridge.session.world().ship_fuel(bridge.ship).unwrap().current();
         bridge.session.update([GameplayCommand::AddInventoryItem {
             player: bridge.player,
@@ -7237,7 +7361,7 @@ mod tests {
         }]);
         bridge.guided_interaction();
         bridge.guided_interaction();
-        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 1);
+        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 4);
         bridge.session.update([GameplayCommand::DamageShip { ship: bridge.ship, amount: 20 }]);
         let before = bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1));
         bridge.session.update([GameplayCommand::Interact {
@@ -7259,7 +7383,7 @@ mod tests {
             station: bridge.engineering_station,
         }]);
         assert!(matches!(rejected.first().map(|value| value.status), Some(gameplay::CommandStatus::Rejected { .. })));
-        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 0);
+        assert_eq!(bridge.session.world().inventory(bridge.player).unwrap().quantity(ItemId(1)), 3);
     }
 
     #[test]

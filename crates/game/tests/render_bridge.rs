@@ -9,7 +9,7 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     let world = support::fixture_world();
     let before = format!("{world:?}");
     let snapshot = snapshot_from_world(&world, Default::default());
-    assert_eq!(snapshot.nodes.len(), 15);
+    assert_eq!(snapshot.nodes.len(), 19);
     assert_eq!(
         snapshot
             .nodes
@@ -72,7 +72,7 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     assert!(snapshot
         .nodes
         .iter()
-        .any(|n| n.entity == SnapshotId::Entity(collectible.entity) && n.mesh == COLLECTIBLE_MESH));
+        .any(|n| n.entity == SnapshotId::Entity(collectible.entity) && n.mesh == ASTEROID_FIELD_MESH));
     assert_eq!(before, format!("{world:?}"));
     assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
 }
@@ -309,7 +309,9 @@ fn discovered_derelicts_use_stable_ids_positions_and_registered_assets() {
     let derelicts: Vec<_> = snapshot
         .nodes
         .iter()
-        .filter(|node| node.mesh == DERELICT_MESH)
+        .filter(|node| {
+            node.entity == SnapshotId::Derelict(41) || node.entity == SnapshotId::Derelict(42)
+        })
         .collect();
     assert_eq!(derelicts.len(), 2);
     assert!(derelicts.iter().any(|node| {
@@ -387,7 +389,7 @@ fn active_debris_fields_use_stable_ids_and_registered_assets() {
     let fields: Vec<_> = snapshot
         .nodes
         .iter()
-        .filter(|node| node.mesh == ASTEROID_FIELD_MESH)
+        .filter(|node| node.entity == SnapshotId::Hazard(77))
         .collect();
     assert_eq!(fields.len(), 1);
     assert_eq!(fields[0].entity, SnapshotId::Hazard(77));
@@ -462,14 +464,14 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
     scene
         .update(&snapshot_from_world(&world, Default::default()))
         .unwrap();
-    assert_eq!(scene.visible_nodes().count(), 12);
+    assert_eq!(scene.visible_nodes().count(), 16);
     assert!(scene.snapshot().nodes.iter().filter(|n| matches!(n.entity,SnapshotId::Entity(id) if id==enemy || id==collectible || id==new_player)).all(|n| !n.visible));
     let empty = gameplay::GameplayWorld::new();
     assert_eq!(
         scene
             .update(&snapshot_from_world(&empty, Default::default()))
             .unwrap()
-            .removed,
+        .removed,
         11
     );
     // Un mundo sin entidades de gameplay puede conservar

@@ -924,7 +924,9 @@ mod tests {
 
         for client in &clients {
             let entity = session.network_player(client.player_id()).unwrap().entity;
-            assert_eq!(session.gameplay().world().inventory(entity).map(|value| value.capacity()), Some(20));
+            let inventory = session.gameplay().world().inventory(entity).unwrap();
+            assert_eq!(inventory.capacity(), 250);
+            assert_eq!(inventory.quantity(gameplay::FUEL_RESOURCE_ITEM), 200);
         }
 
         for mut client in clients {
