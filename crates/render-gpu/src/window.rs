@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 
 use render_core::{
-    Camera, GpuAssetEvent, Mat4, PreparedSceneStats, RasterMesh, RenderSnapshot, SnapshotScene,
-    Transform,
+    Camera, GpuAssetEvent, HudState, Mat4, PreparedSceneStats, RasterMesh, RenderSnapshot,
+    SnapshotScene, Transform,
 };
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -26,6 +26,8 @@ pub struct SurfaceRenderer {
     window: Arc<Window>,
     gpu: Arc<GpuContext>,
     renderer: GpuRenderer,
+    hud_renderer: Option<GpuRenderer>,
+    hud_cache: Option<(HudState, u32, u32)>,
     config: wgpu::SurfaceConfiguration,
     depth: Option<DepthTarget>,
     scene: Vec<(RasterMesh, Transform)>,
@@ -147,6 +149,8 @@ impl SurfaceRenderer {
             window,
             gpu,
             renderer,
+            hud_renderer: None,
+            hud_cache: None,
             config,
             depth: None,
             scene: scene.to_vec(),
@@ -460,11 +464,25 @@ impl SurfaceRenderer {
                 Mat4::IDENTITY,
                 [0, 0, 0, 255],
             )?;
-            let hud_scene = hud_overlay_scene(&overlay.hud, self.config.width, self.config.height);
-            if !hud_scene.is_empty() {
-                let mut hud_renderer = GpuRenderer::new(self.gpu.clone(), self.config.format, &hud_scene)?;
-                let hud_depth = DepthTarget::new(&self.gpu, self.config.width, self.config.height)?;
-                hud_renderer.render_to_view_matrix_over(&view, &hud_depth.view, Mat4::IDENTITY)?;
+            let hud_size = (self.config.width, self.config.height);
+            let hud_changed = self.hud_cache.as_ref().is_none_or(|(cached, width, height)| {
+                cached != &overlay.hud || (*width, *height) != hud_size
+            });
+            if hud_changed {
+                let hud_scene = hud_overlay_scene(&overlay.hud, hud_size.0, hud_size.1);
+                if let Some(renderer) = &mut self.hud_renderer {
+                    renderer.update_scene(&hud_scene)?;
+                } else if !hud_scene.is_empty() {
+                    self.hud_renderer = Some(GpuRenderer::new(
+                        self.gpu.clone(),
+                        self.config.format,
+                        &hud_scene,
+                    )?);
+                }
+                self.hud_cache = Some((overlay.hud.clone(), hud_size.0, hud_size.1));
+            }
+            if let Some(renderer) = &mut self.hud_renderer {
+                renderer.render_to_view_matrix_over(&view, &depth.view, Mat4::IDENTITY)?;
             }
             if let Some(path) = scene_capture {
                 self.capture_surface_texture(&texture.texture, &path)?;
@@ -500,11 +518,25 @@ impl SurfaceRenderer {
         if let Some(path) = scene_capture {
             self.capture_surface_texture(&texture.texture, &path)?;
         }
-        let hud_scene = hud_overlay_scene(&overlay.hud, self.config.width, self.config.height);
-        if !hud_scene.is_empty() {
-            let mut hud_renderer = GpuRenderer::new(self.gpu.clone(), self.config.format, &hud_scene)?;
-            let hud_depth = DepthTarget::new(&self.gpu, self.config.width, self.config.height)?;
-            hud_renderer.render_to_view_matrix_over(&view, &hud_depth.view, Mat4::IDENTITY)?;
+        let hud_size = (self.config.width, self.config.height);
+        let hud_changed = self.hud_cache.as_ref().is_none_or(|(cached, width, height)| {
+            cached != &overlay.hud || (*width, *height) != hud_size
+        });
+        if hud_changed {
+            let hud_scene = hud_overlay_scene(&overlay.hud, hud_size.0, hud_size.1);
+            if let Some(renderer) = &mut self.hud_renderer {
+                renderer.update_scene(&hud_scene)?;
+            } else if !hud_scene.is_empty() {
+                self.hud_renderer = Some(GpuRenderer::new(
+                    self.gpu.clone(),
+                    self.config.format,
+                    &hud_scene,
+                )?);
+            }
+            self.hud_cache = Some((overlay.hud.clone(), hud_size.0, hud_size.1));
+        }
+        if let Some(renderer) = &mut self.hud_renderer {
+            renderer.render_to_view_matrix_over(&view, &depth.view, Mat4::IDENTITY)?;
         }
         if let Some(path) = composite_capture {
             self.capture_surface_texture(&texture.texture, &path)?;

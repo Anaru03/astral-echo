@@ -11,8 +11,8 @@ use render_core::{
     VisualAssets,
 };
 use render_cpu::{
-    render_snapshot_scene_with_stats, render_snapshot_scene_with_shader, write_png, Framebuffer,
-    FragmentShader, RasterMode,
+    render_snapshot_scene_with_stats_and_scratch, render_snapshot_scene_with_shader, write_png,
+    CpuPipelineScratch, Framebuffer, FragmentShader, RasterMode,
 };
 use render_gpu::{GpuError, GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
@@ -183,9 +183,11 @@ struct Host {
 
 struct HostState {
     window: Arc<Window>,
+    window_title: String,
     surface: Option<Surface<Arc<Window>, Arc<Window>>>,
     _context: Context<Arc<Window>>,
     framebuffer: Framebuffer,
+    cpu_scratch: CpuPipelineScratch,
     snapshot: Rc<SnapshotScene>,
     backend: HotSwapState<()>,
     buffer: SnapshotBuffer,
@@ -293,9 +295,11 @@ impl ApplicationHandler for Host {
         );
         self.state = Some(HostState {
             window,
+            window_title: String::new(),
             surface: Some(surface),
             _context: context,
             framebuffer,
+            cpu_scratch: CpuPipelineScratch::default(),
             snapshot,
             backend,
             gpu: None,
@@ -359,7 +363,7 @@ impl ApplicationHandler for Host {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if event.state == ElementState::Pressed {
                         match code {
-                            KeyCode::KeyG => self.toggle(),
+                            KeyCode::KeyG if self.config.raster_controls => self.toggle(),
                             KeyCode::F9 | KeyCode::KeyM => self.capture_debug("marked"),
                             KeyCode::F10 => self.capture_images(),
                             KeyCode::KeyS if self.config.raster_controls => {
@@ -1043,7 +1047,10 @@ impl Host {
                     state.backend.backend(),
                     state.snapshot.snapshot(),
                 );
-                state.window.set_title(&title);
+                if state.window_title != title {
+                    state.window.set_title(&title);
+                    state.window_title = title;
+                }
                 state.backend.update_snapshot(BackendSnapshot {
                     value: (),
                     width: size.width,
@@ -1142,10 +1149,11 @@ impl Host {
             }
             return;
         }
-        if let Ok((stats, _)) = render_snapshot_scene_with_stats(
+        if let Ok((stats, _)) = render_snapshot_scene_with_stats_and_scratch(
             &mut state.framebuffer,
             &state.snapshot,
             self.config.raster_mode,
+            &mut state.cpu_scratch,
         ) {
             if trace_frame {
                 println!(

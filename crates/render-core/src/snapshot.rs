@@ -102,6 +102,7 @@ pub enum SnapshotId {
     Derelict(u32),
     Hazard(u32),
     VisualEvent(u64),
+    RemotePlayer(u64),
     ModelPart {
         parent: u64,
         part: u32,
@@ -252,6 +253,7 @@ pub struct HudState {
     pub guidance: Option<String>,
     pub controls: Option<String>,
     pub instructions: Option<String>,
+    pub quick_actions: Vec<String>,
     pub feedback: Option<String>,
     pub inventory_open: bool,
     pub inventory_items: Vec<String>,

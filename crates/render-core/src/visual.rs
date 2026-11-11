@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -51,11 +51,11 @@ pub struct PreparedDraw {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PreparedScene {
-    textures: MaterialTextureRegistry,
+    textures: Arc<MaterialTextureRegistry>,
     draws: Vec<PreparedDraw>,
     shadow_draws: Option<Vec<PreparedDraw>>,
     pub lighting: crate::LightingEnvironment,
-    materials: BTreeMap<MaterialHandle, crate::MaterialInfo>,
+    materials: Arc<BTreeMap<MaterialHandle, crate::MaterialInfo>>,
     pub considered: usize,
     pub visible: usize,
     pub discarded: usize,
@@ -86,10 +86,10 @@ impl PreparedScene {
             discarded: 0,
             triangles: draws.iter().map(|draw| draw.mesh.indices.len() / 3).sum(),
             draws,
-            textures: MaterialTextureRegistry::default(),
+            textures: Arc::new(MaterialTextureRegistry::default()),
             shadow_draws: None,
             lighting: crate::LightingEnvironment::default(),
-            materials: BTreeMap::new(),
+            materials: Arc::new(BTreeMap::new()),
         }
     }
 
@@ -108,7 +108,7 @@ impl PreparedScene {
     }
 
     pub fn set_material(&mut self, handle: MaterialHandle, material: crate::MaterialInfo) {
-        self.materials.insert(handle, material.sanitized());
+        Arc::make_mut(&mut self.materials).insert(handle, material.sanitized());
     }
 
     pub fn draws(&self) -> impl DoubleEndedIterator<Item = &PreparedDraw> {
@@ -181,10 +181,11 @@ impl VisualAssets {
         raster_mesh: RasterMesh,
     ) {
         let raster_mesh = Arc::new(raster_mesh);
+        let low_mesh = low_lod_mesh(&raster_mesh);
         self.bounds
             .insert((mesh, material), mesh_bounds(&raster_mesh));
-        self.meshes.insert((mesh, material), raster_mesh.clone());
-        self.low.insert((mesh, material), raster_mesh);
+        self.meshes.insert((mesh, material), raster_mesh);
+        self.low.insert((mesh, material), low_mesh);
     }
 
     pub fn register_shared_mesh(
@@ -201,10 +202,56 @@ impl VisualAssets {
             return Err(VisualError::MeshAlreadyRegistered(mesh, material));
         }
         let bounds = mesh_bounds(&raster_mesh);
+        let low_mesh = low_lod_mesh(&raster_mesh);
         self.bounds.insert(key, bounds);
         self.meshes.insert(key, Arc::clone(&raster_mesh));
-        self.low.insert(key, raster_mesh);
+        self.low.insert(key, low_mesh);
         Ok(())
+    }
+}
+
+const MAX_LOW_LOD_TRIANGLES: usize = 2_048;
+
+fn low_lod_mesh(mesh: &Arc<RasterMesh>) -> Arc<RasterMesh> {
+    if mesh.indices.len() / 3 <= MAX_LOW_LOD_TRIANGLES {
+        Arc::clone(mesh)
+    } else {
+        Arc::new(simplify_mesh_for_lod(mesh))
+    }
+}
+
+fn simplify_mesh_for_lod(mesh: &RasterMesh) -> RasterMesh {
+    let triangle_count = mesh.indices.len() / 3;
+    if triangle_count <= MAX_LOW_LOD_TRIANGLES {
+        return mesh.clone();
+    }
+
+    let step = (triangle_count + MAX_LOW_LOD_TRIANGLES - 1) / MAX_LOW_LOD_TRIANGLES;
+    let mut vertices = Vec::with_capacity(MAX_LOW_LOD_TRIANGLES * 3);
+    let mut indices = Vec::with_capacity(MAX_LOW_LOD_TRIANGLES * 3);
+    let mut remap = BTreeMap::<u32, u32>::new();
+
+    for triangle in mesh.indices.chunks_exact(3).step_by(step) {
+        for &source_index in triangle {
+            let destination_index = if let Some(&index) = remap.get(&source_index) {
+                index
+            } else {
+                let index = vertices.len() as u32;
+                let Some(&vertex) = mesh.vertices.get(source_index as usize) else {
+                    return mesh.clone();
+                };
+                vertices.push(vertex);
+                remap.insert(source_index, index);
+                index
+            };
+            indices.push(destination_index);
+        }
+    }
+
+    if indices.len() < 3 {
+        mesh.clone()
+    } else {
+        RasterMesh::new(vertices, indices)
     }
 }
 
@@ -298,7 +345,7 @@ impl Default for VisualAssets {
             ),
             (
                 (MeshHandle::STARS, Self::STARS),
-                RasterMesh::sphere(Vec3::ZERO, 110.0, Vec4::new(0.72, 0.82, 1.0, 1.0)),
+                RasterMesh::star_field(Vec4::new(0.72, 0.82, 1.0, 1.0), 70.0, 384, 0x51A7_2024),
             ),
         ])
         .into_iter()
@@ -535,6 +582,39 @@ mod tests {
         assets.register_mesh(mesh, material, (*shared_triangle()).clone());
         assert!(assets.mesh(mesh, material).is_ok());
     }
+
+    #[test]
+    fn large_meshes_get_a_real_low_lod_copy() {
+        let mut vertices = Vec::with_capacity(6_000);
+        let mut indices = Vec::with_capacity(6_000);
+        for triangle in 0..2_000 {
+            let base = vertices.len() as u32;
+            vertices.extend([
+                RasterVertex::new(Vec3::new(triangle as f32, 0.0, 0.0), Vec4::ONE),
+                RasterVertex::new(Vec3::new(triangle as f32, 1.0, 0.0), Vec4::ONE),
+                RasterVertex::new(Vec3::new(triangle as f32, 0.0, 1.0), Vec4::ONE),
+            ]);
+            indices.extend([base, base + 1, base + 2]);
+        }
+        let mesh = RasterMesh::new(vertices, indices);
+        let low = simplify_mesh_for_lod(&mesh);
+        assert_eq!(low.indices.len(), mesh.indices.len());
+
+        let mut vertices = Vec::with_capacity(12_000);
+        let mut indices = Vec::with_capacity(12_000);
+        for triangle in 0..4_000 {
+            let base = vertices.len() as u32;
+            vertices.extend([
+                RasterVertex::new(Vec3::new(triangle as f32, 0.0, 0.0), Vec4::ONE),
+                RasterVertex::new(Vec3::new(triangle as f32, 1.0, 0.0), Vec4::ONE),
+                RasterVertex::new(Vec3::new(triangle as f32, 0.0, 1.0), Vec4::ONE),
+            ]);
+            indices.extend([base, base + 1, base + 2]);
+        }
+        let reduced = simplify_mesh_for_lod(&RasterMesh::new(vertices, indices));
+        assert!(reduced.indices.len() < 12_000);
+        assert_eq!(reduced.indices.len() % 3, 0);
+    }
 }
 
 fn subdivide(mesh: &RasterMesh) -> RasterMesh {
@@ -567,12 +647,14 @@ pub struct SceneUpdate {
 }
 
 pub struct SnapshotScene {
-    textures: MaterialTextureRegistry,
+    textures: Arc<MaterialTextureRegistry>,
     assets: VisualAssets,
     snapshot: RenderSnapshot,
     lighting_mode: crate::LightingMode,
     shadow_config: crate::ShadowConfig,
-    materials: BTreeMap<MaterialHandle, crate::MaterialInfo>,
+    materials: Arc<BTreeMap<MaterialHandle, crate::MaterialInfo>>,
+    update_seen: HashSet<SnapshotId>,
+    update_old: HashMap<SnapshotId, usize>,
     lod_history: RefCell<BTreeMap<SnapshotId, (MeshHandle, MaterialHandle, LodLevel)>>,
 }
 
@@ -580,12 +662,14 @@ impl Default for SnapshotScene {
     fn default() -> Self {
         let camera = Camera::demo();
         Self {
-            textures: MaterialTextureRegistry::default(),
+            textures: Arc::new(MaterialTextureRegistry::default()),
             assets: VisualAssets::default(),
             lod_history: RefCell::default(),
             lighting_mode: crate::LightingMode::Unlit,
             shadow_config: crate::ShadowConfig::default(),
-            materials: BTreeMap::new(),
+            materials: Arc::new(BTreeMap::new()),
+            update_seen: HashSet::new(),
+            update_old: HashMap::new(),
             snapshot: RenderSnapshot::new(
                 engine::Tick(0),
                 camera.position(),
@@ -602,7 +686,7 @@ impl SnapshotScene {
         material: MaterialHandle,
         path: impl Into<std::path::PathBuf>,
     ) {
-        self.textures.register(material, path);
+        Arc::make_mut(&mut self.textures).register(material, path);
     }
 
     pub fn register_mesh(
@@ -633,7 +717,7 @@ impl SnapshotScene {
     }
 
     pub fn set_material(&mut self, handle: MaterialHandle, material: crate::MaterialInfo) {
-        self.materials.insert(handle, material.sanitized());
+        Arc::make_mut(&mut self.materials).insert(handle, material.sanitized());
     }
 
     pub fn procedural_lod_fixture() -> Self {
@@ -655,9 +739,13 @@ impl SnapshotScene {
         {
             return Err(VisualError::NonFinite);
         }
-        let mut seen = BTreeSet::new();
+        self.update_seen.clear();
+        self.update_old.clear();
+        for (index, node) in self.snapshot.nodes.iter().enumerate() {
+            self.update_old.insert(node.entity, index);
+        }
         for node in &snapshot.nodes {
-            if !seen.insert(node.entity) {
+            if !self.update_seen.insert(node.entity) {
                 return Err(VisualError::DuplicateIdentity);
             }
             if !node.transform.matrix().is_finite() {
@@ -665,23 +753,30 @@ impl SnapshotScene {
             }
             self.assets.mesh(node.mesh, node.material)?;
         }
-        let old: BTreeMap<_, _> = self.snapshot.nodes.iter().map(|n| (n.entity, n)).collect();
         let update = SceneUpdate {
             added: snapshot
                 .nodes
                 .iter()
-                .filter(|n| !old.contains_key(&n.entity))
+                .filter(|node| !self.update_old.contains_key(&node.entity))
                 .count(),
-            removed: old.keys().filter(|id| !seen.contains(id)).count(),
+            removed: self
+                .update_old
+                .keys()
+                .filter(|id| !self.update_seen.contains(id))
+                .count(),
             changed: snapshot
                 .nodes
                 .iter()
-                .filter(|n| old.get(&n.entity).is_some_and(|previous| **previous != **n))
+                .filter(|node| {
+                    self.update_old
+                        .get(&node.entity)
+                        .is_some_and(|index| self.snapshot.nodes[*index] != **node)
+                })
                 .count(),
         };
         self.lod_history
             .borrow_mut()
-            .retain(|id, _| seen.contains(id));
+            .retain(|id, _| self.update_seen.contains(id));
         self.snapshot.clone_from(snapshot);
         self.snapshot.nodes.sort_by_key(|n| n.entity);
         Ok(update)

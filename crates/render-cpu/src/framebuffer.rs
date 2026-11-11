@@ -127,9 +127,7 @@ impl Framebuffer {
     }
 
     pub fn clear_depth(&mut self) {
-        for d in self.depth.iter_mut() {
-            *d = 1.0f32;
-        }
+        self.depth.fill(1.0f32);
     }
 
     pub fn clear(&mut self, color: Color) {

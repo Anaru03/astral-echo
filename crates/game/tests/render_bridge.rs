@@ -9,7 +9,7 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     let world = support::fixture_world();
     let before = format!("{world:?}");
     let snapshot = snapshot_from_world(&world, Default::default());
-    assert_eq!(snapshot.nodes.len(), 15);
+    assert_eq!(snapshot.nodes.len(), 19);
     assert_eq!(
         snapshot
             .nodes
@@ -72,7 +72,7 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     assert!(snapshot
         .nodes
         .iter()
-        .any(|n| n.entity == SnapshotId::Entity(collectible.entity) && n.mesh == COLLECTIBLE_MESH));
+        .any(|n| n.entity == SnapshotId::Entity(collectible.entity) && n.mesh == ASTEROID_FIELD_MESH));
     assert_eq!(before, format!("{world:?}"));
     assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
 }
@@ -309,7 +309,9 @@ fn discovered_derelicts_use_stable_ids_positions_and_registered_assets() {
     let derelicts: Vec<_> = snapshot
         .nodes
         .iter()
-        .filter(|node| node.mesh == DERELICT_MESH)
+        .filter(|node| {
+            node.entity == SnapshotId::Derelict(41) || node.entity == SnapshotId::Derelict(42)
+        })
         .collect();
     assert_eq!(derelicts.len(), 2);
     assert!(derelicts.iter().any(|node| {
@@ -387,7 +389,7 @@ fn active_debris_fields_use_stable_ids_and_registered_assets() {
     let fields: Vec<_> = snapshot
         .nodes
         .iter()
-        .filter(|node| node.mesh == ASTEROID_FIELD_MESH)
+        .filter(|node| node.entity == SnapshotId::Hazard(77))
         .collect();
     assert_eq!(fields.len(), 1);
     assert_eq!(fields[0].entity, SnapshotId::Hazard(77));
@@ -462,14 +464,14 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
     scene
         .update(&snapshot_from_world(&world, Default::default()))
         .unwrap();
-    assert_eq!(scene.visible_nodes().count(), 12);
+    assert_eq!(scene.visible_nodes().count(), 16);
     assert!(scene.snapshot().nodes.iter().filter(|n| matches!(n.entity,SnapshotId::Entity(id) if id==enemy || id==collectible || id==new_player)).all(|n| !n.visible));
     let empty = gameplay::GameplayWorld::new();
     assert_eq!(
         scene
             .update(&snapshot_from_world(&empty, Default::default()))
             .unwrap()
-            .removed,
+        .removed,
         11
     );
     // Un mundo sin entidades de gameplay puede conservar
@@ -676,6 +678,7 @@ fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
             SnapshotId::Destination(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Derelict(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Hazard(_) => panic!("surface object must have a stable entity id"),
+            SnapshotId::RemotePlayer(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::VisualEvent(_)
             | SnapshotId::ModelPart { .. } => {
                 panic!("surface object must have a stable entity id")
@@ -876,6 +879,31 @@ fn flight_camera_tracks_visual_ship_and_keeps_projection_valid() {
     assert!(camera.projection_matrix().is_finite());
     assert!(camera.view_projection_matrix().is_finite());
     assert_eq!(visual_ship_position(&world), world.ship_position().map(render_core::from_engine));
+}
+
+#[test]
+fn pilot_camera_is_behind_the_echo7_propulsors_and_aims_at_its_rear_hull() {
+    let world = support::fixture_world();
+    let ship = visual_ship_position(&world).expect("fixture ship should be visible");
+    let camera = pilot_camera(&world, 16.0 / 9.0, PILOT_CAMERA_DEFAULT_DISTANCE)
+        .expect("pilot camera should be valid");
+
+    // The fixture starts with yaw/pitch = 0. Echo-7's visual nose points -Z
+    // toward the solar system, so its propulsion/camera side is +Z.
+    assert!(camera.position().z > ship.z + 6.8);
+    assert!(camera.target().z > ship.z);
+    assert!(camera.position().z > camera.target().z);
+    assert!(camera.view_projection_matrix().is_finite());
+
+    let snapshot = snapshot_from_world(&world, Default::default());
+    let ship_id = world.navigation().ship_id().expect("fixture ship should exist");
+    let ship_node = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Entity(ship_id))
+        .expect("fixture ship should be rendered");
+    let nose_direction = ship_node.transform.rotation * Vec3::NEG_X;
+    assert!(nose_direction.dot(Vec3::NEG_Z) > 0.99);
 }
 
 #[test]

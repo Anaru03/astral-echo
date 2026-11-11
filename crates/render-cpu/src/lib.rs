@@ -16,6 +16,7 @@ pub use snapshot::{
     render_snapshot_scene_with_shader, render_snapshot_scene_with_shader_at_time,
     render_snapshot_scene_with_shader_at_time_with_stats,
     render_snapshot_scene_with_shader_with_stats, render_snapshot_scene_with_stats,
+    render_snapshot_scene_with_stats_and_scratch,
 };
 
 pub use clip::{
@@ -36,7 +37,7 @@ pub use pipeline::tiles::{
     TileStats,
 };
 pub use pipeline::vertex::VertexStage;
-pub use pipeline::CpuPipeline;
+pub use pipeline::{CpuPipeline, CpuPipelineScratch};
 pub use rasterizer::{RasterConfig, RasterStats, Rasterizer, Winding};
 pub use scene::{
     demo_camera, demo_scene, grid_mesh, terrain_height, GRID_SUBDIVISIONS, TERRAIN_EXTENT,
