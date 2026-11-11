@@ -357,6 +357,11 @@ struct VisualBridge {
     last_audio_impacted: bool,
     last_landed: bool,
     last_game_over: bool,
+    last_ship_integrity: Option<u32>,
+    last_ship_critical: bool,
+    autopilot_was_in_progress: bool,
+    thrust_sound_active: bool,
+    turn_sound_active: bool,
     player_defeated: bool,
     started: bool,
     interior_mode: bool,
@@ -942,6 +947,11 @@ impl VisualBridge {
             last_audio_impacted: false,
             last_landed: false,
             last_game_over: false,
+            last_ship_integrity: None,
+            last_ship_critical: false,
+            autopilot_was_in_progress: false,
+            thrust_sound_active: false,
+            turn_sound_active: false,
             player_defeated: false,
             started: true,
             interior_mode,
@@ -1420,12 +1430,16 @@ impl VisualBridge {
             }
         }
         if matches!(key, KeyCode::ShiftLeft | KeyCode::ShiftRight) && self.pilot_mode {
-            self.boost_pressed = state == ElementState::Pressed;
-            self.issue([GameplayCommand::SetShipBoost {
+            let active = state == ElementState::Pressed;
+            let changed = active != self.boost_pressed;
+            self.boost_pressed = active;
+            if self.issue([GameplayCommand::SetShipBoost {
                 player,
                 pilot_station,
-                active: self.boost_pressed,
-            }]);
+                active,
+            }]) && changed && active {
+                self.audio.request_effect(SoundEffect::ShipBoost);
+            }
             return;
         }
         if self.pilot_mode && self.observation_is_active() && state == ElementState::Pressed {
@@ -1450,16 +1464,23 @@ impl VisualBridge {
                     active,
                 }]) {
                     self.shield_active = active;
+                    self.audio.request_effect(if active {
+                        SoundEffect::ShieldOn
+                    } else {
+                        SoundEffect::ShieldOff
+                    });
                 }
             }
             return;
         }
         if key == KeyCode::KeyX && self.pilot_mode {
             if state == ElementState::Pressed {
-                self.issue([GameplayCommand::BrakeShip {
+                if self.issue([GameplayCommand::BrakeShip {
                     player,
                     pilot_station,
-                }]);
+                }]) {
+                    self.audio.request_effect(SoundEffect::ShipBrake);
+                }
             }
             return;
         }
@@ -2933,6 +2954,7 @@ impl VisualBridge {
     }
 
     fn accelerate_ship(&mut self, player: EntityId, pilot_station: EntityId, input: GameplayVec3) {
+        self.update_thrust_sound(input);
         let mut aggregate = FeedbackAggregate::default();
         self.issue_into([
             GameplayCommand::AccelerateShip {
@@ -3015,6 +3037,9 @@ impl VisualBridge {
             if let Some(client) = &self.lan_client {
                 client.send(ClientMessage::SetPilotControl { active: false });
             }
+            if self.shield_active {
+                self.audio.request_effect(SoundEffect::ShieldOff);
+            }
             self.issue([GameplayCommand::SetShipShieldActive {
                 player: self.player,
                 ship: self.ship,
@@ -3061,6 +3086,7 @@ impl VisualBridge {
 
     fn update_pilot_motion(&mut self) {
         if !self.pilot_mode || self.player_defeated || !self.has_network_pilot_control() {
+            self.turn_sound_active = false;
             return;
         }
         // A/D are the primary steering controls. Arrow keys remain an
@@ -3070,6 +3096,11 @@ impl VisualBridge {
             - self.look_right as i8)
             .clamp(-1, 1);
         let pitch = self.look_down as i8 - self.look_up as i8;
+        let turning = yaw != 0 || pitch != 0;
+        if turning && !self.turn_sound_active {
+            self.audio.request_effect(SoundEffect::ShipTurn);
+        }
+        self.turn_sound_active = turning;
         if yaw != 0 || pitch != 0 {
             self.issue([GameplayCommand::RotateShip {
                 player: self.player,
@@ -3079,10 +3110,12 @@ impl VisualBridge {
                 delta: Duration(16),
             }]);
         }
+        let input = self.current_flight_input();
+        self.update_thrust_sound(input);
         self.issue([GameplayCommand::AccelerateShip {
             player: self.player,
             pilot_station: self.pilot_station,
-            input: self.current_flight_input(),
+            input,
         }]);
         if self.fire_pressed {
             self.issue([GameplayCommand::AttackEnemy {
@@ -3143,6 +3176,14 @@ impl VisualBridge {
         }
     }
 
+    fn update_thrust_sound(&mut self, input: GameplayVec3) {
+        let active = input.x.abs() + input.y.abs() + input.z.abs() > 0.01;
+        if active && !self.thrust_sound_active {
+            self.audio.request_effect(SoundEffect::ShipPropulsion);
+        }
+        self.thrust_sound_active = active;
+    }
+
     fn mission_one_completed(&self) -> bool {
         self.session
             .mission_progress(crate::el_despertar::EL_DESPERTAR)
@@ -3176,10 +3217,12 @@ impl VisualBridge {
         if !self.ship_flight_controls_enabled() {
             return;
         }
+        let flight_input = self.current_flight_input();
+        self.update_thrust_sound(flight_input);
         self.issue([GameplayCommand::AccelerateShip {
             player: self.player,
             pilot_station: self.pilot_station,
-            input: self.current_flight_input(),
+            input: flight_input,
         }]);
     }
 
@@ -3562,8 +3605,7 @@ impl VisualBridge {
     }
 
     fn poll_haptics(&mut self) {
-        let events: Vec<_> = self.session.world().visual_events().copied().collect();
-        for event in events {
+        for event in self.session.world().visual_events().copied() {
             if event.id <= self.haptic_event_cursor {
                 continue;
             }
@@ -3593,8 +3635,7 @@ impl VisualBridge {
     }
 
     fn poll_audio_events(&mut self) {
-        let events: Vec<_> = self.session.world().visual_events().copied().collect();
-        for event in events {
+        for event in self.session.world().visual_events().copied() {
             let effect = match event.kind {
                 gameplay::GameplayVisualEventKind::Attack
                     if event.source == Some(self.player) => Some(SoundEffect::PlayerAttack),
@@ -3622,6 +3663,36 @@ impl VisualBridge {
             self.audio.request_effect(SoundEffect::Landing);
         }
         self.last_landed = landed;
+
+        let autopilot_state = self.session.world().autopilot_state();
+        let autopilot_in_progress = matches!(autopilot_state, gameplay::AutopilotState::InTransit { .. });
+        if autopilot_in_progress && !self.autopilot_was_in_progress {
+            self.audio.request_effect(SoundEffect::AutopilotEngage);
+        } else if self.autopilot_was_in_progress
+            && matches!(autopilot_state, gameplay::AutopilotState::Completed { .. })
+        {
+            self.audio.request_effect(SoundEffect::AutopilotArrival);
+        }
+        self.autopilot_was_in_progress = autopilot_in_progress;
+
+        if let Some(integrity) = self.session.world().ship_integrity(self.ship) {
+            let current = integrity.current();
+            if !impacted
+                && self.last_ship_integrity.is_some_and(|previous| current < previous)
+            {
+                self.audio.request_effect(if self.session.world().ship_shield_active(self.ship) {
+                    SoundEffect::ShieldHit
+                } else {
+                    SoundEffect::PlayerImpacted
+                });
+            }
+            let critical = integrity.is_critical();
+            if critical && !self.last_ship_critical {
+                self.audio.request_effect(SoundEffect::WarningAlert);
+            }
+            self.last_ship_critical = critical;
+            self.last_ship_integrity = Some(current);
+        }
 
         let game_over = self
             .session
@@ -3785,6 +3856,7 @@ impl VisualBridge {
         let status = results.first().map(|result| result.status);
         match status {
             Some(gameplay::CommandStatus::Success { .. }) => {
+                self.audio.request_effect(SoundEffect::DestinationSelect);
                 self.navigation_selector_open = false;
                 self.free_navigation_candidate = None;
                 let evaluation = self.session.update([GameplayCommand::EvaluateFreeNavigation {
@@ -4138,6 +4210,7 @@ impl VisualBridge {
             return;
         }
         self.takeoff_cinematic_started_at = Some(self.session.world().time().elapsed.0);
+        self.audio.request_effect(SoundEffect::Takeoff);
         self.feedback = "DESPEGUE INICIADO — CINEMATICA EN CURSO".to_owned();
     }
 
