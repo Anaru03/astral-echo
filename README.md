@@ -163,16 +163,24 @@ Coloca aquí las canciones en formato MP3 (`.mp3`). El juego las reproduce en or
 
 ## Efectos de sonido adicionales
 
-| Archivo | Uso sugerido |
+| Archivo | Acción en el juego |
 |---|---|
-| `destination_select.wav` | Confirmar un destino |
-| `autopilot_engage.wav` | Iniciar el piloto automático |
-| `autopilot_arrival.wav` | Completar una ruta automática |
-| `ship_boost.wav` | Activar el impulso |
-| `ship_brake.wav` | Frenar la nave |
-| `shield_on.wav` | Activar el escudo |
-| `shield_off.wav` | Desactivar el escudo |
-| `shield_hit.wav` | Impacto absorbido por el escudo |
-| `warning_alert.wav` | Aviso urgente |
+| `attack.wav` | Disparo |
+| `autopilot_arrival.wav` | Llegada del piloto automático |
+| `autopilot_engage.wav` | Inicio del piloto automático |
+| `collect.wav` | Recoger un objeto |
+| `destination_select.wav` | Confirmar destino |
+| `enemy_defeated.wav` | Enemigo derrotado |
+| `game_over.wav` | Fin de partida |
+| `impact.wav` | Daño al casco o impacto planetario |
+| `landing.wav` | Aterrizaje |
+| `scan.wav` | Escaneo |
+| `shield_hit.wav` | Golpe absorbido por el escudo |
+| `shield_off.wav` | Desactivar escudo |
+| `shield_on.wav` | Activar escudo |
+| `ship_boost.wav` | Boost |
+| `ship_brake.wav` | Frenado |
+| `ship_propulsion.wav` | Inicio del empuje |
 | `takeoff.wav` | Despegue |
-| `turn.wav` | Giro breve de la nave |
+| `turn.wav` | Giro |
+| `warning_alert.wav` | Daño crítico |
