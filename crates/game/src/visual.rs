@@ -2498,6 +2498,10 @@ impl VisualBridge {
         if (!self.interior_mode && !self.surface_mode) || self.player_defeated {
             return;
         }
+        if self.surface_planet == Some(TESSARA_DESTINATION) {
+            self.update_clock_surface_motion();
+            return;
+        }
         if self.interior_mode {
             self.sync_ship_interior();
         }
@@ -2644,6 +2648,117 @@ impl VisualBridge {
                 );
             }
         }
+    }
+
+    fn update_clock_surface_motion(&mut self) {
+        let Some(player) = self.session.world().player(self.player).copied() else {
+            return;
+        };
+        let now = Instant::now();
+        let delta_ms = now
+            .saturating_duration_since(self.last_interior_update)
+            .as_millis()
+            .clamp(1, 50) as u64;
+        self.last_interior_update = now;
+        let seconds = delta_ms as f32 / 1_000.0;
+        let keyboard = self.flight_keys.input();
+        let local = GameplayVec3 {
+            x: (keyboard.x + self.gamepad_flight.x).clamp(-1.0, 1.0),
+            y: 0.0,
+            z: (keyboard.z + self.gamepad_flight.z).clamp(-1.0, 1.0),
+        };
+        let has_surface_input = local.x.abs() > 0.001 || local.z.abs() > 0.001;
+        let yaw = player.orientation.yaw_degrees.to_radians();
+        let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        let direction = GameplayVec3 {
+            x: local.x * cos_yaw - local.z * sin_yaw,
+            y: 0.0,
+            z: local.x * sin_yaw + local.z * cos_yaw,
+        };
+        let look_yaw = self.look_right as i8 - self.look_left as i8;
+        let look_pitch = self.look_down as i8 - self.look_up as i8;
+        if look_yaw != 0 || look_pitch != 0 {
+            self.rotate_player(
+                f32::from(look_yaw) * 6.0 * seconds / 0.016,
+                f32::from(look_pitch) * 4.0 * seconds / 0.016,
+            );
+        }
+
+        let previous = player.position;
+        if has_surface_input && direction != GameplayVec3::ZERO {
+            self.session.update([GameplayCommand::MovePlayer {
+                player: self.player,
+                direction,
+                delta: Duration(delta_ms),
+            }]);
+        }
+
+        let Some(center) = self
+            .session
+            .world()
+            .planet_position_at(TESSARA_DESTINATION, self.session.world().time().elapsed)
+        else {
+            return;
+        };
+        let model = game::render_bridge::clock_planet_transform(
+            render_core::from_engine(center),
+            self.session.world().time().elapsed.0 as f64 / 1_000.0,
+        );
+        let inverse = model.matrix().inverse();
+        let moved = self
+            .session
+            .world()
+            .player(self.player)
+            .map(|value| render_core::from_engine(value.position));
+        let Some(moved) = moved else {
+            return;
+        };
+        if !previous.x.is_finite()
+            || !previous.y.is_finite()
+            || !previous.z.is_finite()
+            || !moved.is_finite()
+        {
+            self.session
+                .world_mut()
+                .initialize_player_position(self.player, previous);
+            return;
+        }
+        let local_position = inverse.transform_point3(moved);
+        if !local_position.is_finite()
+            || local_position.x.abs() > 5.55
+            || local_position.z.abs() > 5.55
+        {
+            self.session
+                .world_mut()
+                .initialize_player_position(self.player, previous);
+            return;
+        }
+        let grounded = crate::clock_surface::shared().and_then(|surface| {
+            surface.sample_top(local_position.x, local_position.z)
+        });
+        let Some(surface_y) = grounded else {
+            // Gaps between clock components are not walkable. Restore the
+            // previous position instead of letting the player float in the
+            // empty circular space around the mechanism.
+            self.session
+                .world_mut()
+                .initialize_player_position(self.player, previous);
+            return;
+        };
+        let grounded_local = render_core::Vec3::new(
+            local_position.x,
+            surface_y + game::render_bridge::PLAYER_SURFACE_CLEARANCE / model.scale.y,
+            local_position.z,
+        );
+        let grounded_world = model.matrix().transform_point3(grounded_local);
+        self.session.world_mut().initialize_player_position(
+            self.player,
+            GameplayVec3 {
+                x: grounded_world.x,
+                y: grounded_world.y,
+                z: grounded_world.z,
+            },
+        );
     }
 
     fn contextual_prompt(&self) -> Option<String> {
@@ -4446,6 +4561,7 @@ impl VisualBridge {
             self.landing_cinematic_wall_started_at = Some(Instant::now());
             self.pilot_mode = false;
             self.flight_keys = FlightKeys::default();
+            self.gamepad_flight = GameplayVec3::ZERO;
             self.feedback = format!(
                 "ATERRIZAJE INICIADO EN {} — CINEMATICA EN CURSO",
                 Self::navigation_destination_label(planet)
@@ -4479,6 +4595,8 @@ impl VisualBridge {
                 self.surface_planet = Some(planet);
                 self.interior_mode = false;
                 self.legacy_exterior_controls = false;
+                self.flight_keys = FlightKeys::default();
+                self.gamepad_flight = GameplayVec3::ZERO;
                 if let Some(origin) =
                     game::render_bridge::planet_surface_origin(self.session.world(), planet)
                 {

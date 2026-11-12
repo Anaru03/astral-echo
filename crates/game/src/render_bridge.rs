@@ -64,6 +64,9 @@ const TESSARA_PLANET_CENTER: Vec3 = Vec3::new(0.0, -0.95, 0.0);
 const TESSARA_PLANET_MAX_DIMENSION: f32 = 14.0043;
 const TESSARA_PLANET_VISUAL_SCALE: f32 =
     (TESSARA_VISUAL_RADIUS * 2.0) / TESSARA_PLANET_MAX_DIMENSION;
+// Bounds measured directly from clock_planet.obj. The clock is a thin,
+// mechanical disc rather than a spherical planet.
+const TESSARA_MODEL_TOP_Y: f32 = 5.724097;
 pub const TESSARA_MOON_MESH: MeshHandle = MeshHandle::MOON;
 const TESSARA_MOON_CENTER: Vec3 = Vec3::new(-0.001604, 0.011636, -0.0036585);
 const TESSARA_MOON_VISUAL_SCALE: f32 = 1.0;
@@ -1569,14 +1572,14 @@ pub fn planet_surface_origin(
                 .destination(destination)
                 .map(|value| from_engine(value.position))
         })?;
-    Some(
-        center
-            + Vec3::new(
-                0.0,
-                planet_visual_radius(destination) + PLAYER_SURFACE_CLEARANCE,
-                0.0,
-            ),
-    )
+    if destination.value() == TESSARA_DESTINATION_ID {
+        let transform = tessara_planet_transform(center, world.time().elapsed.0 as f64 / 1_000.0);
+        let top = transform
+            .matrix()
+            .transform_point3(Vec3::new(0.0, TESSARA_MODEL_TOP_Y, 0.0));
+        return Some(top + Vec3::Y * PLAYER_SURFACE_CLEARANCE);
+    }
+    Some(center + Vec3::Y * (planet_visual_radius(destination) + PLAYER_SURFACE_CLEARANCE))
 }
 
 pub fn surface_ship_position(
@@ -1591,6 +1594,10 @@ pub fn surface_ship_position(
                 .destination(destination)
                 .map(|value| from_engine(value.position))
         })?;
+    if destination.value() == TESSARA_DESTINATION_ID {
+        return planet_surface_origin(world, destination)
+            .map(|origin| origin + Vec3::new(4.0, 0.0, 4.0));
+    }
     let surface_radius = planet_visual_radius(destination) + PLAYER_SURFACE_CLEARANCE;
     let direction = Vec3::new(4.0, surface_radius, 4.0).normalize_or_zero();
     Some(center + direction * surface_radius)
@@ -1629,7 +1636,11 @@ fn surface_player_transform(
                 .map(|value| from_engine(value.position))
         })
         .unwrap_or(Vec3::ZERO);
-    let up = (position - center).normalize_or_zero();
+    let up = if destination.value() == TESSARA_DESTINATION_ID {
+        Vec3::Y
+    } else {
+        (position - center).normalize_or_zero()
+    };
     let up = if up.length_squared() > 0.0 { up } else { Vec3::Y };
     // Player meshes are authored with +Y as their head direction. Align that
     // axis with the outward radial vector so gravity always points toward the
@@ -1695,7 +1706,11 @@ pub fn surface_camera_for_player(
         })
         .ok_or(CameraError::InvalidAspect)?;
     let player_position = from_engine(player.position);
-    let up = (player_position - center).normalize_or_zero();
+    let up = if destination.value() == TESSARA_DESTINATION_ID {
+        Vec3::Y
+    } else {
+        (player_position - center).normalize_or_zero()
+    };
     let up = if up.length_squared() > 0.0 {
         up
     } else {
@@ -1839,6 +1854,10 @@ fn tessara_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
     );
     transform.translation -= transform.rotation * (transform.scale * TESSARA_PLANET_CENTER);
     transform
+}
+
+pub fn clock_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
+    tessara_planet_transform(position, elapsed_seconds)
 }
 
 fn tessara_moon_transform(tessara_position: Vec3, elapsed_seconds: f64) -> Transform {
