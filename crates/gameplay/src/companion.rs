@@ -318,13 +318,17 @@ pub enum MaintenancePriority {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MaintenanceRecommendation {
-    AvoidShipActivity { ship: EntityId },
+    AvoidShipActivity {
+        ship: EntityId,
+    },
     ManageFuel {
         ship: EntityId,
         required: u32,
         available: u32,
     },
-    RepairShip { ship: EntityId },
+    RepairShip {
+        ship: EntityId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -436,8 +440,14 @@ pub enum PreparationReason {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PreparationRequirement {
-    Fuel { required: u32, available: u32 },
-    InventoryCapacity { required: u32, available: u32 },
+    Fuel {
+        required: u32,
+        available: u32,
+    },
+    InventoryCapacity {
+        required: u32,
+        available: u32,
+    },
     Ammunition {
         item: Option<crate::types::ItemId>,
         required: u32,
@@ -724,10 +734,7 @@ pub struct RecommendationExplanationComparison {
 }
 
 impl RecommendationExplanation {
-    pub fn compare(
-        previous: &Self,
-        current: &Self,
-    ) -> RecommendationExplanationComparison {
+    pub fn compare(previous: &Self, current: &Self) -> RecommendationExplanationComparison {
         let reason = if !previous.missing_requirements.is_empty()
             && current.missing_requirements.is_empty()
         {
@@ -736,9 +743,7 @@ impl RecommendationExplanation {
             && current.reason != ExplanationReason::ActiveThreat
         {
             ExplanationChangeReason::ThreatResolved
-        } else if previous.objective.is_some()
-            && previous.objective != current.objective
-        {
+        } else if previous.objective.is_some() && previous.objective != current.objective {
             ExplanationChangeReason::ObjectiveCompleted
         } else if previous.action != current.action || previous.status != current.status {
             ExplanationChangeReason::RecommendationChanged
@@ -749,7 +754,8 @@ impl RecommendationExplanation {
         if reason == ExplanationChangeReason::PreparationResolved {
             evidence.push(ExplanationEvidence {
                 kind: ExplanationEvidenceKind::StateChange,
-                description: "Los requisitos que bloqueaban la preparación ya no faltan".to_string(),
+                description: "Los requisitos que bloqueaban la preparación ya no faltan"
+                    .to_string(),
                 objective: current.objective,
                 destination: None,
                 entity: None,
@@ -758,7 +764,8 @@ impl RecommendationExplanation {
         } else if reason == ExplanationChangeReason::ThreatResolved {
             evidence.push(ExplanationEvidence {
                 kind: ExplanationEvidenceKind::StateChange,
-                description: "La amenaza que justificaba la prioridad critica ya no está activa".to_string(),
+                description: "La amenaza que justificaba la prioridad critica ya no está activa"
+                    .to_string(),
                 objective: current.objective,
                 destination: None,
                 entity: previous.blocker.as_ref().and_then(|value| value.entity),
@@ -776,7 +783,9 @@ impl RecommendationExplanation {
         } else if reason == ExplanationChangeReason::NoIdentifiableCause {
             evidence.push(ExplanationEvidence {
                 kind: ExplanationEvidenceKind::StateChange,
-                description: "La causa exacta no puede determinarse con las evaluaciones suministradas".to_string(),
+                description:
+                    "La causa exacta no puede determinarse con las evaluaciones suministradas"
+                        .to_string(),
                 objective: current.objective,
                 destination: None,
                 entity: None,
@@ -942,7 +951,10 @@ pub enum CooperativeNavigationContingencyAction {
     MonitorAutopilot(DestinationId),
     InspectHazard(HazardId),
     AddressEncounter(EncounterId),
-    ManageFuel { required: u32, available: u32 },
+    ManageFuel {
+        required: u32,
+        available: u32,
+    },
     RepairShip(EntityId),
     PrepareEncounter,
     PlayerRequired,

@@ -2,8 +2,8 @@ use engine::EntityId;
 
 use crate::{
     domains::{mission::MissionState, objective::ObjectiveState},
-    knowledge::{KnowledgeState, KnowledgeTarget},
     interaction::InteractionBehavior,
+    knowledge::{KnowledgeState, KnowledgeTarget},
     mission::Mission,
     navigation::DestinationId,
     objective::{Objective, ObjectiveTrigger},
@@ -180,12 +180,15 @@ impl GuidanceSystem {
             }
         }
 
-        let recommended_action = matches!(mission.state(), MissionState::Available | MissionState::Active)
-            .then(|| {
-                (status == GuidanceStatus::Available || status == GuidanceStatus::Active)
-                    .then(|| Self::action_for(world, mission, objective))
-            })
-            .flatten();
+        let recommended_action = matches!(
+            mission.state(),
+            MissionState::Available | MissionState::Active
+        )
+        .then(|| {
+            (status == GuidanceStatus::Available || status == GuidanceStatus::Active)
+                .then(|| Self::action_for(world, mission, objective))
+        })
+        .flatten();
         GuidanceObjective {
             id: objective.id,
             mission: mission.id,
@@ -201,9 +204,12 @@ impl GuidanceSystem {
     }
 
     fn mission_allows_guidance(world: &GameplayWorld, mission: MissionId) -> bool {
-        world
-            .mission(mission)
-            .is_some_and(|mission| matches!(mission.state(), MissionState::Available | MissionState::Active))
+        world.mission(mission).is_some_and(|mission| {
+            matches!(
+                mission.state(),
+                MissionState::Available | MissionState::Active
+            )
+        })
     }
 
     fn trigger_requirement(
@@ -241,15 +247,17 @@ impl GuidanceSystem {
             ObjectiveTrigger::KnowledgeDetected { target }
             | ObjectiveTrigger::KnowledgeIdentified { target }
             | ObjectiveTrigger::KnowledgeDiscovered { target }
-            | ObjectiveTrigger::KnowledgeStudied { target } => GuidanceRequirement::KnowledgeAtLeast {
-                target: (*target)?,
-                state: match trigger {
-                    ObjectiveTrigger::KnowledgeDetected { .. } => KnowledgeState::Detected,
-                    ObjectiveTrigger::KnowledgeIdentified { .. } => KnowledgeState::Identified,
-                    ObjectiveTrigger::KnowledgeDiscovered { .. } => KnowledgeState::Discovered,
-                    _ => KnowledgeState::Studied,
-                },
-            },
+            | ObjectiveTrigger::KnowledgeStudied { target } => {
+                GuidanceRequirement::KnowledgeAtLeast {
+                    target: (*target)?,
+                    state: match trigger {
+                        ObjectiveTrigger::KnowledgeDetected { .. } => KnowledgeState::Detected,
+                        ObjectiveTrigger::KnowledgeIdentified { .. } => KnowledgeState::Identified,
+                        ObjectiveTrigger::KnowledgeDiscovered { .. } => KnowledgeState::Discovered,
+                        _ => KnowledgeState::Studied,
+                    },
+                }
+            }
             ObjectiveTrigger::ShipDamagedByHazard { .. }
             | ObjectiveTrigger::ShipRepaired { .. }
             | ObjectiveTrigger::FuelConsumed { .. }
@@ -300,17 +308,19 @@ impl GuidanceSystem {
                 .find(|interactable| {
                     matches!(interactable.behavior, InteractionBehavior::ElectricalPanel)
                 })
-                .map_or(GuidanceAction::CompleteObjective(objective.id), |interactable| {
-                    GuidanceAction::Interact(interactable.entity_id)
-                }),
+                .map_or(
+                    GuidanceAction::CompleteObjective(objective.id),
+                    |interactable| GuidanceAction::Interact(interactable.entity_id),
+                ),
             ObjectiveTrigger::OxygenSystemRepaired => world
                 .interactables()
                 .find(|interactable| {
                     matches!(interactable.behavior, InteractionBehavior::LifeSupportPanel)
                 })
-                .map_or(GuidanceAction::CompleteObjective(objective.id), |interactable| {
-                    GuidanceAction::Interact(interactable.entity_id)
-                }),
+                .map_or(
+                    GuidanceAction::CompleteObjective(objective.id),
+                    |interactable| GuidanceAction::Interact(interactable.entity_id),
+                ),
             ObjectiveTrigger::DoorRoleOpened { role } => world
                 .interactables()
                 .find_map(|interactable| match interactable.behavior {
@@ -356,15 +366,17 @@ impl GuidanceSystem {
             ObjectiveTrigger::KnowledgeDetected { target }
             | ObjectiveTrigger::KnowledgeIdentified { target }
             | ObjectiveTrigger::KnowledgeDiscovered { target }
-            | ObjectiveTrigger::KnowledgeStudied { target } => {
-                target.map_or(GuidanceAction::StudyKnowledge(KnowledgeTarget::Item(ItemId(1))), GuidanceAction::StudyKnowledge)
-            }
+            | ObjectiveTrigger::KnowledgeStudied { target } => target.map_or(
+                GuidanceAction::StudyKnowledge(KnowledgeTarget::Item(ItemId(1))),
+                GuidanceAction::StudyKnowledge,
+            ),
             ObjectiveTrigger::ShipRepaired { .. } => GuidanceAction::RepairShip,
             ObjectiveTrigger::InteractionSucceeded { target }
             | ObjectiveTrigger::DoorOpened { door: target }
-            | ObjectiveTrigger::StationOccupied { station: target } => {
-                target.map_or(GuidanceAction::CompleteObjective(objective.id), GuidanceAction::Interact)
-            }
+            | ObjectiveTrigger::StationOccupied { station: target } => target.map_or(
+                GuidanceAction::CompleteObjective(objective.id),
+                GuidanceAction::Interact,
+            ),
             ObjectiveTrigger::ConsoleStateChanged { console, .. } => {
                 GuidanceAction::Interact(console)
             }
@@ -433,8 +445,20 @@ mod tests {
             MISSION,
             "Guidance test",
             vec![
-                Objective::new(REQUIRED, MISSION, "Required", true, ObjectiveTrigger::Manual),
-                Objective::new(OPTIONAL, MISSION, "Optional", false, ObjectiveTrigger::Manual),
+                Objective::new(
+                    REQUIRED,
+                    MISSION,
+                    "Required",
+                    true,
+                    ObjectiveTrigger::Manual,
+                ),
+                Objective::new(
+                    OPTIONAL,
+                    MISSION,
+                    "Optional",
+                    false,
+                    ObjectiveTrigger::Manual,
+                ),
             ],
         )
         .expect("mission definition should be valid");
@@ -445,25 +469,50 @@ mod tests {
     }
 
     fn apply(system: &mut MissionSystem, world: &mut GameplayWorld, command: GameplayCommand) {
-        let result = system.process(world, command).expect("mission command should be handled");
+        let result = system
+            .process(world, command)
+            .expect("mission command should be handled");
         assert!(matches!(result.status, CommandStatus::Success { .. }));
     }
 
     fn active_world() -> (GameplayWorld, EntityId, MissionSystem) {
         let (mut world, player) = fixture();
         let mut system = MissionSystem::new();
-        apply(&mut system, &mut world, GameplayCommand::UnlockMission { mission: MISSION });
-        apply(&mut system, &mut world, GameplayCommand::StartMission { mission: MISSION });
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::UnlockMission { mission: MISSION },
+        );
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::StartMission { mission: MISSION },
+        );
         (world, player, system)
     }
 
     #[test]
     fn completed_mission_does_not_recommend_pending_optional_objective() {
         let (mut world, player, mut system) = active_world();
-        apply(&mut system, &mut world, GameplayCommand::StartObjective { objective: REQUIRED });
-        apply(&mut system, &mut world, GameplayCommand::CompleteObjective { objective: REQUIRED });
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::StartObjective {
+                objective: REQUIRED,
+            },
+        );
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::CompleteObjective {
+                objective: REQUIRED,
+            },
+        );
 
-        assert_eq!(world.mission(MISSION).unwrap().state(), MissionState::Completed);
+        assert_eq!(
+            world.mission(MISSION).unwrap().state(),
+            MissionState::Completed
+        );
         let optional = world
             .objective(OPTIONAL)
             .expect("optional objective should remain in the mission");
@@ -488,10 +537,20 @@ mod tests {
     #[test]
     fn failed_mission_does_not_recommend_pending_optional_objective() {
         let (mut world, player, mut system) = active_world();
-        apply(&mut system, &mut world, GameplayCommand::FailMission { mission: MISSION });
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::FailMission { mission: MISSION },
+        );
 
-        assert_eq!(world.mission(MISSION).unwrap().state(), MissionState::Failed);
-        assert_eq!(world.objective(OPTIONAL).unwrap().state(), ObjectiveState::Available);
+        assert_eq!(
+            world.mission(MISSION).unwrap().state(),
+            MissionState::Failed
+        );
+        assert_eq!(
+            world.objective(OPTIONAL).unwrap().state(),
+            ObjectiveState::Available
+        );
         let guidance = GuidanceSystem::query(&world, player).unwrap();
         assert_eq!(guidance.current_objective, None);
         assert_eq!(guidance.recommended_action, None);
@@ -506,11 +565,22 @@ mod tests {
         assert_eq!(locked.current_objective, None);
         assert_eq!(locked.recommended_action, None);
 
-        apply(&mut system, &mut world, GameplayCommand::UnlockMission { mission: MISSION });
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::UnlockMission { mission: MISSION },
+        );
         let available = GuidanceSystem::query(&world, player).unwrap();
-        assert_eq!(available.recommended_action, Some(GuidanceAction::StartMission(MISSION)));
+        assert_eq!(
+            available.recommended_action,
+            Some(GuidanceAction::StartMission(MISSION))
+        );
 
-        apply(&mut system, &mut world, GameplayCommand::StartMission { mission: MISSION });
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::StartMission { mission: MISSION },
+        );
         let active = GuidanceSystem::query(&world, player).unwrap();
         assert_eq!(active.current_objective, Some(REQUIRED));
         assert_eq!(

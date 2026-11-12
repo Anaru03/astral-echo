@@ -751,17 +751,9 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     }
 
     for dest in world.destinations() {
-        // Do not draw the full high-density planet mesh from inside its
-        // surface volume. The local exploration patch below is the playable
-        // ground and prevents the close-up planet model from stalling the
-        // renderer during the landing-to-surface transition.
-        if limited_scene {
+        if limited_scene && landing_planet != Some(dest.id) {
             continue;
         }
-        // Nareth always has a local, lightweight mesh. Hiding it while a
-        // 256 MB source OBJ is loading made the planet disappear halfway
-        // through a landing, and its later GPU registration could stall the
-        // frame that was supposed to finish the cinematic.
         if dest.id == gameplay::DestinationId::new(9_001) {
             // Echo-7's origin is the player's spawn marker, not a world object.
             continue;
@@ -829,33 +821,6 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                 mesh,
                 material,
                 dest.discovery != gameplay::DiscoveryState::Unknown,
-            ));
-        }
-    }
-
-    // Keep a visible, low-cost planet silhouette throughout the approach.
-    // This is deliberately separate from PLANET_SPHERE (the old Earth test
-    // mesh) and from the asynchronously loaded production model.
-    if let Some(planet_id) = landing_planet {
-        let position = world
-            .planet_position_at(planet_id, world.time().elapsed)
-            .map(from_engine)
-            .or_else(|| {
-                world
-                    .destination(planet_id)
-                    .map(|destination| from_engine(destination.position))
-            });
-        if let Some(position) = position {
-            snapshot.push_node(SnapshotNode::destination(
-                planet_id.value(),
-                Transform::new(
-                    position,
-                    Quat::IDENTITY,
-                    Vec3::splat(planet_visual_radius(planet_id)),
-                ),
-                MeshHandle::LANDING_PLANET_PROXY,
-                PLANET_MATERIAL,
-                true,
             ));
         }
     }
