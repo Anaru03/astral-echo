@@ -8,11 +8,5 @@ pub const SHORTCUTS: usize = 3;
 pub const COLOR: [u8; 3] = [231, 155, 80];
 
 pub fn generate() -> PlanetMaze {
-    PlanetMaze::generate_balanced(
-        PlanetMazeKind::Kharvex,
-        SEED,
-        MIN_PATH,
-        MAX_PATH,
-        SHORTCUTS,
-    )
+    PlanetMaze::generate_balanced(PlanetMazeKind::Kharvex, SEED, MIN_PATH, MAX_PATH, SHORTCUTS)
 }

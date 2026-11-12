@@ -104,10 +104,10 @@ impl GpuContext {
         println!("hot-swap gpu-adapter-requested");
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: options.force_fallback_adapter,
-            compatible_surface: surface,
-        })
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: options.force_fallback_adapter,
+                compatible_surface: surface,
+            })
             .await
             .map_err(|e| GpuError::Unavailable(e.to_string()))?;
         println!(
@@ -118,12 +118,12 @@ impl GpuContext {
         println!("hot-swap gpu-device-requested");
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-            label: Some("Astral Echo GPU"),
-            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| GpuError::Backend(e.to_string()))?;
+                label: Some("Astral Echo GPU"),
+                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| GpuError::Backend(e.to_string()))?;
         println!(
             "hot-swap gpu-device-ready elapsed_ms={:.3} total_ms={:.3}",
             device_started.elapsed().as_secs_f64() * 1000.0,

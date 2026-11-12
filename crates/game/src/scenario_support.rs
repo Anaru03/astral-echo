@@ -30,7 +30,12 @@ pub(crate) fn expect_transfer_rejection(
     let before_active = session.world().entities().active_count();
     let before_players = session.world().players().count();
     let result = session
-        .update([GameplayCommand::TransferInventoryItem { from, to, item, amount }])
+        .update([GameplayCommand::TransferInventoryItem {
+            from,
+            to,
+            item,
+            amount,
+        }])
         .into_iter()
         .next()
         .ok_or_else(|| format!("{label}: no se devolvió resultado"))?;
