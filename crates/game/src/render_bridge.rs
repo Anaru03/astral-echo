@@ -114,7 +114,7 @@ pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::splat(ECHO7_VISUAL_SCALE_FACTOR);
 pub const ECHO7_VISUAL_LENGTH: f32 = 93.4 * ECHO7_VISUAL_SCALE_FACTOR;
 // Bounds measured from ECHO7_Exterior_DosCubiertas.obj. The source model uses
 // X for its longitudinal axis and Z as up.
-const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(3.7, 0.0, 5.532_477);
+const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(3.7, 0.0, 0.0);
 const ECHO7_MODEL_AFT_EDGE_X: f32 = 50.4;
 const ECHO7_AFT_EDGE_OFFSET: f32 =
     (ECHO7_MODEL_AFT_EDGE_X - ECHO7_MODEL_CENTER.x) * ECHO7_VISUAL_SCALE.x;
