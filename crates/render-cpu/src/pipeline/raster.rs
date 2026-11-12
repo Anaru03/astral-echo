@@ -246,11 +246,7 @@ pub fn shade_fragment_with_shader(fragment: &Fragment, shader: FragmentShader) -
 }
 
 /// Ejecuta un shader de fragmentos software con una fase temporal explícita.
-pub fn shade_fragment_with_time(
-    fragment: &Fragment,
-    shader: FragmentShader,
-    time: f32,
-) -> Color {
+pub fn shade_fragment_with_time(fragment: &Fragment, shader: FragmentShader, time: f32) -> Color {
     let color = match shader {
         FragmentShader::VertexColor => fragment.color,
         FragmentShader::SolarBands => {
@@ -259,10 +255,8 @@ pub fn shade_fragment_with_time(
             } else {
                 0.0
             };
-            let band = (((fragment.x / 16 + fragment.y / 16) as f32 + time * 0.5).floor()
-                as i32
-                & 1)
-                == 0;
+            let band =
+                (((fragment.x / 16 + fragment.y / 16) as f32 + time * 0.5).floor() as i32 & 1) == 0;
             let base = if band { 1.0 } else { 0.55 };
             let glow = ((fragment.x as f32 * 0.08 + time * 0.7).sin() * 0.5 + 0.5) * 0.25;
             glam::Vec4::new(

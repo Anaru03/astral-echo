@@ -87,12 +87,12 @@ impl VertexStage {
             if let Some(timing) = timings.as_deref_mut() {
                 let (shaded, shade_timings) =
                     render_core::shade_surface_profiled_sanitized_normalized(
-                    lighting.environment,
-                    lighting.material,
-                    vertex.color,
-                    position,
-                    normal,
-                );
+                        lighting.environment,
+                        lighting.material,
+                        vertex.color,
+                        position,
+                        normal,
+                    );
                 transformed.color = shaded;
                 timing.shade.merge(shade_timings);
             } else {
