@@ -5583,7 +5583,7 @@ mod tests {
                 node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value())
             })
             .expect("Nareth should remain in the snapshot while loading");
-        assert_eq!(nareth.mesh, render_core::MeshHandle::PLANET_SPHERE);
+        assert_eq!(resident_nareth.mesh, render_core::MeshHandle::PLANET_SPHERE);
 
         bridge
             .visual_asset_states
@@ -6545,11 +6545,9 @@ mod tests {
             .player(bridge.player)
             .unwrap()
             .position;
+        let walking_camera = bridge.camera(16.0 / 9.0).unwrap();
         let walking_snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
-            bridge.session.world(),
-            Default::default(),
-            &bridge.camera(16.0 / 9.0).unwrap(),
-            true,
+            bridge.session.world(), Default::default(), &walking_camera, true,
         );
         let walking_ship = walking_snapshot
             .nodes
@@ -6562,11 +6560,9 @@ mod tests {
         }]));
         bridge.enter_pilot();
         assert!(bridge.pilot_mode);
+        let pilot_camera = bridge.camera(16.0 / 9.0).unwrap();
         let pilot_snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
-            bridge.session.world(),
-            Default::default(),
-            &bridge.camera(16.0 / 9.0).unwrap(),
-            false,
+            bridge.session.world(), Default::default(), &pilot_camera, false,
         );
         let pilot_ship = pilot_snapshot
             .nodes
@@ -6888,7 +6884,7 @@ mod tests {
 
     #[test]
     fn interior_prompt_identifies_the_nearest_real_interactable() {
-        let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         assert!(bridge
             .contextual_prompt()
             .is_some_and(|prompt| prompt.contains("[I]") && prompt.contains("PILOTAJE")));
@@ -6996,7 +6992,7 @@ mod tests {
 
     #[test]
     fn echo7_interior_uses_one_full_ship_mesh_with_visible_hull() {
-        let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         let camera = bridge
             .camera(16.0 / 9.0)
             .expect("character camera should be valid");
@@ -7046,7 +7042,7 @@ mod tests {
 
     #[test]
     fn echo7_exterior_uses_full_ship_representation() {
-        let bridge = VisualBridge::new_with_mode(false).expect("visual bootstrap should work");
+        let mut bridge = VisualBridge::new_with_mode(false).expect("visual bootstrap should work");
         let camera = bridge
             .camera(16.0 / 9.0)
             .expect("character camera should be valid");

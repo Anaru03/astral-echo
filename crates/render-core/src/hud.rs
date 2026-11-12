@@ -346,12 +346,16 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             height: inventory_height,
             color: [12, 24, 44, 245],
         });
+        let max_columns = width
+            .saturating_sub(inventory_x + margin / 2)
+            .saturating_div(char_width)
+            .max(1) as usize;
         for (row, text) in inventory_lines
             .iter()
             .take(visible_text_rows(margin, margin / 2, height, scale))
             .enumerate()
         {
-            for (column, ch) in text.chars().enumerate() {
+            for (column, ch) in text.chars().take(max_columns).enumerate() {
                 let Some(pattern) = glyph(normalize(ch)) else {
                     continue;
                 };
@@ -483,12 +487,16 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             color: [5, 18, 36, 245],
         };
         glyphs.insert(0, panel);
+        let max_columns = width
+            .saturating_sub(panel.x + margin / 2)
+            .saturating_div(char_width)
+            .max(1) as usize;
         for (row, text) in panel_lines
             .iter()
             .take(visible_text_rows(panel.y, margin, height, scale))
             .enumerate()
         {
-            for (column, ch) in text.chars().enumerate() {
+            for (column, ch) in text.chars().take(max_columns).enumerate() {
                 let Some(pattern) = glyph(normalize(ch)) else {
                     continue;
                 };

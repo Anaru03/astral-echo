@@ -7,7 +7,7 @@ use render_core::{
     from_engine, Camera, CameraError, HudAutopilotState, HudFlightState, HudMissionObjective,
     HudMissionState, HudObjectiveState, HudState, MaterialHandle, MeshHandle, Projection, Quat,
     RenderSnapshot, RenderVisualEvent, RenderVisualEventKind, SnapshotLight, SnapshotNode,
-    Transform, Vec3, VisualAssets,
+    Transform, Vec3, VisualAssets, RenderLightKind,
 };
 
 pub const SUN_ENTITY: engine::EntityId = engine::EntityId::new(9_100);
@@ -2144,6 +2144,29 @@ pub fn surface_ship_position(
     planet_surface_origin(world, destination).map(|origin| origin + Vec3::new(4.0, 0.0, 4.0))
 }
 
+fn surface_player_transform(
+    world: &GameplayWorld,
+    player: &gameplay::Player,
+    destination: gameplay::DestinationId,
+) -> Transform {
+    let position = from_engine(player.position);
+    let center = world
+        .planet_position_at(destination, world.time().elapsed)
+        .map(from_engine)
+        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))
+        .unwrap_or(Vec3::ZERO);
+    let up = if destination.value() == TESSARA_DESTINATION_ID {
+        Vec3::Y
+    } else {
+        (position - center).normalize_or_zero()
+    };
+    let up = if up.length_squared() > 0.0 { up } else { Vec3::Y };
+    let gravity_alignment = Quat::from_rotation_arc(Vec3::Y, up);
+    let local_view = Quat::from_rotation_y(player.orientation.yaw_degrees.to_radians())
+        * Quat::from_rotation_x(player.orientation.pitch_degrees.to_radians());
+    Transform::new(position, gravity_alignment * local_view, PLAYER_VISUAL_SCALE)
+}
+
 fn observation_distance(visual_radius: f32) -> f32 {
     (visual_radius.max(0.1) * 1.75).max(PLANET_OBSERVATION_RADIUS)
 }
@@ -2179,6 +2202,38 @@ pub fn interior_camera_for_player(
             near: 0.05,
             far: 120.0,
         },
+    )
+}
+
+pub fn surface_camera_for_player_with_view(
+    world: &GameplayWorld,
+    player_id: engine::EntityId,
+    destination: gameplay::DestinationId,
+    aspect: f32,
+    camera_yaw_offset: f32,
+    camera_pitch_offset: f32,
+) -> Result<Camera, CameraError> {
+    let player = world.player(player_id).ok_or(CameraError::InvalidAspect)?;
+    let center = world.planet_position_at(destination, world.time().elapsed).map(from_engine)
+        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))
+        .ok_or(CameraError::InvalidAspect)?;
+    let player_position = from_engine(player.position);
+    let up = if destination.value() == TESSARA_DESTINATION_ID { Vec3::Y }
+        else { (player_position - center).normalize_or_zero() };
+    let up = if up.length_squared() > 0.0 { up } else { Vec3::Y };
+    let yaw = (player.orientation.yaw_degrees + camera_yaw_offset).to_radians();
+    let pitch = (player.orientation.pitch_degrees + camera_pitch_offset).to_radians().clamp(-1.2, 1.2);
+    let horizontal = pitch.cos();
+    let raw_forward = Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal);
+    let forward = (raw_forward - up * raw_forward.dot(up)).normalize_or_zero();
+    let forward = if forward.length_squared() > 0.0 { forward } else {
+        up.cross(if up.dot(Vec3::Y).abs() < 0.9 { Vec3::Y } else { Vec3::X }).normalize_or_zero()
+    };
+    Camera::new(
+        player_position - forward * 4.5 + up * 2.2,
+        player_position + up * 0.25,
+        up,
+        Projection::Perspective { fov_y_rad: 72.0_f32.to_radians(), aspect, near: 0.05, far: 220.0 },
     )
 }
 
