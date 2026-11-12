@@ -4,8 +4,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::{
-    Aabb, Camera, Frustum, Mat4, MaterialHandle, MaterialTextureRegistry, MeshHandle, RasterMesh, RasterVertex,
-    RenderSnapshot, SnapshotId, SnapshotNode, Transform, Vec3, Vec4,
+    Aabb, Camera, Frustum, Mat4, MaterialHandle, MaterialTextureRegistry, MeshHandle, RasterMesh,
+    RasterVertex, RenderSnapshot, SnapshotId, SnapshotNode, Transform, Vec3, Vec4,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -72,10 +72,7 @@ pub struct PreparedSceneStats {
 }
 
 impl PreparedScene {
-    pub fn texture_path(
-        &self,
-        material: MaterialHandle,
-    ) -> Option<&std::path::Path> {
+    pub fn texture_path(&self, material: MaterialHandle) -> Option<&std::path::Path> {
         self.textures.get(material)
     }
 
@@ -324,7 +321,10 @@ impl Default for VisualAssets {
                 RasterMesh::sphere(
                     Vec3::ZERO,
                     1.0,
-                    Vec4::new(0.22, 0.42, 0.58, 1.0),
+                    // Nareth's resident low-detail mesh. Keep it visually
+                    // distinct from PLANET_SPHERE, the old blue/green Earth
+                    // placeholder, so it remains recognisable at every LOD.
+                    Vec4::new(0.55, 0.16, 0.68, 1.0),
                 ),
             ),
             (
@@ -441,7 +441,11 @@ mod tests {
     #[test]
     fn enemy_archetype_fallbacks_are_registered_with_distinct_material_handles() {
         let assets = VisualAssets::default();
-        for material in [VisualAssets::ENEMY, VisualAssets::ENEMY_CHARGER, VisualAssets::ENEMY_SHIELDED] {
+        for material in [
+            VisualAssets::ENEMY,
+            VisualAssets::ENEMY_CHARGER,
+            VisualAssets::ENEMY_SHIELDED,
+        ] {
             assert!(assets.mesh(MeshHandle::ENEMY_PLACEHOLDER, material).is_ok());
         }
         assert_ne!(VisualAssets::ENEMY, VisualAssets::ENEMY_CHARGER);
@@ -523,11 +527,17 @@ mod tests {
             Err(VisualError::MeshAlreadyRegistered(mesh, material))
         );
         assert!(Arc::ptr_eq(
-            assets.meshes.get(&(mesh, material)).expect("original high mesh"),
+            assets
+                .meshes
+                .get(&(mesh, material))
+                .expect("original high mesh"),
             &original
         ));
         assert_eq!(
-            *assets.bounds.get(&(mesh, material)).expect("original bounds"),
+            *assets
+                .bounds
+                .get(&(mesh, material))
+                .expect("original bounds"),
             original_bounds
         );
     }

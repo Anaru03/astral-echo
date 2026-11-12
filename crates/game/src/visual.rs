@@ -2560,48 +2560,57 @@ impl VisualBridge {
                 f32::from(look_pitch) * 4.0 * seconds / 0.016,
             );
         }
-        let collision_buffer = 0.75;
-        let min_x = interior_origin.x - game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
-            + game::render_bridge::ECHO7_PLAYER_RADIUS
-            + collision_buffer;
-        let max_x = interior_origin.x + game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
-            - game::render_bridge::ECHO7_PLAYER_RADIUS
-            - collision_buffer;
-        let min_z = interior_origin.z - game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
-            + game::render_bridge::ECHO7_PLAYER_RADIUS
-            + collision_buffer;
-        let max_z = interior_origin.z + game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
-            - game::render_bridge::ECHO7_PLAYER_RADIUS
-            - collision_buffer;
-        let braking_distance_x =
-            player.velocity.x.abs().powi(2) / (2.0 * player.movement.deceleration.max(1.0));
-        let braking_distance_z =
-            player.velocity.z.abs().powi(2) / (2.0 * player.movement.deceleration.max(1.0));
-        if player.velocity.x > 0.0
-            && max_x - player.position.x <= braking_distance_x + player.movement.max_speed * seconds
-        {
-            direction.x = -1.0;
-        } else if player.velocity.x < 0.0
-            && player.position.x - min_x <= braking_distance_x + player.movement.max_speed * seconds
-        {
-            direction.x = 1.0;
-        } else if (player.position.x <= min_x && direction.x < 0.0)
-            || (player.position.x >= max_x && direction.x > 0.0)
-        {
-            direction.x = 0.0;
-        }
-        if player.velocity.z > 0.0
-            && max_z - player.position.z <= braking_distance_z + player.movement.max_speed * seconds
-        {
-            direction.z = -1.0;
-        } else if player.velocity.z < 0.0
-            && player.position.z - min_z <= braking_distance_z + player.movement.max_speed * seconds
-        {
-            direction.z = 1.0;
-        } else if (player.position.z <= min_z && direction.z < 0.0)
-            || (player.position.z >= max_z && direction.z > 0.0)
-        {
-            direction.z = 0.0;
+        // The rectangular limits belong only to the ECHO-7 interior. On a
+        // planet the player is constrained radially below, so applying these
+        // limits as well would trap the player in a tiny box around the ship.
+        if !self.surface_mode {
+            let collision_buffer = 0.75;
+            let min_x = interior_origin.x - game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+                + game::render_bridge::ECHO7_PLAYER_RADIUS
+                + collision_buffer;
+            let max_x = interior_origin.x + game::render_bridge::ECHO7_INTERIOR_HALF_WIDTH
+                - game::render_bridge::ECHO7_PLAYER_RADIUS
+                - collision_buffer;
+            let min_z = interior_origin.z - game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
+                + game::render_bridge::ECHO7_PLAYER_RADIUS
+                + collision_buffer;
+            let max_z = interior_origin.z + game::render_bridge::ECHO7_INTERIOR_HALF_DEPTH
+                - game::render_bridge::ECHO7_PLAYER_RADIUS
+                - collision_buffer;
+            let braking_distance_x =
+                player.velocity.x.abs().powi(2) / (2.0 * player.movement.deceleration.max(1.0));
+            let braking_distance_z =
+                player.velocity.z.abs().powi(2) / (2.0 * player.movement.deceleration.max(1.0));
+            if player.velocity.x > 0.0
+                && max_x - player.position.x
+                    <= braking_distance_x + player.movement.max_speed * seconds
+            {
+                direction.x = -1.0;
+            } else if player.velocity.x < 0.0
+                && player.position.x - min_x
+                    <= braking_distance_x + player.movement.max_speed * seconds
+            {
+                direction.x = 1.0;
+            } else if (player.position.x <= min_x && direction.x < 0.0)
+                || (player.position.x >= max_x && direction.x > 0.0)
+            {
+                direction.x = 0.0;
+            }
+            if player.velocity.z > 0.0
+                && max_z - player.position.z
+                    <= braking_distance_z + player.movement.max_speed * seconds
+            {
+                direction.z = -1.0;
+            } else if player.velocity.z < 0.0
+                && player.position.z - min_z
+                    <= braking_distance_z + player.movement.max_speed * seconds
+            {
+                direction.z = 1.0;
+            } else if (player.position.z <= min_z && direction.z < 0.0)
+                || (player.position.z >= max_z && direction.z > 0.0)
+            {
+                direction.z = 0.0;
+            }
         }
         let magnitude = (direction.x * direction.x + direction.z * direction.z).sqrt();
         if magnitude > 1.0 {
@@ -4636,10 +4645,10 @@ fn run_visual(lan_connection: Option<(String, String)>) -> Result<(), String> {
     runtime
         .borrow_mut()
         .attach_visual_asset_client(asset_client);
-    // Nareth uses its resident runtime LOD. The original source OBJ is over
-    // 250 MB; scheduling it here allowed its CPU/GPU registration to block a
-    // later landing cinematic. Keep the optional import path available for
-    // tooling, but never queue it from gameplay.
+    // Start loading Nareth before the player approaches it. The request is
+    // asynchronous and the renderer keeps the lightweight fallback until the
+    // real mesh is registered, so this cannot block the landing cinematic.
+    runtime.borrow_mut().request_nareth_visual_asset();
     let snapshot_runtime = Rc::clone(&runtime);
     let input_runtime = Rc::clone(&runtime);
     let focus_runtime = Rc::clone(&runtime);
