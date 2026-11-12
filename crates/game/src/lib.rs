@@ -1,3 +1,4 @@
+pub mod planet_mazes;
 pub mod cooperacion;
 pub mod campaign;
 pub mod ecos_anomalia;
@@ -7,6 +8,7 @@ pub mod multiplayer;
 pub mod render_bridge;
 pub mod render_backend;
 pub mod tormenta_gravitacional;
+pub mod planet_maze;
 
 use engine::EntityId;
 use gameplay::types::MissionId;

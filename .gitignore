@@ -1,3 +1,11 @@
 target
 /docs/
 /AGENTS.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Respaldos temporales
+*.py.before_highlights.bak
