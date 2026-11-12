@@ -1595,8 +1595,13 @@ pub fn surface_ship_position(
                 .map(|value| from_engine(value.position))
         })?;
     if destination.value() == TESSARA_DESTINATION_ID {
-        return planet_surface_origin(world, destination)
-            .map(|origin| origin + Vec3::new(4.0, 0.0, 4.0));
+        let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
+        let transform = tessara_planet_transform(center, elapsed_seconds);
+        // Keep ECHO-7 on the walkable top plate, close enough to reach from
+        // the landing point, while avoiding the orbital rings and gears.
+        return planet_surface_origin(world, destination).map(|origin| {
+            origin + transform.rotation * Vec3::new(4.2, 0.0, 0.0)
+        });
     }
     let surface_radius = planet_visual_radius(destination) + PLAYER_SURFACE_CLEARANCE;
     let direction = Vec3::new(4.0, surface_radius, 4.0).normalize_or_zero();

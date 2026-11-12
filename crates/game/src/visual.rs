@@ -382,6 +382,10 @@ struct VisualBridge {
     pilot_camera_distance: f32,
     surface_mode: bool,
     surface_planet: Option<DestinationId>,
+    // Last position confirmed against the clock mesh in model-local space.
+    // Keeping it local prevents the planet's rotation from turning a valid
+    // checkpoint into an invalid world-space position between frames.
+    clock_last_valid_surface_local: Option<GameplayVec3>,
     landing_planet: Option<DestinationId>,
     landing_cinematic_started_at: Option<u64>,
     landing_cinematic_wall_started_at: Option<Instant>,
@@ -1027,6 +1031,7 @@ impl VisualBridge {
             pilot_camera_distance: game::render_bridge::PILOT_CAMERA_DEFAULT_DISTANCE,
             surface_mode: false,
             surface_planet: None,
+            clock_last_valid_surface_local: None,
             landing_planet: None,
             landing_cinematic_started_at: None,
             landing_cinematic_wall_started_at: None,
@@ -2662,10 +2667,12 @@ impl VisualBridge {
         self.last_interior_update = now;
         let seconds = delta_ms as f32 / 1_000.0;
         let keyboard = self.flight_keys.input();
+        // The clock surface is keyboard-authoritative. Ship/gamepad thrust
+        // state must never become an implicit walking direction here.
         let local = GameplayVec3 {
-            x: (keyboard.x + self.gamepad_flight.x).clamp(-1.0, 1.0),
+            x: keyboard.x.clamp(-1.0, 1.0),
             y: 0.0,
-            z: (keyboard.z + self.gamepad_flight.z).clamp(-1.0, 1.0),
+            z: keyboard.z.clamp(-1.0, 1.0),
         };
         let has_surface_input = local.x.abs() > 0.001 || local.z.abs() > 0.001;
         let yaw = player.orientation.yaw_degrees.to_radians();
@@ -2684,15 +2691,6 @@ impl VisualBridge {
             );
         }
 
-        let previous = player.position;
-        if has_surface_input && direction != GameplayVec3::ZERO {
-            self.session.update([GameplayCommand::MovePlayer {
-                player: self.player,
-                direction,
-                delta: Duration(delta_ms),
-            }]);
-        }
-
         let Some(center) = self
             .session
             .world()
@@ -2705,59 +2703,143 @@ impl VisualBridge {
             self.session.world().time().elapsed.0 as f64 / 1_000.0,
         );
         let inverse = model.matrix().inverse();
-        let moved = self
-            .session
-            .world()
-            .player(self.player)
-            .map(|value| render_core::from_engine(value.position));
-        let Some(moved) = moved else {
-            return;
+        let fallback_world = game::render_bridge::planet_surface_origin(
+            self.session.world(),
+            TESSARA_DESTINATION,
+        )
+        .unwrap_or_else(|| {
+            render_core::Vec3::new(
+                center.x,
+                center.y + game::render_bridge::TESSARA_VISUAL_RADIUS,
+                center.z,
+            )
+        });
+        let fallback_local = inverse.transform_point3(fallback_world);
+        let safe_local = self
+            .clock_last_valid_surface_local
+            .filter(|position| {
+                position.x.is_finite() && position.y.is_finite() && position.z.is_finite()
+            })
+            .unwrap_or(GameplayVec3 {
+                x: fallback_local.x,
+                y: fallback_local.y,
+                z: fallback_local.z,
+            });
+        let local_position = self
+            .clock_last_valid_surface_local
+            .filter(|position| {
+                position.x.is_finite() && position.y.is_finite() && position.z.is_finite()
+            })
+            .unwrap_or_else(|| {
+                let local = inverse.transform_point3(render_core::from_engine(player.position));
+                GameplayVec3 {
+                    x: local.x,
+                    y: local.y,
+                    z: local.z,
+                }
+            });
+        let candidate_local = if has_surface_input && direction != GameplayVec3::ZERO {
+            GameplayVec3 {
+                x: local_position.x + direction.x * 4.0 * seconds,
+                y: local_position.y,
+                z: local_position.z + direction.z * 4.0 * seconds,
+            }
+        } else {
+            local_position
         };
-        if !previous.x.is_finite()
-            || !previous.y.is_finite()
-            || !previous.z.is_finite()
-            || !moved.is_finite()
-        {
-            self.session
-                .world_mut()
-                .initialize_player_position(self.player, previous);
-            return;
-        }
-        let local_position = inverse.transform_point3(moved);
-        if !local_position.is_finite()
-            || local_position.x.abs() > 5.55
-            || local_position.z.abs() > 5.55
-        {
-            self.session
-                .world_mut()
-                .initialize_player_position(self.player, previous);
+        let invalid_local = |position: GameplayVec3| {
+            !position.x.is_finite()
+                || !position.y.is_finite()
+                || !position.z.is_finite()
+                || position.x.abs() > 5.5
+                || position.z.abs() > 5.5
+        };
+        if invalid_local(candidate_local) {
+            if has_surface_input {
+                self.flight_keys = FlightKeys::default();
+                self.gamepad_flight = GameplayVec3::ZERO;
+            }
+            let safe_world = model.matrix().transform_point3(render_core::Vec3::new(
+                safe_local.x,
+                safe_local.y,
+                safe_local.z,
+            ));
+            self.session.world_mut().initialize_player_position(
+                self.player,
+                GameplayVec3 {
+                    x: safe_world.x,
+                    y: safe_world.y,
+                    z: safe_world.z,
+                },
+            );
             return;
         }
         let grounded = crate::clock_surface::shared().and_then(|surface| {
-            surface.sample_top(local_position.x, local_position.z)
+            surface.sample_top(candidate_local.x, candidate_local.z)
         });
         let Some(surface_y) = grounded else {
             // Gaps between clock components are not walkable. Restore the
             // previous position instead of letting the player float in the
             // empty circular space around the mechanism.
-            self.session
-                .world_mut()
-                .initialize_player_position(self.player, previous);
+            if has_surface_input {
+                // Reaching a non-walkable edge consumes the current input.
+                // The next movement must be an explicit new user decision.
+                self.flight_keys = FlightKeys::default();
+                self.gamepad_flight = GameplayVec3::ZERO;
+            }
+            let safe_world = model.matrix().transform_point3(render_core::Vec3::new(
+                safe_local.x,
+                safe_local.y,
+                safe_local.z,
+            ));
+            self.session.world_mut().initialize_player_position(
+                self.player,
+                GameplayVec3 {
+                    x: safe_world.x,
+                    y: safe_world.y,
+                    z: safe_world.z,
+                },
+            );
             return;
         };
         let grounded_local = render_core::Vec3::new(
-            local_position.x,
+            candidate_local.x,
             surface_y + game::render_bridge::PLAYER_SURFACE_CLEARANCE / model.scale.y,
-            local_position.z,
+            candidate_local.z,
         );
         let grounded_world = model.matrix().transform_point3(grounded_local);
+        let grounded_position = GameplayVec3 {
+            x: grounded_world.x,
+            y: grounded_world.y,
+            z: grounded_world.z,
+        };
+        if !grounded_position.x.is_finite()
+            || !grounded_position.y.is_finite()
+            || !grounded_position.z.is_finite()
+        {
+            let safe_world = model.matrix().transform_point3(render_core::Vec3::new(
+                safe_local.x,
+                safe_local.y,
+                safe_local.z,
+            ));
+            self.session.world_mut().initialize_player_position(
+                self.player,
+                GameplayVec3 {
+                    x: safe_world.x,
+                    y: safe_world.y,
+                    z: safe_world.z,
+                },
+            );
+            return;
+        }
+        self.clock_last_valid_surface_local = Some(GameplayVec3 {
+            x: grounded_local.x,
+            y: grounded_local.y,
+            z: grounded_local.z,
+        });
         self.session.world_mut().initialize_player_position(
             self.player,
-            GameplayVec3 {
-                x: grounded_world.x,
-                y: grounded_world.y,
-                z: grounded_world.z,
-            },
+            grounded_position,
         );
     }
 
@@ -4605,6 +4687,29 @@ impl VisualBridge {
                         y: origin.y,
                         z: origin.z,
                     };
+                    if planet == TESSARA_DESTINATION {
+                        let local = self
+                            .session
+                            .world()
+                            .planet_position_at(planet, self.session.world().time().elapsed)
+                            .map(render_core::from_engine)
+                            .map(|center| {
+                                game::render_bridge::clock_planet_transform(
+                                    center,
+                                    self.session.world().time().elapsed.0 as f64 / 1_000.0,
+                                )
+                                .matrix()
+                                .inverse()
+                                .transform_point3(render_core::from_engine(origin))
+                            });
+                        self.clock_last_valid_surface_local = local.map(|value| GameplayVec3 {
+                            x: value.x,
+                            y: value.y,
+                            z: value.z,
+                        });
+                    } else {
+                        self.clock_last_valid_surface_local = None;
+                    }
                     let _ = self
                         .session
                         .world_mut()
@@ -4633,6 +4738,7 @@ impl VisualBridge {
                 self.takeoff_cinematic_started_at = None;
                 self.surface_mode = false;
                 self.surface_planet = None;
+                self.clock_last_valid_surface_local = None;
                 self.pilot_mode = true;
                 self.feedback = "DESPEGUE COMPLETADO — ECHO-7 ESTA EN ORBITA".to_owned();
             }
