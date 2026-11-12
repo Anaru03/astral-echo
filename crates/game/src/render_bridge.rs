@@ -89,6 +89,9 @@ pub const OBSERVATION_TRANSITION_DURATION_MS: u64 = 1_000;
 pub const LANDING_CINEMATIC_DURATION_MS: u64 = 1_800;
 pub const TAKEOFF_CINEMATIC_DURATION_MS: u64 = 1_500;
 pub const SURFACE_RETURN_DISTANCE: f32 = 8.5;
+// Keep the landing ship in front of the player's spawn point, on the same
+// height as the walkable surface, so it is visible and reachable immediately.
+const SURFACE_SHIP_OFFSET: Vec3 = Vec3::new(0.0, 0.0, -5.0);
 const SUN_POSITION: Vec3 = Vec3::new(0.0, 0.0, -18.0);
 const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 28.0, 46.0);
 pub const PILOT_CAMERA_DEFAULT_DISTANCE: f32 = 8.0;
@@ -839,9 +842,19 @@ fn echo7_guidance_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
     let Some(player) = world.players().find(|value| value.is_active) else {
         return Vec::new();
     };
+    let guided_target = world
+        .guidance_for_player(player.entity_id)
+        .ok()
+        .and_then(|guidance| match guidance.recommended_action {
+            Some(gameplay::GuidanceAction::Interact(target)) => Some(target),
+            _ => None,
+        });
     let target = world
         .interactables()
         .filter_map(|value| {
+            if guided_target.is_some_and(|target| target != value.entity_id) {
+                return None;
+            }
             let priority = match value.behavior {
                 gameplay::InteractionBehavior::ElectricalPanel => world
                     .electrical_panel(value.entity_id)
@@ -1353,7 +1366,9 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         ));
     }
 
-    let surface_ship = surface_planet.and_then(|planet| surface_ship_position(world, planet));
+    let surface_ship = surface_planet.and_then(|planet| {
+        surface_ship_position_with_transform(world, planet, surface_transform)
+    });
     if let (Some(ship), Some(pos)) = (
         world.navigation().ship_id(),
         surface_ship.or_else(|| visual_ship_position(world)),
@@ -2292,7 +2307,25 @@ pub fn surface_ship_position(
     world: &GameplayWorld,
     destination: gameplay::DestinationId,
 ) -> Option<Vec3> {
-    planet_surface_origin(world, destination).map(|origin| origin + Vec3::new(4.0, 0.0, 4.0))
+    surface_ship_position_with_transform(world, destination, None)
+}
+
+/// Position used by the rendered ship and by the boarding/takeoff checks.
+/// Tessara is a thin rotating clock model, so its station is defined in the
+/// frozen model space used by the surface snapshot rather than in raw world
+/// coordinates. This prevents ECHO-7 from appearing away from the clock face.
+pub fn surface_ship_position_with_transform(
+    world: &GameplayWorld,
+    destination: gameplay::DestinationId,
+    surface_transform: Option<Transform>,
+) -> Option<Vec3> {
+    if destination.value() == TESSARA_DESTINATION_ID {
+        if let Some(transform) = surface_transform {
+            let local_station = Vec3::new(0.0, TESSARA_MODEL_TOP_Y + 0.9, -5.0);
+            return Some(transform.matrix().transform_point3(local_station));
+        }
+    }
+    planet_surface_origin(world, destination).map(|origin| origin + SURFACE_SHIP_OFFSET)
 }
 
 fn surface_player_transform(

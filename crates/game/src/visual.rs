@@ -2374,11 +2374,23 @@ impl VisualBridge {
             ));
         }
         let player = self.session.world().player(self.player)?;
+        let guided_target = self
+            .session
+            .world()
+            .guidance_for_player(self.player)
+            .ok()
+            .and_then(|guidance| match guidance.recommended_action {
+                Some(gameplay::GuidanceAction::Interact(target)) => Some(target),
+                _ => None,
+            });
         let target = self
             .session
             .world()
             .interactables()
             .filter_map(|value| {
+                if guided_target.is_some_and(|target| target != value.entity_id) {
+                    return None;
+                }
                 let (priority, task) = match value.behavior {
                     InteractionBehavior::Console {
                         role: gameplay::ConsoleRole::ShipStatus,
@@ -3207,7 +3219,11 @@ impl VisualBridge {
             if let Some(planet) = self.surface_planet {
                 if let (Some(player), Some(ship_position)) = (
                     self.session.world().player(self.player),
-                    game::render_bridge::surface_ship_position(self.session.world(), planet),
+                    game::render_bridge::surface_ship_position_with_transform(
+                        self.session.world(),
+                        planet,
+                        self.clock_surface_transform,
+                    ),
                 ) {
                     let dx = player.position.x - ship_position.x;
                     let dy = player.position.y - ship_position.y;
@@ -4576,6 +4592,21 @@ impl VisualBridge {
                         self.clock_last_valid_surface_local = None;
                         self.clock_surface_transform = None;
                     }
+                    // Keep the authoritative ship at the same station used
+                    // by rendering and by the boarding distance check.
+                    if let Some(ship_position) =
+                        game::render_bridge::surface_ship_position_with_transform(
+                            self.session.world(),
+                            planet,
+                            self.clock_surface_transform,
+                        )
+                    {
+                        let _ = self.session.world_mut().restore_ship_position(GameplayVec3 {
+                            x: ship_position.x,
+                            y: ship_position.y,
+                            z: ship_position.z,
+                        });
+                    }
                     let _ = self
                         .session
                         .world_mut()
@@ -4617,7 +4648,11 @@ impl VisualBridge {
             return;
         };
         let Some(ship_position) =
-            game::render_bridge::surface_ship_position(self.session.world(), planet)
+            game::render_bridge::surface_ship_position_with_transform(
+                self.session.world(),
+                planet,
+                self.clock_surface_transform,
+            )
         else {
             return;
         };
