@@ -60,9 +60,20 @@ const FONT: [([u8; 7], char); 39] = [
     ([1, 2, 4, 8, 16, 0, 0], '/'),
 ];
 
-fn glyph(ch: char) -> Option<[u8; 7]> {
+pub(crate) fn glyph(ch: char) -> Option<[u8; 7]> {
     FONT.iter().find_map(|(p, c)| (*c == ch).then_some(*p))
 }
+
+fn visible_text_rows(y: u32, margin: u32, height: u32, scale: u32) -> usize {
+    let first_row = y.saturating_add(margin);
+    let glyph_height = 7_u32.saturating_mul(scale);
+    if first_row.saturating_add(glyph_height) > height {
+        return 0;
+    }
+    let row_height = 10_u32.saturating_mul(scale).max(1);
+    (1 + height.saturating_sub(first_row + glyph_height) / row_height) as usize
+}
+
 fn normalize(ch: char) -> char {
     if ch == '—' {
         return '-';
@@ -98,129 +109,6 @@ fn objective_status(state: crate::HudObjectiveState) -> &'static str {
     }
 }
 
-fn wrap_lines(lines: &[String], max_chars: usize) -> Vec<String> {
-    let max_chars = max_chars.max(1);
-    let mut wrapped = Vec::new();
-    for source in lines {
-        let mut current = String::new();
-        for word in source.split_whitespace() {
-            let word_len = word.chars().count();
-            if word_len > max_chars {
-                if !current.is_empty() {
-                    wrapped.push(std::mem::take(&mut current));
-                }
-                let mut chunk = String::new();
-                for ch in word.chars() {
-                    chunk.push(ch);
-                    if chunk.chars().count() == max_chars {
-                        wrapped.push(std::mem::take(&mut chunk));
-                    }
-                }
-                current = chunk;
-            } else if current.is_empty() {
-                current.push_str(word);
-            } else if current.chars().count() + 1 + word_len <= max_chars {
-                current.push(' ');
-                current.push_str(word);
-            } else {
-                wrapped.push(std::mem::take(&mut current));
-                current.push_str(word);
-            }
-        }
-        if !current.is_empty() || source.is_empty() {
-            wrapped.push(current);
-        }
-    }
-    wrapped
-}
-
-fn panel_text_width(lines: &[String], char_width: u32, margin: u32) -> u32 {
-    lines
-        .iter()
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(1) as u32
-        * char_width
-        + margin * 2
-}
-
-fn panel_char_capacity(width: u32, char_width: u32, margin: u32) -> usize {
-    width
-        .saturating_sub(margin.saturating_mul(2))
-        .checked_div(char_width.max(1))
-        .unwrap_or(1)
-        .max(1) as usize
-}
-
-fn visible_text_rows(y: u32, margin: u32, height: u32, scale: u32) -> usize {
-    let first_row = y.saturating_add(margin);
-    let glyph_height = 7_u32.saturating_mul(scale);
-    if first_row.saturating_add(glyph_height) > height {
-        return 0;
-    }
-    let row_height = 10_u32.saturating_mul(scale).max(1);
-    (1 + height.saturating_sub(first_row + glyph_height) / row_height) as usize
-}
-
-fn push_text_panel(
-    glyphs: &mut Vec<HudOverlayRect>,
-    lines: &[String],
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    scale: u32,
-    char_width: u32,
-    margin: u32,
-    text_color: [u8; 4],
-    background_color: [u8; 4],
-) -> HudOverlayRect {
-    let max_chars = width
-        .saturating_sub(margin * 2)
-        .checked_div(char_width.max(1))
-        .unwrap_or(1)
-        .max(1) as usize;
-    let panel_height =
-        (margin + lines.len() as u32 * 10 * scale + margin).min(height.saturating_sub(y).max(1));
-    let panel = HudOverlayRect {
-        x,
-        y,
-        width,
-        height: panel_height,
-        color: background_color,
-    };
-    glyphs.push(panel);
-    for (row, source) in lines
-        .iter()
-        .take(visible_text_rows(panel.y, margin, height, scale))
-        .enumerate()
-    {
-        let text: String = source.chars().take(max_chars).collect();
-        for (column, ch) in text.chars().enumerate() {
-            let Some(pattern) = glyph(normalize(ch)) else {
-                continue;
-            };
-            for (glyph_row, bits) in pattern.iter().copied().enumerate() {
-                for glyph_column in 0..5u32 {
-                    if bits & (1 << (4 - glyph_column)) != 0 {
-                        glyphs.push(HudOverlayRect {
-                            x: panel.x + margin + column as u32 * char_width + glyph_column * scale,
-                            y: panel.y
-                                + margin
-                                + row as u32 * 10 * scale
-                                + glyph_row as u32 * scale,
-                            width: scale,
-                            height: scale,
-                            color: text_color,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    panel
-}
-
 pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     if hud.mission_name.is_none()
         && hud.mission_description.is_none()
@@ -244,7 +132,6 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         && hud.guidance.is_none()
         && hud.controls.is_none()
         && hud.instructions.is_none()
-        && hud.quick_actions.is_empty()
         && hud.feedback.as_deref().is_none_or(str::is_empty)
         && !hud.inventory_open
     {
@@ -262,9 +149,10 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             controls_close_button: None,
         };
     }
-    let scale = (width / 900).clamp(1, 2);
-    let margin = 6 * scale;
-    let char_width = 8 * scale;
+    let scale = (width / 480).clamp(1, 3);
+    let margin = 12 * scale;
+    let char_width = 7 * scale;
+    let max_chars = ((width.saturating_sub(margin * 2)) / char_width).clamp(24, 64) as usize;
     let progress = hud.mission_progress.map(|(d, t)| format!("{d}/{t}"));
     let mut lines = vec![
         hud.mission_name.as_deref().map(|v| format!("MISION: {v}")),
@@ -279,102 +167,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         hud.objective_name
             .as_deref()
             .map(|v| format!("OBJETIVO: {v}")),
-        Some("OBJETIVOS:".to_owned()).filter(|_| !hud.mission_objectives.is_empty()),
-        hud.guidance.as_deref().map(|v| format!("ERICK: {v}")),
-        hud.instructions.as_deref().map(|v| format!("MODO: {v}")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    let inventory_lines = hud.inventory_open.then(|| {
-        std::iter::once("INVENTARIO".to_owned())
-            .chain(hud.inventory_items.iter().cloned())
-            .collect::<Vec<_>>()
-    });
-    if !hud.mission_objectives.is_empty() {
-        let objective_lines =
-            hud.mission_objectives
-                .iter()
-                .enumerate()
-                .map(|(index, objective)| {
-                    let optional = if objective.required { "" } else { " OPCIONAL" };
-                    format!(
-                        "{} {} {}/{} {}{}",
-                        index + 1,
-                        objective_status(objective.state),
-                        objective.progress,
-                        objective.required_progress,
-                        objective.name,
-                        optional,
-                    )
-                });
-        let insertion = lines
-            .iter()
-            .position(|line| line == "OBJETIVOS:")
-            .unwrap_or(lines.len());
-        lines.splice(insertion + 1..insertion + 1, objective_lines);
-    }
-    lines.retain(|line| !line.is_empty());
-    if lines.is_empty() {
-        lines.push("ASTRAL ECHO".to_owned());
-    }
-    let left_max_width = (width * 45 / 100).min(width.saturating_sub(margin));
-    lines = wrap_lines(
-        &lines,
-        panel_char_capacity(left_max_width, char_width, margin),
-    );
-    let text_width = panel_text_width(&lines, char_width, margin);
-    let button_height = hud.contextual_action.as_ref().map_or(0, |_| 12 * scale);
-    let panel_width = text_width.min(left_max_width);
-    let panel_height = (margin + lines.len() as u32 * 10 * scale + margin + button_height)
-        .min(height.saturating_sub(margin));
-    let terminal = hud
-        .feedback
-        .as_deref()
-        .is_some_and(|v| v.contains("DERROTADO"));
-    let color = if terminal {
-        [255, 96, 80, 255]
-    } else {
-        [210, 240, 255, 255]
-    };
-    let background = HudOverlayRect {
-        x: margin,
-        y: margin,
-        width: panel_width,
-        height: panel_height,
-        color: [5, 12, 24, 220],
-    };
-    let visible_left_rows = visible_text_rows(margin, 0, height, scale);
-    let visible_left_chars = lines
-        .iter()
-        .take(visible_left_rows)
-        .map(|line| line.chars().count())
-        .sum::<usize>();
-    let mut glyphs = Vec::with_capacity(visible_left_chars.saturating_mul(12).max(256));
-    for (row, text) in lines.iter().take(visible_left_rows).enumerate() {
-        for (column, ch) in text.chars().enumerate() {
-            let Some(pattern) = glyph(normalize(ch)) else {
-                continue;
-            };
-            for (glyph_row, bits) in pattern.iter().copied().enumerate() {
-                for glyph_column in 0..5u32 {
-                    if bits & (1 << (4 - glyph_column)) != 0 {
-                        glyphs.push(HudOverlayRect {
-                            x: margin + column as u32 * char_width + glyph_column * scale,
-                            y: margin + row as u32 * 10 * scale + glyph_row as u32 * scale,
-                            width: scale,
-                            height: scale,
-                            color,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    let right_lines = [
-        hud.target.map(|target| format!("DESTINO: {target}")),
-        Some(format!("VUELO: {:?}", hud.flight)).filter(|_| hud.ship_speed.is_some()),
+        None,
         Some(format!(
             "ESCUDO: {}",
             if hud.ship_shield_active {
@@ -401,122 +194,149 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         hud.ship_resource_alert
             .as_deref()
             .map(|value| format!("ALERTA: {value}")),
-        (hud.active_enemies > 0).then(|| format!("ENEMIGOS: {}", hud.active_enemies)),
+        None,
+        Some("OBJETIVOS:".to_owned()).filter(|_| !hud.mission_objectives.is_empty()),
+        None,
+        None,
+        hud.guidance.as_deref().map(|v| format!("GUIA: {v}")),
+        hud.interaction_prompt
+            .as_deref()
+            .map(|v| format!("INTERACCION: {v}")),
+        hud.controls.as_deref().map(|v| format!("CONTROLES: {v}")),
+        hud.instructions
+            .as_deref()
+            .map(|v| format!("INSTRUCCIONES: {v}")),
+        hud.feedback
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .map(|v| format!("FEEDBACK: {v}")),
     ]
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
-    if !right_lines.is_empty() {
-        let right_max_width = (width * 38 / 100).max(char_width + margin * 2);
-        let right_wrapped = wrap_lines(
-            &right_lines,
-            panel_char_capacity(right_max_width, char_width, margin / 2),
-        );
-        let right_width =
-            panel_text_width(&right_wrapped, char_width, margin / 2).min(right_max_width);
-        push_text_panel(
-            &mut glyphs,
-            &right_wrapped,
-            width.saturating_sub(margin + right_width),
-            margin,
-            right_width,
-            height,
-            scale,
-            char_width,
-            margin / 2,
-            [210, 240, 255, 255],
-            [5, 12, 24, 220],
-        );
+    let inventory_lines = hud.inventory_open.then(|| {
+        std::iter::once("INVENTARIO".to_owned())
+            .chain(hud.inventory_items.iter().map(|item| format!("    {item}")))
+            .collect::<Vec<_>>()
+    });
+    if !hud.mission_objectives.is_empty() {
+        let objective_lines =
+            hud.mission_objectives
+                .iter()
+                .enumerate()
+                .map(|(index, objective)| {
+                    let optional = if objective.required { "" } else { " OPCIONAL" };
+                    format!(
+                        "{} {} {}/{} {}{}",
+                        index + 1,
+                        objective_status(objective.state),
+                        objective.progress,
+                        objective.required_progress,
+                        objective.name,
+                        optional,
+                    )
+                });
+        let insertion = lines
+            .iter()
+            .position(|line| line == "OBJETIVOS:")
+            .unwrap_or(lines.len());
+        lines.splice(insertion + 1..insertion + 1, objective_lines);
     }
-
-    let mut center_lines = Vec::new();
-    if !hud.quick_actions.is_empty() {
-        center_lines.push("ACCIONES RAPIDAS".to_owned());
-        center_lines.extend(hud.quick_actions.iter().cloned());
+    lines.retain(|line| !line.is_empty());
+    for value in &mut lines {
+        value.truncate(max_chars);
     }
-    if let Some(value) = hud.interaction_prompt.as_deref() {
-        center_lines.push(format!("INTERACCION: {value}"));
+    if lines.is_empty() {
+        lines.push("ASTRAL ECHO".to_owned());
     }
-    if let Some(value) = hud.feedback.as_deref().filter(|value| {
-        !value.is_empty()
-            && (!hud.quick_actions.is_empty() || terminal || value.starts_with("ERICK:"))
-    }) {
-        if value.starts_with("ERICK:") {
-            center_lines.push(value.to_owned());
-        } else {
-            center_lines.push(format!("FEEDBACK: {value}"));
+    let panel_width =
+        (max_chars as u32 * char_width + margin * 2).min(width.saturating_sub(margin));
+    let button_height = hud.contextual_action.as_ref().map_or(0, |_| 12 * scale);
+    let panel_height = (margin + lines.len() as u32 * 8 * scale + margin + button_height)
+        .min(height.saturating_sub(margin));
+    let terminal = hud
+        .feedback
+        .as_deref()
+        .is_some_and(|v| v.contains("DERROTADO"));
+    let color = if terminal {
+        [255, 96, 80, 255]
+    } else {
+        [210, 240, 255, 255]
+    };
+    let background = HudOverlayRect {
+        x: margin,
+        y: margin,
+        width: panel_width,
+        height: panel_height,
+        color: [5, 12, 24, 220],
+    };
+    let mut glyphs = Vec::new();
+    for (row, text) in lines.iter().enumerate() {
+        for (column, ch) in text.chars().enumerate() {
+            let Some(pattern) = glyph(normalize(ch)) else {
+                continue;
+            };
+            for (glyph_row, bits) in pattern.iter().copied().enumerate() {
+                for glyph_column in 0..5u32 {
+                    if bits & (1 << (4 - glyph_column)) != 0 {
+                        glyphs.push(HudOverlayRect {
+                            x: margin + column as u32 * char_width + glyph_column * scale,
+                            y: margin + row as u32 * 8 * scale + glyph_row as u32 * scale,
+                            width: scale,
+                            height: scale,
+                            color,
+                        });
+                    }
+                }
+            }
         }
     }
-    if !center_lines.is_empty() {
-        let center_max_width = (width * 78 / 100).max(char_width + margin);
-        center_lines = wrap_lines(
-            &center_lines,
-            panel_char_capacity(center_max_width, char_width, margin / 2),
-        );
-        let center_width =
-            panel_text_width(&center_lines, char_width, margin / 2).min(center_max_width);
-        let estimated_height = margin + center_lines.len() as u32 * 10 * scale + margin;
-        let center_y = height
-            .saturating_sub(estimated_height + margin)
-            .max(height / 2);
-        push_text_panel(
-            &mut glyphs,
-            &center_lines,
-            width.saturating_sub(center_width) / 2,
-            center_y,
-            center_width,
-            height,
-            scale,
-            char_width,
-            margin / 2,
-            if terminal {
-                [255, 96, 80, 255]
-            } else {
-                [235, 250, 255, 255]
-            },
-            if terminal {
-                [80, 20, 20, 235]
-            } else {
-                [8, 18, 32, 235]
-            },
-        );
-    }
-
     if let Some(notification) = hud.mission_notification.as_deref() {
-        let text = vec![format!("AVISO: {notification}")];
-        let notification_max_width = (width * 78 / 100).max(char_width + margin);
-        let wrapped = wrap_lines(
-            &text,
-            panel_char_capacity(notification_max_width, char_width, margin / 2),
-        );
-        let notification_width =
-            panel_text_width(&wrapped, char_width, margin / 2).min(notification_max_width);
-        let notification_height = margin + wrapped.len() as u32 * 10 * scale + margin;
+        let text = format!("AVISO: {notification}");
+        let notification_width = (text.chars().count() as u32 * char_width + margin * 2)
+            .min(width.saturating_sub(margin * 2));
+        let notification_height = margin + 8 * scale + margin;
         let notification_x = width.saturating_sub(notification_width) / 2;
         let notification_y = height.saturating_sub(notification_height + margin);
-        push_text_panel(
-            &mut glyphs,
-            &wrapped,
-            notification_x,
-            notification_y,
-            notification_width,
-            height,
-            scale,
-            char_width,
-            margin / 2,
-            color,
-            [8, 18, 32, 235],
-        );
+        glyphs.push(HudOverlayRect {
+            x: notification_x,
+            y: notification_y,
+            width: notification_width,
+            height: notification_height,
+            color: [8, 18, 32, 235],
+        });
+        for (column, ch) in text.chars().enumerate() {
+            let Some(pattern) = glyph(normalize(ch)) else {
+                continue;
+            };
+            for (glyph_row, bits) in pattern.iter().copied().enumerate() {
+                for glyph_column in 0..5u32 {
+                    if bits & (1 << (4 - glyph_column)) != 0 {
+                        glyphs.push(HudOverlayRect {
+                            x: notification_x
+                                + margin
+                                + column as u32 * char_width
+                                + glyph_column * scale,
+                            y: notification_y + margin + glyph_row as u32 * scale,
+                            width: scale,
+                            height: scale,
+                            color,
+                        });
+                    }
+                }
+            }
+        }
     }
     if let Some(inventory_lines) = inventory_lines {
-        let inventory_max_width = (width * 38 / 100).max(char_width + margin);
-        let inventory_lines = wrap_lines(
-            &inventory_lines,
-            panel_char_capacity(inventory_max_width, char_width, margin / 2),
-        );
-        let inventory_width =
-            panel_text_width(&inventory_lines, char_width, margin / 2).min(inventory_max_width);
-        let inventory_height = (margin + inventory_lines.len() as u32 * 10 * scale + margin)
+        let inventory_width = (inventory_lines
+            .iter()
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(12) as u32
+            * char_width
+            + margin * 2)
+            .min(width.saturating_sub(margin * 2));
+        let inventory_height = (margin + inventory_lines.len() as u32 * 8 * scale + margin)
             .min(height.saturating_sub(margin * 2));
         let inventory_x = width.saturating_sub(margin + inventory_width);
         glyphs.push(HudOverlayRect {
@@ -545,7 +365,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
                                     + glyph_column * scale,
                                 y: margin
                                     + margin / 2
-                                    + row as u32 * 10 * scale
+                                    + row as u32 * 8 * scale
                                     + glyph_row as u32 * scale,
                                 width: scale,
                                 height: scale,
@@ -642,17 +462,18 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         }
     }
     let controls_close_button = if controls_available && hud.controls_panel.open {
-        let raw_panel_lines = std::iter::once("CONTROLES - F1 CERRAR".to_owned())
+        let panel_lines = std::iter::once("CONTROLES - F1 CERRAR".to_owned())
             .chain(hud.controls_panel.entries.iter().cloned())
             .collect::<Vec<_>>();
-        let controls_max_width = (width * 42 / 100).max(char_width + margin);
-        let panel_lines = wrap_lines(
-            &raw_panel_lines,
-            panel_char_capacity(controls_max_width, char_width, margin / 2),
-        );
-        let panel_width =
-            panel_text_width(&panel_lines, char_width, margin / 2).min(controls_max_width);
-        let panel_height = (margin + panel_lines.len() as u32 * 10 * scale + margin)
+        let panel_width = panel_lines
+            .iter()
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(1) as u32
+            * char_width
+            + margin * 2;
+        let panel_width = panel_width.min(width.saturating_sub(margin * 2));
+        let panel_height = (margin + panel_lines.len() as u32 * 8 * scale + margin)
             .min(height.saturating_sub(margin * 2));
         let panel = HudOverlayRect {
             x: width.saturating_sub(margin + panel_width),
@@ -681,7 +502,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
                                     + glyph_column * scale,
                                 y: panel.y
                                     + margin
-                                    + row as u32 * 10 * scale
+                                    + row as u32 * 8 * scale
                                     + glyph_row as u32 * scale,
                                 width: scale,
                                 height: scale,
@@ -794,16 +615,6 @@ mod tests {
             .glyphs
             .iter()
             .all(|rect| rect.color[0] > rect.color[1]));
-    }
-
-    #[test]
-    fn erick_feedback_is_visible_without_quick_actions() {
-        let hud = HudState {
-            feedback: Some("ERICK: destino de navegación seleccionado.".into()),
-            ..Default::default()
-        };
-        let overlay = hud_overlay(&hud, 640, 360);
-        assert!(overlay.glyphs.iter().any(|glyph| glyph.y > 180));
     }
 
     #[test]
@@ -938,8 +749,8 @@ mod tests {
             360,
         );
 
-        let space_start = 6 + 11 * 8;
-        let next_word_start = space_start + 8;
+        let space_start = 12 + 11 * 7;
+        let next_word_start = space_start + 7;
         assert!(!overlay
             .glyphs
             .iter()

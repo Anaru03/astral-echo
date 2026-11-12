@@ -1,4 +1,6 @@
-use glam::Vec4;
+use glam::{Vec2, Vec4};
+use render_core::MaterialHandle;
+use render_core::MaterialTextureRegistry;
 
 use crate::clip::ClipVertex;
 use crate::color::vec4_to_rgba8;
@@ -14,6 +16,8 @@ pub struct ScreenVertex {
     pub z: f32,
     pub inv_w: f32,
     pub color: Vec4,
+    pub uv: Vec2,
+    pub material: Option<MaterialHandle>,
 }
 
 /// Regla de relleno de triángulos.
@@ -39,6 +43,8 @@ pub struct Fragment {
     pub y: u32,
     pub depth: f32,
     pub color: Vec4,
+    pub uv: Vec2,
+    pub material: Option<MaterialHandle>,
 }
 
 /// Efecto ejecutado por la etapa de fragmentos del rasterizador CPU.
@@ -48,6 +54,9 @@ pub enum FragmentShader {
     VertexColor,
     /// Aplica bandas de iluminación deterministas en espacio de pantalla.
     SolarBands,
+    DiagnosticMagenta(MaterialHandle),
+    DiagnosticTextureNormalized(MaterialHandle),
+    DiagnosticTextureRepeat(MaterialHandle),
 }
 
 /// Resultado de una llamada de rasterización.
@@ -81,6 +90,8 @@ pub fn to_screen(v: &ClipVertex, viewport: &Viewport) -> Option<ScreenVertex> {
         z: ndc_z.clamp(0.0, 1.0),
         inv_w,
         color: v.color,
+        uv: v.uv,
+        material: None,
     })
 }
 
@@ -150,20 +161,14 @@ pub(crate) fn raster_triangle_visit(
     if !area.is_finite() || area.abs() < 1e-8 {
         return 0;
     }
+    // Normaliza el winding para que el interior del triángulo quede en `w <= 0`
+    // en las tres aristas, independientemente del orden de entrada.
     let (b, c) = if area > 0.0 { (c, b) } else { (b, c) };
+    // denom = w0 + w1 + w2 = area (constante por triángulo, no por píxel).
     let denom = edge_function(a, b, c);
     if denom.abs() < f32::EPSILON {
         return 0;
     }
-    let edge0_dx = c.x - b.x;
-    let edge0_dy = c.y - b.y;
-    let edge1_dx = a.x - c.x;
-    let edge1_dy = a.y - c.y;
-    let edge2_dx = b.x - a.x;
-    let edge2_dy = b.y - a.y;
-    let edge0_top_left = is_top_left(b, c);
-    let edge1_top_left = is_top_left(c, a);
-    let edge2_top_left = is_top_left(a, b);
     let (fb_w, fb_h) = framebuffer_size;
     let min_x = a.x.min(b.x).min(c.x);
     let max_x = a.x.max(b.x).max(c.x);
@@ -181,15 +186,30 @@ pub(crate) fn raster_triangle_visit(
     }
     let mut count = 0;
     for py in y0..=y1 {
+        if py < 0 || py >= fb_h as i64 {
+            continue;
+        }
         let sy = (py as f32) + 0.5;
         for px in x0..=x1 {
+            if px < 0 || px >= fb_w as i64 {
+                continue;
+            }
             let sx = (px as f32) + 0.5;
+            let p = ScreenVertex {
+                x: sx,
+                y: sy,
+                z: 0.0,
+                inv_w: 0.0,
+                color: Vec4::ZERO,
+                uv: Vec2::ZERO,
+                material: None,
+            };
             // Edge functions computadas una sola vez; se reusan para cobertura
             // y para las coordenadas barícéntricas (evita recomputarlas como
             // hacía la antigua llamada a covers() más el recálculo posterior).
-            let w0 = edge0_dx * (sy - b.y) - edge0_dy * (sx - b.x);
-            let w1 = edge1_dx * (sy - c.y) - edge1_dy * (sx - c.x);
-            let w2 = edge2_dx * (sy - a.y) - edge2_dy * (sx - a.x);
+            let w0 = edge_function(b, c, &p);
+            let w1 = edge_function(c, a, &p);
+            let w2 = edge_function(a, b, &p);
             // Cobertura: descarta si el punto está estrictamente fuera de
             // cualquier arista (equivalente a covers() con FillRule::All).
             if w0 > 0.0 || w1 > 0.0 || w2 > 0.0 {
@@ -198,13 +218,13 @@ pub(crate) fn raster_triangle_visit(
             // FillRule::TopLeft: si el punto cae en una arista, solo se acepta
             // si esa arista es superior o izquierda.
             if rule == FillRule::TopLeft {
-                if w0 == 0.0 && !edge0_top_left {
+                if w0 == 0.0 && !is_top_left(b, c) {
                     continue;
                 }
-                if w1 == 0.0 && !edge1_top_left {
+                if w1 == 0.0 && !is_top_left(c, a) {
                     continue;
                 }
-                if w2 == 0.0 && !edge2_top_left {
+                if w2 == 0.0 && !is_top_left(a, b) {
                     continue;
                 }
             }
@@ -223,11 +243,14 @@ pub(crate) fn raster_triangle_visit(
             let w1p = b1 * b.inv_w / inv_w;
             let w2p = b2 * c.inv_w / inv_w;
             let color = a.color * w0p + b.color * w1p + c.color * w2p;
+            let uv = a.uv * w0p + b.uv * w1p + c.uv * w2p;
             emit(Fragment {
                 x: px as u32,
                 y: py as u32,
                 depth: depth.clamp(0.0, 1.0),
                 color,
+                uv,
+                material: a.material,
             });
             count += 1;
         }
@@ -242,13 +265,42 @@ pub fn shade_fragment(fragment: &Fragment) -> Color {
 
 /// Ejecuta un shader de fragmentos software sobre un fragmento rasterizado.
 pub fn shade_fragment_with_shader(fragment: &Fragment, shader: FragmentShader) -> Color {
-    shade_fragment_with_time(fragment, shader, 0.0)
+    shade_fragment_with_time_and_textures(fragment, shader, 0.0, None)
 }
 
 /// Ejecuta un shader de fragmentos software con una fase temporal explícita.
 pub fn shade_fragment_with_time(fragment: &Fragment, shader: FragmentShader, time: f32) -> Color {
+    shade_fragment_with_time_and_textures(fragment, shader, time, None)
+}
+
+pub fn shade_fragment_with_time_and_textures(
+    fragment: &Fragment,
+    shader: FragmentShader,
+    time: f32,
+    textures: Option<&MaterialTextureRegistry>,
+) -> Color {
     let color = match shader {
         FragmentShader::VertexColor => fragment.color,
+        FragmentShader::DiagnosticMagenta(target) if fragment.material == Some(target) => {
+            Vec4::new(1.0, 0.0, 1.0, 1.0)
+        }
+        FragmentShader::DiagnosticTextureNormalized(target)
+            if fragment.material == Some(target) =>
+        {
+            let mut normalized = *fragment;
+            normalized.uv = fragment.uv.clamp(Vec2::ZERO, Vec2::ONE);
+            texture_color(
+                &normalized,
+                textures,
+                render_core::TextureAddressMode::Clamp,
+            )
+        }
+        FragmentShader::DiagnosticTextureRepeat(target) if fragment.material == Some(target) => {
+            texture_color(fragment, textures, render_core::TextureAddressMode::Repeat)
+        }
+        FragmentShader::DiagnosticMagenta(_)
+        | FragmentShader::DiagnosticTextureNormalized(_)
+        | FragmentShader::DiagnosticTextureRepeat(_) => fragment.color,
         FragmentShader::SolarBands => {
             let time = if time.is_finite() {
                 time.rem_euclid(4096.0)
@@ -267,7 +319,69 @@ pub fn shade_fragment_with_time(fragment: &Fragment, shader: FragmentShader, tim
             )
         }
     };
+    if matches!(
+        shader,
+        FragmentShader::DiagnosticMagenta(target)
+            | FragmentShader::DiagnosticTextureNormalized(target)
+            | FragmentShader::DiagnosticTextureRepeat(target)
+            if fragment.material == Some(target)
+    ) {
+        return vec4_to_rgba8(color);
+    }
+    let color = textures
+        .and_then(|registry| {
+            fragment.material.and_then(|material| {
+                registry
+                    .image_ref(material)
+                    .map(|texture| (texture, registry.address_mode(material)))
+            })
+        })
+        .map_or(color, |(texture, mode)| {
+            color * sample_texture_with_mode(texture, fragment.uv, mode)
+        });
     vec4_to_rgba8(color)
+}
+
+fn texture_color(
+    fragment: &Fragment,
+    registry: Option<&MaterialTextureRegistry>,
+    mode: render_core::TextureAddressMode,
+) -> Vec4 {
+    registry
+        .and_then(|registry| fragment.material.map(|material| (registry, material)))
+        .and_then(|(registry, material)| {
+            registry
+                .image_ref(material)
+                .map(|texture| (texture, material))
+        })
+        .map(|(texture, _)| sample_texture_with_mode(texture, fragment.uv, mode))
+        .unwrap_or(fragment.color)
+}
+
+pub fn sample_texture(texture: &render_core::DecodedTexture, uv: Vec2) -> Vec4 {
+    sample_texture_with_mode(texture, uv, render_core::TextureAddressMode::Clamp)
+}
+
+pub fn sample_texture_with_mode(
+    texture: &render_core::DecodedTexture,
+    uv: Vec2,
+    mode: render_core::TextureAddressMode,
+) -> Vec4 {
+    let wrap = |value: f32| match mode {
+        render_core::TextureAddressMode::Clamp => value.clamp(0.0, 1.0),
+        render_core::TextureAddressMode::Repeat => value.rem_euclid(1.0),
+    };
+    let u = wrap(uv.x);
+    let v = wrap(uv.y);
+    let x = (u * texture.width.saturating_sub(1) as f32).round() as u32;
+    let y = ((1.0 - v) * texture.height.saturating_sub(1) as f32).round() as u32;
+    let index = ((y * texture.width + x) * 4) as usize;
+    Vec4::new(
+        texture.pixels[index] as f32 / 255.0,
+        texture.pixels[index + 1] as f32 / 255.0,
+        texture.pixels[index + 2] as f32 / 255.0,
+        texture.pixels[index + 3] as f32 / 255.0,
+    )
 }
 
 /// Aplica el test de profundidad y escribe el fragmento en el framebuffer.
@@ -284,8 +398,28 @@ pub fn depth_resolve(
             return Ok(false);
         }
     }
+    let translucent = color.a < 255;
+    let color = if translucent {
+        let background = framebuffer
+            .pixel(fragment.x, fragment.y)
+            .unwrap_or(crate::Color::BLACK);
+        let alpha = f32::from(color.a) / 255.0;
+        crate::Color::new(
+            (f32::from(color.r) * alpha + f32::from(background.r) * (1.0 - alpha)) as u8,
+            (f32::from(color.g) * alpha + f32::from(background.g) * (1.0 - alpha)) as u8,
+            (f32::from(color.b) * alpha + f32::from(background.b) * (1.0 - alpha)) as u8,
+            255,
+        )
+    } else {
+        color
+    };
     framebuffer.set_pixel(fragment.x, fragment.y, color);
-    if depth_write {
+    if (fragment.x, fragment.y) == crate::pipeline::trace_pixel_target()
+        && std::env::var("ASTRAL_ECHO_TRACE_PIXEL").ok().as_deref() == Some("center")
+    {
+        crate::pipeline::trace_pixel_write_committed();
+    }
+    if depth_write && !translucent {
         framebuffer.set_depth(fragment.x, fragment.y, fragment.depth);
     }
     Ok(true)

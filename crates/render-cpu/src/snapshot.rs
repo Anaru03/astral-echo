@@ -3,9 +3,64 @@ use render_core::{
 };
 
 use crate::{
-    Color, CpuPipeline, CpuPipelineScratch, FragmentShader, Framebuffer, PipelineConfig,
-    PipelineStats, RasterError, RasterMode, TileConfig, Topology, Viewport,
+    Color, CpuPipeline, FragmentShader, Framebuffer, PipelineConfig, PipelineStats, RasterError,
+    RasterMode, TileConfig, Topology, Viewport,
 };
+
+fn trace_mount_draws(scene: &SnapshotScene, prepared: &PreparedScene) {
+    if std::env::var_os("ASTRAL_ECHO_MOUNT_TRACE").is_none() {
+        return;
+    }
+    static TRACED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if TRACED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let mut parents = std::collections::BTreeMap::<u64, (usize, usize, usize, Vec<_>)>::new();
+    for draw in prepared.draws() {
+        if let render_core::SnapshotId::ModelPart { parent, .. } = draw.node.entity {
+            let entry = parents.entry(parent).or_default();
+            entry.0 += 1;
+            entry.1 += draw.mesh.vertices.len();
+            entry.2 += draw.mesh.indices.len() / 3;
+            entry
+                .3
+                .push((draw.node.mesh, draw.node.material, draw.visibility));
+        }
+    }
+    if parents.is_empty() {
+        return;
+    }
+    let camera = scene.snapshot().camera_position;
+    let mut bounds = std::collections::BTreeMap::<u64, Vec<_>>::new();
+    for (node, mesh) in scene.draws() {
+        if let render_core::SnapshotId::ModelPart { parent, .. } = node.entity {
+            let mut min = render_core::Vec3::splat(f32::INFINITY);
+            let mut max = render_core::Vec3::splat(f32::NEG_INFINITY);
+            for vertex in &mesh.vertices {
+                min = min.min(vertex.position);
+                max = max.max(vertex.position);
+            }
+            let world = render_core::Aabb { min, max }.transformed(node.transform.matrix());
+            bounds.entry(parent).or_default().push((
+                node.mesh,
+                world,
+                world.contains_point(camera),
+                render_core::Frustum::from_view_projection(scene.view_projection())
+                    .intersects_aabb(world),
+            ));
+        }
+    }
+    TRACED.store(true, std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "mount-trace stage=cpu_prepare renderer={:p} camera={camera:?} snapshot_nodes={} considered={} visible={} discarded={} triangles={} model_parents={parents:?} bounds={bounds:?}",
+        scene,
+        scene.snapshot().nodes.len(),
+        prepared.considered,
+        prepared.visible,
+        prepared.discarded,
+        prepared.triangles
+    );
+}
 
 fn cpu_culling_config(framebuffer: &Framebuffer) -> render_core::CullingConfig {
     let mut config = render_core::CullingConfig {
@@ -18,6 +73,20 @@ fn cpu_culling_config(framebuffer: &Framebuffer) -> render_core::CullingConfig {
         config.high_threshold_px = f32::MAX;
     }
     config
+}
+
+pub fn diagnostic_fragment_shader() -> Option<FragmentShader> {
+    let target = std::env::var("ASTRAL_ECHO_CPU_DIAGNOSTIC_HANDLE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(render_core::MaterialHandle::new)
+        .unwrap_or_else(|| render_core::MaterialHandle::new(100_830));
+    match std::env::var("ASTRAL_ECHO_CPU_DIAGNOSTIC").ok().as_deref() {
+        Some("magenta") => Some(FragmentShader::DiagnosticMagenta(target)),
+        Some("normalized") => Some(FragmentShader::DiagnosticTextureNormalized(target)),
+        Some("repeat") => Some(FragmentShader::DiagnosticTextureRepeat(target)),
+        _ => None,
+    }
 }
 
 pub fn render_snapshot_scene(
@@ -34,81 +103,109 @@ pub fn render_snapshot_scene_with_stats(
     scene: &SnapshotScene,
     mode: RasterMode,
 ) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
-    render_snapshot_scene_with_stats_and_scratch(
-        framebuffer,
-        scene,
-        mode,
-        &mut CpuPipelineScratch::default(),
-    )
-}
-
-pub fn render_snapshot_scene_with_stats_and_scratch(
-    framebuffer: &mut Framebuffer,
-    scene: &SnapshotScene,
-    mode: RasterMode,
-    scratch: &mut CpuPipelineScratch,
-) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
-    let prepared = scene.prepare(cpu_culling_config(framebuffer));
+    let prepared = scene.prepare(render_core::CullingConfig {
+        width: framebuffer.width(),
+        height: framebuffer.height(),
+        ..Default::default()
+    });
     let prepared_stats = prepared.stats();
-    let pipeline_stats = render_prepared_scene_with_scratch(
+    trace_mount_draws(scene, &prepared);
+    let pipeline_stats = render_prepared_scene_with_clear(
         framebuffer,
         &prepared,
         scene.view_projection(),
         mode,
         overlay_clear_color(scene.overlay()),
         scene.overlay().game_over,
-        FragmentShader::VertexColor,
-        0.0,
-        PipelineConfig::default(),
-        scratch,
     )?;
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, scene, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats))
 }
 
-pub fn compose_hud_overlay(framebuffer: &mut Framebuffer, hud: &render_core::HudState) {
+pub fn compose_hud_overlay(
+    framebuffer: &mut Framebuffer,
+    scene: &SnapshotScene,
+    hud: &render_core::HudState,
+) {
     let overlay = render_core::hud_overlay(hud, framebuffer.width(), framebuffer.height());
-    let width = framebuffer.width() as usize;
-    let height = framebuffer.height() as usize;
-    let (pixels, _) = framebuffer.color_depth_slices_mut();
     for rect in std::iter::once(overlay.background).chain(overlay.glyphs) {
-        let x0 = (rect.x as usize).min(width);
-        let y0 = (rect.y as usize).min(height);
-        let x1 = (rect.x as usize)
-            .saturating_add(rect.width as usize)
-            .min(width);
-        let y1 = (rect.y as usize)
-            .saturating_add(rect.height as usize)
-            .min(height);
-        if x0 >= x1 || y0 >= y1 {
-            continue;
-        }
-        if rect.color[3] == 0 {
-            continue;
-        }
-        if rect.color[3] == 255 {
-            for y in y0..y1 {
-                let start = (y * width + x0) * 4;
-                let end = (y * width + x1) * 4;
-                for pixel in pixels[start..end].chunks_exact_mut(4) {
-                    pixel.copy_from_slice(&rect.color);
-                }
+        for y in rect.y..rect.y.saturating_add(rect.height) {
+            for x in rect.x..rect.x.saturating_add(rect.width) {
+                let Some(destination) = framebuffer.pixel(x, y) else {
+                    continue;
+                };
+                let alpha = f32::from(rect.color[3]) / 255.0;
+                let blend = |source: u8, target: u8| {
+                    (f32::from(source) * alpha + f32::from(target) * (1.0 - alpha)) as u8
+                };
+                framebuffer.set_pixel(
+                    x,
+                    y,
+                    Color::new(
+                        blend(rect.color[0], destination.r),
+                        blend(rect.color[1], destination.g),
+                        blend(rect.color[2], destination.b),
+                        255,
+                    ),
+                );
             }
-            continue;
         }
-        let alpha = f32::from(rect.color[3]) / 255.0;
-        let inverse_alpha = 1.0 - alpha;
-        for y in y0..y1 {
-            let start = (y * width + x0) * 4;
-            let end = (y * width + x1) * 4;
-            for pixel in pixels[start..end].chunks_exact_mut(4) {
-                pixel[0] =
-                    (f32::from(rect.color[0]) * alpha + f32::from(pixel[0]) * inverse_alpha) as u8;
-                pixel[1] =
-                    (f32::from(rect.color[1]) * alpha + f32::from(pixel[1]) * inverse_alpha) as u8;
-                pixel[2] =
-                    (f32::from(rect.color[2]) * alpha + f32::from(pixel[2]) * inverse_alpha) as u8;
-                pixel[3] = 255;
+    }
+    if hud.inventory_open {
+        let scale = (framebuffer.width() / 480).clamp(1, 3);
+        let margin = 12 * scale;
+        let char_width = 7 * scale;
+        let max_chars = std::iter::once("INVENTARIO".chars().count())
+            .chain(
+                hud.inventory_items
+                    .iter()
+                    .map(|item| item.chars().count() + 4),
+            )
+            .max()
+            .unwrap_or(12);
+        let inventory_width = (max_chars as u32 * char_width + margin * 2)
+            .min(framebuffer.width().saturating_sub(margin * 2));
+        let inventory_x = framebuffer.width().saturating_sub(margin + inventory_width);
+        for (index, item) in hud.inventory_items.iter().enumerate() {
+            let Some(item_id) = item
+                .strip_prefix("ITEM ")
+                .and_then(|value| value.split_whitespace().next())
+                .and_then(|value| value.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            let material = render_core::MaterialHandle::new(500 + item_id);
+            let Some(texture) = scene.texture_image(material) else {
+                continue;
+            };
+            let size = (8 * scale).min(16);
+            let x = inventory_x + margin / 2;
+            let y = margin + margin / 2 + 8 * scale + index as u32 * 8 * scale;
+            for py in 0..size {
+                for px in 0..size {
+                    let sx = (px * texture.width / size).min(texture.width.saturating_sub(1));
+                    let sy = (py * texture.height / size).min(texture.height.saturating_sub(1));
+                    let offset = ((sy * texture.width + sx) * 4) as usize;
+                    if offset + 3 >= texture.pixels.len() {
+                        continue;
+                    }
+                    let alpha = texture.pixels[offset + 3];
+                    if alpha == 0 {
+                        continue;
+                    }
+                    framebuffer.set_pixel(
+                        x + px,
+                        y + py,
+                        Color::new(
+                            texture.pixels[offset],
+                            texture.pixels[offset + 1],
+                            texture.pixels[offset + 2],
+                            alpha,
+                        ),
+                    );
+                }
             }
         }
     }
@@ -123,6 +220,7 @@ pub fn render_snapshot_scene_with_timing(
     let prepared = scene.prepare(cpu_culling_config(framebuffer));
     let preparation_ns = preparation_started.elapsed().as_nanos() as u64;
     let prepared_stats = prepared.stats();
+    trace_mount_draws(scene, &prepared);
     let pipeline_stats = render_prepared_scene_with_config(
         framebuffer,
         &prepared,
@@ -135,7 +233,9 @@ pub fn render_snapshot_scene_with_timing(
             ..Default::default()
         },
     )?;
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, scene, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats, preparation_ns))
 }
 
@@ -158,6 +258,7 @@ pub fn render_snapshot_scene_with_shader_at_time_with_stats(
 ) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
     let prepared = scene.prepare(cpu_culling_config(framebuffer));
     let prepared_stats = prepared.stats();
+    trace_mount_draws(scene, &prepared);
     let pipeline_stats = render_prepared_scene_with_shader(
         framebuffer,
         &prepared,
@@ -169,7 +270,9 @@ pub fn render_snapshot_scene_with_shader_at_time_with_stats(
         time,
         PipelineConfig::default(),
     )?;
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, scene, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats))
 }
 
@@ -219,7 +322,9 @@ pub fn render_snapshot_scene_reference(
     }
     let stats = pipeline.stats;
     drop(pipeline);
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, scene, &scene.overlay().hud);
+    }
     Ok(stats)
 }
 
@@ -274,7 +379,7 @@ fn render_prepared_scene_with_config(
         mode,
         clear,
         game_over,
-        FragmentShader::VertexColor,
+        diagnostic_fragment_shader().unwrap_or(FragmentShader::VertexColor),
         0.0,
         config,
     )
@@ -291,73 +396,33 @@ fn render_prepared_scene_with_shader(
     time: f32,
     config: PipelineConfig,
 ) -> Result<PipelineStats, RasterError> {
-    render_prepared_scene_with_scratch(
-        framebuffer,
-        scene,
-        view_projection,
-        mode,
-        clear,
-        game_over,
-        shader,
-        time,
-        config,
-        &mut CpuPipelineScratch::default(),
-    )
-}
-
-fn render_prepared_scene_with_scratch(
-    framebuffer: &mut Framebuffer,
-    scene: &PreparedScene,
-    view_projection: render_core::Mat4,
-    mode: RasterMode,
-    clear: Color,
-    game_over: bool,
-    shader: FragmentShader,
-    time: f32,
-    config: PipelineConfig,
-    scratch: &mut CpuPipelineScratch,
-) -> Result<PipelineStats, RasterError> {
     let viewport = Viewport::from_size(framebuffer.width(), framebuffer.height())?;
-    let mut pipeline =
-        CpuPipeline::new_with_scratch(framebuffer, viewport, config, std::mem::take(scratch))
-            .with_fragment_shader(shader)
-            .with_fragment_time(time)
-            .with_tile_config(TileConfig {
-                tile_size: 16,
-                mode,
-            });
+    let mut pipeline = CpuPipeline::new(framebuffer, viewport, config)
+        .with_fragment_shader(shader)
+        .with_fragment_time(time)
+        .with_tile_config(TileConfig {
+            tile_size: 16,
+            mode,
+        });
     pipeline.clear(clear);
     if game_over {
         let stats = pipeline.stats;
-        *scratch = pipeline.into_scratch();
+        drop(pipeline);
         draw_game_over(framebuffer);
         return Ok(stats);
     }
-    let draw_result = pipeline.draw_prepared_scene(scene, view_projection);
-    let stats = pipeline.stats;
-    *scratch = pipeline.into_scratch();
-    draw_result?;
-    Ok(stats)
+    pipeline.draw_prepared_scene(scene, view_projection)?;
+    Ok(pipeline.stats)
 }
 
 fn draw_game_over(framebuffer: &mut Framebuffer) {
-    let (left, top, scale) = game_over_layout(framebuffer.width(), framebuffer.height());
-    let color = Color::new(255, 64, 48, 255);
-    for (glyph_index, glyph) in GAME_OVER_GLYPHS.iter().enumerate() {
-        let word_gap = u32::from(glyph_index >= 4) * 2 * scale;
-        let glyph_left = left + glyph_index as u32 * 6 * scale + word_gap;
-        for (row, bits) in glyph.iter().copied().enumerate() {
-            for column in 0..5u32 {
-                if bits & (1 << (4 - column)) == 0 {
-                    continue;
-                }
-                let x = glyph_left + column * scale;
-                let y = top + row as u32 * scale;
-                for dy in 0..scale {
-                    for dx in 0..scale {
-                        framebuffer.set_pixel(x + dx, y + dy, color);
-                    }
-                }
+    for rect in
+        render_core::game_over_ui::game_over_rects(framebuffer.width(), framebuffer.height())
+    {
+        let color = Color::new(rect.color[0], rect.color[1], rect.color[2], rect.color[3]);
+        for y in rect.y..rect.y + rect.height {
+            for x in rect.x..rect.x + rect.width {
+                framebuffer.set_pixel(x, y, color);
             }
         }
     }

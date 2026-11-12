@@ -10,12 +10,12 @@ pub mod scene;
 mod snapshot;
 pub mod viewport;
 pub use snapshot::{
-    compose_hud_overlay, render_prepared_scene, render_snapshot_scene,
+    compose_hud_overlay, diagnostic_fragment_shader, render_prepared_scene, render_snapshot_scene,
     render_snapshot_scene_reference, render_snapshot_scene_with_shader,
     render_snapshot_scene_with_shader_at_time,
     render_snapshot_scene_with_shader_at_time_with_stats,
     render_snapshot_scene_with_shader_with_stats, render_snapshot_scene_with_stats,
-    render_snapshot_scene_with_stats_and_scratch, render_snapshot_scene_with_timing,
+    render_snapshot_scene_with_timing,
 };
 
 pub use clip::{
@@ -36,7 +36,9 @@ pub use pipeline::tiles::{
     TileStats,
 };
 pub use pipeline::vertex::VertexStage;
-pub use pipeline::{CpuPipeline, CpuPipelineScratch};
+pub use pipeline::{
+    reset_trace_pixel_writes, set_trace_pixel_target, trace_pixel_writes, CpuPipeline,
+};
 pub use rasterizer::{RasterConfig, RasterStats, Rasterizer, Winding};
 pub use scene::{
     demo_camera, demo_scene, grid_mesh, terrain_height, GRID_SUBDIVISIONS, TERRAIN_EXTENT,

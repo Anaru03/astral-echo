@@ -1,12 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, Cursor};
-use std::num::{NonZeroU16, NonZeroU32};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use rodio::{buffer::SamplesBuffer, Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MusicTrack {
@@ -23,17 +22,6 @@ pub enum SoundEffect {
     PlayerImpacted,
     GameOver,
     ShipPropulsion,
-    ShipBoost,
-    ShipBrake,
-    ShipTurn,
-    DestinationSelect,
-    ShieldOn,
-    ShieldOff,
-    ShieldHit,
-    WarningAlert,
-    Takeoff,
-    AutopilotEngage,
-    AutopilotArrival,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,7 +100,6 @@ struct AudioResources {
 
 struct MusicPlayback {
     player: Player,
-    playlist_index: Option<usize>,
 }
 
 struct RodioOutput {
@@ -124,97 +111,12 @@ struct RodioOutput {
 #[derive(Clone, Copy)]
 enum PendingAudioTarget {
     Music { track: MusicTrack, looping: bool },
-    Playlist { index: usize },
     Effect(SoundEffect),
 }
 
 struct LoadedAudio {
     target: PendingAudioTarget,
     bytes: Result<Vec<u8>, AudioError>,
-}
-
-fn audio_asset_path(path: impl AsRef<Path>) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/audio")
-        .join(path)
-}
-
-fn decode_pcm_wav(bytes: &[u8]) -> Result<SamplesBuffer, AudioError> {
-    if bytes.get(0..4) != Some(&b"RIFF"[..]) || bytes.get(8..12) != Some(&b"WAVE"[..]) {
-        return Err(AudioError::LoadFailed);
-    }
-
-    let mut offset = 12usize;
-    let mut format = None;
-    let mut data = None;
-    while offset.checked_add(8).is_some_and(|end| end <= bytes.len()) {
-        let chunk_id = &bytes[offset..offset + 4];
-        let chunk_size = u32::from_le_bytes(
-            bytes[offset + 4..offset + 8]
-                .try_into()
-                .map_err(|_| AudioError::LoadFailed)?,
-        ) as usize;
-        let chunk_start = offset + 8;
-        let chunk_end = chunk_start
-            .checked_add(chunk_size)
-            .filter(|end| *end <= bytes.len())
-            .ok_or(AudioError::LoadFailed)?;
-        match chunk_id {
-            b"fmt " if chunk_size >= 16 => {
-                let chunk = &bytes[chunk_start..chunk_end];
-                format = Some((
-                    u16::from_le_bytes([chunk[0], chunk[1]]),
-                    u16::from_le_bytes([chunk[2], chunk[3]]),
-                    u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]),
-                    u16::from_le_bytes([chunk[14], chunk[15]]),
-                ));
-            }
-            b"data" => data = Some(&bytes[chunk_start..chunk_end]),
-            _ => {}
-        }
-        offset = chunk_end.saturating_add(chunk_size & 1);
-    }
-
-    let (encoding, channels, sample_rate, bits_per_sample) =
-        format.ok_or(AudioError::LoadFailed)?;
-    let samples = data.ok_or(AudioError::LoadFailed)?;
-    if encoding != 1 || bits_per_sample != 16 || samples.len() % 2 != 0 {
-        return Err(AudioError::LoadFailed);
-    }
-    let channels = NonZeroU16::new(channels).ok_or(AudioError::LoadFailed)?;
-    let sample_rate = NonZeroU32::new(sample_rate).ok_or(AudioError::LoadFailed)?;
-    if samples.len() % (channels.get() as usize * 2) != 0 {
-        return Err(AudioError::LoadFailed);
-    }
-    let decoded = samples
-        .chunks_exact(2)
-        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32768.0)
-        .collect::<Vec<_>>();
-    Ok(SamplesBuffer::new(channels, sample_rate, decoded))
-}
-
-fn discover_music_playlist() -> Vec<PathBuf> {
-    let directory = audio_asset_path("music");
-    let mut tracks = std::fs::read_dir(&directory)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"))
-        })
-        .collect::<Vec<_>>();
-    let legacy_track = audio_asset_path("exploration.mp3");
-    if legacy_track.is_file() && !tracks.contains(&legacy_track) {
-        tracks.push(legacy_track);
-    }
-    tracks.sort();
-    tracks
 }
 
 impl RodioOutput {
@@ -266,12 +168,8 @@ impl AudioEventCursor {
 pub struct AudioManager {
     output: Option<RodioOutput>,
     resources: AudioResources,
-    playlist: Vec<PathBuf>,
-    current_music_index: Option<usize>,
-    playlist_loading: bool,
     config: AudioConfig,
     focused: bool,
-    music_paused: bool,
     closed: bool,
     reported_errors: HashSet<SoundEffect>,
     load_tx: Sender<LoadedAudio>,
@@ -282,50 +180,37 @@ pub struct AudioManager {
 impl AudioManager {
     pub fn new() -> Self {
         let (load_tx, load_rx) = mpsc::channel();
-        let output = match RodioOutput::open() {
-            Ok(output) => Some(output),
-            Err(error) => {
-                eprintln!("audio: salida de audio no disponible ({error:?})");
-                None
-            }
-        };
         Self {
-            output,
+            output: RodioOutput::open().ok(),
             resources: AudioResources {
-                music: [(MusicTrack::Exploration, audio_asset_path("exploration.mp3"))]
-                    .into_iter()
-                    .collect(),
+                music: [(
+                    MusicTrack::Exploration,
+                    PathBuf::from("assets/audio/exploration.ogg"),
+                )]
+                .into_iter()
+                .collect(),
                 effects: [
-                    (SoundEffect::PlayerAttack, "sfx/attack.wav"),
-                    (SoundEffect::EnemyDefeated, "sfx/enemy_defeated.wav"),
-                    (SoundEffect::Collect, "sfx/collect.wav"),
-                    (SoundEffect::Scan, "sfx/scan.wav"),
-                    (SoundEffect::Landing, "sfx/landing.wav"),
-                    (SoundEffect::PlayerImpacted, "sfx/impact.wav"),
-                    (SoundEffect::GameOver, "sfx/game_over.wav"),
-                    (SoundEffect::ShipPropulsion, "sfx/ship_propulsion.wav"),
-                    (SoundEffect::ShipBoost, "sfx/ship_boost.wav"),
-                    (SoundEffect::ShipBrake, "sfx/ship_brake.wav"),
-                    (SoundEffect::ShipTurn, "sfx/turn.wav"),
-                    (SoundEffect::DestinationSelect, "sfx/destination_select.wav"),
-                    (SoundEffect::ShieldOn, "sfx/shield_on.wav"),
-                    (SoundEffect::ShieldOff, "sfx/shield_off.wav"),
-                    (SoundEffect::ShieldHit, "sfx/shield_hit.wav"),
-                    (SoundEffect::WarningAlert, "sfx/warning_alert.wav"),
-                    (SoundEffect::Takeoff, "sfx/takeoff.wav"),
-                    (SoundEffect::AutopilotEngage, "sfx/autopilot_engage.wav"),
-                    (SoundEffect::AutopilotArrival, "sfx/autopilot_arrival.wav"),
+                    (SoundEffect::PlayerAttack, "assets/audio/sfx/attack.wav"),
+                    (
+                        SoundEffect::EnemyDefeated,
+                        "assets/audio/sfx/enemy_defeated.wav",
+                    ),
+                    (SoundEffect::Collect, "assets/audio/sfx/collect.wav"),
+                    (SoundEffect::Scan, "assets/audio/sfx/scan.wav"),
+                    (SoundEffect::Landing, "assets/audio/sfx/landing.wav"),
+                    (SoundEffect::PlayerImpacted, "assets/audio/sfx/impact.wav"),
+                    (SoundEffect::GameOver, "assets/audio/sfx/game_over.wav"),
+                    (
+                        SoundEffect::ShipPropulsion,
+                        "assets/audio/sfx/ship_propulsion.wav",
+                    ),
                 ]
                 .into_iter()
-                .map(|(effect, path)| (effect, audio_asset_path(path)))
+                .map(|(effect, path)| (effect, PathBuf::from(path)))
                 .collect(),
             },
-            playlist: Vec::new(),
-            current_music_index: None,
-            playlist_loading: false,
             config: AudioConfig::default(),
             focused: true,
-            music_paused: false,
             closed: false,
             reported_errors: HashSet::new(),
             load_tx,
@@ -343,37 +228,7 @@ impl AudioManager {
     }
 
     pub fn request_exploration_music(&mut self) {
-        self.playlist = discover_music_playlist();
-        if self.playlist.is_empty() {
-            self.queue_music(MusicTrack::Exploration, true);
-        } else {
-            self.queue_playlist_track(0);
-        }
-    }
-
-    pub fn toggle_music_pause(&mut self) {
-        if self.music_paused {
-            self.music_paused = false;
-            self.resume_music();
-        } else {
-            self.music_paused = true;
-            self.pause_music();
-        }
-    }
-
-    pub fn toggle_muted(&mut self) {
-        self.set_muted(!self.config.muted);
-    }
-
-    pub fn next_music(&mut self) {
-        self.playlist = discover_music_playlist();
-        if self.playlist.is_empty() || self.playlist_loading {
-            return;
-        }
-        let next = self
-            .current_music_index
-            .map_or(0, |index| (index + 1) % self.playlist.len());
-        self.queue_playlist_track(next);
+        self.queue_music(MusicTrack::Exploration, true);
     }
 
     pub fn register_music(&mut self, track: MusicTrack, path: impl Into<PathBuf>) {
@@ -425,10 +280,7 @@ impl AudioManager {
         let player = Player::connect_new(output.device.mixer());
         player.set_volume(self.config.music_gain());
         player.append(source);
-        if let Some(previous) = output.music.replace(MusicPlayback {
-            player,
-            playlist_index: None,
-        }) {
+        if let Some(previous) = output.music.replace(MusicPlayback { player }) {
             previous.player.stop();
         }
         Ok(())
@@ -443,10 +295,7 @@ impl AudioManager {
         let player = Player::connect_new(output.device.mixer());
         player.set_volume(volume);
         player.append(source);
-        if let Some(previous) = output.music.replace(MusicPlayback {
-            player,
-            playlist_index: None,
-        }) {
+        if let Some(previous) = output.music.replace(MusicPlayback { player }) {
             previous.player.stop();
         }
         Ok(())
@@ -469,7 +318,7 @@ impl AudioManager {
     }
 
     pub fn resume_music(&mut self) {
-        if self.focused && !self.music_paused {
+        if self.focused {
             if let Some(output) = &self.output {
                 if let Some(music) = &output.music {
                     music.player.play();
@@ -530,15 +379,9 @@ impl AudioManager {
             match loaded.bytes {
                 Ok(bytes) => self.finish_load(loaded.target, bytes),
                 Err(error) => {
-                    if matches!(loaded.target, PendingAudioTarget::Playlist { .. }) {
-                        self.playlist_loading = false;
-                        self.playlist.clear();
-                    }
                     let effect = match loaded.target {
                         PendingAudioTarget::Effect(effect) => Some(effect),
-                        PendingAudioTarget::Music { .. } | PendingAudioTarget::Playlist { .. } => {
-                            None
-                        }
+                        PendingAudioTarget::Music { .. } => None,
                     };
                     self.report_error(error, effect);
                 }
@@ -546,19 +389,6 @@ impl AudioManager {
         }
         if let Some(output) = &mut self.output {
             output.effects.retain(|effect| !effect.empty());
-        }
-        if !self.playlist_loading {
-            let ended_index = self.output.as_ref().and_then(|output| {
-                output
-                    .music
-                    .as_ref()
-                    .and_then(|music| music.playlist_index.filter(|_| music.player.empty()))
-            });
-            if let Some(index) = ended_index {
-                if !self.playlist.is_empty() {
-                    self.queue_playlist_track((index + 1) % self.playlist.len());
-                }
-            }
         }
     }
 
@@ -595,17 +425,6 @@ impl AudioManager {
         self.queue_load(PendingAudioTarget::Music { track, looping }, path);
     }
 
-    fn queue_playlist_track(&mut self, index: usize) {
-        if self.closed || self.output.is_none() || self.playlist_loading {
-            return;
-        }
-        let Some(path) = self.playlist.get(index).cloned() else {
-            return;
-        };
-        self.playlist_loading = true;
-        self.queue_load(PendingAudioTarget::Playlist { index }, path);
-    }
-
     fn queue_load(&self, target: PendingAudioTarget, path: PathBuf) {
         if self.output.is_none() {
             return;
@@ -620,7 +439,6 @@ impl AudioManager {
     fn finish_load(&mut self, target: PendingAudioTarget, bytes: Vec<u8>) {
         match target {
             PendingAudioTarget::Music { looping, .. } => {
-                self.playlist_loading = false;
                 let result = if looping {
                     Decoder::new_looped(Cursor::new(bytes)).map(|source| {
                         let Some(output) = self.output.as_mut() else {
@@ -629,13 +447,7 @@ impl AudioManager {
                         let player = Player::connect_new(output.device.mixer());
                         player.set_volume(self.config.music_gain());
                         player.append(source);
-                        if self.music_paused || !self.focused {
-                            player.pause();
-                        }
-                        if let Some(previous) = output.music.replace(MusicPlayback {
-                            player,
-                            playlist_index: None,
-                        }) {
+                        if let Some(previous) = output.music.replace(MusicPlayback { player }) {
                             previous.player.stop();
                         }
                     })
@@ -647,13 +459,7 @@ impl AudioManager {
                         let player = Player::connect_new(output.device.mixer());
                         player.set_volume(self.config.music_gain());
                         player.append(source);
-                        if self.music_paused || !self.focused {
-                            player.pause();
-                        }
-                        if let Some(previous) = output.music.replace(MusicPlayback {
-                            player,
-                            playlist_index: None,
-                        }) {
+                        if let Some(previous) = output.music.replace(MusicPlayback { player }) {
                             previous.player.stop();
                         }
                     })
@@ -662,56 +468,19 @@ impl AudioManager {
                     self.report_error(AudioError::LoadFailed, None);
                 }
             }
-            PendingAudioTarget::Playlist { index } => {
-                self.playlist_loading = false;
-                let result = Decoder::new(Cursor::new(bytes)).map(|source| {
-                    let Some(output) = self.output.as_mut() else {
-                        return;
-                    };
-                    let player = Player::connect_new(output.device.mixer());
-                    player.set_volume(self.config.music_gain());
-                    player.append(source);
-                    if self.music_paused || !self.focused {
-                        player.pause();
-                    }
-                    if let Some(previous) = output.music.replace(MusicPlayback {
-                        player,
-                        playlist_index: Some(index),
-                    }) {
-                        previous.player.stop();
-                    }
-                    self.current_music_index = Some(index);
-                });
-                if result.is_err() {
-                    self.playlist.clear();
-                    self.report_error(AudioError::LoadFailed, None);
-                }
-            }
             PendingAudioTarget::Effect(effect) => {
-                if bytes.get(0..4) == Some(&b"RIFF"[..]) {
-                    match decode_pcm_wav(&bytes) {
-                        Ok(source) => self.append_effect_source(source),
-                        Err(error) => self.report_error(error, Some(effect)),
+                match Decoder::new(BufReader::new(Cursor::new(bytes))) {
+                    Ok(source) => {
+                        if let Some(output) = &mut self.output {
+                            let player = Player::connect_new(output.device.mixer());
+                            player.set_volume(self.config.effects_gain());
+                            player.append(source);
+                            output.effects.push(player);
+                        }
                     }
-                } else {
-                    match Decoder::new(BufReader::new(Cursor::new(bytes))) {
-                        Ok(source) => self.append_effect_source(source),
-                        Err(_) => self.report_error(AudioError::LoadFailed, Some(effect)),
-                    }
+                    Err(_) => self.report_error(AudioError::LoadFailed, Some(effect)),
                 }
             }
-        }
-    }
-
-    fn append_effect_source<S>(&mut self, source: S)
-    where
-        S: Source + Send + 'static,
-    {
-        if let Some(output) = &mut self.output {
-            let player = Player::connect_new(output.device.mixer());
-            player.set_volume(self.config.effects_gain());
-            player.append(source);
-            output.effects.push(player);
         }
     }
 
@@ -774,53 +543,29 @@ mod tests {
 
         assert_eq!(
             audio.resources.music.get(&MusicTrack::Exploration),
-            Some(&audio_asset_path("exploration.mp3"))
+            Some(&PathBuf::from("assets/audio/exploration.ogg"))
         );
         let expected_effects = [
-            (SoundEffect::PlayerAttack, "sfx/attack.wav"),
-            (SoundEffect::EnemyDefeated, "sfx/enemy_defeated.wav"),
-            (SoundEffect::Collect, "sfx/collect.wav"),
-            (SoundEffect::Scan, "sfx/scan.wav"),
-            (SoundEffect::Landing, "sfx/landing.wav"),
-            (SoundEffect::PlayerImpacted, "sfx/impact.wav"),
-            (SoundEffect::GameOver, "sfx/game_over.wav"),
-            (SoundEffect::ShipPropulsion, "sfx/ship_propulsion.wav"),
-            (SoundEffect::ShipBoost, "sfx/ship_boost.wav"),
-            (SoundEffect::ShipBrake, "sfx/ship_brake.wav"),
-            (SoundEffect::ShipTurn, "sfx/turn.wav"),
-            (SoundEffect::DestinationSelect, "sfx/destination_select.wav"),
-            (SoundEffect::ShieldOn, "sfx/shield_on.wav"),
-            (SoundEffect::ShieldOff, "sfx/shield_off.wav"),
-            (SoundEffect::ShieldHit, "sfx/shield_hit.wav"),
-            (SoundEffect::WarningAlert, "sfx/warning_alert.wav"),
-            (SoundEffect::Takeoff, "sfx/takeoff.wav"),
-            (SoundEffect::AutopilotEngage, "sfx/autopilot_engage.wav"),
-            (SoundEffect::AutopilotArrival, "sfx/autopilot_arrival.wav"),
+            (SoundEffect::PlayerAttack, "assets/audio/sfx/attack.wav"),
+            (
+                SoundEffect::EnemyDefeated,
+                "assets/audio/sfx/enemy_defeated.wav",
+            ),
+            (SoundEffect::Collect, "assets/audio/sfx/collect.wav"),
+            (SoundEffect::Scan, "assets/audio/sfx/scan.wav"),
+            (SoundEffect::Landing, "assets/audio/sfx/landing.wav"),
+            (SoundEffect::PlayerImpacted, "assets/audio/sfx/impact.wav"),
+            (SoundEffect::GameOver, "assets/audio/sfx/game_over.wav"),
+            (
+                SoundEffect::ShipPropulsion,
+                "assets/audio/sfx/ship_propulsion.wav",
+            ),
         ];
         for (effect, path) in expected_effects {
             assert_eq!(
                 audio.resources.effects.get(&effect),
-                Some(&audio_asset_path(path))
+                Some(&PathBuf::from(path))
             );
-        }
-    }
-
-    #[test]
-    fn every_default_sound_effect_has_a_decodable_audio_file() {
-        let audio = AudioManager::new();
-        for (effect, path) in &audio.resources.effects {
-            let bytes = std::fs::read(path).unwrap_or_else(|error| {
-                panic!(
-                    "could not open {effect:?} audio at {}: {error}",
-                    path.display()
-                )
-            });
-            decode_pcm_wav(&bytes).unwrap_or_else(|error| {
-                panic!(
-                    "could not decode {effect:?} audio at {}: {error:?}",
-                    path.display()
-                )
-            });
         }
     }
 
@@ -841,12 +586,8 @@ mod tests {
         let mut audio = AudioManager {
             output: None,
             resources: AudioResources::default(),
-            playlist: Vec::new(),
-            current_music_index: None,
-            playlist_loading: false,
             config: AudioConfig::default(),
             focused: true,
-            music_paused: false,
             closed: false,
             reported_errors: HashSet::new(),
             load_tx: mpsc::channel().0,
@@ -873,12 +614,8 @@ mod tests {
         let mut audio = AudioManager {
             output: None,
             resources: AudioResources::default(),
-            playlist: Vec::new(),
-            current_music_index: None,
-            playlist_loading: false,
             config: AudioConfig::default(),
             focused: true,
-            music_paused: false,
             closed: false,
             reported_errors: HashSet::new(),
             load_tx: mpsc::channel().0,

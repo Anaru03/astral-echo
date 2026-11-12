@@ -4,9 +4,11 @@ use rayon::prelude::*;
 
 use crate::framebuffer::Framebuffer;
 use crate::pipeline::raster::{
-    edge_function, raster_triangle_visit, shade_fragment_with_time, FillRule, FragmentShader,
-    ScreenVertex,
+    edge_function, raster_triangle_visit, shade_fragment_with_time_and_textures, FillRule,
+    FragmentShader, ScreenVertex,
 };
+use render_core::MaterialTextureRegistry;
+use render_core::SnapshotId;
 
 /// Rectangle que representa un tile en la cuadrícula de tiles.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -212,6 +214,8 @@ pub fn rasterize_triangles_tiled(
         config,
         FragmentShader::VertexColor,
         0.0,
+        None,
+        None,
     )
 }
 
@@ -224,6 +228,8 @@ pub(crate) fn rasterize_triangles_tiled_with_shader(
     config: TileConfig,
     fragment_shader: FragmentShader,
     fragment_time: f32,
+    textures: Option<&MaterialTextureRegistry>,
+    trace_draw: Option<SnapshotId>,
 ) -> TileStats {
     rasterize_triangles_tiled_with_shader_and_scratch(
         triangles,
@@ -234,6 +240,8 @@ pub(crate) fn rasterize_triangles_tiled_with_shader(
         config,
         fragment_shader,
         fragment_time,
+        textures,
+        trace_draw,
         &mut TileScratch::default(),
     )
 }
@@ -247,6 +255,8 @@ pub(crate) fn rasterize_triangles_tiled_with_shader_and_scratch(
     config: TileConfig,
     fragment_shader: FragmentShader,
     fragment_time: f32,
+    textures: Option<&MaterialTextureRegistry>,
+    trace_draw: Option<SnapshotId>,
     scratch: &mut TileScratch,
 ) -> TileStats {
     let grid = TileGrid::new(framebuffer.width(), framebuffer.height(), config.tile_size);
@@ -333,6 +343,8 @@ pub(crate) fn rasterize_triangles_tiled_with_shader_and_scratch(
         depth_write,
         fragment_shader,
         fragment_time,
+        textures,
+        trace_draw,
     };
     let start = Instant::now();
     let band_pixels = grid.framebuffer_w as usize * grid.tile_size.min(grid.framebuffer_h) as usize;
@@ -413,6 +425,8 @@ struct RasterJob<'a> {
     depth_write: bool,
     fragment_shader: FragmentShader,
     fragment_time: f32,
+    textures: Option<&'a MaterialTextureRegistry>,
+    trace_draw: Option<SnapshotId>,
 }
 
 impl RasterJob<'_> {
@@ -439,15 +453,48 @@ impl RasterJob<'_> {
                             output.rejected += 1;
                             return;
                         }
-                        let rgba = shade_fragment_with_time(
+                        let rgba = shade_fragment_with_time_and_textures(
                             &fragment,
                             self.fragment_shader,
                             self.fragment_time,
+                            self.textures,
                         )
                         .to_rgba8();
                         color[pixel * 4..pixel * 4 + 4].copy_from_slice(&rgba);
                         if self.depth_write {
                             depth[pixel] = fragment.depth;
+                        }
+                        if (fragment.x, fragment.y) == super::trace_pixel_target()
+                            && std::env::var("ASTRAL_ECHO_TRACE_PIXEL").ok().as_deref()
+                                == Some("center")
+                        {
+                            let texture = fragment.material.and_then(|material| {
+                                self.textures.and_then(|registry| {
+                                    registry.image_ref(material).map(|image| {
+                                        (
+                                            registry.get(material),
+                                            registry.address_mode(material),
+                                            image,
+                                        )
+                                    })
+                                })
+                            });
+                            let sampled = texture.map(|(_, mode, image)| {
+                                crate::pipeline::raster::sample_texture_with_mode(
+                                    image,
+                                    fragment.uv,
+                                    mode,
+                                )
+                            });
+                            eprintln!(
+                                "cpu-pixel-trace winner pixel={:?} draw={:?} triangle={} depth={:.8} shader={:?} material={:?} texture={} address={:?} uv=({:.6},{:.6}) base={:?} texel={:?} final={:?}",
+                                super::trace_pixel_target(), self.trace_draw, index, fragment.depth,
+                                self.fragment_shader, fragment.material,
+                                texture.and_then(|(path, _, _)| path).map(|path| path.display().to_string()).unwrap_or_else(|| "<none>".into()),
+                                texture.map(|(_, mode, _)| mode), fragment.uv.x, fragment.uv.y,
+                                fragment.color, sampled, rgba
+                            );
+                            super::trace_pixel_write_committed();
                         }
                         output.written += 1;
                     },

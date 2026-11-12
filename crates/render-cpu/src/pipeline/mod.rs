@@ -5,7 +5,7 @@ pub mod tiles;
 pub mod vertex;
 
 use glam::Mat4;
-use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -21,28 +21,47 @@ use crate::viewport::Viewport;
 pub use assembly::{assemble, AssemblyStats, Topology, Triangle};
 pub use raster::{
     depth_resolve, edge_function, raster_triangle, resolve_fragment, shade_fragment,
-    shade_fragment_with_shader, shade_fragment_with_time, to_screen, FillRule, Fragment,
-    FragmentShader, RasterOutput, ScreenVertex,
+    shade_fragment_with_shader, shade_fragment_with_time, shade_fragment_with_time_and_textures,
+    to_screen, FillRule, Fragment, FragmentShader, RasterOutput, ScreenVertex,
 };
 pub use stages::{PipelineConfig, PipelineError, PipelineStats, Stage, StageMetrics};
+use tiles::rasterize_triangles_tiled_with_shader;
 pub use tiles::{
     rasterize_triangles_tiled, RasterMode, RasterWorkload, TileConfig, TileGrid, TileRect,
     TileStats,
 };
-use tiles::{rasterize_triangles_tiled_with_shader_and_scratch, TileScratch};
 use vertex::VertexLighting;
+
+static TRACE_PIXEL_WRITES: AtomicU32 = AtomicU32::new(0);
+static TRACE_PIXEL_X: AtomicU32 = AtomicU32::new(320);
+static TRACE_PIXEL_Y: AtomicU32 = AtomicU32::new(180);
+
+pub fn reset_trace_pixel_writes() {
+    TRACE_PIXEL_WRITES.store(0, Ordering::Relaxed);
+}
+
+pub fn trace_pixel_writes() -> u32 {
+    TRACE_PIXEL_WRITES.load(Ordering::Relaxed)
+}
+
+pub fn set_trace_pixel_target(width: u32, height: u32) {
+    TRACE_PIXEL_X.store(width / 2, Ordering::Relaxed);
+    TRACE_PIXEL_Y.store(height / 2, Ordering::Relaxed);
+}
+
+pub(crate) fn trace_pixel_target() -> (u32, u32) {
+    (
+        TRACE_PIXEL_X.load(Ordering::Relaxed),
+        TRACE_PIXEL_Y.load(Ordering::Relaxed),
+    )
+}
+
+pub(crate) fn trace_pixel_write_committed() {
+    TRACE_PIXEL_WRITES.fetch_add(1, Ordering::Relaxed);
+}
 pub use vertex::VertexStage;
 
 /// Pipeline CPU por etapas: vertex, assembly, clipping, raster, fragment y depth.
-#[derive(Default)]
-pub struct CpuPipelineScratch {
-    clip_vertices: Vec<ClipVertex>,
-    triangles: Vec<Triangle>,
-    screen_triangles: Vec<(ScreenVertex, ScreenVertex, ScreenVertex)>,
-    normal_cache: HashMap<usize, (Arc<RasterMesh>, Arc<Vec<glam::Vec3>>)>,
-    tile: TileScratch,
-}
-
 pub struct CpuPipeline<'a> {
     framebuffer: &'a mut Framebuffer,
     viewport: Viewport,
@@ -53,12 +72,16 @@ pub struct CpuPipeline<'a> {
     pub stats: PipelineStats,
     clip_vertices: Vec<ClipVertex>,
     triangles: Vec<Triangle>,
-    scratch: CpuPipelineScratch,
     fragments: Vec<Fragment>,
     shaded: Vec<Color>,
     assembly: AssemblyStats,
     fragment_shader: FragmentShader,
     fragment_time: f32,
+    draw_material: Option<render_core::MaterialHandle>,
+    draw_entity: Option<render_core::SnapshotId>,
+    draw_triangle: usize,
+    draw_trace_id: Option<render_core::SnapshotId>,
+    textures: Option<render_core::MaterialTextureRegistry>,
 }
 
 impl<'a> CpuPipeline<'a> {
@@ -67,16 +90,6 @@ impl<'a> CpuPipeline<'a> {
         viewport: Viewport,
         config: PipelineConfig,
     ) -> Self {
-        Self::new_with_scratch(framebuffer, viewport, config, CpuPipelineScratch::default())
-    }
-
-    pub fn new_with_scratch(
-        framebuffer: &'a mut Framebuffer,
-        viewport: Viewport,
-        config: PipelineConfig,
-        scratch: CpuPipelineScratch,
-    ) -> Self {
-        let mut scratch = scratch;
         Self {
             framebuffer,
             viewport,
@@ -85,21 +98,19 @@ impl<'a> CpuPipeline<'a> {
             tile_config: None,
             tile_stats: TileStats::default(),
             stats: PipelineStats::default(),
-            clip_vertices: std::mem::take(&mut scratch.clip_vertices),
-            triangles: std::mem::take(&mut scratch.triangles),
-            scratch,
+            clip_vertices: Vec::new(),
+            triangles: Vec::new(),
             fragments: Vec::new(),
             shaded: Vec::new(),
             assembly: AssemblyStats::default(),
             fragment_shader: FragmentShader::VertexColor,
             fragment_time: 0.0,
+            draw_material: None,
+            draw_entity: None,
+            draw_triangle: 0,
+            draw_trace_id: None,
+            textures: None,
         }
-    }
-
-    pub fn into_scratch(mut self) -> CpuPipelineScratch {
-        self.scratch.clip_vertices = std::mem::take(&mut self.clip_vertices);
-        self.scratch.triangles = std::mem::take(&mut self.triangles);
-        self.scratch
     }
 
     pub fn with_fill_rule(mut self, rule: FillRule) -> Self {
@@ -129,15 +140,6 @@ impl<'a> CpuPipeline<'a> {
     pub fn scratch_bytes(&self) -> usize {
         self.clip_vertices.capacity() * std::mem::size_of::<ClipVertex>()
             + self.triangles.capacity() * std::mem::size_of::<Triangle>()
-            + self.scratch.screen_triangles.capacity()
-                * std::mem::size_of::<(ScreenVertex, ScreenVertex, ScreenVertex)>()
-            + self
-                .scratch
-                .normal_cache
-                .values()
-                .map(|(_, normals)| normals.capacity() * std::mem::size_of::<glam::Vec3>())
-                .sum::<usize>()
-            + self.scratch.tile.bytes()
             + self.fragments.capacity() * std::mem::size_of::<Fragment>()
             + self.shaded.capacity() * std::mem::size_of::<Color>()
             + self.tile_stats.scratch_bytes
@@ -163,7 +165,7 @@ impl<'a> CpuPipeline<'a> {
         mvp: Mat4,
         topology: Topology,
     ) -> Result<PipelineStats, RasterError> {
-        self.draw_mesh_inner(mesh, mvp, topology, false, None)
+        self.draw_mesh_inner(mesh, mvp, topology, false, None, None, None)
     }
 
     pub fn draw_mesh_instances(
@@ -174,7 +176,7 @@ impl<'a> CpuPipeline<'a> {
     ) -> Result<PipelineStats, RasterError> {
         let mut reuse = false;
         for mvp in matrices {
-            self.draw_mesh_inner(mesh, mvp, topology, reuse, None)?;
+            self.draw_mesh_inner(mesh, mvp, topology, reuse, None, None, None)?;
             reuse = true;
         }
         Ok(self.stats)
@@ -188,19 +190,17 @@ impl<'a> CpuPipeline<'a> {
         if scene.lighting.mode != render_core::LightingMode::Unlit {
             return self.draw_lit_scene(scene, vp);
         }
-        let mut draws = scene.draws().peekable();
-        while let Some(first) = draws.next() {
-            let matrices = std::iter::once(vp * first.node.transform.matrix()).chain(
-                std::iter::from_fn(|| {
-                    let next = draws.peek()?;
-                    if !Arc::ptr_eq(&first.mesh, &next.mesh) {
-                        return None;
-                    }
-                    let next = draws.next()?;
-                    Some(vp * next.node.transform.matrix())
-                }),
-            );
-            self.draw_mesh_instances(&first.mesh, matrices, Topology::TriangleList)?;
+        self.textures = Some(scene.textures().clone());
+        for draw in scene.draws() {
+            self.draw_mesh_inner(
+                &draw.mesh,
+                vp * draw.node.transform.matrix(),
+                Topology::TriangleList,
+                false,
+                None,
+                Some(draw.node.material),
+                Some(draw.node.entity),
+            )?;
         }
         Ok(self.stats)
     }
@@ -210,28 +210,10 @@ impl<'a> CpuPipeline<'a> {
         scene: &render_core::PreparedScene,
         vp: Mat4,
     ) -> Result<PipelineStats, RasterError> {
+        self.textures = Some(scene.textures().clone());
         let mut draws = scene.draws().peekable();
         while let Some(first) = draws.next() {
-            let mesh_key = Arc::as_ptr(&first.mesh) as usize;
-            let normals = self
-                .scratch
-                .normal_cache
-                .get(&mesh_key)
-                .filter(|(mesh, _)| Arc::ptr_eq(mesh, &first.mesh))
-                .map(|(_, normals)| Arc::clone(normals));
-            let normals = match normals {
-                Some(normals) => normals,
-                None => {
-                    let normals = Arc::new(first.mesh.resolved_normals());
-                    if self.scratch.normal_cache.len() >= 16 {
-                        self.scratch.normal_cache.clear();
-                    }
-                    self.scratch
-                        .normal_cache
-                        .insert(mesh_key, (Arc::clone(&first.mesh), Arc::clone(&normals)));
-                    normals
-                }
-            };
+            let normals = first.mesh.resolved_normals();
             let mut draw = first;
             let mut reuse = false;
             loop {
@@ -239,7 +221,7 @@ impl<'a> CpuPipeline<'a> {
                 let lighting = VertexLighting {
                     model,
                     normal_matrix: render_core::normal_matrix(model),
-                    normals: normals.as_slice(),
+                    normals: &normals,
                     material: scene.material(draw.node.material),
                     environment: &scene.lighting,
                 };
@@ -249,6 +231,8 @@ impl<'a> CpuPipeline<'a> {
                     Topology::TriangleList,
                     reuse,
                     Some(&lighting),
+                    Some(draw.node.material),
+                    Some(draw.node.entity),
                 )?;
                 reuse = true;
                 if !draws
@@ -270,9 +254,15 @@ impl<'a> CpuPipeline<'a> {
         topology: Topology,
         reuse: bool,
         lighting: Option<&VertexLighting<'_>>,
+        material: Option<render_core::MaterialHandle>,
+        entity: Option<render_core::SnapshotId>,
     ) -> Result<PipelineStats, RasterError> {
+        let before = self.stats;
         self.stats.draws += 1;
         let stage = VertexStage::new(mvp);
+        self.draw_material = material;
+        self.draw_entity = entity;
+        self.draw_trace_id = entity;
         self.stats.metrics.vertices_in += mesh.vertices.len() as u32;
         let t0 = self.timer();
         if let Some(lighting) = lighting {
@@ -321,18 +311,47 @@ impl<'a> CpuPipeline<'a> {
         } else {
             for i in 0..self.triangles.len() {
                 let triangle = self.triangles[i];
+                self.draw_triangle = i;
                 self.draw_assembled_triangle(&triangle);
             }
         }
         self.stats.metrics.timings.vertex_ns += vertex_ns;
         self.stats.metrics.timings.assembly_ns += assembly_ns;
+        if std::env::var_os("ASTRAL_ECHO_MOUNT_TRACE").is_some()
+            && matches!(entity, Some(render_core::SnapshotId::ModelPart { .. }))
+        {
+            static TRACED: std::sync::OnceLock<
+                std::sync::Mutex<std::collections::HashSet<render_core::SnapshotId>>,
+            > = std::sync::OnceLock::new();
+            let id = entity.expect("model part");
+            let first = TRACED
+                .get_or_init(Default::default)
+                .lock()
+                .expect("mount trace lock")
+                .insert(id);
+            if first {
+                let metrics = self.stats.metrics;
+                eprintln!(
+                    "mount-trace stage=cpu_draw entity={id:?} material={material:?} vertices={} triangles={} assembled={} clipped={} culled={} degenerate={} fragments={} depth_rejected={} pixels_written={}",
+                    mesh.vertices.len(),
+                    mesh.indices.len() / 3,
+                    metrics.triangles_assembled - before.metrics.triangles_assembled,
+                    metrics.triangles_clipped - before.metrics.triangles_clipped,
+                    metrics.triangles_culled - before.metrics.triangles_culled,
+                    metrics.triangles_degenerate - before.metrics.triangles_degenerate,
+                    metrics.fragments_rasterized - before.metrics.fragments_rasterized,
+                    metrics.fragments_depth_rejected - before.metrics.fragments_depth_rejected,
+                    metrics.pixels_written - before.metrics.pixels_written
+                );
+            }
+        }
         Ok(self.stats)
     }
 
     /// Ruta de rasterización por tiles: procesa todos los triángulos del mesh
     /// usando binned rasterization, opcionalmente en paralelo con Rayon.
     fn draw_mesh_tiled(&mut self) {
-        self.scratch.screen_triangles.clear();
+        let mut screen_triangles: Vec<(ScreenVertex, ScreenVertex, ScreenVertex)> = Vec::new();
 
         for i in 0..self.triangles.len() {
             let triangle = self.triangles[i];
@@ -385,7 +404,20 @@ impl<'a> CpuPipeline<'a> {
                             self.stats.metrics.triangles_degenerate += 1;
                             continue;
                         }
-                        self.scratch.screen_triangles.push((va, vb, vc));
+                        screen_triangles.push((
+                            ScreenVertex {
+                                material: self.draw_material,
+                                ..va
+                            },
+                            ScreenVertex {
+                                material: self.draw_material,
+                                ..vb
+                            },
+                            ScreenVertex {
+                                material: self.draw_material,
+                                ..vc
+                            },
+                        ));
                     }
                     _ => {
                         self.stats.metrics.triangles_degenerate += 1;
@@ -395,8 +427,8 @@ impl<'a> CpuPipeline<'a> {
         }
 
         let t0 = self.timer();
-        let mut tile_stats = rasterize_triangles_tiled_with_shader_and_scratch(
-            &self.scratch.screen_triangles,
+        let mut tile_stats = rasterize_triangles_tiled_with_shader(
+            &screen_triangles,
             self.framebuffer,
             self.fill_rule,
             self.config.depth_test,
@@ -404,7 +436,8 @@ impl<'a> CpuPipeline<'a> {
             self.tile_config.unwrap_or_default(),
             self.fragment_shader,
             self.fragment_time,
-            &mut self.scratch.tile,
+            self.textures.as_ref(),
+            self.draw_trace_id,
         );
         let raster_ns = self.elapsed(t0);
 
@@ -413,7 +446,7 @@ impl<'a> CpuPipeline<'a> {
         self.stats.metrics.pixels_written += tile_stats.pixels_written;
         self.stats.metrics.fragments_shaded += tile_stats.fragments_rasterized;
         self.stats.metrics.fragments_depth_rejected += tile_stats.fragments_depth_rejected;
-        tile_stats.scratch_bytes += self.scratch.screen_triangles.capacity()
+        tile_stats.scratch_bytes += screen_triangles.capacity()
             * std::mem::size_of::<(ScreenVertex, ScreenVertex, ScreenVertex)>();
         if !self.config.timing {
             tile_stats.bin_ns = 0;
@@ -500,6 +533,9 @@ impl<'a> CpuPipeline<'a> {
         self.fragments.clear();
         let t0 = self.timer();
         let produced = raster_triangle(&va, &vb, &vc, size, self.fill_rule, &mut self.fragments);
+        for fragment in self.fragments.iter_mut().rev().take(produced as usize) {
+            fragment.material = self.draw_material;
+        }
         let raster_ns = self.elapsed(t0);
         self.stats.metrics.timings.raster_ns += raster_ns;
         self.stats.metrics.fragments_rasterized += produced;
@@ -511,7 +547,12 @@ impl<'a> CpuPipeline<'a> {
         let t1 = self.timer();
         self.shaded.clear();
         self.shaded.extend(self.fragments.iter().map(|fragment| {
-            shade_fragment_with_time(fragment, self.fragment_shader, self.fragment_time)
+            shade_fragment_with_time_and_textures(
+                fragment,
+                self.fragment_shader,
+                self.fragment_time,
+                self.textures.as_ref(),
+            )
         }));
         let fragment_ns = self.elapsed(t1);
         // Etapa de depth: test de profundidad y escritura en el framebuffer.
@@ -525,6 +566,15 @@ impl<'a> CpuPipeline<'a> {
                 self.config.depth_write,
             ) {
                 Ok(true) => {
+                    trace_pixel_write(
+                        fragment,
+                        *color,
+                        self.fragment_shader,
+                        self.draw_entity,
+                        self.draw_material,
+                        self.textures.as_ref(),
+                        self.draw_triangle,
+                    );
                     self.stats.metrics.pixels_written += 1;
                 }
                 Ok(false) => {
@@ -539,4 +589,40 @@ impl<'a> CpuPipeline<'a> {
         self.stats.metrics.timings.fragment_ns += fragment_ns;
         self.stats.metrics.timings.depth_ns += depth_ns;
     }
+}
+
+fn trace_pixel_write(
+    fragment: &Fragment,
+    color: Color,
+    shader: FragmentShader,
+    entity: Option<render_core::SnapshotId>,
+    material: Option<render_core::MaterialHandle>,
+    textures: Option<&render_core::MaterialTextureRegistry>,
+    triangle: usize,
+) {
+    if std::env::var("ASTRAL_ECHO_TRACE_PIXEL").ok().as_deref() != Some("center")
+        || (fragment.x, fragment.y) != trace_pixel_target()
+    {
+        return;
+    }
+    let texture = material.and_then(|handle| {
+        textures.and_then(|registry| {
+            registry
+                .image_ref(handle)
+                .map(|image| (registry.get(handle), registry.address_mode(handle), image))
+        })
+    });
+    let sampled = texture.map(|(_, mode, image)| {
+        crate::pipeline::raster::sample_texture_with_mode(image, fragment.uv, mode)
+    });
+    eprintln!(
+        "cpu-pixel-trace pixel={:?} entity={entity:?} triangle={triangle} depth={:.8} shader={shader:?} material={material:?} texture={} address={:?} uv=({:.6},{:.6}) texel={sampled:?} output={:?}",
+        trace_pixel_target(),
+        fragment.depth,
+        texture.and_then(|(path, _, _)| path).map(|path| path.display().to_string()).unwrap_or_else(|| "<none>".into()),
+        texture.map(|(_, mode, _)| mode),
+        fragment.uv.x,
+        fragment.uv.y,
+        color,
+    );
 }

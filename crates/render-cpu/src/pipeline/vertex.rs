@@ -40,7 +40,7 @@ impl VertexStage {
         if !clip.is_finite() {
             return Err(RasterError::NonFiniteVertex);
         }
-        Ok(ClipVertex::new(clip, vertex.color))
+        Ok(ClipVertex::with_uv(clip, vertex.color, vertex.uv))
     }
 
     pub(super) fn transform_lit_into(

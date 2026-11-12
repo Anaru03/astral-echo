@@ -40,44 +40,43 @@ pub fn game_over_overlay_scene(width: u32, height: u32) -> Vec<(RasterMesh, Tran
     if width == 0 || height == 0 {
         return Vec::new();
     }
-    let (left, top, scale) = game_over_layout(width, height);
-    let color = Vec4::new(1.0, 0.25, 0.19, 1.0);
     let to_ndc = |x: u32, y: u32| {
         Vec3::new(
-            (x as f32 / width as f32) * 2.0 - 1.0,
-            1.0 - (y as f32 / height as f32) * 2.0,
+            x as f32 / width as f32 * 2.0 - 1.0,
+            1.0 - y as f32 / height as f32 * 2.0,
             0.0,
         )
     };
-    let mut result = Vec::new();
-    for (glyph_index, glyph) in GAME_OVER_GLYPHS.iter().enumerate() {
-        let word_gap = u32::from(glyph_index >= 4) * 2 * scale;
-        let glyph_left = left + glyph_index as u32 * 6 * scale + word_gap;
-        for (row, bits) in glyph.iter().copied().enumerate() {
-            for column in 0..5u32 {
-                if bits & (1 << (4 - column)) == 0 {
-                    continue;
-                }
-                let x0 = glyph_left + column * scale;
-                let y0 = top + row as u32 * scale;
-                let x1 = x0 + scale;
-                let y1 = y0 + scale;
-                result.push((
-                    RasterMesh::new(
-                        vec![
-                            RasterVertex::new(to_ndc(x0, y1), color),
-                            RasterVertex::new(to_ndc(x1, y1), color),
-                            RasterVertex::new(to_ndc(x1, y0), color),
-                            RasterVertex::new(to_ndc(x0, y0), color),
-                        ],
-                        vec![0, 1, 2, 0, 2, 3],
-                    ),
-                    Transform::IDENTITY,
-                ));
-            }
-        }
+    let rects = render_core::game_over_ui::game_over_rects(width, height);
+    let rects_len = rects.len();
+    let mut vertices = Vec::with_capacity(rects_len * 4);
+    let mut indices = Vec::with_capacity(rects.len() * 6);
+    for (i, r) in rects.into_iter().enumerate() {
+        let color = Vec4::new(
+            r.color[0] as f32 / 255.0,
+            r.color[1] as f32 / 255.0,
+            r.color[2] as f32 / 255.0,
+            1.0,
+        );
+        let x1 = r.x.saturating_add(r.width);
+        let y1 = r.y.saturating_add(r.height);
+        // Smaller depth = closer; background stays behind all artwork.
+        let depth = 0.95 - (i as f32 / (rects_len as f32 + 1.0)) * 0.85;
+        let base = vertices.len() as u32;
+        let p = |x, y| {
+            let mut v = to_ndc(x, y);
+            v.z = depth;
+            v
+        };
+        vertices.extend([
+            RasterVertex::new(p(r.x, y1), color),
+            RasterVertex::new(p(x1, y1), color),
+            RasterVertex::new(p(x1, r.y), color),
+            RasterVertex::new(p(r.x, r.y), color),
+        ]);
+        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
-    result
+    vec![(RasterMesh::new(vertices, indices), Transform::IDENTITY)]
 }
 
 pub fn hud_overlay_scene(hud: &HudState, width: u32, height: u32) -> Vec<(RasterMesh, Transform)> {
@@ -90,9 +89,7 @@ pub fn hud_overlay_scene(hud: &HudState, width: u32, height: u32) -> Vec<(Raster
         )
     };
     let glyph_count = overlay.glyphs.len().max(1) as f32;
-    let rect_count = 1 + overlay.glyphs.len();
-    let mut vertices = Vec::with_capacity(rect_count * 4);
-    let mut indices = Vec::with_capacity(rect_count * 6);
+    let mut result = Vec::with_capacity(1 + overlay.glyphs.len());
     for (index, rect) in std::iter::once(overlay.background)
         .chain(overlay.glyphs)
         .enumerate()
@@ -110,16 +107,20 @@ pub fn hud_overlay_scene(hud: &HudState, width: u32, height: u32) -> Vec<(Raster
         } else {
             0.25 * (1.0 - index as f32 / (glyph_count + 1.0))
         };
-        let base = vertices.len() as u32;
-        vertices.extend([
-            RasterVertex::new(to_ndc(rect.x, y1, depth), color),
-            RasterVertex::new(to_ndc(x1, y1, depth), color),
-            RasterVertex::new(to_ndc(x1, rect.y, depth), color),
-            RasterVertex::new(to_ndc(rect.x, rect.y, depth), color),
-        ]);
-        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        result.push((
+            RasterMesh::new(
+                vec![
+                    RasterVertex::new(to_ndc(rect.x, y1, depth), color),
+                    RasterVertex::new(to_ndc(x1, y1, depth), color),
+                    RasterVertex::new(to_ndc(x1, rect.y, depth), color),
+                    RasterVertex::new(to_ndc(rect.x, rect.y, depth), color),
+                ],
+                vec![0, 1, 2, 0, 2, 3],
+            ),
+            Transform::IDENTITY,
+        ));
     }
-    vec![(RasterMesh::new(vertices, indices), Transform::IDENTITY)]
+    result
 }
 
 impl PackedScene {
@@ -188,16 +189,12 @@ pub struct GpuRenderer {
     pub(crate) gpu: Arc<GpuContext>,
     pipeline: wgpu::RenderPipeline,
     pipeline_layout: wgpu::PipelineLayout,
-    uniform_layout: wgpu::BindGroupLayout,
     shader: wgpu::ShaderModule,
     instanced: Option<crate::instancing::InstancedScene>,
     timer: Option<crate::timing::GpuTimer>,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     uniforms: wgpu::Buffer,
-    vertex_capacity: u64,
-    index_capacity: u64,
-    uniform_capacity: u64,
     bind_group: wgpu::BindGroup,
     draws: Vec<(Range<u32>, Transform)>,
     uniform_data: Vec<u8>,
@@ -291,12 +288,12 @@ impl GpuRenderer {
         let vertices = create(
             "persistent vertices",
             bytemuck::cast_slice(&packed.vertices),
-            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            wgpu::BufferUsages::VERTEX,
         );
         let indices = create(
             "persistent indices",
             bytemuck::cast_slice(&packed.indices),
-            wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            wgpu::BufferUsages::INDEX,
         );
         let uniforms = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("persistent MVPs"),
@@ -354,16 +351,12 @@ impl GpuRenderer {
             renderer_epoch: next_renderer_epoch(),
             pipeline,
             pipeline_layout,
-            uniform_layout: layout,
             shader,
             instanced: None,
             timer: None,
             vertices,
             indices,
             uniforms,
-            vertex_capacity: stats.vertex_bytes,
-            index_capacity: stats.index_bytes,
-            uniform_capacity: stats.uniform_bytes,
             bind_group,
             draws: packed.draws,
             uniform_data: vec![0; stats.uniform_bytes as usize],
@@ -448,99 +441,6 @@ impl GpuRenderer {
             .as_mut()
             .expect("initialized instancing")
             .sync(&self.gpu, scene)
-    }
-
-    /// Replaces packed geometry while retaining the renderer pipeline and
-    /// reusing GPU buffers until the new scene exceeds their current capacity.
-    pub fn update_scene(&mut self, scene: &[(RasterMesh, Transform)]) -> Result<(), GpuError> {
-        if self.instanced.is_some() || self.snapshot_keys.is_some() {
-            return Err(GpuError::InvalidInput(
-                "packed scene updates are unavailable for snapshot renderers".into(),
-            ));
-        }
-
-        let packed = PackedScene::new(scene)?;
-        let vertex_bytes = (packed.vertices.len() * std::mem::size_of::<GpuVertex>()).max(4) as u64;
-        let index_bytes = (packed.indices.len() * std::mem::size_of::<u32>()).max(4) as u64;
-        let uniform_bytes = packed.draws.len().max(1) as u64 * u64::from(self.stride);
-        let max = self.gpu.device.limits().max_buffer_size;
-        if [vertex_bytes, index_bytes, uniform_bytes]
-            .into_iter()
-            .any(|size| size > max)
-            || uniform_bytes > u64::from(u32::MAX)
-        {
-            return Err(GpuError::InvalidInput(
-                "scene exceeds device buffer limits".into(),
-            ));
-        }
-
-        if vertex_bytes > self.vertex_capacity {
-            self.vertices = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("persistent vertices"),
-                size: vertex_bytes,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.vertex_capacity = vertex_bytes;
-            self.stats.buffer_rebuilds += 1;
-        }
-        if index_bytes > self.index_capacity {
-            self.indices = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("persistent indices"),
-                size: index_bytes,
-                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.index_capacity = index_bytes;
-            self.stats.buffer_rebuilds += 1;
-        }
-        if uniform_bytes > self.uniform_capacity {
-            self.uniforms = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("persistent MVPs"),
-                size: uniform_bytes,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.bind_group = self
-                .gpu
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("MVP bind group"),
-                    layout: &self.uniform_layout,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &self.uniforms,
-                            offset: 0,
-                            size: NonZeroU64::new(64),
-                        }),
-                    }],
-                });
-            self.uniform_capacity = uniform_bytes;
-            self.stats.buffer_rebuilds += 1;
-        }
-
-        if !packed.vertices.is_empty() {
-            self.gpu
-                .queue
-                .write_buffer(&self.vertices, 0, bytemuck::cast_slice(&packed.vertices));
-        }
-        if !packed.indices.is_empty() {
-            self.gpu
-                .queue
-                .write_buffer(&self.indices, 0, bytemuck::cast_slice(&packed.indices));
-        }
-
-        self.draws = packed.draws;
-        self.uniform_data.resize(uniform_bytes as usize, 0);
-        self.stats.vertex_bytes = vertex_bytes;
-        self.stats.index_bytes = index_bytes;
-        self.stats.uniform_bytes = uniform_bytes;
-        self.stats.draw_count = self.draws.len();
-        self.stats.instance_count = self.draws.len();
-        self.stats.geometry_uploads += self.draws.len() as u64;
-        self.stats.dynamic_bytes_written = 0;
-        Ok(())
     }
 
     /// Returns GPU availability transitions produced since the previous poll.
@@ -961,9 +861,9 @@ mod tests {
             640,
             360,
         );
-        assert_eq!(scene.len(), 1);
+        assert!(scene.len() > 1);
         let background_depth = scene[0].0.vertices[0].position.z;
-        let glyph_depth = scene[0].0.vertices[4].position.z;
+        let glyph_depth = scene[1].0.vertices[0].position.z;
         assert!(glyph_depth < background_depth);
     }
 
@@ -980,11 +880,9 @@ mod tests {
             640,
             360,
         );
-        let depths: Vec<_> = scene[0]
-            .0
-            .vertices
-            .chunks_exact(4)
-            .map(|quad| quad[0].position.z)
+        let depths: Vec<_> = scene
+            .iter()
+            .map(|(mesh, _)| mesh.vertices[0].position.z)
             .collect();
         assert!(depths.len() > 2);
         assert!(depths.windows(2).all(|pair| pair[0] > pair[1]));

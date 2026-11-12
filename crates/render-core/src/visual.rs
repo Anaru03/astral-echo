@@ -76,6 +76,17 @@ impl PreparedScene {
         self.textures.get(material)
     }
 
+    pub fn texture_image(
+        &self,
+        material: MaterialHandle,
+    ) -> Option<&crate::material_texture::DecodedTexture> {
+        self.textures.image_ref(material)
+    }
+
+    pub fn textures(&self) -> &MaterialTextureRegistry {
+        &self.textures
+    }
+
     pub fn from_draws(draws: Vec<PreparedDraw>) -> Self {
         Self {
             considered: draws.len(),
@@ -707,6 +718,37 @@ impl SnapshotScene {
         Arc::make_mut(&mut self.textures).register(material, path);
     }
 
+    pub fn try_register_material_texture(
+        &mut self,
+        material: MaterialHandle,
+        path: impl Into<std::path::PathBuf>,
+    ) -> Result<(), String> {
+        Arc::make_mut(&mut self.textures).try_register(material, path)
+    }
+
+    pub fn set_material_texture_address_mode(
+        &mut self,
+        material: MaterialHandle,
+        mode: crate::TextureAddressMode,
+    ) {
+        Arc::make_mut(&mut self.textures).set_address_mode(material, mode);
+    }
+
+    pub fn texture_path(&self, material: MaterialHandle) -> Option<&std::path::Path> {
+        self.textures.get(material)
+    }
+
+    pub fn texture_address_mode(&self, material: MaterialHandle) -> crate::TextureAddressMode {
+        self.textures.address_mode(material)
+    }
+
+    pub fn texture_image(
+        &self,
+        material: MaterialHandle,
+    ) -> Option<&crate::material_texture::DecodedTexture> {
+        self.textures.image_ref(material)
+    }
+
     pub fn register_mesh(
         &mut self,
         mesh: MeshHandle,
@@ -714,6 +756,17 @@ impl SnapshotScene {
         raster_mesh: RasterMesh,
     ) {
         self.assets.register_mesh(mesh, material, raster_mesh);
+    }
+
+    pub fn mesh_statistics(
+        &self,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+    ) -> Option<(usize, usize)> {
+        self.assets
+            .meshes
+            .get(&(mesh, material))
+            .map(|mesh| (mesh.vertices.len(), mesh.indices.len() / 3))
     }
 
     pub fn register_shared_mesh(

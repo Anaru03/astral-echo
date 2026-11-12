@@ -9,7 +9,6 @@ mod runtime_mode;
 mod runtime_types;
 mod scenario_groups;
 mod scenario_support;
-mod clock_surface;
 mod visual;
 use game::multiplayer::MultiplayerSession;
 use game::{

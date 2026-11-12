@@ -1,4 +1,4 @@
-use glam::Vec4;
+use glam::{Vec2, Vec4};
 use render_cpu::{clip_polygon_near, clip_triangle_near, ClipVertex};
 
 fn v(x: f32, y: f32, z: f32, w: f32) -> ClipVertex {
@@ -52,6 +52,29 @@ fn clipped_vertex_interpolates_color() {
     for vert in &out {
         assert!((vert.color.x + vert.color.y + vert.color.z - 1.0).abs() < 1e-4);
     }
+}
+
+#[test]
+fn clipped_vertex_interpolates_uv() {
+    let a = ClipVertex::with_uv(
+        Vec4::new(0.0, 0.0, 0.0, -1.0),
+        Vec4::ONE,
+        Vec2::new(0.0, 0.0),
+    );
+    let b = ClipVertex::with_uv(
+        Vec4::new(0.0, 0.0, 0.0, 1.0),
+        Vec4::ONE,
+        Vec2::new(1.0, 0.0),
+    );
+    let c = ClipVertex::with_uv(
+        Vec4::new(0.0, 1.0, 0.0, 1.0),
+        Vec4::ONE,
+        Vec2::new(0.0, 1.0),
+    );
+    let out = clip_triangle_near(a, b, c).expect("clips");
+    assert!(out
+        .iter()
+        .any(|vertex| { (vertex.clip.w - 1e-6).abs() < 1e-5 && (vertex.uv.x - 0.5).abs() < 1e-5 }));
 }
 
 #[test]

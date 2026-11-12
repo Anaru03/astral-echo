@@ -1,3 +1,6 @@
+#[path = "native_splash.rs"]
+mod native_splash;
+
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -11,8 +14,8 @@ use render_core::{
     VisualAssets,
 };
 use render_cpu::{
-    render_snapshot_scene_with_shader, render_snapshot_scene_with_stats_and_scratch, write_png,
-    CpuPipelineScratch, FragmentShader, Framebuffer, RasterMode,
+    render_snapshot_scene_with_shader, render_snapshot_scene_with_stats, write_png, FragmentShader,
+    Framebuffer, RasterMode,
 };
 use render_gpu::{GpuError, GpuOptions, SurfaceRenderer};
 use softbuffer::{Context, Surface};
@@ -119,6 +122,9 @@ pub fn run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
 ) -> Result<HotSwapReport, String> {
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let wake_proxy = event_loop.create_proxy();
+    let native_menu = config.title.starts_with("Astral Echo")
+        && !config.raster_controls
+        && std::env::var_os("ASTRAL_ECHO_SKIP_NATIVE_MENU").is_none();
     let mut app = Host {
         config,
         source,
@@ -142,6 +148,9 @@ pub fn run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
         auto_capture_requested: false,
         wake_proxy,
         visual_assets,
+        splash: None,
+        native_menu: native_menu,
+        splash_starting: false,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
     app.failure.map_or_else(|| Ok(app.report), Err)
@@ -177,6 +186,9 @@ struct Host {
     auto_capture_requested: bool,
     wake_proxy: EventLoopProxy<()>,
     visual_assets: VisualAssetHost,
+    splash: Option<native_splash::NativeSplash>,
+    native_menu: bool,
+    splash_starting: bool,
 }
 
 struct HostState {
@@ -185,7 +197,6 @@ struct HostState {
     surface: Option<Surface<Arc<Window>, Arc<Window>>>,
     _context: Context<Arc<Window>>,
     framebuffer: Framebuffer,
-    cpu_scratch: CpuPipelineScratch,
     snapshot: Rc<SnapshotScene>,
     backend: HotSwapState<()>,
     buffer: SnapshotBuffer,
@@ -212,41 +223,98 @@ impl ApplicationHandler for Host {
             return;
         }
         let size = self.config.preset.resolution();
-        let window = match event_loop.create_window(
-            Window::default_attributes()
-                .with_title(&self.config.title)
-                .with_inner_size(LogicalSize::new(size.0, size.1)),
-        ) {
-            Ok(w) => Arc::new(w),
-            Err(e) => {
-                self.failure = Some(e.to_string());
-                event_loop.exit();
-                return;
+        if self.native_menu && self.splash.is_none() && !self.splash_starting {
+            let window = match event_loop.create_window(
+                Window::default_attributes()
+                    .with_title(&self.config.title)
+                    .with_inner_size(LogicalSize::new(size.0, size.1)),
+            ) {
+                Ok(w) => Arc::new(w),
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            let context = match Context::new(window.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            let surface = match Surface::new(&context, window.clone()) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            self.splash = Some(native_splash::NativeSplash {
+                window,
+                context,
+                surface,
+                selected: 0,
+                controls: false,
+            });
+            if let Some(splash) = &mut self.splash {
+                splash.window.request_redraw();
             }
-        };
-        let context = match Context::new(window.clone()) {
-            Ok(c) => c,
-            Err(e) => {
-                self.failure = Some(e.to_string());
-                event_loop.exit();
-                return;
-            }
-        };
-        let mut surface = match Surface::new(&context, window.clone()) {
-            Ok(s) => s,
-            Err(e) => {
-                self.failure = Some(e.to_string());
-                event_loop.exit();
-                return;
-            }
-        };
-        let framebuffer = match Framebuffer::new(size.0, size.1) {
-            Ok(f) => f,
-            Err(e) => {
-                self.failure = Some(e.to_string());
-                event_loop.exit();
-                return;
-            }
+            return;
+        }
+        let (window, context, mut surface, framebuffer) = if self.splash_starting {
+            self.splash_starting = false;
+            let splash = self.splash.take().expect("native splash must exist");
+            let framebuffer = match Framebuffer::new(size.0, size.1) {
+                Ok(f) => f,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            (splash.window, splash.context, splash.surface, framebuffer)
+        } else {
+            let size = self.config.preset.resolution();
+            let window = match event_loop.create_window(
+                Window::default_attributes()
+                    .with_title(&self.config.title)
+                    .with_inner_size(LogicalSize::new(size.0, size.1)),
+            ) {
+                Ok(w) => Arc::new(w),
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            let context = match Context::new(window.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            let mut surface = match Surface::new(&context, window.clone()) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            let framebuffer = match Framebuffer::new(size.0, size.1) {
+                Ok(f) => f,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            (window, context, surface, framebuffer)
         };
         let snapshot = match (self.source)(size.0, size.1) {
             Ok(s) => s,
@@ -297,7 +365,6 @@ impl ApplicationHandler for Host {
             surface: Some(surface),
             _context: context,
             framebuffer,
-            cpu_scratch: CpuPipelineScratch::default(),
             snapshot,
             backend,
             gpu: None,
@@ -323,6 +390,57 @@ impl ApplicationHandler for Host {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(splash) = &mut self.splash {
+            if splash.window.id() != id {
+                return;
+            }
+            match event {
+                WindowEvent::CloseRequested => event_loop.exit(),
+                WindowEvent::Resized(_) | WindowEvent::RedrawRequested => {
+                    if let Err(e) = splash.present(false) {
+                        self.failure = Some(e);
+                        event_loop.exit();
+                    }
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed && !event.repeat =>
+                {
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        match code {
+                            KeyCode::ArrowUp | KeyCode::KeyW if !splash.controls => {
+                                splash.selected = (splash.selected + 2) % 3
+                            }
+                            KeyCode::ArrowDown | KeyCode::KeyS if !splash.controls => {
+                                splash.selected = (splash.selected + 1) % 3
+                            }
+                            KeyCode::Escape if splash.controls => splash.controls = false,
+                            KeyCode::Escape => event_loop.exit(),
+                            KeyCode::Enter if splash.controls => splash.controls = false,
+                            KeyCode::Enter if splash.selected == 1 => splash.controls = true,
+                            KeyCode::Enter if splash.selected == 2 => event_loop.exit(),
+                            KeyCode::Enter => {
+                                // Presentar la carga ANTES de inicializar los recursos 3D.
+                                if let Err(e) = splash.present(true) {
+                                    self.failure = Some(e);
+                                    event_loop.exit();
+                                    return;
+                                }
+                                (self.input)(KeyCode::Enter, ElementState::Pressed);
+                                self.splash_starting = true;
+                                self.resumed(event_loop);
+                                return;
+                            }
+                            _ => {}
+                        }
+                        if let Some(splash) = &mut self.splash {
+                            splash.window.request_redraw();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         let Some(window_id) = self.state.as_ref().map(|state| state.window.id()) else {
             return;
         };
@@ -355,7 +473,7 @@ impl ApplicationHandler for Host {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if event.state == ElementState::Pressed {
                         match code {
-                            KeyCode::KeyG if self.config.raster_controls => self.toggle(),
+                            KeyCode::KeyG => self.toggle(),
                             KeyCode::F9 | KeyCode::KeyM => self.capture_debug("marked"),
                             KeyCode::F10 => self.capture_images(),
                             KeyCode::KeyS if self.config.raster_controls => {
@@ -939,15 +1057,103 @@ impl Host {
         let _ = std::fs::create_dir_all(&directory);
         let internal_path =
             directory.join(format!("frame-{:04}-cpu-internal.png", self.debug_frame));
+        let capture_id = self.debug_frame;
         let scaled_path = directory.join(format!("frame-{:04}-cpu-scaled.png", self.debug_frame));
         self.debug_frame += 1;
-        let _ = render_snapshot_scene_with_shader(
+        let trace_pixel = std::env::var("ASTRAL_ECHO_TRACE_PIXEL")
+            .ok()
+            .filter(|value| value == "center");
+        let trace_target = (
+            state.framebuffer.width() / 2,
+            state.framebuffer.height() / 2,
+        );
+        if let Some(pixel) = trace_pixel.as_deref() {
+            render_cpu::set_trace_pixel_target(
+                state.framebuffer.width(),
+                state.framebuffer.height(),
+            );
+            println!(
+                "cpu-pixel-trace activation=1 pixel={} target={:?} framebuffer={}x{} requested_mode={:?} capture_mode=Secuencial",
+                pixel, trace_target, state.framebuffer.width(), state.framebuffer.height(), self.config.raster_mode
+            );
+        }
+        let capture_mode = if trace_pixel.is_some() {
+            render_cpu::RasterMode::Secuencial
+        } else {
+            self.config.raster_mode
+        };
+        let capture_shader = if trace_pixel.is_some() {
+            FragmentShader::VertexColor
+        } else {
+            render_cpu::diagnostic_fragment_shader().unwrap_or(FragmentShader::VertexColor)
+        };
+        if trace_pixel.is_some() {
+            render_cpu::reset_trace_pixel_writes();
+            state
+                .framebuffer
+                .clear(render_cpu::Color::new(8, 10, 18, 255));
+            println!(
+                "cpu-pixel-trace frame={} stage=before-render buffer=state.framebuffer pixel={:?} color={:?} depth={:?}",
+                capture_id,
+                trace_target,
+                state.framebuffer.pixel(trace_target.0, trace_target.1),
+                state.framebuffer.depth_at(trace_target.0, trace_target.1)
+            );
+        }
+        let render_result = render_snapshot_scene_with_shader(
             &mut state.framebuffer,
             &state.snapshot,
-            self.config.raster_mode,
-            FragmentShader::SolarBands,
+            capture_mode,
+            capture_shader,
         );
+        if trace_pixel.is_some() {
+            println!(
+                "cpu-pixel-trace frame={} stage=after-raster buffer=state.framebuffer pixel={:?} render_result={:?} color={:?} depth={:?} route=tiled-sequential writes={}",
+                capture_id,
+                trace_target,
+                render_result.as_ref().map(|_| "ok").map_err(|error| error.to_string()),
+                state.framebuffer.pixel(trace_target.0, trace_target.1),
+                state.framebuffer.depth_at(trace_target.0, trace_target.1),
+                render_cpu::trace_pixel_writes()
+            );
+        }
         let _ = write_png(&internal_path, &state.framebuffer);
+        if trace_pixel.is_some() {
+            println!(
+                "cpu-pixel-trace frame={} stage=after-save buffer={} pixel={:?} color={:?} depth={:?}",
+                capture_id,
+                internal_path.display(),
+                trace_target,
+                state.framebuffer.pixel(trace_target.0, trace_target.1),
+                state.framebuffer.depth_at(trace_target.0, trace_target.1)
+            );
+        }
+        if matches!(
+            std::env::var("ASTRAL_ECHO_FRAMEBUFFER_DIAGNOSTIC").as_deref(),
+            Ok("1") | Ok("true")
+        ) {
+            let fb_width = state.framebuffer.width();
+            let fb_height = state.framebuffer.height();
+            let window_width = size.width.max(1);
+            let window_height = size.height.max(1);
+            let px = ((window_width / 2) * fb_width / window_width).min(fb_width - 1);
+            let py = ((window_height / 2) * fb_height / window_height).min(fb_height - 1);
+            let pixel = state.framebuffer.pixel(px, py);
+            println!(
+                "cpu-framebuffer-diagnostic png={} format=RGBA8 stride={} framebuffer={}x{} window={}x{} window_pixel=({}, {}) framebuffer_pixel=({}, {}) rgba={:?}",
+                internal_path.display(),
+                fb_width * 4,
+                fb_width,
+                fb_height,
+                window_width,
+                window_height,
+                window_width / 2,
+                window_height / 2,
+                px,
+                py,
+                pixel.map(|color| (color.r, color.g, color.b, color.a)),
+            );
+        }
         let mut pixels = vec![0u32; (size.width as usize) * (size.height as usize)];
         if copy_nearest_rgba(
             state.framebuffer.color_bytes(),
@@ -1181,11 +1387,10 @@ impl Host {
             }
             return;
         }
-        if let Ok((stats, _)) = render_snapshot_scene_with_stats_and_scratch(
+        if let Ok((stats, _)) = render_snapshot_scene_with_stats(
             &mut state.framebuffer,
             &state.snapshot,
             self.config.raster_mode,
-            &mut state.cpu_scratch,
         ) {
             if trace_frame {
                 println!(

@@ -10,3 +10,4 @@ __pycache__/
 
 # Respaldos temporales
 *.py.before_highlights.bak
+*.bak

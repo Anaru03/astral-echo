@@ -1,0 +1,88 @@
+{
+  "Panel_Verde": {
+    "png": "panel_verde_original.png",
+    "tipo": "pintura_original",
+    "rgb": null
+  },
+  "Casco_Marfil": {
+    "png": "base_marfil.png",
+    "tipo": "color_base_provisional",
+    "rgb": [
+      223,
+      222,
+      211
+    ]
+  },
+  "Metal_Oscuro": {
+    "png": "base_metal_oscuro.png",
+    "tipo": "color_base_provisional",
+    "rgb": [
+      55,
+      66,
+      60
+    ]
+  },
+  "Metal_Gris": {
+    "png": "base_metal_gris.png",
+    "tipo": "color_base_provisional",
+    "rgb": [
+      130,
+      139,
+      137
+    ]
+  },
+  "Vidrio_Azul": {
+    "png": "base_vidrio_azul.png",
+    "tipo": "color_base_provisional",
+    "rgb": [
+      94,
+      123,
+      133
+    ]
+  },
+  "Pantalla_Verde": {
+    "png": "base_pantalla_verde.png",
+    "tipo": "color_base_provisional",
+    "rgb": [
+      68,
+      106,
+      79
+    ]
+  },
+  "Tela_Verde": {
+    "png": "base_tela_verde.png",
+    "tipo": "color_base_provisional",
+    "rgb": [
+      74,
+      91,
+      64
+    ]
+  },
+  "Vegetacion": {
+    "png": "base_vegetacion.png",
+    "tipo": "color_base_provisional",
+    "rgb": [
+      101,
+      126,
+      68
+    ]
+  },
+  "Acento_Coral": {
+    "png": "base_coral.png",
+    "tipo": "color_base_provisional",
+    "rgb": [
+      183,
+      119,
+      104
+    ]
+  },
+  "Panel_Solar": {
+    "png": "base_panel_solar.png",
+    "tipo": "color_base_provisional",
+    "rgb": [
+      63,
+      86,
+      105
+    ]
+  }
+}
