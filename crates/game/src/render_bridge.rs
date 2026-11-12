@@ -88,7 +88,7 @@ pub const PLANET_OBSERVATION_RADIUS: f32 = 14.0;
 pub const OBSERVATION_TRANSITION_DURATION_MS: u64 = 1_000;
 pub const LANDING_CINEMATIC_DURATION_MS: u64 = 1_800;
 pub const TAKEOFF_CINEMATIC_DURATION_MS: u64 = 1_500;
-pub const SURFACE_RETURN_DISTANCE: f32 = 5.0;
+pub const SURFACE_RETURN_DISTANCE: f32 = 8.5;
 const SUN_POSITION: Vec3 = Vec3::new(0.0, 0.0, -18.0);
 const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 28.0, 46.0);
 pub const PILOT_CAMERA_DEFAULT_DISTANCE: f32 = 8.0;
@@ -551,6 +551,28 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     pilot_mode: bool,
     surface_planet: Option<gameplay::DestinationId>,
 ) -> RenderSnapshot {
+    snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface_transform(
+        world,
+        params,
+        camera,
+        interior,
+        nareth_mesh_ready,
+        pilot_mode,
+        surface_planet,
+        None,
+    )
+}
+
+pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface_transform(
+    world: &GameplayWorld,
+    params: BridgeParams<'_>,
+    camera: &Camera,
+    interior: bool,
+    nareth_mesh_ready: bool,
+    pilot_mode: bool,
+    surface_planet: Option<gameplay::DestinationId>,
+    surface_transform: Option<Transform>,
+) -> RenderSnapshot {
     let tick = world.time().tick;
     let academic_planet = academic_planet_id(world);
     let tessara_planet = tessara_planet_id(world);
@@ -643,7 +665,9 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         ));
     }
 
-    let surface_ship = surface_planet.and_then(|planet| surface_ship_position(world, planet));
+    let surface_ship = surface_planet.and_then(|planet| {
+        surface_ship_position_with_transform(world, planet, surface_transform)
+    });
     if landing_planet.is_none() {
         if let (Some(ship), Some(pos)) = (
             world.navigation().ship_id(),
@@ -780,7 +804,12 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                     .planet_position_at(dest.id, world.time().elapsed)
                     .map(from_engine)
                     .unwrap_or_else(|| from_engine(dest.position));
-                tessara_planet_transform(position, elapsed_seconds)
+                if surface_planet == Some(dest.id) {
+                    surface_transform
+                        .unwrap_or_else(|| tessara_planet_transform(position, elapsed_seconds))
+                } else {
+                    tessara_planet_transform(position, elapsed_seconds)
+                }
             } else if kharvex_planet == Some(dest.id) {
                 let position = world
                     .planet_position_at(dest.id, world.time().elapsed)
@@ -1586,6 +1615,14 @@ pub fn surface_ship_position(
     world: &GameplayWorld,
     destination: gameplay::DestinationId,
 ) -> Option<Vec3> {
+    surface_ship_position_with_transform(world, destination, None)
+}
+
+pub fn surface_ship_position_with_transform(
+    world: &GameplayWorld,
+    destination: gameplay::DestinationId,
+    frozen_transform: Option<Transform>,
+) -> Option<Vec3> {
     let center = world
         .planet_position_at(destination, world.time().elapsed)
         .map(from_engine)
@@ -1596,12 +1633,16 @@ pub fn surface_ship_position(
         })?;
     if destination.value() == TESSARA_DESTINATION_ID {
         let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
-        let transform = tessara_planet_transform(center, elapsed_seconds);
-        // Keep ECHO-7 on the walkable top plate, close enough to reach from
-        // the landing point, while avoiding the orbital rings and gears.
-        return planet_surface_origin(world, destination).map(|origin| {
-            origin + transform.rotation * Vec3::new(4.2, 0.0, 0.0)
-        });
+        let transform = frozen_transform
+            .unwrap_or_else(|| tessara_planet_transform(center, elapsed_seconds));
+        // Put ECHO-7 visibly beyond the clock's walkable edge and above its
+        // face. The player can reach it from the edge, but the hull cannot be
+        // hidden by the clock geometry or confused with the orbital rings.
+        return Some(transform.matrix().transform_point3(Vec3::new(
+            6.2,
+            TESSARA_MODEL_TOP_Y + 1.8,
+            0.0,
+        )));
     }
     let surface_radius = planet_visual_radius(destination) + PLAYER_SURFACE_CLEARANCE;
     let direction = Vec3::new(4.0, surface_radius, 4.0).normalize_or_zero();
@@ -1613,7 +1654,16 @@ pub fn surface_departure_position(
     destination: gameplay::DestinationId,
     altitude: f32,
 ) -> Option<Vec3> {
-    let ship = surface_ship_position(world, destination)?;
+    surface_departure_position_with_transform(world, destination, altitude, None)
+}
+
+pub fn surface_departure_position_with_transform(
+    world: &GameplayWorld,
+    destination: gameplay::DestinationId,
+    altitude: f32,
+    frozen_transform: Option<Transform>,
+) -> Option<Vec3> {
+    let ship = surface_ship_position_with_transform(world, destination, frozen_transform)?;
     let center = world
         .planet_position_at(destination, world.time().elapsed)
         .map(from_engine)

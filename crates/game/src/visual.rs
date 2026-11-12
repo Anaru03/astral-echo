@@ -386,6 +386,10 @@ struct VisualBridge {
     // Keeping it local prevents the planet's rotation from turning a valid
     // checkpoint into an invalid world-space position between frames.
     clock_last_valid_surface_local: Option<GameplayVec3>,
+    // The visual reference is frozen when landing completes. The gameplay
+    // planet may continue orbiting, but the player must not feel that motion
+    // while exploring its surface.
+    clock_surface_transform: Option<render_core::Transform>,
     landing_planet: Option<DestinationId>,
     landing_cinematic_started_at: Option<u64>,
     landing_cinematic_wall_started_at: Option<Instant>,
@@ -1032,6 +1036,7 @@ impl VisualBridge {
             surface_mode: false,
             surface_planet: None,
             clock_last_valid_surface_local: None,
+            clock_surface_transform: None,
             landing_planet: None,
             landing_cinematic_started_at: None,
             landing_cinematic_wall_started_at: None,
@@ -2677,10 +2682,19 @@ impl VisualBridge {
         let has_surface_input = local.x.abs() > 0.001 || local.z.abs() > 0.001;
         let yaw = player.orientation.yaw_degrees.to_radians();
         let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        // The clock face is authored with its two walkable axes swapped
+        // relative to the gameplay plane. Keep A/D and W/S on separate model
+        // axes instead of letting each pair appear to control the other one.
+        let model_x = local.z;
+        let model_z = local.x;
         let direction = GameplayVec3 {
-            x: local.x * cos_yaw - local.z * sin_yaw,
+            // The authored clock model/camera uses the opposite horizontal
+            // winding from the gameplay input axes. Negating both axes keeps
+            // WASD intuitive on screen: W up/forward, S down/back, A left,
+            // D right.
+            x: -(model_x * cos_yaw - model_z * sin_yaw),
             y: 0.0,
-            z: local.x * sin_yaw + local.z * cos_yaw,
+            z: -(model_x * sin_yaw + model_z * cos_yaw),
         };
         let look_yaw = self.look_right as i8 - self.look_left as i8;
         let look_pitch = self.look_down as i8 - self.look_up as i8;
@@ -2698,10 +2712,12 @@ impl VisualBridge {
         else {
             return;
         };
-        let model = game::render_bridge::clock_planet_transform(
-            render_core::from_engine(center),
-            self.session.world().time().elapsed.0 as f64 / 1_000.0,
-        );
+        let model = self.clock_surface_transform.unwrap_or_else(|| {
+            game::render_bridge::clock_planet_transform(
+                render_core::from_engine(center),
+                self.session.world().time().elapsed.0 as f64 / 1_000.0,
+            )
+        });
         let inverse = model.matrix().inverse();
         let fallback_world = game::render_bridge::planet_surface_origin(
             self.session.world(),
@@ -2853,7 +2869,11 @@ impl VisualBridge {
             if let Some(planet) = self.surface_planet {
                 if let (Some(player), Some(ship_position)) = (
                     self.session.world().player(self.player),
-                    game::render_bridge::surface_ship_position(self.session.world(), planet),
+                    game::render_bridge::surface_ship_position_with_transform(
+                        self.session.world(),
+                        planet,
+                        self.clock_surface_transform,
+                    ),
                 ) {
                     let dx = player.position.x - ship_position.x;
                     let dy = player.position.y - ship_position.y;
@@ -4688,7 +4708,7 @@ impl VisualBridge {
                         z: origin.z,
                     };
                     if planet == TESSARA_DESTINATION {
-                        let local = self
+                        let frozen_transform = self
                             .session
                             .world()
                             .planet_position_at(planet, self.session.world().time().elapsed)
@@ -4698,17 +4718,22 @@ impl VisualBridge {
                                     center,
                                     self.session.world().time().elapsed.0 as f64 / 1_000.0,
                                 )
+                            });
+                        self.clock_surface_transform = frozen_transform;
+                        self.clock_last_valid_surface_local = frozen_transform.map(|transform| {
+                            let value = transform
                                 .matrix()
                                 .inverse()
-                                .transform_point3(render_core::from_engine(origin))
-                            });
-                        self.clock_last_valid_surface_local = local.map(|value| GameplayVec3 {
+                                .transform_point3(render_core::from_engine(origin));
+                            GameplayVec3 {
                             x: value.x,
                             y: value.y,
                             z: value.z,
+                            }
                         });
                     } else {
                         self.clock_last_valid_surface_local = None;
+                        self.clock_surface_transform = None;
                     }
                     let _ = self
                         .session
@@ -4721,10 +4746,11 @@ impl VisualBridge {
         if let Some(started) = self.takeoff_cinematic_started_at {
             if now.saturating_sub(started) >= game::render_bridge::TAKEOFF_CINEMATIC_DURATION_MS {
                 if let Some(planet) = self.surface_planet {
-                    if let Some(origin) = game::render_bridge::surface_departure_position(
+                    if let Some(origin) = game::render_bridge::surface_departure_position_with_transform(
                         self.session.world(),
                         planet,
                         10.0,
+                        self.clock_surface_transform,
                     ) {
                         let origin = GameplayVec3 {
                             x: origin.x,
@@ -4739,6 +4765,7 @@ impl VisualBridge {
                 self.surface_mode = false;
                 self.surface_planet = None;
                 self.clock_last_valid_surface_local = None;
+                self.clock_surface_transform = None;
                 self.pilot_mode = true;
                 self.feedback = "DESPEGUE COMPLETADO — ECHO-7 ESTA EN ORBITA".to_owned();
             }
@@ -4750,7 +4777,11 @@ impl VisualBridge {
             return;
         };
         let Some(ship_position) =
-            game::render_bridge::surface_ship_position(self.session.world(), planet)
+            game::render_bridge::surface_ship_position_with_transform(
+                self.session.world(),
+                planet,
+                self.clock_surface_transform,
+            )
         else {
             return;
         };
@@ -4915,7 +4946,7 @@ fn run_visual(lan_connection: Option<(String, String)>) -> Result<(), String> {
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
-            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface(
+            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface_transform(
                 bridge.session.world(),
                 Default::default(),
                 &camera,
@@ -4923,6 +4954,7 @@ fn run_visual(lan_connection: Option<(String, String)>) -> Result<(), String> {
                 bridge.nareth_visual_asset_ready(),
                 bridge.pilot_mode,
                 bridge.surface_planet,
+                bridge.clock_surface_transform,
             );
             bridge.append_remote_player_nodes(&mut snapshot);
             if bridge.hud_visible {
