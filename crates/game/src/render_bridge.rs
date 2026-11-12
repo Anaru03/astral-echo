@@ -117,7 +117,7 @@ pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::splat(ECHO7_VISUAL_SCALE_FACTOR);
 pub const ECHO7_VISUAL_LENGTH: f32 = 93.4 * ECHO7_VISUAL_SCALE_FACTOR;
 // Bounds measured from ECHO7_Exterior_DosCubiertas.obj. The source model uses
 // X for its longitudinal axis and Z as up.
-const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(3.7, 0.0, 5.532_477);
+const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(3.7, 0.0, 0.0);
 const ECHO7_MODEL_AFT_EDGE_X: f32 = 50.4;
 const ECHO7_AFT_EDGE_OFFSET: f32 =
     (ECHO7_MODEL_AFT_EDGE_X - ECHO7_MODEL_CENTER.x) * ECHO7_VISUAL_SCALE.x;
@@ -1323,20 +1323,20 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         };
         snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
             color: Vec3::new(1.0, 0.93, 0.82),
-            intensity: 14.0,
+            intensity: 52.0,
             kind: render_core::RenderLightKind::Point {
                 position: from_engine(local_light(Vec3::new(0.0, 5.6, 0.0))),
-                range: 20.0,
+                range: 32.0,
             },
             casts_shadow: false,
         }));
         for local_position in [Vec3::new(-6.0, 3.5, 0.0), Vec3::new(6.0, 3.5, 0.0)] {
             snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
                 color: Vec3::new(0.86, 0.92, 1.0),
-                intensity: 8.0,
+                intensity: 34.0,
                 kind: render_core::RenderLightKind::Point {
                     position: from_engine(local_light(local_position)),
-                    range: 14.0,
+                    range: 24.0,
                 },
                 casts_shadow: false,
             }));

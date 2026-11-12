@@ -3035,8 +3035,16 @@ impl VisualBridge {
             } else {
                 true
             };
+            let proposed_surface = game::render_bridge::echo7_support_surface(
+                updated.position,
+                interior_origin,
+                ship_yaw,
+            );
             let stair_path_valid = if matches!(
                 current_surface,
+                game::render_bridge::Echo7SupportSurface::Stair
+            ) || matches!(
+                proposed_surface,
                 game::render_bridge::Echo7SupportSurface::Stair
             ) {
                 let horizontal_distance = ((updated.position.x - player.position.x).powi(2)
@@ -3123,6 +3131,10 @@ impl VisualBridge {
                 || !upper_deck_path_valid
                 || !stair_path_valid
                 || crossed_upper_edge
+                || (matches!(
+                    proposed_surface,
+                    game::render_bridge::Echo7SupportSurface::Stair
+                ) && (support - updated.position.y).abs() > 0.75)
             {
                 static COLLISION_REJECTION_REPORTED: std::sync::atomic::AtomicBool =
                     std::sync::atomic::AtomicBool::new(false);
@@ -6414,12 +6426,18 @@ mod tests {
     #[test]
     fn interior_motion_supports_real_stair_ascent_and_descent() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let ship_position = bridge.session.world().ship_position().unwrap();
+        let start = game::render_bridge::echo7_model_to_world(
+            render_core::Vec3::new(-4.5, -7.0, 0.0),
+            ship_position,
+            0.0,
+        );
         bridge.session.world_mut().initialize_player_position(
             bridge.player,
             GameplayVec3 {
-                x: -5.1,
-                y: 0.0,
-                z: -2.8,
+                x: start.x,
+                y: start.y,
+                z: start.z,
             },
         );
         bridge.flight_keys.backward = true;

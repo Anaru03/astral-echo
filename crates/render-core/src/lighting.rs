@@ -27,7 +27,7 @@ impl Default for LightingEnvironment {
             mode: LightingMode::Unlit,
             shadows: crate::ShadowConfig::default(),
             camera_position: Vec3::ZERO,
-            ambient: Vec3::splat(0.03),
+            ambient: Vec3::splat(0.14),
             lights: Vec::new(),
         }
     }
