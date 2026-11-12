@@ -604,8 +604,8 @@ fn test_reject_invalid_json() {
 fn test_incomplete_message_is_rejected_when_client_closes() {
     let (address, shutdown, handle) = start_server();
     let mut stream = raw_client(&address);
-    use std::net::Shutdown;
     use std::io::Write;
+    use std::net::Shutdown;
     stream.write_all(br#"{"type":"Ping"}"#).unwrap();
     stream.shutdown(Shutdown::Write).unwrap();
 
@@ -620,7 +620,10 @@ fn test_incomplete_message_is_rejected_when_client_closes() {
 fn test_actions_before_join_are_rejected() {
     let (address, shutdown, handle) = start_server();
     let mut stream = raw_client(&address);
-    send_raw(&mut stream, &networking::encode(&ClientMessage::Ping).unwrap());
+    send_raw(
+        &mut stream,
+        &networking::encode(&ClientMessage::Ping).unwrap(),
+    );
 
     assert!(matches!(
         read_raw_response(&stream),
@@ -830,13 +833,21 @@ fn test_concurrent_connections_and_disconnects_at_configured_limit() {
 
     let mut clients = Vec::new();
     for _ in 0..MAX_PLAYERS {
-        clients.push(receiver.recv_timeout(Duration::from_secs(2)).unwrap().unwrap());
+        clients.push(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap(),
+        );
     }
     for thread in threads {
         thread.join().unwrap();
     }
 
-    let mut ids = clients.iter().map(GameClient::player_id).collect::<Vec<_>>();
+    let mut ids = clients
+        .iter()
+        .map(GameClient::player_id)
+        .collect::<Vec<_>>();
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), MAX_PLAYERS);
@@ -855,11 +866,14 @@ fn test_simultaneous_movements_keep_messages_valid_for_healthy_clients() {
     let (address, shutdown, handle) = start_server();
     let mut clients = Vec::new();
     for index in 0..MAX_PLAYERS {
-        clients.push(GameClient::connect(&address, &format!("Movimiento {index}" )).unwrap());
+        clients.push(GameClient::connect(&address, &format!("Movimiento {index}")).unwrap());
     }
     for client in &mut clients {
         for _ in 0..(MAX_PLAYERS - 1) {
-            assert!(matches!(client.receive().unwrap(), ServerMessage::PlayerJoined { .. }));
+            assert!(matches!(
+                client.receive().unwrap(),
+                ServerMessage::PlayerJoined { .. }
+            ));
         }
     }
 
@@ -930,7 +944,7 @@ fn test_shutdown_during_concurrent_broadcast_finishes_all_handlers() {
 
     let mut clients = Vec::new();
     for index in 0..MAX_PLAYERS {
-        clients.push(GameClient::connect(&address, &format!("Cierre {index}" )).unwrap());
+        clients.push(GameClient::connect(&address, &format!("Cierre {index}")).unwrap());
     }
     let barrier = Arc::new(Barrier::new(MAX_PLAYERS + 1));
     let mut client_threads = Vec::new();

@@ -209,7 +209,10 @@ impl ServerState {
         if self.pilot_owner != Some(id) || !transform.is_valid() {
             return false;
         }
-        if self.last_ship_sequence.is_some_and(|previous| sequence <= previous) {
+        if self
+            .last_ship_sequence
+            .is_some_and(|previous| sequence <= previous)
+        {
             return false;
         }
         self.last_ship_sequence = Some(sequence);
@@ -379,7 +382,9 @@ fn set_pilot_control(
     broadcast_message_locked(
         state,
         events,
-        &ServerMessage::PilotControlChanged { player_id: current_owner },
+        &ServerMessage::PilotControlChanged {
+            player_id: current_owner,
+        },
         None,
     );
 }
@@ -572,11 +577,7 @@ impl GameServerHandle {
         broadcast_all(&self.state, self.events.as_ref(), message, exclude);
     }
 
-    pub fn send_to(
-        &self,
-        player_id: NetworkPlayerId,
-        message: &ServerMessage,
-    ) -> io::Result<()> {
+    pub fn send_to(&self, player_id: NetworkPlayerId, message: &ServerMessage) -> io::Result<()> {
         let (mut stream, output, write_lock) = {
             let state = self
                 .state
@@ -1186,7 +1187,9 @@ fn handle_client(
                         send_response(
                             output.as_ref(),
                             &mut stream,
-                            &ServerMessage::PilotControlChanged { player_id: Some(owner) },
+                            &ServerMessage::PilotControlChanged {
+                                player_id: Some(owner),
+                            },
                         )?;
                     }
                     if let (Some(owner), Some(transform)) = (pilot_owner, ship_transform) {
@@ -1195,7 +1198,10 @@ fn handle_client(
                             &mut stream,
                             &ServerMessage::ShipMoved {
                                 player_id: owner,
-                                sequence: state.lock().map(|server| server.last_ship_sequence.unwrap_or(0)).unwrap_or(0),
+                                sequence: state
+                                    .lock()
+                                    .map(|server| server.last_ship_sequence.unwrap_or(0))
+                                    .unwrap_or(0),
                                 transform,
                             },
                         )?;
@@ -1245,7 +1251,10 @@ fn handle_client(
                     }
                 }
 
-                ClientMessage::ShipMove { sequence, transform } => {
+                ClientMessage::ShipMove {
+                    sequence,
+                    transform,
+                } => {
                     if let Some(id) = player_id {
                         let accepted = state
                             .lock()

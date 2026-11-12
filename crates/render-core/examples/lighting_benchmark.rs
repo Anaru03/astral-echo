@@ -25,8 +25,8 @@ struct Measurement {
 }
 
 fn inputs() -> Result<Vec<Input>, Box<dyn std::error::Error>> {
-    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/models/shooter/shooter.obj");
+    let path: PathBuf =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/models/shooter/shooter.obj");
     let mesh = load_obj(path)?;
     let normals = mesh.resolved_normals();
     Ok(mesh
@@ -50,7 +50,11 @@ fn environment(lights: &[RenderLight]) -> LightingEnvironment {
     environment
 }
 
-fn measure(environment: &LightingEnvironment, material: MaterialInfo, values: &[Input]) -> Measurement {
+fn measure(
+    environment: &LightingEnvironment,
+    material: MaterialInfo,
+    values: &[Input],
+) -> Measurement {
     for _ in 0..WARMUP_REPETITIONS {
         let mut checksum = Vec4::ZERO;
         for input in values {
