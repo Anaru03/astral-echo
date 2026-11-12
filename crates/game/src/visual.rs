@@ -1,7 +1,8 @@
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -513,6 +514,14 @@ struct VisualBridge {
     gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, u64, GpuAssetState)>,
     nareth_diag_snapshot_mesh: Option<MeshHandle>,
     echo7_pick_requested: bool,
+    active_ship_minigame: Option<ActiveShipMinigame>,
+    completed_ship_minigames: BTreeSet<&'static str>,
+}
+
+struct ActiveShipMinigame {
+    task: &'static str,
+    event_file: PathBuf,
+    child: Child,
 }
 
 impl VisualBridge {
@@ -1195,6 +1204,8 @@ impl VisualBridge {
             gpu_asset_states: BTreeMap::new(),
             nareth_diag_snapshot_mesh: None,
             echo7_pick_requested: false,
+            active_ship_minigame: None,
+            completed_ship_minigames: BTreeSet::new(),
         })
     }
 
@@ -1389,6 +1400,7 @@ impl VisualBridge {
     }
 
     fn advance_visual_time(&mut self) {
+        self.poll_ship_minigame();
         let now = Instant::now();
         let delta_ms = now
             .saturating_duration_since(self.last_world_update)
@@ -2326,6 +2338,101 @@ impl VisualBridge {
         println!("visual gameplay: {}", self.feedback);
     }
 
+    fn ship_minigame_for_target(&self, target: EntityId) -> Option<&'static str> {
+        match self.session.world().interactable(target).map(|value| value.behavior) {
+            Some(InteractionBehavior::ElectricalPanel) => Some("wiring"),
+            Some(InteractionBehavior::LifeSupportPanel) => Some("filter"),
+            Some(InteractionBehavior::Console {
+                role: gameplay::ConsoleRole::ShipStatus,
+                ..
+            }) => Some("code"),
+            Some(InteractionBehavior::Station { station })
+                if station.station_type == StationType::Piloting => Some("asteroids"),
+            _ => None,
+        }
+    }
+
+    fn start_ship_minigame(&mut self, task: &'static str, _target: EntityId) -> bool {
+        if self.completed_ship_minigames.contains(task)
+            || self.active_ship_minigame.is_some()
+        {
+            return false;
+        }
+
+        // Unit tests use the gameplay interaction directly and must not open
+        // a desktop Tk window. The real visual runtime uses the same path
+        // through the Python minigame bridge below.
+        if cfg!(test) {
+            self.completed_ship_minigames.insert(task);
+            return false;
+        }
+
+        let event_file = std::env::temp_dir().join(format!(
+            "astral_echo_ship_minigame_{}_{}.events",
+            std::process::id(),
+            task
+        ));
+        let _ = std::fs::remove_file(&event_file);
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("ship_minigames")
+            .join("ship_mission.py");
+        let python = std::env::var("ASTRAL_ECHO_PYTHON").unwrap_or_else(|_| "python".to_owned());
+        let child = std::process::Command::new(python)
+            .arg(script)
+            .arg("--task")
+            .arg(task)
+            .arg("--event-file")
+            .arg(&event_file)
+            .spawn();
+        let Ok(child) = child else {
+            self.feedback = format!(
+                "NO SE PUDO ABRIR EL MINIJUEGO {task} — CONFIGURA ASTRAL_ECHO_PYTHON"
+            );
+            return false;
+        };
+        self.active_ship_minigame = Some(ActiveShipMinigame {
+            task,
+            event_file,
+            child,
+        });
+        self.feedback = format!(
+            "MINIJUEGO INICIADO: {task} — COMPLETALO PARA CONTINUAR LA MISION"
+        );
+        true
+    }
+
+    fn poll_ship_minigame(&mut self) {
+        let Some(mut active) = self.active_ship_minigame.take() else {
+            return;
+        };
+        let completed = std::fs::read_to_string(&active.event_file)
+            .map(|contents| {
+                contents.lines().any(|line| {
+                    line.contains(&format!("\"task\": \"{}\"", active.task))
+                        || line.contains(&format!("\"task\":\"{}\"", active.task))
+                })
+            })
+            .unwrap_or(false);
+        let exited = active.child.try_wait().ok().flatten();
+        if completed {
+            let _ = std::fs::remove_file(&active.event_file);
+            self.completed_ship_minigames.insert(active.task);
+            self.feedback = format!(
+                "MINIJUEGO COMPLETADO: {} — INTERACCION RESTAURADA",
+                active.task
+            );
+            self.guided_interaction();
+        } else if exited.is_some() {
+            let _ = std::fs::remove_file(&active.event_file);
+            self.feedback = format!(
+                "MINIJUEGO CANCELADO: {} — VUELVE A INTERACTUAR PARA REINTENTAR",
+                active.task
+            );
+        } else {
+            self.active_ship_minigame = Some(active);
+        }
+    }
+
     fn guided_interaction(&mut self) {
         let at_pilot_station = self.interior_mode
             && self.mission_one_completed()
@@ -2436,6 +2543,14 @@ impl VisualBridge {
                     .ok()
                     .and_then(|guidance| guidance.recommended_action)
             });
+        if let Some(target) = selected_interaction {
+            if let Some(task) = self.ship_minigame_for_target(target) {
+                if !self.completed_ship_minigames.contains(task) {
+                    self.start_ship_minigame(task, target);
+                    return;
+                }
+            }
+        }
         let pilot_console_available = action.is_none()
             && !self.pilot_mode
             && !self.legacy_exterior_controls

@@ -26,6 +26,17 @@ TASKS = (
     ("code", "Validar los sistemas de acceso", open_code_task),
     ("asteroids", "Asegurar la defensa de la nave", open_asteroids_task),
 )
+TASK_BY_ID = {task_id: (label, opener) for task_id, label, opener in TASKS}
+
+# These are the interaction points used by ECHO-7's interior.  The gameplay
+# layer can pass one of these stable ids instead of knowing anything about
+# Tkinter or the implementation of a minigame.
+INTERACTION_TASKS = {
+    "electrical_panel": "wiring",
+    "life_support_panel": "filter",
+    "ship_status_console": "code",
+    "piloting_station": "asteroids",
+}
 
 
 @dataclass
@@ -48,10 +59,69 @@ class ShipMissionProgress:
 
     def mark_completed(self, task_id: str) -> bool:
         """Mark a task once and return whether the whole mission is complete."""
-        if task_id not in {task[0] for task in TASKS}:
+        if task_id not in TASK_BY_ID:
             raise ValueError(f"unknown ship mission task: {task_id}")
         self.completed.add(task_id)
         return self.is_complete
+
+
+class ShipInteractionMission:
+    """Attach one minigame to each interactable ECHO-7 ship location."""
+
+    def __init__(
+        self,
+        parent,
+        on_complete: Optional[Callable[[], None]] = None,
+        on_progress: Optional[Callable[[ShipMissionProgress], None]] = None,
+    ):
+        self.parent = parent
+        self.on_complete = on_complete
+        self.on_progress = on_progress
+        self.progress = ShipMissionProgress()
+        self.active_task_id = None
+        self.active_task = None
+
+    def activate(self, interaction_id: str):
+        """Open the task assigned to an interaction point.
+
+        Returns the Tk task instance, or ``None`` when the point is already
+        complete, unknown, or another minigame is currently open.
+        """
+        task_id = INTERACTION_TASKS.get(interaction_id)
+        if task_id is None or task_id in self.progress.completed:
+            return None
+        if self.active_task is not None:
+            return None
+
+        _label, opener = TASK_BY_ID[task_id]
+        self.active_task_id = task_id
+        self.active_task = opener(
+            self.parent,
+            on_success=lambda task_id=task_id: self._complete(task_id),
+        )
+        return self.active_task
+
+    def _complete(self, task_id: str):
+        if task_id != self.active_task_id:
+            return
+        window = self.active_task.master if self.active_task is not None else None
+        if window is not None and window.winfo_exists():
+            window.destroy()
+        self.active_task = None
+        self.active_task_id = None
+        mission_complete = self.progress.mark_completed(task_id)
+        if self.on_progress:
+            self.on_progress(self.progress)
+        if mission_complete and self.on_complete:
+            self.on_complete()
+
+    def cancel(self):
+        if self.active_task is not None:
+            window = self.active_task.master
+            if window.winfo_exists():
+                window.destroy()
+        self.active_task = None
+        self.active_task_id = None
 
 
 class ShipMaintenanceMission:
@@ -136,14 +206,33 @@ def open_ship_maintenance_mission(parent, on_complete=None, on_progress=None):
 
 if __name__ == "__main__":
     import tkinter as tk
+    import argparse
+    import json
 
     root = tk.Tk()
     root.withdraw()
-    open_ship_maintenance_mission(
-        root,
-        on_complete=lambda: print("MISION DE MANTENIMIENTO COMPLETADA"),
-        on_progress=lambda progress: print(
-            f"PROGRESO {progress.count}/{progress.total}"
-        ),
-    )
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task", choices=tuple(TASK_BY_ID))
+    parser.add_argument("--event-file")
+    args = parser.parse_args()
+
+    if args.task:
+        _label, opener = TASK_BY_ID[args.task]
+
+        def task_complete():
+            if args.event_file:
+                with open(args.event_file, "a", encoding="utf-8") as stream:
+                    stream.write(json.dumps({"task": args.task}) + "\n")
+            root.destroy()
+
+        opener(root, on_success=task_complete)
+    else:
+        open_ship_maintenance_mission(
+            root,
+            on_complete=lambda: print("MISION DE MANTENIMIENTO COMPLETADA"),
+            on_progress=lambda progress: print(
+                f"PROGRESO {progress.count}/{progress.total}"
+            ),
+        )
     root.mainloop()
