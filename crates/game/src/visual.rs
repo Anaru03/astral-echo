@@ -4779,17 +4779,126 @@ pub fn run() -> Result<(), String> {
                 }
             }
 
-            // Modelos de main que aun no tienen entrada en el registro texturizado.
+            // Registrar las mallas originales para mantener compatibilidad
+            // con snapshots, LOD y referencias existentes del juego.
             for (relative_path, mesh, material) in [
-                ("moon/moon.obj", render_core::MeshHandle::MOON, VisualAssets::PLANET),
-                ("building/building_planet.obj", render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
-                ("clock/clock_planet.obj", render_core::MeshHandle::TESSARA_PLANET, VisualAssets::PLANET),
-                ("mecanic/mecanic_planet.obj", render_core::MeshHandle::KHARVEX_PLANET, VisualAssets::PLANET),
+                (
+                    "clock/clock_planet.obj",
+                    render_core::MeshHandle::TESSARA_PLANET,
+                    VisualAssets::PLANET,
+                ),
+                (
+                    "mecanic/mecanic_planet.obj",
+                    render_core::MeshHandle::KHARVEX_PLANET,
+                    VisualAssets::PLANET,
+                ),
+                (
+                    "building/building_planet.obj",
+                    render_core::MeshHandle::BUILDING_PLANET,
+                    VisualAssets::PLANET,
+                ),
             ] {
                 let path = assets_root.join(relative_path);
                 match render_core::load_obj(&path) {
-                    Ok(mesh_data) => scene.register_mesh(mesh, material, mesh_data),
-                    Err(error) => eprintln!("modelo no cargado {}: {error}", path.display()),
+                    Ok(mesh_data) => {
+                        scene.register_mesh(mesh, material, mesh_data);
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "Modelo original no cargado {}: {}",
+                            path.display(),
+                            error
+                        );
+                    }
+                }
+            }
+
+            // Planetas con materiales originales exportados desde Blender.
+            // No se modifican los archivos OBJ originales.
+            for (index, relative_path, mesh, material, fallback_path) in [
+                (
+                    0u32,
+                    "clock/clock.obj",
+                    render_core::MeshHandle::TESSARA_PLANET,
+                    VisualAssets::PLANET,
+                    "clock/clock_planet.obj",
+                ),
+                (
+                    1u32,
+                    "mecanic/mecanic.obj",
+                    render_core::MeshHandle::KHARVEX_PLANET,
+                    VisualAssets::PLANET,
+                    "mecanic/mecanic_planet.obj",
+                ),
+                (
+                    2u32,
+                    "building/building.obj",
+                    render_core::MeshHandle::BUILDING_PLANET,
+                    VisualAssets::PLANET,
+                    "building/building_planet.obj",
+                ),
+            ] {
+                let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../assets/models_exportados")
+                    .join(relative_path);
+
+                let first_id = 500_000u32 + index * 20_000;
+
+                match render_core::register_textured_model(
+                    scene,
+                    &path,
+                    first_id,
+                    first_id,
+                ) {
+                    Ok(parts) if !parts.is_empty() => {
+                        println!(
+                            "PLANETA TEXTURIZADO: {} ({} submallas)",
+                            path.display(),
+                            parts.len()
+                        );
+
+                        parts_for_setup
+                            .borrow_mut()
+                            .insert((mesh, material), parts);
+                    }
+                    result => {
+                        eprintln!(
+                            "No se pudo cargar el planeta texturizado {}: {:?}",
+                            path.display(),
+                            result.err()
+                        );
+
+                        let fallback = assets_root.join(fallback_path);
+                        match render_core::load_obj(&fallback) {
+                            Ok(mesh_data) => {
+                                scene.register_mesh(mesh, material, mesh_data);
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "Modelo de respaldo no cargado {}: {}",
+                                    fallback.display(),
+                                    error
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // La Luna conserva su modelo original.
+            {
+                let path = assets_root.join("moon/moon.obj");
+                match render_core::load_obj(&path) {
+                    Ok(mesh_data) => scene.register_mesh(
+                        render_core::MeshHandle::MOON,
+                        VisualAssets::PLANET,
+                        mesh_data,
+                    ),
+                    Err(error) => eprintln!(
+                        "Modelo lunar no cargado {}: {}",
+                        path.display(),
+                        error
+                    ),
                 }
             }
             scene.set_material(VisualAssets::SHIP, MaterialInfo::ship());
