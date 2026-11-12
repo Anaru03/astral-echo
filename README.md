@@ -148,7 +148,7 @@ Cuando el HUD muestra una acción contextual, puede activarse con la tecla indic
 - Teclas `1`, `2` y `3`: cambiar entre los presets de resolución bajo, medio y alto cuando el host de renderizado permite cambiar presets.
 - Teclas `S`, `P` y `A`: seleccionar rasterizado secuencial, paralelo o automático únicamente cuando los controles de rasterizado están habilitados.
 
-El juego usa resolución baja por defecto, selección automática del rasterizador y LOD para reducir el coste de modelos lejanos. Si el equipo tiene problemas de rendimiento, usa `--backend cpu`, mantén el preset bajo y evita capturas gráficas durante el juego.
+El juego usa resolución baja por defecto, selección automática del rasterizador y LOD para reducir el coste de los modelos. En CPU, el preset bajo usa siempre las mallas simplificadas para impedir que una nave cercana de alta resolución consuma todo el tiempo del cuadro. Si el equipo tiene problemas de rendimiento, usa `--backend cpu`, mantén el preset bajo y evita capturas gráficas durante el juego.
 
 ## Problemas frecuentes
 
