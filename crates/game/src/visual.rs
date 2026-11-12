@@ -402,6 +402,8 @@ struct VisualBridge {
     look_right: bool,
     look_up: bool,
     look_down: bool,
+    surface_camera_yaw: f32,
+    surface_camera_pitch: f32,
     last_interior_update: Instant,
     last_world_update: Instant,
     visual_asset_client: Option<VisualAssetClient>,
@@ -1049,6 +1051,8 @@ impl VisualBridge {
             look_right: false,
             look_up: false,
             look_down: false,
+            surface_camera_yaw: 0.0,
+            surface_camera_pitch: 0.0,
             last_interior_update: Instant::now(),
             last_world_update: Instant::now(),
             visual_asset_client: None,
@@ -1574,7 +1578,9 @@ impl VisualBridge {
             }
             return;
         }
-        if (self.interior_mode || self.pilot_mode) && state == ElementState::Released {
+        if (self.interior_mode || self.pilot_mode || self.surface_mode)
+            && state == ElementState::Released
+        {
             match key {
                 KeyCode::ArrowLeft => self.look_left = false,
                 KeyCode::ArrowRight => self.look_right = false,
@@ -1636,6 +1642,9 @@ impl VisualBridge {
                 self.toggle_flight(player, pilot_station)
             }
             KeyCode::KeyO => self.toggle_observation(),
+            KeyCode::ArrowLeft if self.surface_mode => {
+                self.look_left = true;
+            }
             KeyCode::ArrowLeft if self.interior_mode || self.pilot_mode => {
                 self.look_left = true;
                 if self.interior_mode {
@@ -1644,6 +1653,9 @@ impl VisualBridge {
                 if self.pilot_mode {
                     self.rotate_ship_from_input(1.0, 0.0);
                 }
+            }
+            KeyCode::ArrowRight if self.surface_mode => {
+                self.look_right = true;
             }
             KeyCode::ArrowRight if self.interior_mode || self.pilot_mode => {
                 self.look_right = true;
@@ -1654,6 +1666,9 @@ impl VisualBridge {
                     self.rotate_ship_from_input(-1.0, 0.0);
                 }
             }
+            KeyCode::ArrowUp if self.surface_mode => {
+                self.look_up = true;
+            }
             KeyCode::ArrowUp if self.interior_mode || self.pilot_mode => {
                 self.look_up = true;
                 if self.interior_mode {
@@ -1662,6 +1677,9 @@ impl VisualBridge {
                 if self.pilot_mode {
                     self.rotate_ship_from_input(0.0, -1.0);
                 }
+            }
+            KeyCode::ArrowDown if self.surface_mode => {
+                self.look_down = true;
             }
             KeyCode::ArrowDown if self.interior_mode || self.pilot_mode => {
                 self.look_down = true;
@@ -2680,13 +2698,18 @@ impl VisualBridge {
             z: keyboard.z.clamp(-1.0, 1.0),
         };
         let has_surface_input = local.x.abs() > 0.001 || local.z.abs() > 0.001;
-        let yaw = player.orientation.yaw_degrees.to_radians();
+        // WASD follows the camera's horizontal heading, not the character's
+        // stored orientation. Arrow keys therefore change navigation without
+        // rotating the player model.
+        let yaw = (player.orientation.yaw_degrees + self.surface_camera_yaw).to_radians();
         let (sin_yaw, cos_yaw) = yaw.sin_cos();
         // The clock face is authored with its two walkable axes swapped
         // relative to the gameplay plane. Keep A/D and W/S on separate model
         // axes instead of letting each pair appear to control the other one.
         let model_x = local.z;
-        let model_z = local.x;
+        // A/D were mirrored on the clock face; invert only this lateral
+        // component so W/S retain their current forward/backward direction.
+        let model_z = -local.x;
         let direction = GameplayVec3 {
             // The authored clock model/camera uses the opposite horizontal
             // winding from the gameplay input axes. Negating both axes keeps
@@ -2699,10 +2722,12 @@ impl VisualBridge {
         let look_yaw = self.look_right as i8 - self.look_left as i8;
         let look_pitch = self.look_down as i8 - self.look_up as i8;
         if look_yaw != 0 || look_pitch != 0 {
-            self.rotate_player(
-                f32::from(look_yaw) * 6.0 * seconds / 0.016,
-                f32::from(look_pitch) * 4.0 * seconds / 0.016,
-            );
+            // On a planet the arrows orbit only the third-person camera;
+            // they must never rotate the character or alter WASD heading.
+            self.surface_camera_yaw += f32::from(look_yaw) * 6.0 * seconds / 0.016;
+            self.surface_camera_pitch = (self.surface_camera_pitch
+                + f32::from(look_pitch) * 4.0 * seconds / 0.016)
+                .clamp(-65.0, 65.0);
         }
 
         let Some(center) = self
@@ -4699,6 +4724,8 @@ impl VisualBridge {
                 self.legacy_exterior_controls = false;
                 self.flight_keys = FlightKeys::default();
                 self.gamepad_flight = GameplayVec3::ZERO;
+                self.surface_camera_yaw = 0.0;
+                self.surface_camera_pitch = 0.0;
                 if let Some(origin) =
                     game::render_bridge::planet_surface_origin(self.session.world(), planet)
                 {
@@ -4766,6 +4793,8 @@ impl VisualBridge {
                 self.surface_planet = None;
                 self.clock_last_valid_surface_local = None;
                 self.clock_surface_transform = None;
+                self.surface_camera_yaw = 0.0;
+                self.surface_camera_pitch = 0.0;
                 self.pilot_mode = true;
                 self.feedback = "DESPEGUE COMPLETADO — ECHO-7 ESTA EN ORBITA".to_owned();
             }
@@ -4845,11 +4874,13 @@ impl VisualBridge {
         }
         if self.surface_mode {
             if let Some(planet) = self.surface_planet {
-                return game::render_bridge::surface_camera_for_player(
+                return game::render_bridge::surface_camera_for_player_with_view(
                     world,
                     self.player,
                     planet,
                     aspect,
+                    self.surface_camera_yaw,
+                    self.surface_camera_pitch,
                 );
             }
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);

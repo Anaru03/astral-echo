@@ -668,7 +668,10 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     let surface_ship = surface_planet.and_then(|planet| {
         surface_ship_position_with_transform(world, planet, surface_transform)
     });
-    if landing_planet.is_none() {
+    let parked_ship = surface_ship.is_some();
+    // Once the cinematic ends the gameplay state remains `Landed`, so the
+    // landing planet must not hide the parked ship during surface mode.
+    if landing_planet.is_none() || surface_planet.is_some() {
         if let (Some(ship), Some(pos)) = (
             world.navigation().ship_id(),
             surface_ship.or_else(|| visual_ship_position(world)),
@@ -686,7 +689,10 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                 transform,
                 ECHO7_MESH,
                 ECHO7_MATERIAL,
-                world.entities().contains(ship),
+                // During surface exploration the ship is a parked visual
+                // anchor even though navigation keeps its world entity in
+                // the landed state. Do not let entity activity hide it.
+                parked_ship || world.entities().contains(ship),
             ));
         }
     }
@@ -1635,13 +1641,12 @@ pub fn surface_ship_position_with_transform(
         let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
         let transform = frozen_transform
             .unwrap_or_else(|| tessara_planet_transform(center, elapsed_seconds));
-        // Put ECHO-7 visibly beyond the clock's walkable edge and above its
-        // face. The player can reach it from the edge, but the hull cannot be
-        // hidden by the clock geometry or confused with the orbital rings.
+        // Put ECHO-7 clearly on the upper face of the clock, above the model
+        // rather than behind its edge or inside the orbital rings.
         return Some(transform.matrix().transform_point3(Vec3::new(
-            6.2,
-            TESSARA_MODEL_TOP_Y + 1.8,
-            0.0,
+            2.0,
+            TESSARA_MODEL_TOP_Y + 3.0,
+            -0.5,
         )));
     }
     let surface_radius = planet_visual_radius(destination) + PLAYER_SURFACE_CLEARANCE;
@@ -1750,6 +1755,17 @@ pub fn surface_camera_for_player(
     destination: gameplay::DestinationId,
     aspect: f32,
 ) -> Result<Camera, CameraError> {
+    surface_camera_for_player_with_view(world, player_id, destination, aspect, 0.0, 0.0)
+}
+
+pub fn surface_camera_for_player_with_view(
+    world: &GameplayWorld,
+    player_id: engine::EntityId,
+    destination: gameplay::DestinationId,
+    aspect: f32,
+    camera_yaw_offset: f32,
+    camera_pitch_offset: f32,
+) -> Result<Camera, CameraError> {
     let player = world.player(player_id).ok_or(CameraError::InvalidAspect)?;
     let center = world
         .planet_position_at(destination, world.time().elapsed)
@@ -1771,10 +1787,8 @@ pub fn surface_camera_for_player(
     } else {
         Vec3::Y
     };
-    let yaw = player.orientation.yaw_degrees.to_radians();
-    let pitch = player
-        .orientation
-        .pitch_degrees
+    let yaw = (player.orientation.yaw_degrees + camera_yaw_offset).to_radians();
+    let pitch = (player.orientation.pitch_degrees + camera_pitch_offset)
         .to_radians()
         .clamp(-1.2, 1.2);
     let horizontal = pitch.cos();
