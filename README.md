@@ -150,6 +150,8 @@ Cuando el HUD muestra una acción contextual, puede activarse con la tecla indic
 
 El juego usa resolución baja por defecto, selección automática del rasterizador y LOD para reducir el coste de los modelos. En CPU, el preset bajo usa siempre las mallas simplificadas para impedir que una nave cercana de alta resolución consuma todo el tiempo del cuadro. Si el equipo tiene problemas de rendimiento, usa `--backend cpu`, mantén el preset bajo y evita capturas gráficas durante el juego.
 
+El preset bajo conserva la resolución interna de 640×360 y apunta a 60 FPS. Los modelos OBJ se agrupan por material durante la carga para reducir nodos y llamadas de dibujo sin eliminar sus texturas.
+
 ## Problemas frecuentes
 
 - `cargo no se reconoce`: Rust no está instalado o debes reiniciar la terminal.

@@ -84,6 +84,19 @@ pub fn compose_hud_overlay(framebuffer: &mut Framebuffer, hud: &render_core::Hud
         if x0 >= x1 || y0 >= y1 {
             continue;
         }
+        if rect.color[3] == 0 {
+            continue;
+        }
+        if rect.color[3] == 255 {
+            for y in y0..y1 {
+                let start = (y * width + x0) * 4;
+                let end = (y * width + x1) * 4;
+                for pixel in pixels[start..end].chunks_exact_mut(4) {
+                    pixel.copy_from_slice(&rect.color);
+                }
+            }
+            continue;
+        }
         let alpha = f32::from(rect.color[3]) / 255.0;
         let inverse_alpha = 1.0 - alpha;
         for y in y0..y1 {

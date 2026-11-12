@@ -93,19 +93,59 @@ pub fn copy_nearest_rgba(
         }
     }
     let layout = ScaleLayout::fit(source, target)?;
-    output.fill(0);
+    let fills_target = layout.x == 0
+        && layout.y == 0
+        && layout.width == target.0
+        && layout.height == target.1;
+    if !fills_target {
+        output.fill(0);
+    }
+
+    if source == target {
+        for (destination, pixel) in output.iter_mut().zip(rgba.chunks_exact(4)) {
+            *destination = rgba_to_xrgb([pixel[0], pixel[1], pixel[2], pixel[3]]);
+        }
+        return Ok(layout);
+    }
+
+    // Advance source coordinates with an exact quotient/remainder accumulator.
+    // This preserves nearest-neighbour output while avoiding one integer
+    // division for every displayed pixel.
+    let x_step = u64::from(source.0 / layout.width);
+    let x_remainder = u64::from(source.0 % layout.width);
+    let x_denominator = u64::from(layout.width);
+    let y_step = u64::from(source.1 / layout.height);
+    let y_remainder = u64::from(source.1 % layout.height);
+    let y_denominator = u64::from(layout.height);
+    let mut source_y = 0u64;
+    let mut y_error = 0u64;
     for y in 0..layout.height {
-        let sy = (u64::from(y) * u64::from(source.1) / u64::from(layout.height)) as usize;
         let target_row = (y + layout.y) as usize * target.0 as usize + layout.x as usize;
-        for x in 0..layout.width {
-            let sx = (u64::from(x) * u64::from(source.0) / u64::from(layout.width)) as usize;
-            let source_pixel = (sy * source.0 as usize + sx) * 4;
-            output[target_row + x as usize] = rgba_to_xrgb([
+        let target_end = target_row + layout.width as usize;
+        let source_row = source_y as usize * source.0 as usize;
+        let mut source_x = 0u64;
+        let mut x_error = 0u64;
+        for destination in &mut output[target_row..target_end] {
+            let source_pixel = (source_row + source_x as usize) * 4;
+            *destination = rgba_to_xrgb([
                 rgba[source_pixel],
                 rgba[source_pixel + 1],
                 rgba[source_pixel + 2],
                 rgba[source_pixel + 3],
             ]);
+
+            source_x += x_step;
+            x_error += x_remainder;
+            if x_error >= x_denominator {
+                x_error -= x_denominator;
+                source_x += 1;
+            }
+        }
+        source_y += y_step;
+        y_error += y_remainder;
+        if y_error >= y_denominator {
+            y_error -= y_denominator;
+            source_y += 1;
         }
     }
     Ok(layout)

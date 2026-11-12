@@ -1,4 +1,5 @@
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::model_loader::build_mesh;
@@ -167,8 +168,9 @@ pub fn register_textured_model(
     first_material_id: u32,
 ) -> Result<Vec<RegisteredModelPart>, String> {
     let model = load_textured_obj(path).map_err(|e| e.to_string())?;
-    let mut parts = Vec::with_capacity(model.meshes.len());
-    for (i, part) in model.meshes.into_iter().enumerate() {
+    let meshes = coalesce_textured_meshes(model.meshes)?;
+    let mut parts = Vec::with_capacity(meshes.len());
+    for (i, part) in meshes.into_iter().enumerate() {
         let offset = u32::try_from(i).map_err(|e| e.to_string())?;
         let mesh_id = first_mesh_id.checked_add(offset)
             .ok_or_else(|| "mesh ID overflow".to_string())?;
@@ -195,6 +197,42 @@ pub fn register_textured_model(
     Ok(parts)
 }
 
+// OBJ exporters often split a model into hundreds or thousands of named
+// objects even when those objects share a material. Rendering each object as a
+// separate node defeats batching and also prevents the low LOD generator from
+// simplifying the model as a whole. Merge compatible pieces once at load time.
+fn coalesce_textured_meshes(meshes: Vec<TexturedMesh>) -> Result<Vec<TexturedMesh>, String> {
+    let mut group_by_material = HashMap::<Option<usize>, usize>::with_capacity(meshes.len());
+    let mut grouped = Vec::<TexturedMesh>::new();
+
+    for part in meshes {
+        if let Some(&group_index) = group_by_material.get(&part.material_index) {
+            append_mesh(&mut grouped[group_index].mesh, part.mesh)?;
+        } else {
+            group_by_material.insert(part.material_index, grouped.len());
+            grouped.push(part);
+        }
+    }
+
+    Ok(grouped)
+}
+
+fn append_mesh(target: &mut RasterMesh, source: RasterMesh) -> Result<(), String> {
+    let vertex_offset = u32::try_from(target.vertices.len())
+        .map_err(|_| "model has more vertices than the index format supports".to_owned())?;
+    target.vertices.reserve(source.vertices.len());
+    target.indices.reserve(source.indices.len());
+    target.vertices.extend(source.vertices);
+    for index in source.indices {
+        target.indices.push(
+            index
+                .checked_add(vertex_offset)
+                .ok_or_else(|| "model index overflow while merging submeshes".to_owned())?,
+        );
+    }
+    Ok(())
+}
+
 
 /// Expande un nodo en submallas registradas.
 ///
@@ -205,21 +243,36 @@ pub fn expand_model_parts(
     parts: &[RegisteredModelPart],
     parent: u64,
 ) -> Vec<crate::SnapshotNode> {
-    parts
-        .iter()
-        .enumerate()
-        .map(|(index, part)| crate::SnapshotNode {
-            entity: crate::SnapshotId::ModelPart {
-                parent,
-                part: u32::try_from(index)
-                    .expect("demasiadas submallas"),
-            },
-            transform: original.transform,
-            mesh: part.mesh,
-            material: part.material,
-            visible: original.visible,
-        })
-        .collect()
+    let mut expanded = Vec::with_capacity(parts.len());
+    append_model_parts(&mut expanded, original, parts, parent);
+    expanded
+}
+
+/// Appends registered model parts to an existing snapshot buffer.
+///
+/// This allocation-free form is intended for per-frame expansion.
+pub fn append_model_parts(
+    output: &mut Vec<crate::SnapshotNode>,
+    original: &crate::SnapshotNode,
+    parts: &[RegisteredModelPart],
+    parent: u64,
+) {
+    output.reserve(parts.len());
+    output.extend(
+        parts
+            .iter()
+            .enumerate()
+            .map(|(index, part)| crate::SnapshotNode {
+                entity: crate::SnapshotId::ModelPart {
+                    parent,
+                    part: u32::try_from(index).expect("demasiadas submallas"),
+                },
+                transform: original.transform,
+                mesh: part.mesh,
+                material: part.material,
+                visible: original.visible,
+            }),
+    );
 }
 
 #[cfg(test)]
@@ -271,5 +324,40 @@ mod model_expansion_tests {
 
         let result = expand_model_parts(&node, &[], 42);
         assert!(result.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod mesh_coalescing_tests {
+    use super::*;
+
+    fn triangle(name: &str, material_index: Option<usize>, x: f32) -> TexturedMesh {
+        let color = crate::Vec4::ONE;
+        TexturedMesh {
+            name: name.to_owned(),
+            material_index,
+            mesh: RasterMesh::triangle(
+                crate::RasterVertex::new(crate::Vec3::new(x, 0.0, 0.0), color),
+                crate::RasterVertex::new(crate::Vec3::new(x + 1.0, 0.0, 0.0), color),
+                crate::RasterVertex::new(crate::Vec3::new(x, 1.0, 0.0), color),
+            ),
+        }
+    }
+
+    #[test]
+    fn compatible_obj_parts_are_merged_and_indices_are_rebased() {
+        let grouped = coalesce_textured_meshes(vec![
+            triangle("hull-a", Some(0), 0.0),
+            triangle("glass", Some(1), 10.0),
+            triangle("hull-b", Some(0), 20.0),
+        ])
+        .unwrap();
+
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].material_index, Some(0));
+        assert_eq!(grouped[0].mesh.vertices.len(), 6);
+        assert_eq!(grouped[0].mesh.indices, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(grouped[1].material_index, Some(1));
+        assert_eq!(grouped[1].mesh.vertices.len(), 3);
     }
 }
