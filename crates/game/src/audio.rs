@@ -203,7 +203,9 @@ fn discover_music_playlist() -> Vec<PathBuf> {
         .map(|entry| entry.path())
         .filter(|path| {
             path.is_file()
-                && path.extension().and_then(|extension| extension.to_str())
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"))
         })
         .collect::<Vec<_>>();
@@ -217,8 +219,8 @@ fn discover_music_playlist() -> Vec<PathBuf> {
 
 impl RodioOutput {
     fn open() -> Result<Self, AudioError> {
-        let mut device = DeviceSinkBuilder::open_default_sink()
-            .map_err(|_| AudioError::Unavailable)?;
+        let mut device =
+            DeviceSinkBuilder::open_default_sink().map_err(|_| AudioError::Unavailable)?;
         device.log_on_drop(false);
         Ok(Self {
             device,
@@ -368,7 +370,9 @@ impl AudioManager {
         if self.playlist.is_empty() || self.playlist_loading {
             return;
         }
-        let next = self.current_music_index.map_or(0, |index| (index + 1) % self.playlist.len());
+        let next = self
+            .current_music_index
+            .map_or(0, |index| (index + 1) % self.playlist.len());
         self.queue_playlist_track(next);
     }
 
@@ -421,7 +425,10 @@ impl AudioManager {
         let player = Player::connect_new(output.device.mixer());
         player.set_volume(self.config.music_gain());
         player.append(source);
-        if let Some(previous) = output.music.replace(MusicPlayback { player, playlist_index: None }) {
+        if let Some(previous) = output.music.replace(MusicPlayback {
+            player,
+            playlist_index: None,
+        }) {
             previous.player.stop();
         }
         Ok(())
@@ -436,7 +443,10 @@ impl AudioManager {
         let player = Player::connect_new(output.device.mixer());
         player.set_volume(volume);
         player.append(source);
-        if let Some(previous) = output.music.replace(MusicPlayback { player, playlist_index: None }) {
+        if let Some(previous) = output.music.replace(MusicPlayback {
+            player,
+            playlist_index: None,
+        }) {
             previous.player.stop();
         }
         Ok(())
@@ -526,7 +536,9 @@ impl AudioManager {
                     }
                     let effect = match loaded.target {
                         PendingAudioTarget::Effect(effect) => Some(effect),
-                        PendingAudioTarget::Music { .. } | PendingAudioTarget::Playlist { .. } => None,
+                        PendingAudioTarget::Music { .. } | PendingAudioTarget::Playlist { .. } => {
+                            None
+                        }
                     };
                     self.report_error(error, effect);
                 }
@@ -537,9 +549,10 @@ impl AudioManager {
         }
         if !self.playlist_loading {
             let ended_index = self.output.as_ref().and_then(|output| {
-                output.music.as_ref().and_then(|music| {
-                    music.playlist_index.filter(|_| music.player.empty())
-                })
+                output
+                    .music
+                    .as_ref()
+                    .and_then(|music| music.playlist_index.filter(|_| music.player.empty()))
             });
             if let Some(index) = ended_index {
                 if !self.playlist.is_empty() {
@@ -616,8 +629,13 @@ impl AudioManager {
                         let player = Player::connect_new(output.device.mixer());
                         player.set_volume(self.config.music_gain());
                         player.append(source);
-                        if self.music_paused || !self.focused { player.pause(); }
-                        if let Some(previous) = output.music.replace(MusicPlayback { player, playlist_index: None }) {
+                        if self.music_paused || !self.focused {
+                            player.pause();
+                        }
+                        if let Some(previous) = output.music.replace(MusicPlayback {
+                            player,
+                            playlist_index: None,
+                        }) {
                             previous.player.stop();
                         }
                     })
@@ -629,8 +647,13 @@ impl AudioManager {
                         let player = Player::connect_new(output.device.mixer());
                         player.set_volume(self.config.music_gain());
                         player.append(source);
-                        if self.music_paused || !self.focused { player.pause(); }
-                        if let Some(previous) = output.music.replace(MusicPlayback { player, playlist_index: None }) {
+                        if self.music_paused || !self.focused {
+                            player.pause();
+                        }
+                        if let Some(previous) = output.music.replace(MusicPlayback {
+                            player,
+                            playlist_index: None,
+                        }) {
                             previous.player.stop();
                         }
                     })
@@ -642,11 +665,15 @@ impl AudioManager {
             PendingAudioTarget::Playlist { index } => {
                 self.playlist_loading = false;
                 let result = Decoder::new(Cursor::new(bytes)).map(|source| {
-                    let Some(output) = self.output.as_mut() else { return };
+                    let Some(output) = self.output.as_mut() else {
+                        return;
+                    };
                     let player = Player::connect_new(output.device.mixer());
                     player.set_volume(self.config.music_gain());
                     player.append(source);
-                    if self.music_paused || !self.focused { player.pause(); }
+                    if self.music_paused || !self.focused {
+                        player.pause();
+                    }
                     if let Some(previous) = output.music.replace(MusicPlayback {
                         player,
                         playlist_index: Some(index),
@@ -771,7 +798,10 @@ mod tests {
             (SoundEffect::AutopilotArrival, "sfx/autopilot_arrival.wav"),
         ];
         for (effect, path) in expected_effects {
-            assert_eq!(audio.resources.effects.get(&effect), Some(&audio_asset_path(path)));
+            assert_eq!(
+                audio.resources.effects.get(&effect),
+                Some(&audio_asset_path(path))
+            );
         }
     }
 
@@ -780,10 +810,16 @@ mod tests {
         let audio = AudioManager::new();
         for (effect, path) in &audio.resources.effects {
             let bytes = std::fs::read(path).unwrap_or_else(|error| {
-                panic!("could not open {effect:?} audio at {}: {error}", path.display())
+                panic!(
+                    "could not open {effect:?} audio at {}: {error}",
+                    path.display()
+                )
             });
             decode_pcm_wav(&bytes).unwrap_or_else(|error| {
-                panic!("could not decode {effect:?} audio at {}: {error:?}", path.display())
+                panic!(
+                    "could not decode {effect:?} audio at {}: {error:?}",
+                    path.display()
+                )
             });
         }
     }
@@ -817,10 +853,19 @@ mod tests {
             load_rx: mpsc::channel().1,
             event_cursor: AudioEventCursor::new(),
         };
-        assert_eq!(audio.play_music(MusicTrack::Exploration, true), Err(AudioError::MissingResource));
-        assert_eq!(audio.play_effect(SoundEffect::PlayerAttack), Err(AudioError::MissingResource));
+        assert_eq!(
+            audio.play_music(MusicTrack::Exploration, true),
+            Err(AudioError::MissingResource)
+        );
+        assert_eq!(
+            audio.play_effect(SoundEffect::PlayerAttack),
+            Err(AudioError::MissingResource)
+        );
         audio.register_music(MusicTrack::Exploration, "missing.wav");
-        assert_eq!(audio.play_music(MusicTrack::Exploration, true), Err(AudioError::Unavailable));
+        assert_eq!(
+            audio.play_music(MusicTrack::Exploration, true),
+            Err(AudioError::Unavailable)
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 #[path = "visual_support/mod.rs"]
 mod support;
 
-use std::error::Error;
 use std::cell::RefCell;
+use std::error::Error;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use game::render_backend::{select_backend, BackendDecision, BackendRequest};
-use render_core::{CullingConfig, LightingMode, MaterialInfo, MeshHandle, SnapshotScene, VisualAssets};
+use render_core::{
+    CullingConfig, LightingMode, MaterialInfo, MeshHandle, SnapshotScene, VisualAssets,
+};
 use render_gpu::{GpuContext, GpuRenderer, OffscreenTarget};
 
 fn print_cpu_timing(label: &str, preparation_ns: u64, stats: &render_cpu::PipelineStats) {
@@ -101,7 +103,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("--demo-flight and --demo-impact are mutually exclusive".into());
     }
     if !matches!(lights.as_str(), "none" | "directional" | "point" | "both") {
-        return Err(format!("invalid lights variant {lights}; expected none, directional, point, or both").into());
+        return Err(format!(
+            "invalid lights variant {lights}; expected none, directional, point, or both"
+        )
+        .into());
     }
     let requested = BackendRequest::parse(&backend)?;
     let decision = select_backend(requested, || {
@@ -148,12 +153,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         delta: engine::Duration(500),
                     }]);
                 }
-                let snapshot = support::deterministic_flight_snapshot(
-                    &session,
-                    width,
-                    height,
-                    *stage,
-                );
+                let snapshot =
+                    support::deterministic_flight_snapshot(&session, width, height, *stage);
                 *stage = (*stage + 1).min(2);
                 Ok(snapshot)
             })
@@ -214,12 +215,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     if lights != "both" {
         for snapshot in &mut snapshots {
-            snapshot.lights.retain(|light| match (lights.as_str(), light.light.kind) {
-                ("none", _) => false,
-                ("directional", render_core::RenderLightKind::Directional { .. }) => true,
-                ("point", render_core::RenderLightKind::Point { .. }) => true,
-                _ => false,
-            });
+            snapshot
+                .lights
+                .retain(|light| match (lights.as_str(), light.light.kind) {
+                    ("none", _) => false,
+                    ("directional", render_core::RenderLightKind::Directional { .. }) => true,
+                    ("point", render_core::RenderLightKind::Point { .. }) => true,
+                    _ => false,
+                });
         }
     }
     if demo_impact {
@@ -263,30 +266,33 @@ fn main() -> Result<(), Box<dyn Error>> {
         baseline_scene.update(&snapshots[0])?;
         let mut baseline_framebuffer = render_cpu::Framebuffer::new(width, height)?;
         let baseline_started = Instant::now();
-        let (baseline_prepared, baseline_pipeline, baseline_preparation_ns) = if profile_cpu && shader_time.is_none() {
-            let (prepared, pipeline, preparation_ns) = render_cpu::render_snapshot_scene_with_timing(
-                &mut baseline_framebuffer,
-                &baseline_scene,
-                render_cpu::RasterMode::Secuencial,
-            )?;
-            (prepared, pipeline, preparation_ns)
-        } else if let Some(time) = shader_time {
-            let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
-                &mut baseline_framebuffer,
-                &baseline_scene,
-                render_cpu::RasterMode::Secuencial,
-                render_cpu::FragmentShader::SolarBands,
-                time,
-            )?;
-            (prepared, pipeline, 0)
-        } else {
-            let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_stats(
-                &mut baseline_framebuffer,
-                &baseline_scene,
-                render_cpu::RasterMode::Secuencial,
-            )?;
-            (prepared, pipeline, 0)
-        };
+        let (baseline_prepared, baseline_pipeline, baseline_preparation_ns) =
+            if profile_cpu && shader_time.is_none() {
+                let (prepared, pipeline, preparation_ns) =
+                    render_cpu::render_snapshot_scene_with_timing(
+                        &mut baseline_framebuffer,
+                        &baseline_scene,
+                        render_cpu::RasterMode::Secuencial,
+                    )?;
+                (prepared, pipeline, preparation_ns)
+            } else if let Some(time) = shader_time {
+                let (prepared, pipeline) =
+                    render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
+                        &mut baseline_framebuffer,
+                        &baseline_scene,
+                        render_cpu::RasterMode::Secuencial,
+                        render_cpu::FragmentShader::SolarBands,
+                        time,
+                    )?;
+                (prepared, pipeline, 0)
+            } else {
+                let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_stats(
+                    &mut baseline_framebuffer,
+                    &baseline_scene,
+                    render_cpu::RasterMode::Secuencial,
+                )?;
+                (prepared, pipeline, 0)
+            };
         println!(
             "cpu-baseline elapsed_ms={:.3} prepared_triangles={} vertices_in={} culled={} degenerate={} fragments={} depth_rejected={} pixels_written={}",
             baseline_started.elapsed().as_secs_f64() * 1000.0,
@@ -315,20 +321,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             let render_started = Instant::now();
             let (prepared, pipeline, preparation_ns) = if profile_cpu && shader_time.is_none() {
-                let (prepared, pipeline, preparation_ns) = render_cpu::render_snapshot_scene_with_timing(
-                    &mut framebuffer,
-                    &scene,
-                    render_cpu::RasterMode::Secuencial,
-                )?;
+                let (prepared, pipeline, preparation_ns) =
+                    render_cpu::render_snapshot_scene_with_timing(
+                        &mut framebuffer,
+                        &scene,
+                        render_cpu::RasterMode::Secuencial,
+                    )?;
                 (prepared, pipeline, preparation_ns)
             } else if let Some(time) = shader_time {
-                let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
-                    &mut framebuffer,
-                    &scene,
-                    render_cpu::RasterMode::Secuencial,
-                    render_cpu::FragmentShader::SolarBands,
-                    time,
-                )?;
+                let (prepared, pipeline) =
+                    render_cpu::render_snapshot_scene_with_shader_at_time_with_stats(
+                        &mut framebuffer,
+                        &scene,
+                        render_cpu::RasterMode::Secuencial,
+                        render_cpu::FragmentShader::SolarBands,
+                        time,
+                    )?;
                 (prepared, pipeline, 0)
             } else {
                 let (prepared, pipeline) = render_cpu::render_snapshot_scene_with_stats(
@@ -364,10 +372,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             if demo_flight {
                 render_cpu::write_png(&demo_path(&path, index), &framebuffer)?;
             } else if demo_impact {
-                let image = impact_paths
-                    .as_ref()
-                    .ok_or("missing impact output paths")?[index]
-                    .clone();
+                let image =
+                    impact_paths.as_ref().ok_or("missing impact output paths")?[index].clone();
                 let visible = has_game_over_indicator(framebuffer.color_bytes());
                 println!(
                     "impact backend=cpu index={index} tick={} fade_to_black={} game_over={} framebuffer_game_over={} path={}",
@@ -422,10 +428,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 target.readback()?.write_png(&demo_path(&path, index))?;
             } else if demo_impact {
                 let image = target.readback()?;
-                let path = impact_paths
-                    .as_ref()
-                    .ok_or("missing impact output paths")?[index]
-                    .clone();
+                let path =
+                    impact_paths.as_ref().ok_or("missing impact output paths")?[index].clone();
                 let visible = has_game_over_indicator(&image.rgba);
                 println!(
                     "impact backend=gpu index={index} tick={} fade_to_black={} game_over={} framebuffer_game_over={} path={}",
@@ -460,18 +464,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !demo_flight {
         assert_eq!(tick, world.time().tick);
     }
-    println!("PNG={} demo_flight={} gameplay_tick_unchanged={}", path.display(), demo_flight, tick.0);
+    println!(
+        "PNG={} demo_flight={} gameplay_tick_unchanged={}",
+        path.display(),
+        demo_flight,
+        tick.0
+    );
     Ok(())
 }
 
 fn shooter_obj_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/models/shooter/shooter.obj")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models/shooter/shooter.obj")
 }
 
 fn demo_path(path: &Path, index: usize) -> PathBuf {
-    let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("frame");
-    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("png");
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("frame");
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("png");
     path.with_file_name(format!("{stem}-demo-{index:02}.{extension}"))
 }
 

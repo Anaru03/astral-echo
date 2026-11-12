@@ -1,3 +1,4 @@
+pub mod game_over_ui;
 mod material_texture;
 mod textured_model;
 
@@ -22,6 +23,7 @@ pub mod visual_asset;
 
 pub use bounds::{Aabb, AabbError, Frustum, Plane};
 pub use camera::{Camera, CameraError, Projection};
+pub use cpu_model_loader::{CpuModelLoadManager, CpuModelLoadState};
 pub use demo::{
     demo_camera, demo_scene, grid_mesh, terrain_height, GRID_SUBDIVISIONS, TERRAIN_EXTENT,
     TERRAIN_HEIGHT,
@@ -32,7 +34,6 @@ pub use hud::{
     HudOverlay, HudOverlayRect,
 };
 pub use interpolation::{InterpolationConfig, SnapshotBuffer};
-pub use cpu_model_loader::{CpuModelLoadManager, CpuModelLoadState};
 pub use lighting::{
     material_fixture, shade_surface, shade_surface_profiled, shade_surface_profiled_sanitized,
     shade_surface_profiled_sanitized_normalized, shade_surface_sanitized,
@@ -40,6 +41,7 @@ pub use lighting::{
     MAX_POINT_LIGHTS,
 };
 pub use material::{MaterialHandle, MaterialInfo};
+pub use material_texture::MaterialTextureRegistry;
 pub use math::{
     from_engine, normal_matrix, normalize_direction, perspective_rh_wgpu, to_engine,
     transform_normal, Mat4, Quat, Vec2, Vec3, Vec4,
@@ -63,5 +65,6 @@ pub use visual::{
     CullingConfig, LodLevel, PreparedDraw, PreparedScene, PreparedSceneStats, SceneUpdate,
     SnapshotScene, VisibilityClass, VisualAssets, VisualError,
 };
-pub use material_texture::MaterialTextureRegistry;
-pub use visual_asset::{GpuAssetEvent, GpuAssetState, VisualAssetEvent, VisualAssetRequest, VisualAssetState};
+pub use visual_asset::{
+    GpuAssetEvent, GpuAssetState, VisualAssetEvent, VisualAssetRequest, VisualAssetState,
+};

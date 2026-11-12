@@ -7,12 +7,12 @@ use std::thread::{self, JoinHandle};
 use engine::{Duration, EntityId, Vec3};
 use gameplay::{CommandStatus, GameplayCommand};
 use networking::{
-    GameServer, GameServerHandle, NetworkOrientation, NetworkPlayerId, NetworkVec3,
-    Mission5ContentProjection, Mission5DestinationProjection, Mission5ObjectiveProjection,
-    Mission5DestinationTypeProjection, Mission5DiscoveryProjection, Mission5ShooterProjection,
-    MissionRecoveryOutcome, MissionStateProjection, ObjectiveStateProjection, PlayerTransform,
-    EnemyProjection, ServerEvent, ServerEventQueue, ServerMessage, InventoryItemProjection,
-    SharedInventoryProjection,
+    EnemyProjection, GameServer, GameServerHandle, InventoryItemProjection,
+    Mission5ContentProjection, Mission5DestinationProjection, Mission5DestinationTypeProjection,
+    Mission5DiscoveryProjection, Mission5ObjectiveProjection, Mission5ShooterProjection,
+    MissionRecoveryOutcome, MissionStateProjection, NetworkOrientation, NetworkPlayerId,
+    NetworkVec3, ObjectiveStateProjection, PlayerTransform, ServerEvent, ServerEventQueue,
+    ServerMessage, SharedInventoryProjection,
 };
 
 use crate::ProjectEchoSession;
@@ -248,7 +248,11 @@ impl MultiplayerSession {
         self.players.insert(player_id, entity);
 
         if let Some(mut player) = self.gameplay.world().player(entity).copied() {
-            let slot = self.players.keys().position(|id| *id == player_id).unwrap_or(0) as f32;
+            let slot = self
+                .players
+                .keys()
+                .position(|id| *id == player_id)
+                .unwrap_or(0) as f32;
             player.position.x += slot * PLAYER_COLLISION_DIAMETER * 1.15;
             self.gameplay
                 .world_mut()
@@ -282,20 +286,12 @@ impl MultiplayerSession {
                 Some((
                     network_id,
                     PlayerTransform::new(
-                        NetworkVec3::new(
-                            player.position.x,
-                            player.position.y,
-                            player.position.z,
-                        ),
+                        NetworkVec3::new(player.position.x, player.position.y, player.position.z),
                         NetworkOrientation::new(
                             player.orientation.yaw_degrees,
                             player.orientation.pitch_degrees,
                         ),
-                        NetworkVec3::new(
-                            player.velocity.x,
-                            player.velocity.y,
-                            player.velocity.z,
-                        ),
+                        NetworkVec3::new(player.velocity.x, player.velocity.y, player.velocity.z),
                     ),
                 ))
             })
@@ -316,19 +312,18 @@ impl MultiplayerSession {
         Ok(())
     }
 
-    fn apply_interaction(
-        &mut self,
-        player_id: NetworkPlayerId,
-        request_id: u64,
-        target: u64,
-    ) {
+    fn apply_interaction(&mut self, player_id: NetworkPlayerId, request_id: u64, target: u64) {
         let result = self.players.get(&player_id).copied().map(|player| {
             self.gameplay.update([GameplayCommand::Interact {
                 player,
                 target: EntityId::new(target),
             }])
         });
-        self.publish_action_result(player_id, request_id, result.and_then(|results| results.into_iter().next()));
+        self.publish_action_result(
+            player_id,
+            request_id,
+            result.and_then(|results| results.into_iter().next()),
+        );
     }
 
     fn apply_attack(&mut self, player_id: NetworkPlayerId, request_id: u64, enemy: u64) {
@@ -338,7 +333,11 @@ impl MultiplayerSession {
                 enemy: EntityId::new(enemy),
             }])
         });
-        self.publish_action_result(player_id, request_id, result.and_then(|results| results.into_iter().next()));
+        self.publish_action_result(
+            player_id,
+            request_id,
+            result.and_then(|results| results.into_iter().next()),
+        );
     }
 
     fn apply_collect(
@@ -355,7 +354,11 @@ impl MultiplayerSession {
                 amount,
             }])
         });
-        self.publish_action_result(player_id, request_id, result.and_then(|results| results.into_iter().next()));
+        self.publish_action_result(
+            player_id,
+            request_id,
+            result.and_then(|results| results.into_iter().next()),
+        );
     }
 
     fn publish_action_result(
@@ -381,9 +384,10 @@ impl MultiplayerSession {
             },
         );
         if accepted {
-            self.server.broadcast(&ServerMessage::MissionContentUpdated {
-                content: self.mission5_content_projection(),
-            });
+            self.server
+                .broadcast(&ServerMessage::MissionContentUpdated {
+                    content: self.mission5_content_projection(),
+                });
             self.broadcast_shared_inventory();
             self.broadcast_enemy_state();
         }
@@ -411,9 +415,10 @@ impl MultiplayerSession {
     }
 
     fn broadcast_shared_inventory(&self) {
-        self.server.broadcast(&ServerMessage::SharedInventoryUpdated {
-            inventory: self.shared_inventory_projection(),
-        });
+        self.server
+            .broadcast(&ServerMessage::SharedInventoryUpdated {
+                inventory: self.shared_inventory_projection(),
+            });
     }
 
     fn enemy_state_projection(&self) -> Vec<EnemyProjection> {
@@ -438,12 +443,17 @@ impl MultiplayerSession {
 
     fn apply_equip_weapon(&mut self, player_id: NetworkPlayerId, request_id: u64, item: u32) {
         let result = self.players.get(&player_id).copied().map(|player| {
-            self.gameplay.update([GameplayCommand::EquipPlayerWeaponItem {
-                player,
-                item: gameplay::types::ItemId(item),
-            }])
+            self.gameplay
+                .update([GameplayCommand::EquipPlayerWeaponItem {
+                    player,
+                    item: gameplay::types::ItemId(item),
+                }])
         });
-        self.publish_action_result(player_id, request_id, result.and_then(|results| results.into_iter().next()));
+        self.publish_action_result(
+            player_id,
+            request_id,
+            result.and_then(|results| results.into_iter().next()),
+        );
     }
 
     fn apply_healing_item(
@@ -454,13 +464,18 @@ impl MultiplayerSession {
         amount: u32,
     ) {
         let result = self.players.get(&player_id).copied().map(|player| {
-            self.gameplay.update([GameplayCommand::UseHealingConsumable {
-                player,
-                item: gameplay::types::ItemId(item),
-                amount,
-            }])
+            self.gameplay
+                .update([GameplayCommand::UseHealingConsumable {
+                    player,
+                    item: gameplay::types::ItemId(item),
+                    amount,
+                }])
         });
-        self.publish_action_result(player_id, request_id, result.and_then(|results| results.into_iter().next()));
+        self.publish_action_result(
+            player_id,
+            request_id,
+            result.and_then(|results| results.into_iter().next()),
+        );
     }
 
     fn apply_travel(
@@ -557,9 +572,10 @@ impl MultiplayerSession {
         );
 
         if matches!(outcome, MissionRecoveryOutcome::Succeeded) {
-            self.server.broadcast(&ServerMessage::MissionContentUpdated {
-                content: self.mission5_content_projection(),
-            });
+            self.server
+                .broadcast(&ServerMessage::MissionContentUpdated {
+                    content: self.mission5_content_projection(),
+                });
         }
     }
 
@@ -626,9 +642,7 @@ impl MultiplayerSession {
                 discovery: match value.discovery {
                     gameplay::DiscoveryState::Unknown => Mission5DiscoveryProjection::Unknown,
                     gameplay::DiscoveryState::Known => Mission5DiscoveryProjection::Known,
-                    gameplay::DiscoveryState::Discovered => {
-                        Mission5DiscoveryProjection::Discovered
-                    }
+                    gameplay::DiscoveryState::Discovered => Mission5DiscoveryProjection::Discovered,
                 },
             });
         let shooter = self
@@ -746,20 +760,18 @@ impl MultiplayerSession {
                 .world_mut()
                 .initialize_player_position(entity, updated.position);
         }
-        self.server.broadcast(
-            &ServerMessage::PlayerMoved {
-                player_id,
-                sequence,
-                transform: PlayerTransform::new(
-                    NetworkVec3::new(updated.position.x, updated.position.y, updated.position.z),
-                    NetworkOrientation::new(
-                        updated.orientation.yaw_degrees,
-                        updated.orientation.pitch_degrees,
-                    ),
-                    NetworkVec3::new(updated.velocity.x, updated.velocity.y, updated.velocity.z),
+        self.server.broadcast(&ServerMessage::PlayerMoved {
+            player_id,
+            sequence,
+            transform: PlayerTransform::new(
+                NetworkVec3::new(updated.position.x, updated.position.y, updated.position.z),
+                NetworkOrientation::new(
+                    updated.orientation.yaw_degrees,
+                    updated.orientation.pitch_degrees,
                 ),
-            },
-        );
+                NetworkVec3::new(updated.velocity.x, updated.velocity.y, updated.velocity.z),
+            ),
+        });
         Ok(())
     }
 }
@@ -904,8 +916,7 @@ mod tests {
             .destination(crate::cooperacion::SIGNAL_DESTINATION)
             .is_none());
         assert!(!session.gameplay().world().combatants().any(|value| {
-            !value.is_player
-                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+            !value.is_player && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
         }));
 
         client.disconnect().unwrap();
@@ -947,10 +958,9 @@ mod tests {
             GameplayCommand::UnlockMission { mission },
             GameplayCommand::StartMission { mission },
         ]);
-        assert!(setup.iter().all(|result| matches!(
-            result.status,
-            CommandStatus::Success { .. }
-        )));
+        assert!(setup
+            .iter()
+            .all(|result| matches!(result.status, CommandStatus::Success { .. })));
 
         first.request_mission_recovery(21).unwrap();
         wait_for_update(&mut session);
@@ -1049,10 +1059,9 @@ mod tests {
             GameplayCommand::UnlockMission { mission },
             GameplayCommand::StartMission { mission },
         ]);
-        assert!(setup.iter().all(|result| matches!(
-            result.status,
-            CommandStatus::Success { .. }
-        )));
+        assert!(setup
+            .iter()
+            .all(|result| matches!(result.status, CommandStatus::Success { .. })));
 
         first.request_mission_recovery(11).unwrap();
         wait_for_update(&mut session);
@@ -1074,7 +1083,10 @@ mod tests {
         assert_eq!(content.required_total, 3);
         assert!(content.destination.is_some());
         assert!(content.shooter.is_some());
-        assert!(content.shooter.as_ref().is_some_and(|shooter| shooter.active));
+        assert!(content
+            .shooter
+            .as_ref()
+            .is_some_and(|shooter| shooter.active));
         assert_eq!(first.mission5_content(), Some(&content));
 
         first.request_mission_recovery(11).unwrap();
@@ -1138,10 +1150,9 @@ mod tests {
             GameplayCommand::UnlockMission { mission },
             GameplayCommand::StartMission { mission },
         ]);
-        assert!(setup.iter().all(|result| matches!(
-            result.status,
-            CommandStatus::Success { .. }
-        )));
+        assert!(setup
+            .iter()
+            .all(|result| matches!(result.status, CommandStatus::Success { .. })));
 
         let active_id = session
             .gameplay
@@ -1155,7 +1166,14 @@ mod tests {
             .map(|combatant| combatant.entity)
             .expect("la preparación debe crear un Shooter activo");
         assert_ne!(inactive_id, active_id);
-        assert!(!session.gameplay.world().combatant(inactive_id).unwrap().active);
+        assert!(
+            !session
+                .gameplay
+                .world()
+                .combatant(inactive_id)
+                .unwrap()
+                .active
+        );
 
         let projection = session.mission5_content_projection();
         let projected_id = projection
@@ -1195,10 +1213,9 @@ mod tests {
             GameplayCommand::UnlockMission { mission },
             GameplayCommand::StartMission { mission },
         ]);
-        assert!(setup.iter().all(|result| matches!(
-            result.status,
-            CommandStatus::Success { .. }
-        )));
+        assert!(setup
+            .iter()
+            .all(|result| matches!(result.status, CommandStatus::Success { .. })));
 
         let active_id = session
             .gameplay
@@ -1240,8 +1257,14 @@ mod tests {
             destination_id
         );
         let after = session.gameplay.mission_progress(mission).unwrap();
-        assert_eq!(projection.required_completed, before.required_completed as u32);
-        assert_eq!(projection.optional_completed, before.optional_completed as u32);
+        assert_eq!(
+            projection.required_completed,
+            before.required_completed as u32
+        );
+        assert_eq!(
+            projection.optional_completed,
+            before.optional_completed as u32
+        );
         assert_eq!(after.required_completed, before.required_completed);
         assert_eq!(after.optional_completed, before.optional_completed);
 

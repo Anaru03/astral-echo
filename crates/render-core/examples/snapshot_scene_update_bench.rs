@@ -133,14 +133,20 @@ fn measure_alternating(left: &RenderSnapshot, right: &RenderSnapshot) -> Measure
     scene.update(left).expect("left fixture must be valid");
     for iteration in 0..WARMUP {
         let target = if iteration % 2 == 0 { right } else { left };
-        black_box(scene.update(target).expect("alternating fixture must be valid"));
+        black_box(
+            scene
+                .update(target)
+                .expect("alternating fixture must be valid"),
+        );
     }
 
     let start = Instant::now();
     let mut checksum: usize = 0;
     for iteration in 0..ITERATIONS {
         let target = if iteration % 2 == 0 { right } else { left };
-        let update = scene.update(target).expect("alternating fixture must be valid");
+        let update = scene
+            .update(target)
+            .expect("alternating fixture must be valid");
         checksum = checksum
             .wrapping_add(update.added)
             .wrapping_add(update.removed)

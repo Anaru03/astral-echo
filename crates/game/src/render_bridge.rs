@@ -1,13 +1,12 @@
 use std::collections::BTreeSet;
 
-use gameplay::GameplayWorld;
 use gameplay::domains::{mission::MissionState, objective::ObjectiveState};
 use gameplay::types::MissionId;
+use gameplay::GameplayWorld;
 use render_core::{
-    from_engine, Camera, CameraError, MaterialHandle, MeshHandle, Projection, Quat,
-    HudAutopilotState, HudFlightState, HudMissionObjective, HudMissionState, HudObjectiveState,
-    HudState, RenderSnapshot, RenderVisualEvent,
-    RenderVisualEventKind, SnapshotLight, SnapshotNode,
+    from_engine, Camera, CameraError, HudAutopilotState, HudFlightState, HudMissionObjective,
+    HudMissionState, HudObjectiveState, HudState, MaterialHandle, MeshHandle, Projection, Quat,
+    RenderSnapshot, RenderVisualEvent, RenderVisualEventKind, SnapshotLight, SnapshotNode,
     Transform, Vec3, VisualAssets,
 };
 
@@ -222,23 +221,40 @@ fn station_nodes_for_view(world: &GameplayWorld, interior: bool) -> Vec<Snapshot
             Transform::new(
                 from_engine(interactable.position),
                 Quat::IDENTITY,
-                if interior { Vec3::splat(0.55) } else { STATION_VISUAL_SCALE },
+                if interior {
+                    Vec3::splat(0.55)
+                } else {
+                    STATION_VISUAL_SCALE
+                },
             ),
-            if interior { PLACEHOLDER_MESH } else { STATION_MESH },
-            if interior { DESTINATION_MATERIAL } else { STATION_MATERIAL },
+            if interior {
+                PLACEHOLDER_MESH
+            } else {
+                STATION_MESH
+            },
+            if interior {
+                DESTINATION_MATERIAL
+            } else {
+                STATION_MATERIAL
+            },
             interactable.enabled,
         ));
     }
     if !interior {
-        nodes.extend(EXTERIOR_STATION_IDS.into_iter().zip(EXTERIOR_STATION_POSITIONS).map(
-            |(entity, position)| SnapshotNode::new(
-                entity,
-                Transform::new(position, Quat::IDENTITY, STATION_VISUAL_SCALE),
-                STATION_MESH,
-                STATION_MATERIAL,
-                true,
-            ),
-        ));
+        nodes.extend(
+            EXTERIOR_STATION_IDS
+                .into_iter()
+                .zip(EXTERIOR_STATION_POSITIONS)
+                .map(|(entity, position)| {
+                    SnapshotNode::new(
+                        entity,
+                        Transform::new(position, Quat::IDENTITY, STATION_VISUAL_SCALE),
+                        STATION_MESH,
+                        STATION_MATERIAL,
+                        true,
+                    )
+                }),
+        );
     }
     nodes
 }
@@ -326,9 +342,7 @@ fn ambient_derelict_nodes() -> [SnapshotNode; 4] {
 pub fn asteroid_field_nodes(world: &GameplayWorld) -> impl Iterator<Item = SnapshotNode> + '_ {
     world
         .active_environmental_hazards()
-        .filter(|hazard| {
-            hazard.hazard_type == gameplay::EnvironmentalHazardType::DebrisField
-        })
+        .filter(|hazard| hazard.hazard_type == gameplay::EnvironmentalHazardType::DebrisField)
         .map(|hazard| {
             SnapshotNode::hazard(
                 hazard.id.value(),
@@ -396,9 +410,7 @@ struct SurfaceDistribution {
 
 impl SurfaceDistribution {
     fn new(seed: u64) -> Self {
-        Self {
-            state: seed | 1,
-        }
+        Self { state: seed | 1 }
     }
 
     fn next_u64(&mut self) -> u64 {
@@ -486,13 +498,7 @@ pub fn snapshot_from_world_with_camera_and_view(
     camera: &Camera,
     interior: bool,
 ) -> RenderSnapshot {
-    snapshot_from_world_with_camera_and_view_and_nareth(
-        world,
-        params,
-        camera,
-        interior,
-        false,
-    )
+    snapshot_from_world_with_camera_and_view_and_nareth(world, params, camera, interior, false)
 }
 
 pub fn snapshot_from_world_with_camera_and_view_and_nareth(
@@ -604,10 +610,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     }
 
     if interior {
-        let interior_origin = world
-            .ship_position()
-            .map(from_engine)
-            .unwrap_or(Vec3::ZERO);
+        let interior_origin = world.ship_position().map(from_engine).unwrap_or(Vec3::ZERO);
         for node in interior_nodes(interior_origin) {
             snapshot.push_node(node);
         }
@@ -650,11 +653,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         } else {
             echo7_visual_rotation(orientation)
         };
-        let mut transform = Transform::new(
-            pos,
-            rotation,
-            ECHO7_VISUAL_SCALE,
-        );
+        let mut transform = Transform::new(pos, rotation, ECHO7_VISUAL_SCALE);
         transform.translation -= rotation * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER);
         snapshot.push_node(SnapshotNode::new(
             ship,
@@ -751,11 +750,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                     PLANET_MATERIAL,
                     Vec3::splat(planet_visual_radius(dest.id)),
                 ),
-                _ => (
-                    ASTEROID_FIELD_MESH,
-                    ASTEROID_MATERIAL,
-                    Vec3::splat(0.65),
-                ),
+                _ => (ASTEROID_FIELD_MESH, ASTEROID_MATERIAL, Vec3::splat(0.65)),
             };
             let transform = if academic_planet == Some(dest.id) {
                 let mut transform = building_planet_transform(elapsed_seconds);
@@ -827,9 +822,9 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
 
     let academic_planet_visible = academic_planet.is_some_and(|id| {
         (params.destinations.is_empty() || params.destinations.contains(&id))
-            && world
-                .destination(id)
-                .is_some_and(|destination| destination.discovery != gameplay::DiscoveryState::Unknown)
+            && world.destination(id).is_some_and(|destination| {
+                destination.discovery != gameplay::DiscoveryState::Unknown
+            })
     });
     if academic_planet_visible {
         if let Some(planet_id) = academic_planet {
@@ -894,11 +889,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         for c in world.collectibles() {
             snapshot.push_node(SnapshotNode::new(
                 c.entity,
-                Transform::new(
-                    from_engine(c.position),
-                    Quat::IDENTITY,
-                    Vec3::splat(0.65),
-                ),
+                Transform::new(from_engine(c.position), Quat::IDENTITY, Vec3::splat(0.65)),
                 ASTEROID_FIELD_MESH,
                 ASTEROID_MATERIAL,
                 c.active && world.entities().contains(c.entity),
@@ -999,16 +990,12 @@ fn visual_event_nodes(snapshot: &RenderSnapshot) -> Vec<SnapshotNode> {
                 .clamp(0.0, 1.0);
             let intensity = 1.0 - progress;
             let (mesh, material, scale) = match event.kind {
-                RenderVisualEventKind::Attack => (
-                    SUN_MESH,
-                    SUN_MATERIAL,
-                    Vec3::splat(0.2 + intensity * 0.45),
-                ),
-                RenderVisualEventKind::EnemyDefeated => (
-                    SUN_MESH,
-                    SUN_MATERIAL,
-                    Vec3::splat(0.45 + intensity * 1.4),
-                ),
+                RenderVisualEventKind::Attack => {
+                    (SUN_MESH, SUN_MATERIAL, Vec3::splat(0.2 + intensity * 0.45))
+                }
+                RenderVisualEventKind::EnemyDefeated => {
+                    (SUN_MESH, SUN_MATERIAL, Vec3::splat(0.45 + intensity * 1.4))
+                }
                 RenderVisualEventKind::ItemCollected => (
                     COLLECTIBLE_MESH,
                     COLLECTIBLE_MATERIAL,
@@ -1030,10 +1017,7 @@ fn visual_event_nodes(snapshot: &RenderSnapshot) -> Vec<SnapshotNode> {
         .collect()
 }
 
-fn hud_state(
-    world: &GameplayWorld,
-    academic_planet: Option<gameplay::DestinationId>,
-) -> HudState {
+fn hud_state(world: &GameplayWorld, academic_planet: Option<gameplay::DestinationId>) -> HudState {
     let flight = match world.planet_flight_state() {
         gameplay::PlanetFlightState::Free => HudFlightState::Free,
         gameplay::PlanetFlightState::Atmospheric { .. } => HudFlightState::Atmospheric,
@@ -1117,11 +1101,14 @@ fn hud_state(
         ship_speed: (world.ship_control_active() == Some(true))
             .then(|| world.ship_speed().zip(world.ship_speed_limit()))
             .flatten()
-            .map(|(speed, limit)| {
-                (speed.round().max(0.0) as u32, limit.round().max(0.0) as u32)
-            }),
+            .map(|(speed, limit)| (speed.round().max(0.0) as u32, limit.round().max(0.0) as u32)),
         weapon_name: (world.ship_control_active() == Some(true))
-            .then(|| world.combatants().find(|value| value.is_player).and_then(|value| value.equipped_weapon))
+            .then(|| {
+                world
+                    .combatants()
+                    .find(|value| value.is_player)
+                    .and_then(|value| value.equipped_weapon)
+            })
             .flatten()
             .map(|weapon| match weapon.attack_type {
                 gameplay::AttackType::Kinetic => "CINETICA".to_owned(),
@@ -1138,21 +1125,49 @@ fn hud_state(
             })
             .flatten(),
         ship_fuel: (world.ship_control_active() == Some(true))
-            .then(|| world.navigation().ship_id().and_then(|ship| world.ship_fuel(ship)))
+            .then(|| {
+                world
+                    .navigation()
+                    .ship_id()
+                    .and_then(|ship| world.ship_fuel(ship))
+            })
             .flatten()
             .map(|fuel| (fuel.current(), fuel.capacity())),
         ship_oxygen: (world.ship_control_active() == Some(true))
-            .then(|| world.life_support_panels().next().map(|panel| (panel.allocated_total(), panel.capacity())))
+            .then(|| {
+                world
+                    .life_support_panels()
+                    .next()
+                    .map(|panel| (panel.allocated_total(), panel.capacity()))
+            })
             .flatten(),
         ship_supplies: (world.ship_control_active() == Some(true))
-            .then(|| world.players().next().and_then(|player| world.inventory(player.entity_id)).map(|inventory| inventory.quantity(gameplay::types::ItemId(1))))
+            .then(|| {
+                world
+                    .players()
+                    .next()
+                    .and_then(|player| world.inventory(player.entity_id))
+                    .map(|inventory| inventory.quantity(gameplay::types::ItemId(1)))
+            })
             .flatten(),
         ship_resource_alert: if world.ship_control_active() == Some(true) {
-            let fuel_alert = world.navigation().ship_id().and_then(|ship| world.ship_fuel(ship)).and_then(|fuel| {
-                (fuel.current() == 0).then_some("COMBUSTIBLE AGOTADO").or_else(|| (fuel.current() * 4 <= fuel.capacity()).then_some("COMBUSTIBLE BAJO"))
-            });
+            let fuel_alert = world
+                .navigation()
+                .ship_id()
+                .and_then(|ship| world.ship_fuel(ship))
+                .and_then(|fuel| {
+                    (fuel.current() == 0)
+                        .then_some("COMBUSTIBLE AGOTADO")
+                        .or_else(|| {
+                            (fuel.current() * 4 <= fuel.capacity()).then_some("COMBUSTIBLE BAJO")
+                        })
+                });
             let oxygen_alert = world.life_support_panels().next().and_then(|panel| {
-                (panel.allocated_total() == 0).then_some("OXIGENO AGOTADO").or_else(|| (panel.allocated_total() * 4 <= panel.capacity()).then_some("OXIGENO BAJO"))
+                (panel.allocated_total() == 0)
+                    .then_some("OXIGENO AGOTADO")
+                    .or_else(|| {
+                        (panel.allocated_total() * 4 <= panel.capacity()).then_some("OXIGENO BAJO")
+                    })
             });
             fuel_alert.or(oxygen_alert).map(str::to_owned)
         } else {
@@ -1169,12 +1184,8 @@ fn hud_state(
         objective_name: current_objective.map(|value| value.name.clone()),
         mission_current_objective: current_objective.map(|value| value.id.0),
         mission_objectives,
-        mission_progress: mission_progress.map(|value| {
-            (
-                value.required_completed as u8,
-                value.required_total as u8,
-            )
-        }),
+        mission_progress: mission_progress
+            .map(|value| (value.required_completed as u8, value.required_total as u8)),
         mission_state,
         mission_notification: completed_mission
             .or(presented_mission)
@@ -1207,21 +1218,27 @@ fn mission_notification(world: &GameplayWorld, mission: MissionId) -> Option<Str
     let mut selected_priority = 0;
     for event in world.events().iter() {
         let (priority, text) = match event {
-            gameplay::GameplayEvent::MissionStarted { mission: actual, .. }
-                if *actual == mission => (3, "NUEVA MISION"),
+            gameplay::GameplayEvent::MissionStarted {
+                mission: actual, ..
+            } if *actual == mission => (3, "NUEVA MISION"),
             gameplay::GameplayEvent::ObjectiveAvailable { objective, .. }
             | gameplay::GameplayEvent::ObjectiveStarted { objective, .. }
-                if world.objective(*objective).is_some_and(|value| value.mission_id == mission) =>
+                if world
+                    .objective(*objective)
+                    .is_some_and(|value| value.mission_id == mission) =>
             {
                 (2, "OBJETIVO ACTUALIZADO")
             }
             gameplay::GameplayEvent::ObjectiveCompleted { objective, .. }
-                if world.objective(*objective).is_some_and(|value| value.mission_id == mission) =>
+                if world
+                    .objective(*objective)
+                    .is_some_and(|value| value.mission_id == mission) =>
             {
                 (4, "OBJETIVO COMPLETADO")
             }
-            gameplay::GameplayEvent::MissionCompleted { mission: actual, .. }
-                if *actual == mission => (5, "MISION COMPLETADA"),
+            gameplay::GameplayEvent::MissionCompleted {
+                mission: actual, ..
+            } if *actual == mission => (5, "MISION COMPLETADA"),
             _ => continue,
         };
         if priority >= selected_priority {
@@ -1266,9 +1283,7 @@ fn expected_snapshot_node_count(
         .count();
     count += world
         .active_environmental_hazards()
-        .filter(|hazard| {
-            hazard.hazard_type == gameplay::EnvironmentalHazardType::DebrisField
-        })
+        .filter(|hazard| hazard.hazard_type == gameplay::EnvironmentalHazardType::DebrisField)
         .count();
     count += world.enemies().filter(|enemy| !enemy.is_player).count();
     count += world
@@ -1280,9 +1295,9 @@ fn expected_snapshot_node_count(
 
     let academic_planet_visible = academic_planet.is_some_and(|id| {
         (params.destinations.is_empty() || params.destinations.contains(&id))
-            && world
-                .destination(id)
-                .is_some_and(|destination| destination.discovery != gameplay::DiscoveryState::Unknown)
+            && world.destination(id).is_some_and(|destination| {
+                destination.discovery != gameplay::DiscoveryState::Unknown
+            })
     });
     if academic_planet_visible {
         count += SURFACE_OBJECT_IDS.len();
@@ -1310,14 +1325,21 @@ pub fn visual_ship_position(world: &GameplayWorld) -> Option<Vec3> {
     let gameplay::TravelState::InProgress { destination, .. } = world.travel_state() else {
         return Some(current);
     };
-    if world.planet_position_at(destination, world.time().elapsed).is_some() {
+    if world
+        .planet_position_at(destination, world.time().elapsed)
+        .is_some()
+    {
         return Some(current);
     }
     let progress = world.travel_progress()?.progress.clamp(0.0, 1.0);
     let target = world
         .planet_position_at(destination, world.time().elapsed)
         .map(from_engine)
-        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))?;
+        .or_else(|| {
+            world
+                .destination(destination)
+                .map(|value| from_engine(value.position))
+        })?;
     Some(interpolate_visual_ship_position(current, target, progress))
 }
 
@@ -1345,12 +1367,8 @@ pub fn pilot_camera(
     let distance = distance.clamp(PILOT_CAMERA_MIN_DISTANCE, PILOT_CAMERA_MAX_DISTANCE);
     // `ship` is the gameplay/model-center anchor, not the rear of the mesh.
     // Start immediately behind the actual propulsion edge.
-    let position = ship
-        + aft * (ECHO7_AFT_EDGE_OFFSET + distance)
-        + up * ECHO7_CAMERA_HEIGHT;
-    let target = ship
-        + aft * ECHO7_CAMERA_TARGET_AFT_OFFSET
-        + up * ECHO7_CAMERA_TARGET_HEIGHT;
+    let position = ship + aft * (ECHO7_AFT_EDGE_OFFSET + distance) + up * ECHO7_CAMERA_HEIGHT;
+    let target = ship + aft * ECHO7_CAMERA_TARGET_AFT_OFFSET + up * ECHO7_CAMERA_TARGET_HEIGHT;
     Camera::new(
         position,
         target,
@@ -1371,14 +1389,7 @@ pub fn observation_camera(
     azimuth: f32,
     elevation: f32,
 ) -> Result<Camera, CameraError> {
-    observation_camera_for_destination(
-        world,
-        aspect,
-        transition,
-        azimuth,
-        elevation,
-        None,
-    )
+    observation_camera_for_destination(world, aspect, transition, azimuth, elevation, None)
 }
 
 pub fn observation_camera_for_destination(
@@ -1398,8 +1409,11 @@ pub fn observation_camera_for_destination(
         .and_then(|id| world.planet_position_at(id, world.time().elapsed))
         .map(from_engine)
         .or_else(|| {
-            target
-                .and_then(|id| world.destination(id).map(|value| from_engine(value.position)))
+            target.and_then(|id| {
+                world
+                    .destination(id)
+                    .map(|value| from_engine(value.position))
+            })
         })
         .unwrap_or_else(|| academic_planet_transform(elapsed_seconds).translation);
     let observation_radius = target
@@ -1412,11 +1426,11 @@ pub fn observation_camera_for_destination(
         0.0
     };
     let flight_radius = FLIGHT_CAMERA_OFFSET.length();
-    let flight_elevation =
-        (FLIGHT_CAMERA_OFFSET.y / (FLIGHT_CAMERA_OFFSET.x * FLIGHT_CAMERA_OFFSET.x
+    let flight_elevation = (FLIGHT_CAMERA_OFFSET.y
+        / (FLIGHT_CAMERA_OFFSET.x * FLIGHT_CAMERA_OFFSET.x
             + FLIGHT_CAMERA_OFFSET.z * FLIGHT_CAMERA_OFFSET.z)
             .sqrt())
-        .atan()
+    .atan()
         + elevation;
     let flight_position = ship
         + Vec3::new(
@@ -1434,8 +1448,7 @@ pub fn observation_camera_for_destination(
     let close_position = planet + surface_direction * observation_distance(observation_radius);
     let transition = transition.clamp(0.0, 1.0);
     let mut position = space_position.lerp(close_position, transition);
-    if let gameplay::PlanetFlightState::Atmospheric { intensity, .. } =
-        world.planet_flight_state()
+    if let gameplay::PlanetFlightState::Atmospheric { intensity, .. } = world.planet_flight_state()
     {
         let phase = elapsed_seconds as f32 * 28.0;
         let amplitude = intensity.clamp(0.0, 1.0) * 0.22;
@@ -1470,7 +1483,9 @@ pub fn observable_planets(world: &GameplayWorld) -> Vec<gameplay::DestinationId>
 pub fn is_observable_planet(world: &GameplayWorld, destination: gameplay::DestinationId) -> bool {
     world.destination(destination).is_some_and(|value| {
         value.destination_type == gameplay::DestinationType::Planet
-            && (world.planet_position_at(destination, world.time().elapsed).is_some()
+            && (world
+                .planet_position_at(destination, world.time().elapsed)
+                .is_some()
                 || (value.position.x.is_finite()
                     && value.position.y.is_finite()
                     && value.position.z.is_finite()))
@@ -1494,7 +1509,11 @@ pub fn planet_surface_origin(
     let center = world
         .planet_position_at(destination, world.time().elapsed)
         .map(from_engine)
-        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))?;
+        .or_else(|| {
+            world
+                .destination(destination)
+                .map(|value| from_engine(value.position))
+        })?;
     Some(center + Vec3::new(0.0, planet_visual_radius(destination) + 1.0, 0.0))
 }
 
@@ -1502,18 +1521,14 @@ pub fn surface_ship_position(
     world: &GameplayWorld,
     destination: gameplay::DestinationId,
 ) -> Option<Vec3> {
-    planet_surface_origin(world, destination)
-        .map(|origin| origin + Vec3::new(4.0, 0.0, 4.0))
+    planet_surface_origin(world, destination).map(|origin| origin + Vec3::new(4.0, 0.0, 4.0))
 }
 
 fn observation_distance(visual_radius: f32) -> f32 {
     (visual_radius.max(0.1) * 1.75).max(PLANET_OBSERVATION_RADIUS)
 }
 
-pub fn interior_camera(
-    world: &GameplayWorld,
-    aspect: f32,
-) -> Result<Camera, CameraError> {
+pub fn interior_camera(world: &GameplayWorld, aspect: f32) -> Result<Camera, CameraError> {
     let player = world.players().next().ok_or(CameraError::InvalidAspect)?;
     interior_camera_for_player(world, player.entity_id, aspect)
 }
@@ -1526,10 +1541,14 @@ pub fn interior_camera_for_player(
     let player = world.player(player_id).ok_or(CameraError::InvalidAspect)?;
     let position = from_engine(player.position) + Vec3::new(0.0, 1.45, 0.0);
     let yaw = player.orientation.yaw_degrees.to_radians();
-    let pitch = player.orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);
+    let pitch = player
+        .orientation
+        .pitch_degrees
+        .to_radians()
+        .clamp(-1.2, 1.2);
     let horizontal = pitch.cos();
-    let direction = Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal)
-        .normalize_or_zero();
+    let direction =
+        Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal).normalize_or_zero();
     Camera::new(
         position,
         position + direction,
@@ -1646,9 +1665,8 @@ fn tessara_moon_transform(tessara_position: Vec3, elapsed_seconds: f64) -> Trans
         TESSARA_MOON_ORBIT_HEIGHT,
         TESSARA_MOON_ORBIT_RADIUS * angle.sin(),
     );
-    let rotation = Quat::from_rotation_y(
-        TESSARA_MOON_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND * elapsed,
-    );
+    let rotation =
+        Quat::from_rotation_y(TESSARA_MOON_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND * elapsed);
     let mut transform = Transform::new(
         tessara_position + offset,
         rotation,
@@ -1700,7 +1718,8 @@ fn visual_transform(position: engine::Vec3, yaw: f32, pitch: f32) -> Transform {
 
 #[cfg(test)]
 mod tests {
-    use super::{academic_planet_transform, building_planet_transform, hud_mission_state,
+    use super::{
+        academic_planet_transform, building_planet_transform, hud_mission_state,
         kharvex_planet_transform, planet_mesh_for_destination, tessara_moon_transform,
         tessara_planet_transform,
         BUILDING_PLANET_CENTER, BUILDING_PLANET_MESH, KHARVEX_PLANET_CENTER,
@@ -1716,12 +1735,8 @@ mod tests {
         PLANET_VISUAL_RADIUS, SUN_MODEL_CENTER, SUN_MODEL_MESH, SUN_MODEL_MAX_DIMENSION,
         SUN_MODEL_VISUAL_SCALE, SUN_POSITION, SUN_VISUAL_RADIUS};
     use gameplay::{
-        commands::GameplayCommand,
-        domains::mission::MissionState,
-        mission_system::MissionSystem,
-        systems::GameplaySystem,
-        types::MissionId,
-        GameplayWorld,
+        commands::GameplayCommand, domains::mission::MissionState, mission_system::MissionSystem,
+        systems::GameplaySystem, types::MissionId, GameplayWorld,
     };
     use render_core::MeshHandle;
     use render_core::{HudMissionState, Vec3};
@@ -1742,14 +1757,13 @@ mod tests {
         let result = system
             .process(world, command)
             .expect("mission command should be handled");
-        assert!(matches!(result.status, gameplay::CommandStatus::Success { .. }));
+        assert!(matches!(
+            result.status,
+            gameplay::CommandStatus::Success { .. }
+        ));
     }
 
-    fn unlock_and_start(
-        system: &mut MissionSystem,
-        world: &mut GameplayWorld,
-        mission: MissionId,
-    ) {
+    fn unlock_and_start(system: &mut MissionSystem, world: &mut GameplayWorld, mission: MissionId) {
         apply(system, world, GameplayCommand::UnlockMission { mission });
         apply(system, world, GameplayCommand::StartMission { mission });
     }
@@ -1785,9 +1799,10 @@ mod tests {
         assert!(snapshot.nodes.iter().any(|node| {
             node.entity == render_core::SnapshotId::Entity(super::INTERIOR_FLOOR_ENTITY)
         }));
-        assert!(snapshot.nodes.iter().any(|node| {
-            node.entity == render_core::SnapshotId::Entity(player)
-        }));
+        assert!(snapshot
+            .nodes
+            .iter()
+            .any(|node| { node.entity == render_core::SnapshotId::Entity(player) }));
         assert!(snapshot.nodes.iter().any(|node| {
             node.entity == render_core::SnapshotId::Entity(super::INTERIOR_BACK_WALL_ENTITY)
         }));
@@ -1824,7 +1839,10 @@ mod tests {
         let hud = super::hud_state(&world, None);
 
         assert_eq!(hud.mission_name.as_deref(), Some("El despertar"));
-        assert_eq!(hud.objective_name.as_deref(), Some("Evaluar el estado de la nave"));
+        assert_eq!(
+            hud.objective_name.as_deref(),
+            Some("Evaluar el estado de la nave")
+        );
     }
 
     #[test]
@@ -1835,32 +1853,64 @@ mod tests {
 
         let started = super::hud_state(&world, None);
         assert_eq!(started.mission_description.as_deref(), Some("La tripulación de ECHO-7 despierta tras un incidente desconocido y debe recuperar el control de la nave."));
-        assert_eq!(started.mission_current_objective, Some(crate::el_despertar::EVALUAR_ESTADO_NAVE.0));
+        assert_eq!(
+            started.mission_current_objective,
+            Some(crate::el_despertar::EVALUAR_ESTADO_NAVE.0)
+        );
         assert_eq!(started.mission_objectives.len(), 6);
-        assert_eq!(started.mission_objectives[0].id, crate::el_despertar::EVALUAR_ESTADO_NAVE.0);
+        assert_eq!(
+            started.mission_objectives[0].id,
+            crate::el_despertar::EVALUAR_ESTADO_NAVE.0
+        );
         assert_eq!(started.mission_objectives[0].progress, 0);
         assert_eq!(started.mission_objectives[0].required_progress, 1);
-        assert_eq!(started.mission_notification.as_deref(), Some("NUEVA MISION"));
+        assert_eq!(
+            started.mission_notification.as_deref(),
+            Some("NUEVA MISION")
+        );
 
-        apply(&mut system, &mut world, GameplayCommand::StartObjective {
-            objective: crate::el_despertar::EVALUAR_ESTADO_NAVE,
-        });
-        apply(&mut system, &mut world, GameplayCommand::CompleteObjective {
-            objective: crate::el_despertar::EVALUAR_ESTADO_NAVE,
-        });
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::StartObjective {
+                objective: crate::el_despertar::EVALUAR_ESTADO_NAVE,
+            },
+        );
+        apply(
+            &mut system,
+            &mut world,
+            GameplayCommand::CompleteObjective {
+                objective: crate::el_despertar::EVALUAR_ESTADO_NAVE,
+            },
+        );
 
         let progressed = super::hud_state(&world, None);
-        assert_eq!(progressed.mission_objectives[0].state, render_core::HudObjectiveState::Completed);
+        assert_eq!(
+            progressed.mission_objectives[0].state,
+            render_core::HudObjectiveState::Completed
+        );
         assert_eq!(progressed.mission_objectives[0].progress, 0);
-        assert_eq!(progressed.mission_current_objective, Some(crate::el_despertar::RESTAURAR_ENERGIA.0));
-        assert_eq!(progressed.objective_name.as_deref(), Some("Restaurar la energía"));
-        assert_eq!(progressed.mission_notification.as_deref(), Some("OBJETIVO COMPLETADO"));
+        assert_eq!(
+            progressed.mission_current_objective,
+            Some(crate::el_despertar::RESTAURAR_ENERGIA.0)
+        );
+        assert_eq!(
+            progressed.objective_name.as_deref(),
+            Some("Restaurar la energía")
+        );
+        assert_eq!(
+            progressed.mission_notification.as_deref(),
+            Some("OBJETIVO COMPLETADO")
+        );
         assert_eq!(progressed, super::hud_state(&world, None));
 
         world.take_events();
         let quiet = super::hud_state(&world, None);
         assert_eq!(quiet.mission_objectives, progressed.mission_objectives);
-        assert_eq!(quiet.mission_current_objective, progressed.mission_current_objective);
+        assert_eq!(
+            quiet.mission_current_objective,
+            progressed.mission_current_objective
+        );
         assert!(quiet.mission_notification.is_none());
     }
 
@@ -1895,10 +1945,22 @@ mod tests {
             crate::el_despertar::ACCEDER_PUENTE_MANDO,
             crate::el_despertar::TOMAR_CONTROL_NAVE,
         ] {
-            apply(&mut system, &mut world, GameplayCommand::StartObjective { objective });
-            apply(&mut system, &mut world, GameplayCommand::CompleteObjective { objective });
+            apply(
+                &mut system,
+                &mut world,
+                GameplayCommand::StartObjective { objective },
+            );
+            apply(
+                &mut system,
+                &mut world,
+                GameplayCommand::CompleteObjective { objective },
+            );
         }
-        unlock_and_start(&mut system, &mut world, crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA);
+        unlock_and_start(
+            &mut system,
+            &mut world,
+            crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+        );
 
         let hud = super::hud_state(&world, None);
 
@@ -1919,7 +1981,11 @@ mod tests {
                 mission: crate::el_despertar::EL_DESPERTAR,
             },
         );
-        unlock_and_start(&mut system, &mut world, crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA);
+        unlock_and_start(
+            &mut system,
+            &mut world,
+            crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA,
+        );
 
         let hud = super::hud_state(&world, None);
 
@@ -1945,7 +2011,10 @@ mod tests {
                 && !objective.required
                 && objective.recommended_action.is_some()
         }));
-        assert_eq!(hud.objective_name.as_deref(), Some("Evaluar el estado de la nave"));
+        assert_eq!(
+            hud.objective_name.as_deref(),
+            Some("Evaluar el estado de la nave")
+        );
     }
 
     #[test]
@@ -1997,8 +2066,16 @@ mod tests {
             crate::el_despertar::ACCEDER_PUENTE_MANDO,
             crate::el_despertar::TOMAR_CONTROL_NAVE,
         ] {
-            apply(&mut system, &mut world, GameplayCommand::StartObjective { objective });
-            apply(&mut system, &mut world, GameplayCommand::CompleteObjective { objective });
+            apply(
+                &mut system,
+                &mut world,
+                GameplayCommand::StartObjective { objective },
+            );
+            apply(
+                &mut system,
+                &mut world,
+                GameplayCommand::CompleteObjective { objective },
+            );
         }
         apply(
             &mut system,
@@ -2011,8 +2088,17 @@ mod tests {
         let hud = super::hud_state(&world, None);
         assert_eq!(hud.mission_name.as_deref(), Some("Ecos de la anomalía"));
         assert_eq!(hud.mission_state, Some(HudMissionState::Available));
-        assert_eq!(hud.mission_notification.as_deref(), Some("MISION COMPLETADA"));
-        assert_eq!(world.mission(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state(), MissionState::Available);
+        assert_eq!(
+            hud.mission_notification.as_deref(),
+            Some("MISION COMPLETADA")
+        );
+        assert_eq!(
+            world
+                .mission(crate::ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+                .unwrap()
+                .state(),
+            MissionState::Available
+        );
         assert!(hud.objective_name.is_some());
     }
 
@@ -2037,18 +2123,61 @@ mod tests {
 
         let tessara = gameplay::DestinationId::new(super::TESSARA_DESTINATION_ID);
         let kharvex = gameplay::DestinationId::new(super::KHARVEX_DESTINATION_ID);
-        assert_eq!(planet_mesh_for_destination(academic, Some(academic), Some(tessara), Some(kharvex), None, false), BUILDING_PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(tessara, Some(academic), Some(tessara), Some(kharvex), None, false), TESSARA_PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(kharvex, Some(academic), Some(tessara), Some(kharvex), None, false), KHARVEX_PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(other, Some(academic), Some(tessara), Some(kharvex), None, false), PLANET_MESH);
-        assert_eq!(planet_mesh_for_destination(academic, None, Some(tessara), Some(kharvex), None, false), PLANET_MESH);
+        assert_eq!(
+            planet_mesh_for_destination(
+                academic,
+                Some(academic),
+                Some(tessara),
+                Some(kharvex),
+                None,
+                false
+            ),
+            BUILDING_PLANET_MESH
+        );
+        assert_eq!(
+            planet_mesh_for_destination(
+                tessara,
+                Some(academic),
+                Some(tessara),
+                Some(kharvex),
+                None,
+                false
+            ),
+            TESSARA_PLANET_MESH
+        );
+        assert_eq!(
+            planet_mesh_for_destination(
+                kharvex,
+                Some(academic),
+                Some(tessara),
+                Some(kharvex),
+                None,
+                false
+            ),
+            KHARVEX_PLANET_MESH
+        );
+        assert_eq!(
+            planet_mesh_for_destination(
+                other,
+                Some(academic),
+                Some(tessara),
+                Some(kharvex),
+                None,
+                false
+            ),
+            PLANET_MESH
+        );
+        assert_eq!(
+            planet_mesh_for_destination(academic, None, Some(tessara), Some(kharvex), None, false),
+            PLANET_MESH
+        );
     }
 
     #[test]
     fn kharvex_planet_transform_centers_and_preserves_uniform_visual_scale() {
         let transform = kharvex_planet_transform(KHARVEX_POSITION, 0.0);
-        let centered = transform.translation
-            + transform.rotation * (transform.scale * KHARVEX_PLANET_CENTER);
+        let centered =
+            transform.translation + transform.rotation * (transform.scale * KHARVEX_PLANET_CENTER);
 
         assert!((centered - KHARVEX_POSITION).length() < 1e-5);
         assert_eq!(transform.scale, Vec3::splat(KHARVEX_PLANET_VISUAL_SCALE));
@@ -2060,10 +2189,10 @@ mod tests {
     fn kharvex_planet_transform_rotates_without_changing_center_or_scale() {
         let initial = kharvex_planet_transform(KHARVEX_POSITION, 0.0);
         let later = kharvex_planet_transform(KHARVEX_POSITION, 10.0);
-        let initial_center = initial.translation
-            + initial.rotation * (initial.scale * KHARVEX_PLANET_CENTER);
-        let later_center = later.translation
-            + later.rotation * (later.scale * KHARVEX_PLANET_CENTER);
+        let initial_center =
+            initial.translation + initial.rotation * (initial.scale * KHARVEX_PLANET_CENTER);
+        let later_center =
+            later.translation + later.rotation * (later.scale * KHARVEX_PLANET_CENTER);
 
         assert_ne!(initial.rotation, later.rotation);
         assert!((initial_center - KHARVEX_POSITION).length() < 1e-5);
@@ -2074,8 +2203,8 @@ mod tests {
     #[test]
     fn building_planet_transform_centers_and_preserves_visual_diameter() {
         let transform = building_planet_transform(0.0);
-        let centered = transform.translation
-            + transform.rotation * (transform.scale * BUILDING_PLANET_CENTER);
+        let centered =
+            transform.translation + transform.rotation * (transform.scale * BUILDING_PLANET_CENTER);
         let academic_position = academic_planet_transform(0.0).translation;
 
         assert!((centered - academic_position).length() < 1e-5);
@@ -2085,8 +2214,8 @@ mod tests {
     #[test]
     fn tessara_transform_centers_at_its_static_position_and_preserves_visual_diameter() {
         let transform = tessara_planet_transform(TESSARA_POSITION, 0.0);
-        let centered = transform.translation
-            + transform.rotation * (transform.scale * TESSARA_PLANET_CENTER);
+        let centered =
+            transform.translation + transform.rotation * (transform.scale * TESSARA_PLANET_CENTER);
 
         assert!((centered - TESSARA_POSITION).length() < 1e-5);
         assert!((transform.scale.x * TESSARA_PLANET_MAX_DIMENSION
@@ -2100,10 +2229,10 @@ mod tests {
     fn tessara_planet_transform_rotates_without_changing_center_or_scale() {
         let initial = tessara_planet_transform(TESSARA_POSITION, 0.0);
         let later = tessara_planet_transform(TESSARA_POSITION, 10.0);
-        let initial_center = initial.translation
-            + initial.rotation * (initial.scale * TESSARA_PLANET_CENTER);
-        let later_center = later.translation
-            + later.rotation * (later.scale * TESSARA_PLANET_CENTER);
+        let initial_center =
+            initial.translation + initial.rotation * (initial.scale * TESSARA_PLANET_CENTER);
+        let later_center =
+            later.translation + later.rotation * (later.scale * TESSARA_PLANET_CENTER);
 
         assert_ne!(initial.rotation, later.rotation);
         assert!((initial_center - TESSARA_POSITION).length() < 1e-5);
@@ -2115,47 +2244,60 @@ mod tests {
     fn tessara_moon_orbits_the_current_tessara_position() {
         let initial = tessara_moon_transform(TESSARA_POSITION, 0.0);
         let later = tessara_moon_transform(TESSARA_POSITION, 10.0);
-        let initial_center = initial.translation
-            + initial.rotation * (initial.scale * TESSARA_MOON_CENTER);
-        let later_center = later.translation
-            + later.rotation * (later.scale * TESSARA_MOON_CENTER);
+        let initial_center =
+            initial.translation + initial.rotation * (initial.scale * TESSARA_MOON_CENTER);
+        let later_center = later.translation + later.rotation * (later.scale * TESSARA_MOON_CENTER);
 
         assert_ne!(initial_center, later_center);
-        assert!((initial_center - (TESSARA_POSITION + Vec3::new(
-            TESSARA_MOON_ORBIT_RADIUS,
-            TESSARA_MOON_ORBIT_HEIGHT,
-            0.0,
-        ))).length() < 1e-5);
-        assert!(((later_center - TESSARA_POSITION).length() -
-            (TESSARA_MOON_ORBIT_RADIUS.powi(2) + TESSARA_MOON_ORBIT_HEIGHT.powi(2)).sqrt())
-            .abs() < 1e-4);
+        assert!(
+            (initial_center
+                - (TESSARA_POSITION
+                    + Vec3::new(TESSARA_MOON_ORBIT_RADIUS, TESSARA_MOON_ORBIT_HEIGHT, 0.0,)))
+            .length()
+                < 1e-5
+        );
+        assert!(
+            ((later_center - TESSARA_POSITION).length()
+                - (TESSARA_MOON_ORBIT_RADIUS.powi(2) + TESSARA_MOON_ORBIT_HEIGHT.powi(2)).sqrt())
+            .abs()
+                < 1e-4
+        );
     }
 
     #[test]
     fn tessara_moon_rotation_is_deterministic_and_centered() {
         let first = tessara_moon_transform(TESSARA_POSITION, 10.0);
         let second = tessara_moon_transform(TESSARA_POSITION, 10.0);
-        let centered = first.translation
-            + first.rotation * (first.scale * TESSARA_MOON_CENTER);
+        let centered = first.translation + first.rotation * (first.scale * TESSARA_MOON_CENTER);
 
         assert_eq!(first, second);
-        assert!((centered - (TESSARA_POSITION + Vec3::new(
-            TESSARA_MOON_ORBIT_RADIUS * (TESSARA_MOON_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND * 10.0).cos(),
-            TESSARA_MOON_ORBIT_HEIGHT,
-            TESSARA_MOON_ORBIT_RADIUS * (TESSARA_MOON_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND * 10.0).sin(),
-        ))).length() < 1e-4);
+        assert!(
+            (centered
+                - (TESSARA_POSITION
+                    + Vec3::new(
+                        TESSARA_MOON_ORBIT_RADIUS
+                            * (TESSARA_MOON_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND * 10.0).cos(),
+                        TESSARA_MOON_ORBIT_HEIGHT,
+                        TESSARA_MOON_ORBIT_RADIUS
+                            * (TESSARA_MOON_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND * 10.0).sin(),
+                    )))
+            .length()
+                < 1e-4
+        );
         assert_eq!(first.scale, Vec3::splat(TESSARA_MOON_VISUAL_SCALE));
     }
 
     #[test]
     fn sun_model_is_exclusive_and_centered_at_the_physical_sun_position() {
         let transform = super::sun_model_transform();
-        let centered = transform.translation
-            + transform.rotation * (transform.scale * SUN_MODEL_CENTER);
+        let centered =
+            transform.translation + transform.rotation * (transform.scale * SUN_MODEL_CENTER);
 
         assert_eq!(SUN_MODEL_MESH, MeshHandle::SUN_MODEL);
         assert!((centered - SUN_POSITION).length() < 1e-5);
-        assert!((transform.scale.x * SUN_MODEL_MAX_DIMENSION - SUN_VISUAL_RADIUS * 2.0).abs() < 1e-5);
+        assert!(
+            (transform.scale.x * SUN_MODEL_MAX_DIMENSION - SUN_VISUAL_RADIUS * 2.0).abs() < 1e-5
+        );
         assert_eq!(transform.scale, Vec3::splat(SUN_MODEL_VISUAL_SCALE));
     }
 }

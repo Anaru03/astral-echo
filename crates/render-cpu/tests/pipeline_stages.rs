@@ -91,7 +91,10 @@ fn sequential_and_tiled_paths_apply_the_same_animated_shader() {
         framebuffer.color_bytes().to_vec()
     };
 
-    assert_eq!(render(render_cpu::RasterMode::Secuencial), render(render_cpu::RasterMode::Paralelo));
+    assert_eq!(
+        render(render_cpu::RasterMode::Secuencial),
+        render(render_cpu::RasterMode::Paralelo)
+    );
 }
 
 #[test]

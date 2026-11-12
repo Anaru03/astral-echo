@@ -119,8 +119,7 @@ impl StageMetrics {
         self.clipping.trivial_rejects += other.clipping.trivial_rejects;
         self.clipping.trivial_accepts += other.clipping.trivial_accepts;
         self.clipping.full_clip_calls += other.clipping.full_clip_calls;
-        self.clipping.plane_distance_evaluations +=
-            other.clipping.plane_distance_evaluations;
+        self.clipping.plane_distance_evaluations += other.clipping.plane_distance_evaluations;
         self.clipping.plane_intersections += other.clipping.plane_intersections;
         self.clipping.interpolated_vertices += other.clipping.interpolated_vertices;
         self.clipping.final_polygon_vertices += other.clipping.final_polygon_vertices;

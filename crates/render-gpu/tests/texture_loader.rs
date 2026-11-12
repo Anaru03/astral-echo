@@ -1,12 +1,11 @@
-
 use std::path::Path;
 
 use render_gpu::texture_loader::TextureImage;
 
 #[test]
 fn loads_all_seraphim_textures_as_rgba8() {
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/textures/planets/seraphim_planet");
+    let base =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/textures/planets/seraphim_planet");
 
     let files = [
         "seraphim_wings.png",
@@ -19,9 +18,7 @@ fn loads_all_seraphim_textures_as_rgba8() {
         let path = base.join(file);
 
         let image = TextureImage::load_png(&path)
-            .unwrap_or_else(|error| {
-                panic!("Failed to load {}: {}", path.display(), error)
-            });
+            .unwrap_or_else(|error| panic!("Failed to load {}: {}", path.display(), error));
 
         assert!(image.width > 0);
         assert!(image.height > 0);

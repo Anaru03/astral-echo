@@ -29,9 +29,7 @@ pub struct TexturedModel {
 }
 
 /// Carga un OBJ conservando geometria, UVs y materiales.
-pub fn load_textured_obj(
-    path: impl AsRef<Path>,
-) -> Result<TexturedModel, ObjLoadError> {
+pub fn load_textured_obj(path: impl AsRef<Path>) -> Result<TexturedModel, ObjLoadError> {
     let path = path.as_ref();
 
     let options = tobj::LoadOptions {
@@ -42,12 +40,9 @@ pub fn load_textured_obj(
         ..Default::default()
     };
 
-    let (models, materials_result) =
-        tobj::load_obj(path, &options)
-            .map_err(ObjLoadError::Parse)?;
+    let (models, materials_result) = tobj::load_obj(path, &options).map_err(ObjLoadError::Parse)?;
 
-    let materials = materials_result
-        .map_err(ObjLoadError::Parse)?;
+    let materials = materials_result.map_err(ObjLoadError::Parse)?;
 
     let base = path.parent().unwrap_or_else(|| Path::new("."));
 
@@ -71,9 +66,7 @@ pub fn load_textured_obj(
                 roughness,
                 0.0,
             )
-            .with_emissive(crate::Vec3::new(
-                emissive[0], emissive[1], emissive[2],
-            ));
+            .with_emissive(crate::Vec3::new(emissive[0], emissive[1], emissive[2]));
 
             TexturedMaterial {
                 name: material.name,
@@ -96,9 +89,7 @@ pub fn load_textured_obj(
             }
         }
 
-        let mesh = build_mesh(
-            std::iter::once(model.mesh),
-        )?;
+        let mesh = build_mesh(std::iter::once(model.mesh))?;
 
         meshes.push(TexturedMesh {
             name: model.name,
@@ -111,10 +102,7 @@ pub fn load_textured_obj(
         return Err(ObjLoadError::Empty);
     }
 
-    Ok(TexturedModel {
-        meshes,
-        materials,
-    })
+    Ok(TexturedModel { meshes, materials })
 }
 
 #[cfg(test)]
@@ -128,16 +116,12 @@ mod tests {
             materials: vec![
                 TexturedMaterial {
                     name: "Alas".into(),
-                    diffuse_texture: Some(
-                        PathBuf::from("textures/wings.png"),
-                    ),
+                    diffuse_texture: Some(PathBuf::from("textures/wings.png")),
                     info: crate::MaterialInfo::fixture_metal(),
                 },
                 TexturedMaterial {
                     name: "Nucleo".into(),
-                    diffuse_texture: Some(
-                        PathBuf::from("textures/core.png"),
-                    ),
+                    diffuse_texture: Some(PathBuf::from("textures/core.png")),
                     info: crate::MaterialInfo::fixture_rough(),
                 },
             ],
@@ -148,7 +132,6 @@ mod tests {
         assert_eq!(model.materials[1].name, "Nucleo");
     }
 }
-
 
 /// Una submalla registrada, lista para crear un SnapshotNode.
 #[derive(Clone, Debug)]
@@ -172,12 +155,15 @@ pub fn register_textured_model(
     let mut parts = Vec::with_capacity(meshes.len());
     for (i, part) in meshes.into_iter().enumerate() {
         let offset = u32::try_from(i).map_err(|e| e.to_string())?;
-        let mesh_id = first_mesh_id.checked_add(offset)
+        let mesh_id = first_mesh_id
+            .checked_add(offset)
             .ok_or_else(|| "mesh ID overflow".to_string())?;
-        let material_offset = part.material_index
+        let material_offset = part
+            .material_index
             .and_then(|index| u32::try_from(index).ok())
             .unwrap_or(offset);
-        let material_id = first_material_id.checked_add(material_offset)
+        let material_id = first_material_id
+            .checked_add(material_offset)
             .ok_or_else(|| "material ID overflow".to_string())?;
         let mesh = crate::MeshHandle::new(mesh_id);
         let material = crate::MaterialHandle::new(material_id);
@@ -192,7 +178,11 @@ pub fn register_textured_model(
             }
         }
         scene.register_mesh(mesh, material, part.mesh);
-        parts.push(RegisteredModelPart { name: part.name, mesh, material });
+        parts.push(RegisteredModelPart {
+            name: part.name,
+            mesh,
+            material,
+        });
     }
     Ok(parts)
 }

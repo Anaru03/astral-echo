@@ -52,7 +52,8 @@ impl PlanetMaze {
                 let nx = x as isize + dx;
                 let ny = y as isize + dy;
 
-                if nx > 0 && ny > 0
+                if nx > 0
+                    && ny > 0
                     && nx < (MAZE_SIZE - 1) as isize
                     && ny < (MAZE_SIZE - 1) as isize
                     && !cells[ny as usize][nx as usize]
@@ -66,8 +67,7 @@ impl PlanetMaze {
                 continue;
             }
 
-            let (nx, ny) =
-                neighbors[(random(&mut rng) as usize) % neighbors.len()];
+            let (nx, ny) = neighbors[(random(&mut rng) as usize) % neighbors.len()];
 
             cells[(y + ny) / 2][(x + nx) / 2] = true;
             cells[ny][nx] = true;
@@ -92,8 +92,7 @@ impl PlanetMaze {
         let mut best = None;
 
         for attempt in 0..2000u64 {
-            let candidate_seed =
-                seed.wrapping_add(attempt.wrapping_mul(7919));
+            let candidate_seed = seed.wrapping_add(attempt.wrapping_mul(7919));
             let mut maze = Self::generate_base(kind, candidate_seed);
 
             let mut rng = candidate_seed.max(1);
@@ -105,10 +104,8 @@ impl PlanetMaze {
                         continue;
                     }
 
-                    let horizontal =
-                        maze.cells[y][x - 1] && maze.cells[y][x + 1];
-                    let vertical =
-                        maze.cells[y - 1][x] && maze.cells[y + 1][x];
+                    let horizontal = maze.cells[y][x - 1] && maze.cells[y][x + 1];
+                    let vertical = maze.cells[y - 1][x] && maze.cells[y + 1][x];
 
                     if horizontal || vertical {
                         candidates.push((x, y));
@@ -131,7 +128,8 @@ impl PlanetMaze {
 
                 maze.cells[y][x] = true;
 
-                if maze.shortest_path_length()
+                if maze
+                    .shortest_path_length()
                     .is_some_and(|distance| distance >= min_path)
                 {
                     opened += 1;
@@ -141,19 +139,14 @@ impl PlanetMaze {
             }
 
             if let Some(distance) = maze.shortest_path_length() {
-                if distance >= min_path && distance <= max_path
-                    && opened == shortcuts
-                {
+                if distance >= min_path && distance <= max_path && opened == shortcuts {
                     return maze;
                 }
 
-                let error = distance.abs_diff(
-                    (min_path + max_path) / 2
-                ) + (shortcuts - opened) * 10;
+                let error =
+                    distance.abs_diff((min_path + max_path) / 2) + (shortcuts - opened) * 10;
 
-                if best.as_ref()
-                    .is_none_or(|(score, _)| error < *score)
-                {
+                if best.as_ref().is_none_or(|(score, _)| error < *score) {
                     best = Some((error, maze));
                 }
             }
@@ -187,12 +180,7 @@ impl PlanetMaze {
                 return Some(distances[y][x]);
             }
 
-            for (dx, dy) in [
-                (0isize, -1isize),
-                (1, 0),
-                (0, 1),
-                (-1, 0),
-            ] {
+            for (dx, dy) in [(0isize, -1isize), (1, 0), (0, 1), (-1, 0)] {
                 let nx = x as isize + dx;
                 let ny = y as isize + dy;
 
@@ -202,9 +190,7 @@ impl PlanetMaze {
 
                 let (nx, ny) = (nx as usize, ny as usize);
 
-                if self.is_walkable(nx, ny)
-                    && distances[ny][nx] == usize::MAX
-                {
+                if self.is_walkable(nx, ny) && distances[ny][nx] == usize::MAX {
                     distances[ny][nx] = distances[y][x] + 1;
                     queue.push_back((nx, ny));
                 }

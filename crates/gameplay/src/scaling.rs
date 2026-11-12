@@ -88,14 +88,10 @@ impl GameplayScaling {
         if !self.is_playable() {
             return Err(ScalingError::NoActivePlayers);
         }
-        configuration.maximum_health = self.scale_amount(
-            configuration.maximum_health,
-            self.enemy_health_percent,
-        )?;
-        configuration.weapon.damage = self.scale_amount(
-            configuration.weapon.damage,
-            self.enemy_damage_percent,
-        )?;
+        configuration.maximum_health =
+            self.scale_amount(configuration.maximum_health, self.enemy_health_percent)?;
+        configuration.weapon.damage =
+            self.scale_amount(configuration.weapon.damage, self.enemy_damage_percent)?;
         if let Some(shield) = configuration.shield {
             configuration.shield = Some(Self::scale_shield(self, shield)?);
         }
@@ -107,12 +103,13 @@ impl GameplayScaling {
 
     fn scale_shield(self, shield: Shield) -> Result<Shield, ScalingError> {
         let maximum = self.scale_amount(shield.maximum, self.enemy_health_percent)?;
-        let current = self.scale_amount(shield.current, self.enemy_health_percent)?.min(maximum);
+        let current = self
+            .scale_amount(shield.current, self.enemy_health_percent)?
+            .min(maximum);
         Ok(Shield {
             current,
             maximum,
             weakness: shield.weakness,
         })
     }
-
 }

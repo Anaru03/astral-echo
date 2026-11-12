@@ -1,14 +1,14 @@
 use std::num::NonZeroU64;
 use std::ops::Range;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use render_core::{
     game_over_layout, hud_overlay, Camera, GpuAssetEvent, GpuAssetState, HudState, LodLevel, Mat4,
-    MaterialHandle, MeshHandle, PreparedScene, RasterMesh,
-    RasterVertex, SnapshotId, SnapshotScene, Transform, Vec3, Vec4, GAME_OVER_GLYPHS,
+    MaterialHandle, MeshHandle, PreparedScene, RasterMesh, RasterVertex, SnapshotId, SnapshotScene,
+    Transform, Vec3, Vec4, GAME_OVER_GLYPHS,
 };
 use wgpu::util::DeviceExt;
 
@@ -40,44 +40,43 @@ pub fn game_over_overlay_scene(width: u32, height: u32) -> Vec<(RasterMesh, Tran
     if width == 0 || height == 0 {
         return Vec::new();
     }
-    let (left, top, scale) = game_over_layout(width, height);
-    let color = Vec4::new(1.0, 0.25, 0.19, 1.0);
     let to_ndc = |x: u32, y: u32| {
         Vec3::new(
-            (x as f32 / width as f32) * 2.0 - 1.0,
-            1.0 - (y as f32 / height as f32) * 2.0,
+            x as f32 / width as f32 * 2.0 - 1.0,
+            1.0 - y as f32 / height as f32 * 2.0,
             0.0,
         )
     };
-    let mut result = Vec::new();
-    for (glyph_index, glyph) in GAME_OVER_GLYPHS.iter().enumerate() {
-        let word_gap = u32::from(glyph_index >= 4) * 2 * scale;
-        let glyph_left = left + glyph_index as u32 * 6 * scale + word_gap;
-        for (row, bits) in glyph.iter().copied().enumerate() {
-            for column in 0..5u32 {
-                if bits & (1 << (4 - column)) == 0 {
-                    continue;
-                }
-                let x0 = glyph_left + column * scale;
-                let y0 = top + row as u32 * scale;
-                let x1 = x0 + scale;
-                let y1 = y0 + scale;
-                result.push((
-                    RasterMesh::new(
-                        vec![
-                            RasterVertex::new(to_ndc(x0, y1), color),
-                            RasterVertex::new(to_ndc(x1, y1), color),
-                            RasterVertex::new(to_ndc(x1, y0), color),
-                            RasterVertex::new(to_ndc(x0, y0), color),
-                        ],
-                        vec![0, 1, 2, 0, 2, 3],
-                    ),
-                    Transform::IDENTITY,
-                ));
-            }
-        }
+    let rects = render_core::game_over_ui::game_over_rects(width, height);
+    let rects_len = rects.len();
+    let mut vertices = Vec::with_capacity(rects_len * 4);
+    let mut indices = Vec::with_capacity(rects.len() * 6);
+    for (i, r) in rects.into_iter().enumerate() {
+        let color = Vec4::new(
+            r.color[0] as f32 / 255.0,
+            r.color[1] as f32 / 255.0,
+            r.color[2] as f32 / 255.0,
+            1.0,
+        );
+        let x1 = r.x.saturating_add(r.width);
+        let y1 = r.y.saturating_add(r.height);
+        // Smaller depth = closer; background stays behind all artwork.
+        let depth = 0.95 - (i as f32 / (rects_len as f32 + 1.0)) * 0.85;
+        let base = vertices.len() as u32;
+        let p = |x, y| {
+            let mut v = to_ndc(x, y);
+            v.z = depth;
+            v
+        };
+        vertices.extend([
+            RasterVertex::new(p(r.x, y1), color),
+            RasterVertex::new(p(x1, y1), color),
+            RasterVertex::new(p(x1, r.y), color),
+            RasterVertex::new(p(r.x, r.y), color),
+        ]);
+        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
-    result
+    vec![(RasterMesh::new(vertices, indices), Transform::IDENTITY)]
 }
 
 pub fn hud_overlay_scene(hud: &HudState, width: u32, height: u32) -> Vec<(RasterMesh, Transform)> {
@@ -460,8 +459,7 @@ impl GpuRenderer {
         }
 
         let packed = PackedScene::new(scene)?;
-        let vertex_bytes = (packed.vertices.len() * std::mem::size_of::<GpuVertex>())
-            .max(4) as u64;
+        let vertex_bytes = (packed.vertices.len() * std::mem::size_of::<GpuVertex>()).max(4) as u64;
         let index_bytes = (packed.indices.len() * std::mem::size_of::<u32>()).max(4) as u64;
         let uniform_bytes = packed.draws.len().max(1) as u64 * u64::from(self.stride);
         let max = self.gpu.device.limits().max_buffer_size;
@@ -502,35 +500,34 @@ impl GpuRenderer {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.bind_group = self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("MVP bind group"),
-                layout: &self.uniform_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.uniforms,
-                        offset: 0,
-                        size: NonZeroU64::new(64),
-                    }),
-                }],
-            });
+            self.bind_group = self
+                .gpu
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("MVP bind group"),
+                    layout: &self.uniform_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.uniforms,
+                            offset: 0,
+                            size: NonZeroU64::new(64),
+                        }),
+                    }],
+                });
             self.uniform_capacity = uniform_bytes;
             self.stats.buffer_rebuilds += 1;
         }
 
         if !packed.vertices.is_empty() {
-            self.gpu.queue.write_buffer(
-                &self.vertices,
-                0,
-                bytemuck::cast_slice(&packed.vertices),
-            );
+            self.gpu
+                .queue
+                .write_buffer(&self.vertices, 0, bytemuck::cast_slice(&packed.vertices));
         }
         if !packed.indices.is_empty() {
-            self.gpu.queue.write_buffer(
-                &self.indices,
-                0,
-                bytemuck::cast_slice(&packed.indices),
-            );
+            self.gpu
+                .queue
+                .write_buffer(&self.indices, 0, bytemuck::cast_slice(&packed.indices));
         }
 
         self.draws = packed.draws;
@@ -554,9 +551,11 @@ impl GpuRenderer {
     }
 
     pub fn gpu_asset_state(&self, mesh: MeshHandle, lod: LodLevel) -> GpuAssetState {
-        self.instanced.as_ref().map_or(GpuAssetState::Unavailable, |scene| {
-            scene.gpu_asset_state((mesh, lod))
-        })
+        self.instanced
+            .as_ref()
+            .map_or(GpuAssetState::Unavailable, |scene| {
+                scene.gpu_asset_state((mesh, lod))
+            })
     }
 
     pub fn ensure_shared_mesh(
@@ -755,7 +754,10 @@ impl GpuRenderer {
                     ops: wgpu::Operations {
                         load: match clear {
                             Some(clear) => wgpu::LoadOp::Clear(wgpu::Color {
-                                r: channel(clear[0]), g: channel(clear[1]), b: channel(clear[2]), a: 1.0,
+                                r: channel(clear[0]),
+                                g: channel(clear[1]),
+                                b: channel(clear[2]),
+                                a: 1.0,
                             }),
                             None => wgpu::LoadOp::Load,
                         },

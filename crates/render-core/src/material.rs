@@ -168,7 +168,10 @@ mod tests {
                 && sanitized.emissive.is_finite()
         }));
         assert_ne!(MaterialInfo::enemy_shooter(), MaterialInfo::enemy_charger());
-        assert_ne!(MaterialInfo::enemy_charger(), MaterialInfo::enemy_shielded());
+        assert_ne!(
+            MaterialInfo::enemy_charger(),
+            MaterialInfo::enemy_shielded()
+        );
         assert_ne!(MaterialInfo::ship(), MaterialInfo::station());
     }
 }

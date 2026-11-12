@@ -1,13 +1,13 @@
-use std::{path::PathBuf, sync::Arc};
 use render_core::{
     expand_model_parts, load_textured_obj, Camera, LightingMode, Projection, RegisteredModelPart,
     RenderSnapshot, SnapshotNode, SnapshotScene, Transform, Vec3,
 };
 use render_gpu::{GpuContext, GpuError, GpuRenderer, OffscreenTarget};
+use std::{path::PathBuf, sync::Arc};
 
 fn draw(with_textures: bool, gpu: Arc<GpuContext>) -> Vec<u8> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/models/charger/charger.obj");
+    let root =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/models/charger/charger.obj");
     let mut scene = SnapshotScene::default();
     scene.set_lighting_mode(LightingMode::Pbr);
     let model = load_textured_obj(&root).expect("OBJ/MTL deben poder cargarse");
@@ -17,9 +17,7 @@ fn draw(with_textures: bool, gpu: Arc<GpuContext>) -> Vec<u8> {
     for material in &model.materials {
         println!(
             "Material: {} | Color: {:?} | Emision: {:?}",
-            material.name,
-            material.info.base_color,
-            material.info.emissive
+            material.name, material.info.base_color, material.info.emissive
         );
     }
 
@@ -40,7 +38,11 @@ fn draw(with_textures: bool, gpu: Arc<GpuContext>) -> Vec<u8> {
             scene.set_material(material, render_core::MaterialInfo::ship());
         }
         scene.register_mesh(mesh, material, part.mesh);
-        parts.push(RegisteredModelPart { name: part.name, mesh, material });
+        parts.push(RegisteredModelPart {
+            name: part.name,
+            mesh,
+            material,
+        });
     }
     assert_eq!(parts.len(), 404);
     let camera = Camera::new(
@@ -53,45 +55,45 @@ fn draw(with_textures: bool, gpu: Arc<GpuContext>) -> Vec<u8> {
             near: 0.1,
             far: 100.0,
         },
-    ).unwrap();
+    )
+    .unwrap();
     let mut snapshot = RenderSnapshot::minimal_demo();
     snapshot.nodes.clear();
-    snapshot.lights = vec![
-        render_core::SnapshotLight::new(
-            render_core::RenderLight {
-                color: Vec3::ONE,
-                intensity: 2.0,
-                kind: render_core::RenderLightKind::Directional {
-                    direction: Vec3::new(-0.5, -1.0, -0.8).normalize(),
-                },
-                casts_shadow: false,
-            },
-        ),
-    ];
+    snapshot.lights = vec![render_core::SnapshotLight::new(render_core::RenderLight {
+        color: Vec3::ONE,
+        intensity: 2.0,
+        kind: render_core::RenderLightKind::Directional {
+            direction: Vec3::new(-0.5, -1.0, -0.8).normalize(),
+        },
+        casts_shadow: false,
+    })];
     snapshot.camera_position = camera.position();
     snapshot.view = camera.view_matrix();
     snapshot.projection = camera.projection_matrix();
     let parent = SnapshotNode::destination(
-        100, Transform::IDENTITY, parts[0].mesh, parts[0].material, true,
+        100,
+        Transform::IDENTITY,
+        parts[0].mesh,
+        parts[0].material,
+        true,
     );
     snapshot.nodes = expand_model_parts(&parent, &parts, 100);
     scene.update(&snapshot).unwrap();
     let mut prepared = scene.prepare(render_core::CullingConfig {
-        width: 640, height: 320, ..Default::default()
+        width: 640,
+        height: 320,
+        ..Default::default()
     });
     prepared.lighting.ambient = Vec3::splat(0.30);
     println!("Submallas visibles: {}", prepared.stats().visible);
     let mut renderer = GpuRenderer::from_prepared(gpu.clone(), &prepared).unwrap();
     let target = OffscreenTarget::new(gpu, 640, 320).unwrap();
-    target.render_prepared(
-        &mut renderer,
-        &prepared,
-        scene.view_projection(),
-    ).unwrap();
+    target
+        .render_prepared(&mut renderer, &prepared, scene.view_projection())
+        .unwrap();
     let image = target.readback().unwrap();
 
-    let output = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/charger-preview");
+    let output = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/charger-preview");
 
     std::fs::create_dir_all(&output).unwrap();
 
@@ -105,13 +107,13 @@ fn draw(with_textures: bool, gpu: Arc<GpuContext>) -> Vec<u8> {
 
     println!("Captura guardada: {}", output.join(filename).display());
 
-    let colored = image.rgba.chunks_exact(4)
+    let colored = image
+        .rgba
+        .chunks_exact(4)
         .filter(|pixel| pixel[0] > 20 || pixel[1] > 20 || pixel[2] > 20)
         .count();
 
-    let depth_pixels = image.depth.iter()
-        .filter(|depth| **depth < 1.0)
-        .count();
+    let depth_pixels = image.depth.iter().filter(|depth| **depth < 1.0).count();
 
     println!(
         "DIAGNOSTICO GPU: texturas={}, pixeles_color={}, pixeles_depth={}",
@@ -123,10 +125,7 @@ fn draw(with_textures: bool, gpu: Arc<GpuContext>) -> Vec<u8> {
         "Shooter no aparece en el buffer de profundidad"
     );
 
-    assert!(
-        colored > 100,
-        "Shooter se renderiza negro"
-    );
+    assert!(colored > 100, "Shooter se renderiza negro");
 
     image.rgba
 }

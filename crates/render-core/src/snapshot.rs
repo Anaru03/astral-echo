@@ -103,10 +103,7 @@ pub enum SnapshotId {
     Hazard(u32),
     VisualEvent(u64),
     RemotePlayer(u64),
-    ModelPart {
-        parent: u64,
-        part: u32,
-    },
+    ModelPart { parent: u64, part: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

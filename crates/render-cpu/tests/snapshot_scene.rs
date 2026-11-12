@@ -50,12 +50,8 @@ fn snapshot_render_reports_stats_from_its_prepared_scene() {
     let mut scene = SnapshotScene::default();
     scene.update(&RenderSnapshot::minimal_demo()).unwrap();
     let mut framebuffer = Framebuffer::new(321, 181).unwrap();
-    let (stats, _) = render_snapshot_scene_with_stats(
-        &mut framebuffer,
-        &scene,
-        RasterMode::Secuencial,
-    )
-    .unwrap();
+    let (stats, _) =
+        render_snapshot_scene_with_stats(&mut framebuffer, &scene, RasterMode::Secuencial).unwrap();
     let expected = scene
         .prepare(CullingConfig {
             width: 321,
@@ -76,12 +72,8 @@ fn game_over_overlay_reaches_a_black_frame_with_a_visible_indicator() {
 
     let mut framebuffer = Framebuffer::new(32, 18).unwrap();
     framebuffer.clear(render_cpu::Color::new(255, 0, 255, 255));
-    let (prepared, pipeline) = render_snapshot_scene_with_stats(
-        &mut framebuffer,
-        &scene,
-        RasterMode::Secuencial,
-    )
-    .unwrap();
+    let (prepared, pipeline) =
+        render_snapshot_scene_with_stats(&mut framebuffer, &scene, RasterMode::Secuencial).unwrap();
 
     assert_eq!(prepared.visible, 2);
     assert_eq!(pipeline.draws, 0);
@@ -103,7 +95,10 @@ fn hud_overlay_changes_expected_framebuffer_region_without_changing_snapshot() {
     let before = scene.snapshot().clone();
     let mut framebuffer = Framebuffer::new(320, 180).unwrap();
     render_snapshot_scene_with_stats(&mut framebuffer, &scene, RasterMode::Secuencial).unwrap();
-    assert_ne!(framebuffer.pixel(12, 12).unwrap(), render_cpu::Color::new(8, 10, 18, 255));
+    assert_ne!(
+        framebuffer.pixel(12, 12).unwrap(),
+        render_cpu::Color::new(8, 10, 18, 255)
+    );
     assert!(framebuffer
         .color_bytes()
         .chunks_exact(4)

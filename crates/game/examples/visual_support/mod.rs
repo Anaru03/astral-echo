@@ -111,24 +111,30 @@ pub fn deterministic_flight_session() -> (ProjectEchoSession, DestinationId) {
             discovery: DiscoveryState::Discovered,
         })
         .unwrap();
-    assert!(session.world_mut().configure_planet_physics(gameplay::PlanetPhysics {
-        destination: planet,
-        orbit_center: Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: -20.0,
-        },
-        orbit_radius: 10.0,
-        orbit_start: Vec3::ZERO,
-        orbit_axis: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
-        orbit_phase: 0.0,
-        orbit_angular_speed: 0.1,
-        surface_radius: 2.0,
-        ship_radius: 1.0,
-        gravity_influence_radius: 24.0,
-        gravitational_parameter: 80.0,
-        atmosphere_height: 4.0,
-    }));
+    assert!(session
+        .world_mut()
+        .configure_planet_physics(gameplay::PlanetPhysics {
+            destination: planet,
+            orbit_center: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -20.0,
+            },
+            orbit_radius: 10.0,
+            orbit_start: Vec3::ZERO,
+            orbit_axis: Vec3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0
+            },
+            orbit_phase: 0.0,
+            orbit_angular_speed: 0.1,
+            surface_radius: 2.0,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }));
     let route = gameplay::NavigationRoute {
         from: origin,
         to: planet,
@@ -154,9 +160,9 @@ pub fn deterministic_flight_session() -> (ProjectEchoSession, DestinationId) {
             pilot_station: station,
         },
     ]);
-    assert!(results.iter().all(|result| {
-        matches!(result.status, gameplay::CommandStatus::Success { .. })
-    }));
+    assert!(results
+        .iter()
+        .all(|result| { matches!(result.status, gameplay::CommandStatus::Success { .. }) }));
     (session, planet)
 }
 

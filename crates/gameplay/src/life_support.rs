@@ -232,7 +232,11 @@ impl LifeSupportPanel {
             if !seen.insert(compartment_id) {
                 return Err(LifeSupportRegistrationError::DuplicateCompartmentId);
             }
-            let Some(compartment) = self.compartments.iter_mut().find(|value| value.id == compartment_id) else {
+            let Some(compartment) = self
+                .compartments
+                .iter_mut()
+                .find(|value| value.id == compartment_id)
+            else {
                 return Err(LifeSupportRegistrationError::InvalidCompartmentId);
             };
             if *allocation > compartment.maximum_allocation {

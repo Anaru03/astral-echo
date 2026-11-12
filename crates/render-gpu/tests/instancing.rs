@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use render_core::{
-    CullingConfig, GpuAssetState, LodLevel, Mat4, MaterialHandle, MeshHandle, PreparedDraw, PreparedScene,
-    RasterMesh, RenderSnapshot, SnapshotNode, SnapshotScene, Transform, Vec3, Vec4,
+    CullingConfig, GpuAssetState, LodLevel, Mat4, MaterialHandle, MeshHandle, PreparedDraw,
+    PreparedScene, RasterMesh, RenderSnapshot, SnapshotNode, SnapshotScene, Transform, Vec3, Vec4,
     VisibilityClass,
 };
 use render_gpu::{GpuContext, GpuError, GpuRenderer, OffscreenTarget};

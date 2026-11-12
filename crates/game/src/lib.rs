@@ -1,29 +1,28 @@
-pub mod planet_mazes;
-pub mod cooperacion;
 pub mod campaign;
+pub mod cooperacion;
 pub mod ecos_anomalia;
 pub mod el_despertar;
 pub mod la_defensa_imposible;
 pub mod multiplayer;
-pub mod render_bridge;
-pub mod render_backend;
-pub mod tormenta_gravitacional;
 pub mod planet_maze;
+pub mod planet_mazes;
+pub mod render_backend;
+pub mod render_bridge;
+pub mod tormenta_gravitacional;
 
 use engine::EntityId;
 use gameplay::types::MissionId;
-use gameplay::{CommandStatus, Destination, DestinationType, EnemyArchetype, EnemyConfiguration};
 use gameplay::{
     systems::{
-        CombatSystem, CompanionSystem, DoorSystem, ElectricalSystem, EnemyAiSystem,
-        EnvironmentalHazardSystem, HullIntegritySystem, InteractionSystem, InventorySystem,
-        LifeSupportSystem, NavigationSystem, PilotSystem, PlayerSystem, ResourceSystem,
-        ScannerSystem, StationSystem, DerelictSystem, FunctionalWorldSystem,
-        SpatialEncounterSystem,
+        CombatSystem, CompanionSystem, DerelictSystem, DoorSystem, ElectricalSystem, EnemyAiSystem,
+        EnvironmentalHazardSystem, FunctionalWorldSystem, HullIntegritySystem, InteractionSystem,
+        InventorySystem, LifeSupportSystem, NavigationSystem, PilotSystem, PlayerSystem,
+        ResourceSystem, ScannerSystem, SpatialEncounterSystem, StationSystem,
     },
     CommandResult, DoorAccessRequirement, GameplayCommand, GameplayProcessor, GameplayState,
     GameplayWorld,
 };
+use gameplay::{CommandStatus, Destination, DestinationType, EnemyArchetype, EnemyConfiguration};
 use gameplay::{
     HealingSystem, KnowledgeSystem, Mission, MissionProgress, MissionRegistrationError,
     MissionSystem, RevivalSystem, RewardSystem,
@@ -57,8 +56,10 @@ fn register_campaign_missions(world: &mut GameplayWorld) -> Result<(), MissionRe
     let missions = [
         el_despertar::definition().expect("El despertar debe tener una definicion valida"),
         ecos_anomalia::definition().expect("Ecos de la anomalia debe tener una definicion valida"),
-        tormenta_gravitacional::definition().expect("Tormenta gravitacional debe tener una definicion valida"),
-        la_defensa_imposible::definition().expect("La defensa imposible debe tener una definicion valida"),
+        tormenta_gravitacional::definition()
+            .expect("Tormenta gravitacional debe tener una definicion valida"),
+        la_defensa_imposible::definition()
+            .expect("La defensa imposible debe tener una definicion valida"),
         cooperacion::definition().expect("Progresion cooperativa debe tener una definicion valida"),
     ];
 
@@ -352,9 +353,7 @@ impl ProjectEchoSession {
             .mission(mission)
             .is_some_and(|value| value.state() == gameplay::domains::mission::MissionState::Active)
         {
-            return CommandResult::rejected(
-                gameplay::CommandRejection::InvalidMissionTransition,
-            );
+            return CommandResult::rejected(gameplay::CommandRejection::InvalidMissionTransition);
         }
 
         match self.ensure_cooperative_mission_content() {
@@ -390,15 +389,17 @@ impl ProjectEchoSession {
                 );
             }
         }
-        let should_prepare_cooperative_mission = commands.iter().zip(results.iter()).any(
-            |(command, result)| {
-                matches!(
-                    command,
-                    GameplayCommand::StartMission { mission }
-                        if *mission == cooperacion::PROGRESION_COOPERATIVA
-                ) && matches!(result.status, CommandStatus::Success { changed: true })
-            },
-        );
+        let should_prepare_cooperative_mission =
+            commands
+                .iter()
+                .zip(results.iter())
+                .any(|(command, result)| {
+                    matches!(
+                        command,
+                        GameplayCommand::StartMission { mission }
+                            if *mission == cooperacion::PROGRESION_COOPERATIVA
+                    ) && matches!(result.status, CommandStatus::Success { changed: true })
+                });
         if should_prepare_cooperative_mission {
             if let Err(error) = self.ensure_cooperative_mission_content() {
                 results.push(CommandResult::rejected(
@@ -423,7 +424,9 @@ impl ProjectEchoSession {
 
         if let Some(existing) = self.world.destination(destination) {
             if existing.destination_type != DestinationType::SpacePoint {
-                return Err(format!("el destino {destination:?} no es una señal espacial compatible"));
+                return Err(format!(
+                    "el destino {destination:?} no es una señal espacial compatible"
+                ));
             }
         } else {
             self.world
@@ -458,7 +461,10 @@ impl ProjectEchoSession {
         if matches!(result.status, CommandStatus::Success { changed: true }) {
             Ok(())
         } else {
-            Err(format!("crear amenaza cooperativa rechazado: {:?}", result.status))
+            Err(format!(
+                "crear amenaza cooperativa rechazado: {:?}",
+                result.status
+            ))
         }
     }
 }

@@ -3,9 +3,8 @@ use render_core::{
 };
 
 use crate::{
-    Color, CpuPipeline, CpuPipelineScratch, Framebuffer, FragmentShader, PipelineConfig,
-    PipelineStats, RasterError, RasterMode,
-    TileConfig, Topology, Viewport,
+    Color, CpuPipeline, CpuPipelineScratch, FragmentShader, Framebuffer, PipelineConfig,
+    PipelineStats, RasterError, RasterMode, TileConfig, Topology, Viewport,
 };
 
 fn cpu_culling_config(framebuffer: &Framebuffer) -> render_core::CullingConfig {
@@ -63,7 +62,9 @@ pub fn render_snapshot_scene_with_stats_and_scratch(
         PipelineConfig::default(),
         scratch,
     )?;
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats))
 }
 
@@ -103,12 +104,12 @@ pub fn compose_hud_overlay(framebuffer: &mut Framebuffer, hud: &render_core::Hud
             let start = (y * width + x0) * 4;
             let end = (y * width + x1) * 4;
             for pixel in pixels[start..end].chunks_exact_mut(4) {
-                pixel[0] = (f32::from(rect.color[0]) * alpha
-                    + f32::from(pixel[0]) * inverse_alpha) as u8;
-                pixel[1] = (f32::from(rect.color[1]) * alpha
-                    + f32::from(pixel[1]) * inverse_alpha) as u8;
-                pixel[2] = (f32::from(rect.color[2]) * alpha
-                    + f32::from(pixel[2]) * inverse_alpha) as u8;
+                pixel[0] =
+                    (f32::from(rect.color[0]) * alpha + f32::from(pixel[0]) * inverse_alpha) as u8;
+                pixel[1] =
+                    (f32::from(rect.color[1]) * alpha + f32::from(pixel[1]) * inverse_alpha) as u8;
+                pixel[2] =
+                    (f32::from(rect.color[2]) * alpha + f32::from(pixel[2]) * inverse_alpha) as u8;
                 pixel[3] = 255;
             }
         }
@@ -136,7 +137,9 @@ pub fn render_snapshot_scene_with_timing(
             ..Default::default()
         },
     )?;
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats, preparation_ns))
 }
 
@@ -147,13 +150,7 @@ pub fn render_snapshot_scene_with_shader_with_stats(
     shader: FragmentShader,
 ) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
     let time = (scene.snapshot().tick.0 % 4096) as f32;
-    render_snapshot_scene_with_shader_at_time_with_stats(
-        framebuffer,
-        scene,
-        mode,
-        shader,
-        time,
-    )
+    render_snapshot_scene_with_shader_at_time_with_stats(framebuffer, scene, mode, shader, time)
 }
 
 pub fn render_snapshot_scene_with_shader_at_time_with_stats(
@@ -176,7 +173,9 @@ pub fn render_snapshot_scene_with_shader_at_time_with_stats(
         time,
         PipelineConfig::default(),
     )?;
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats))
 }
 
@@ -203,12 +202,8 @@ pub fn render_snapshot_scene_with_shader(
     mode: RasterMode,
     shader: FragmentShader,
 ) -> Result<PipelineStats, RasterError> {
-    let (_, stats) = render_snapshot_scene_with_shader_with_stats(
-        framebuffer,
-        scene,
-        mode,
-        shader,
-    )?;
+    let (_, stats) =
+        render_snapshot_scene_with_shader_with_stats(framebuffer, scene, mode, shader)?;
     Ok(stats)
 }
 
@@ -230,7 +225,9 @@ pub fn render_snapshot_scene_reference(
     }
     let stats = pipeline.stats;
     drop(pipeline);
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    }
     Ok(stats)
 }
 
@@ -329,18 +326,14 @@ fn render_prepared_scene_with_scratch(
     scratch: &mut CpuPipelineScratch,
 ) -> Result<PipelineStats, RasterError> {
     let viewport = Viewport::from_size(framebuffer.width(), framebuffer.height())?;
-    let mut pipeline = CpuPipeline::new_with_scratch(
-        framebuffer,
-        viewport,
-        config,
-        std::mem::take(scratch),
-    )
-        .with_fragment_shader(shader)
-        .with_fragment_time(time)
-        .with_tile_config(TileConfig {
-            tile_size: 16,
-            mode,
-        });
+    let mut pipeline =
+        CpuPipeline::new_with_scratch(framebuffer, viewport, config, std::mem::take(scratch))
+            .with_fragment_shader(shader)
+            .with_fragment_time(time)
+            .with_tile_config(TileConfig {
+                tile_size: 16,
+                mode,
+            });
     pipeline.clear(clear);
     if game_over {
         let stats = pipeline.stats;
@@ -356,23 +349,13 @@ fn render_prepared_scene_with_scratch(
 }
 
 fn draw_game_over(framebuffer: &mut Framebuffer) {
-    let (left, top, scale) = game_over_layout(framebuffer.width(), framebuffer.height());
-    let color = Color::new(255, 64, 48, 255);
-    for (glyph_index, glyph) in GAME_OVER_GLYPHS.iter().enumerate() {
-        let word_gap = u32::from(glyph_index >= 4) * 2 * scale;
-        let glyph_left = left + glyph_index as u32 * 6 * scale + word_gap;
-        for (row, bits) in glyph.iter().copied().enumerate() {
-            for column in 0..5u32 {
-                if bits & (1 << (4 - column)) == 0 {
-                    continue;
-                }
-                let x = glyph_left + column * scale;
-                let y = top + row as u32 * scale;
-                for dy in 0..scale {
-                    for dx in 0..scale {
-                        framebuffer.set_pixel(x + dx, y + dy, color);
-                    }
-                }
+    for rect in
+        render_core::game_over_ui::game_over_rects(framebuffer.width(), framebuffer.height())
+    {
+        let color = Color::new(rect.color[0], rect.color[1], rect.color[2], rect.color[3]);
+        for y in rect.y..rect.y + rect.height {
+            for x in rect.x..rect.x + rect.width {
+                framebuffer.set_pixel(x, y, color);
             }
         }
     }

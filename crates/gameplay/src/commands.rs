@@ -1,17 +1,17 @@
 use crate::collectible::ItemDefinition;
-use crate::companion::CompanionBehavior;
 use crate::combat::{EnemyConfiguration, WeaponConfiguration};
+use crate::companion::CompanionBehavior;
 use crate::derelict::Derelict;
-use crate::world_activity::FunctionalWorld;
 use crate::electrical::{BreakerId, BreakerState, ElectricalPanelConfiguration};
 use crate::encounter::{EncounterId, SpatialEncounter};
 use crate::knowledge::KnowledgeTarget;
 use crate::life_support::{CompartmentId, LifeSupportConfiguration};
 use crate::navigation::ShipMovementParameters;
 use crate::navigation::{Destination, DestinationId, NavigationRoute};
-use crate::reward::EnemyReward;
 use crate::resources::ShipUpgrade;
+use crate::reward::EnemyReward;
 use crate::types::{MissionId, ObjectiveId};
+use crate::world_activity::FunctionalWorld;
 use engine::{Duration, EntityId, Vec3};
 
 #[derive(Clone, Debug, PartialEq)]

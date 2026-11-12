@@ -131,9 +131,12 @@ impl<'a> CpuPipeline<'a> {
             + self.triangles.capacity() * std::mem::size_of::<Triangle>()
             + self.scratch.screen_triangles.capacity()
                 * std::mem::size_of::<(ScreenVertex, ScreenVertex, ScreenVertex)>()
-            + self.scratch.normal_cache.values().map(|(_, normals)| {
-                normals.capacity() * std::mem::size_of::<glam::Vec3>()
-            }).sum::<usize>()
+            + self
+                .scratch
+                .normal_cache
+                .values()
+                .map(|(_, normals)| normals.capacity() * std::mem::size_of::<glam::Vec3>())
+                .sum::<usize>()
             + self.scratch.tile.bytes()
             + self.fragments.capacity() * std::mem::size_of::<Fragment>()
             + self.shaded.capacity() * std::mem::size_of::<Color>()
@@ -223,10 +226,9 @@ impl<'a> CpuPipeline<'a> {
                     if self.scratch.normal_cache.len() >= 16 {
                         self.scratch.normal_cache.clear();
                     }
-                    self.scratch.normal_cache.insert(
-                        mesh_key,
-                        (Arc::clone(&first.mesh), Arc::clone(&normals)),
-                    );
+                    self.scratch
+                        .normal_cache
+                        .insert(mesh_key, (Arc::clone(&first.mesh), Arc::clone(&normals)));
                     normals
                 }
             };
@@ -508,10 +510,9 @@ impl<'a> CpuPipeline<'a> {
         // Etapa de fragment: sombreado y conversión de color.
         let t1 = self.timer();
         self.shaded.clear();
-        self.shaded
-            .extend(self.fragments.iter().map(|fragment| {
-                shade_fragment_with_time(fragment, self.fragment_shader, self.fragment_time)
-            }));
+        self.shaded.extend(self.fragments.iter().map(|fragment| {
+            shade_fragment_with_time(fragment, self.fragment_shader, self.fragment_time)
+        }));
         let fragment_ns = self.elapsed(t1);
         // Etapa de depth: test de profundidad y escritura en el framebuffer.
         let t2 = self.timer();

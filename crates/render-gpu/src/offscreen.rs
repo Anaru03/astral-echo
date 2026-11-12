@@ -4,7 +4,10 @@ use render_core::{Camera, Mat4, PreparedScene, SnapshotScene};
 
 use crate::postprocess::{PostProcessConfig, PostProcessPass};
 use crate::renderer::{validate_extent, DepthTarget};
-use crate::{game_over_overlay_scene, hud_overlay_scene, GpuContext, GpuError, GpuImage, GpuRenderer, ReadbackLayout};
+use crate::{
+    game_over_overlay_scene, hud_overlay_scene, GpuContext, GpuError, GpuImage, GpuRenderer,
+    ReadbackLayout,
+};
 
 pub struct OffscreenTarget {
     gpu: Arc<GpuContext>,
@@ -147,9 +150,10 @@ impl OffscreenTarget {
             height: self.layout.height,
             ..Default::default()
         });
-        if prepared.draws().any(|draw| {
-            prepared.texture_path(draw.node.material).is_some()
-        }) {
+        if prepared
+            .draws()
+            .any(|draw| prepared.texture_path(draw.node.material).is_some())
+        {
             renderer.sync_prepared(&prepared)?;
         } else {
             renderer.sync_snapshot(scene)?;
@@ -213,34 +217,14 @@ impl OffscreenTarget {
                 Mat4::IDENTITY,
                 [0, 0, 0, 255],
             )?;
-            let hud_scene = hud_overlay_scene(
-                &scene.overlay().hud,
-                self.layout.width,
-                self.layout.height,
-            );
-            if !hud_scene.is_empty() {
-                let mut hud_renderer = GpuRenderer::new(
-                    self.gpu.clone(),
-                    renderer.color_format(),
-                    &hud_scene,
-                )?;
-                let hud_depth = DepthTarget::new(
-                    &self.gpu,
-                    self.layout.width,
-                    self.layout.height,
-                )?;
-                hud_renderer.render_to_view_matrix_over(
-                    &self.color_view,
-                    &hud_depth.view,
-                    Mat4::IDENTITY,
-                )?;
-            }
             return Ok(());
         }
         self.render_matrix(renderer, scene.view_projection())?;
-        let overlay_scene = hud_overlay_scene(&scene.overlay().hud, self.layout.width, self.layout.height);
+        let overlay_scene =
+            hud_overlay_scene(&scene.overlay().hud, self.layout.width, self.layout.height);
         if !overlay_scene.is_empty() {
-            let mut overlay_renderer = GpuRenderer::new(self.gpu.clone(), renderer.color_format(), &overlay_scene)?;
+            let mut overlay_renderer =
+                GpuRenderer::new(self.gpu.clone(), renderer.color_format(), &overlay_scene)?;
             let overlay_depth = DepthTarget::new(&self.gpu, self.layout.width, self.layout.height)?;
             overlay_renderer.render_to_view_matrix_over(
                 &self.color_view,
