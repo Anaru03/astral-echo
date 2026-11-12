@@ -5436,8 +5436,8 @@ mod tests {
         let ship = game::render_bridge::visual_ship_position(bridge.session.world())
             .expect("ship should be visible");
         let camera = bridge.camera(16.0 / 9.0).expect("pilot camera should be valid");
-        assert!(camera.position().x > ship.x + 6.8);
-        assert!(camera.target().x > ship.x);
+        assert!(camera.position().x > ship.x + 30.0);
+        assert!(camera.target().x > ship.x + 10.0);
         assert!(camera.position().x > camera.target().x);
         assert!(camera.view_projection_matrix().is_finite());
     }
