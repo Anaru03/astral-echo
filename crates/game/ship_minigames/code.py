@@ -17,8 +17,10 @@ TRANSITION_MS = 1200
 LEVELS = [('ADMINISTRACION', 4), ('COMUNICACIONES', 5), ('NAVEGACION', 6), ('REACTOR PRINCIPAL', 7)]
 
 class CodeGame:
-    def __init__(self, root):
+    def __init__(self, root, on_success=None, on_close=None):
         self.root = root
+        self.on_success = on_success
+        self.on_close = on_close
         root.title('Astral Echo | Ingresar codigo')
         root.geometry(f'{WIDTH}x{HEIGHT}')
         root.resizable(False, False)
@@ -213,6 +215,8 @@ class CodeGame:
         self.draw()
         self.canvas.create_rectangle(115, 160, 735, 285, fill='#080D17', outline=GREEN, width=4)
         self.canvas.create_text(425, 220, text='ACCESO AUTORIZADO', fill=GREEN, font=('DejaVu Sans', 25, 'bold'))
+        if self.on_success:
+            self.root.after(800, self.on_success)
 
     def time_out(self):
         if self.phase in ('completed','timeout'):
@@ -234,10 +238,29 @@ class CodeGame:
                 self.time_out()
         self.root.after(100,self.update_timer)
 
+    def close(self):
+        self.generation += 1
+        if self.on_close:
+            self.on_close()
+
+
+def open_code_task(parent, on_success=None):
+    """Open code validation as one stage of the ship mission."""
+    win = tk.Toplevel(parent)
+    win.title('Astral Echo | Ingresar codigo')
+    win.configure(bg=BG)
+    win.resizable(False, False)
+    task = CodeGame(win, on_success=on_success, on_close=win.destroy)
+    win.protocol('WM_DELETE_WINDOW', task.close)
+    win.transient(parent)
+    win.grab_set()
+    return task
+
 
 def main():
     root=tk.Tk()
-    CodeGame(root)
+    task = CodeGame(root, on_close=root.destroy)
+    root.protocol('WM_DELETE_WINDOW', task.close)
     root.mainloop()
 
 if __name__ == '__main__':

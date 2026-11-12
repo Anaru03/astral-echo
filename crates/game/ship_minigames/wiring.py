@@ -37,8 +37,10 @@ HEIGHT = 590
 
 
 class WiringGame:
-    def __init__(self, root):
+    def __init__(self, root, on_success=None, on_close=None):
         self.root = root
+        self.on_success = on_success
+        self.on_close = on_close
         self.root.title("Astral Echo | Mantenimiento de la nave")
         self.root.geometry(f"{WIDTH}x{HEIGHT}")
         self.root.resizable(False, False)
@@ -373,6 +375,8 @@ class WiringGame:
                 fill=GREEN,
                 font=("DejaVu Sans", 21, "bold"),
             )
+            if self.on_success:
+                self.root.after(800, self.on_success)
 
     def next_level(self):
         self.level += 1
@@ -419,10 +423,29 @@ class WiringGame:
 
         self.root.after(100, self.update_timer)
 
+    def close(self):
+        self.generation += 1
+        if self.on_close:
+            self.on_close()
+
+
+def open_wiring_task(parent, on_success=None):
+    """Open wiring as one stage of the ship maintenance mission."""
+    win = tk.Toplevel(parent)
+    win.title("Astral Echo | Mantenimiento de la nave")
+    win.configure(bg=BG)
+    win.resizable(False, False)
+    task = WiringGame(win, on_success=on_success, on_close=win.destroy)
+    win.protocol("WM_DELETE_WINDOW", task.close)
+    win.transient(parent)
+    win.grab_set()
+    return task
+
 
 def main():
     root = tk.Tk()
-    WiringGame(root)
+    task = WiringGame(root, on_close=root.destroy)
+    root.protocol("WM_DELETE_WINDOW", task.close)
     root.mainloop()
 
 
