@@ -680,6 +680,55 @@ impl GameplayWorld {
             return false;
         };
         value.position = position;
+        value.velocity = engine::Vec3::ZERO;
+        true
+    }
+
+    /// Keeps a player on a spherical planetary surface and removes radial
+    /// velocity so movement remains tangent to the ground.
+    pub fn constrain_player_to_surface(
+        &mut self,
+        player: EntityId,
+        center: engine::Vec3,
+        surface_radius: f32,
+        clearance: f32,
+    ) -> bool {
+        if !finite_vec3(center)
+            || !surface_radius.is_finite()
+            || !clearance.is_finite()
+            || surface_radius <= 0.0
+            || clearance < 0.0
+        {
+            return false;
+        }
+        let Some(value) = self.players.get_mut(&player) else {
+            return false;
+        };
+        let offset = engine::Vec3 {
+            x: value.position.x - center.x,
+            y: value.position.y - center.y,
+            z: value.position.z - center.z,
+        };
+        let distance = (offset.x * offset.x + offset.y * offset.y + offset.z * offset.z).sqrt();
+        let target_radius = surface_radius + clearance;
+        let normal = if distance > 0.0001 {
+            engine::Vec3 { x: offset.x / distance, y: offset.y / distance, z: offset.z / distance }
+        } else {
+            engine::Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+        };
+        value.position = engine::Vec3 {
+            x: center.x + normal.x * target_radius,
+            y: center.y + normal.y * target_radius,
+            z: center.z + normal.z * target_radius,
+        };
+        let radial_speed = value.velocity.x * normal.x
+            + value.velocity.y * normal.y
+            + value.velocity.z * normal.z;
+        value.velocity = engine::Vec3 {
+            x: value.velocity.x - normal.x * radial_speed,
+            y: value.velocity.y - normal.y * radial_speed,
+            z: value.velocity.z - normal.z * radial_speed,
+        };
         true
     }
     pub fn companions(&self) -> impl Iterator<Item = &Companion> {

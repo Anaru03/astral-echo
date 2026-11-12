@@ -2447,6 +2447,20 @@ impl VisualBridge {
                 delta: Duration(delta_ms),
             }]);
         }
+        if let Some(planet) = self.surface_planet {
+            if let Some(center) = self
+                .session
+                .world()
+                .planet_position_at(planet, self.session.world().time().elapsed)
+            {
+                let _ = self.session.world_mut().constrain_player_to_surface(
+                    self.player,
+                    center,
+                    game::render_bridge::planet_visual_radius(planet),
+                    game::render_bridge::PLAYER_SURFACE_CLEARANCE,
+                );
+            }
+        }
     }
 
     fn contextual_prompt(&self) -> Option<String> {

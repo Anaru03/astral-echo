@@ -134,6 +134,7 @@ const ECHO7_CAMERA_TARGET_HEIGHT: f32 = 1.0;
 pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
 pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
 pub const PLAYER_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
+pub const PLAYER_SURFACE_CLEARANCE: f32 = 0.25;
 pub const ECHO7_INTERIOR_HALF_WIDTH: f32 = 9.0;
 pub const ECHO7_INTERIOR_HALF_DEPTH: f32 = 7.0;
 pub const ECHO7_INTERIOR_FLOOR_Y: f32 = -1.2;
@@ -618,7 +619,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
             snapshot.push_node(SnapshotNode::new(
                 LANDING_INDICATOR_ENTITY,
                 Transform::new(
-                    origin + Vec3::new(0.0, -0.8, 0.0),
+                    origin + Vec3::new(0.0, -0.325, 0.0),
                     Quat::IDENTITY,
                     Vec3::new(7.0, 0.15, 7.0),
                 ),
@@ -730,9 +731,6 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     }
 
     for dest in world.destinations() {
-        if surface_planet == Some(dest.id) {
-            continue;
-        }
         if dest.id == gameplay::DestinationId::new(9_001) {
             // Echo-7's origin is the player's spawn marker, not a world object.
             continue;
@@ -1477,7 +1475,7 @@ pub fn is_observable_planet(world: &GameplayWorld, destination: gameplay::Destin
     })
 }
 
-fn planet_visual_radius(destination: gameplay::DestinationId) -> f32 {
+pub fn planet_visual_radius(destination: gameplay::DestinationId) -> f32 {
     match destination.value() {
         ACADEMIC_PLANET_DESTINATION_ID => PLANET_VISUAL_RADIUS,
         TESSARA_DESTINATION_ID => TESSARA_VISUAL_RADIUS,
@@ -1495,7 +1493,11 @@ pub fn planet_surface_origin(
         .planet_position_at(destination, world.time().elapsed)
         .map(from_engine)
         .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))?;
-    Some(center + Vec3::new(0.0, planet_visual_radius(destination) + 1.0, 0.0))
+    Some(center + Vec3::new(
+        0.0,
+        planet_visual_radius(destination) + PLAYER_SURFACE_CLEARANCE,
+        0.0,
+    ))
 }
 
 pub fn surface_ship_position(
