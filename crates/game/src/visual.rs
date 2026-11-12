@@ -2530,6 +2530,10 @@ impl VisualBridge {
             self.update_clock_surface_motion();
             return;
         }
+        if self.surface_mode {
+            self.update_spherical_surface_motion();
+            return;
+        }
         if self.interior_mode {
             self.sync_ship_interior();
         }
@@ -2675,6 +2679,91 @@ impl VisualBridge {
                     game::render_bridge::PLAYER_SURFACE_CLEARANCE,
                 );
             }
+        }
+    }
+
+    fn update_spherical_surface_motion(&mut self) {
+        let Some(player) = self.session.world().player(self.player).copied() else {
+            return;
+        };
+        let Some(planet) = self.surface_planet else {
+            return;
+        };
+        let Some(center) = self
+            .session
+            .world()
+            .planet_position_at(planet, self.session.world().time().elapsed)
+        else {
+            return;
+        };
+        let now = Instant::now();
+        let delta_ms = now
+            .saturating_duration_since(self.last_interior_update)
+            .as_millis()
+            .clamp(1, 50) as u64;
+        self.last_interior_update = now;
+        let seconds = delta_ms as f32 / 1_000.0;
+        let look_yaw = self.look_right as i8 - self.look_left as i8;
+        let look_pitch = self.look_down as i8 - self.look_up as i8;
+        self.surface_camera_yaw += f32::from(look_yaw) * 6.0 * seconds / 0.016;
+        self.surface_camera_pitch = (self.surface_camera_pitch
+            + f32::from(look_pitch) * 4.0 * seconds / 0.016)
+            .clamp(-65.0, 65.0);
+        let keyboard = self.flight_keys.input();
+        let input = GameplayVec3 {
+            x: keyboard.x.clamp(-1.0, 1.0),
+            y: 0.0,
+            z: keyboard.z.clamp(-1.0, 1.0),
+        };
+        let yaw = (player.orientation.yaw_degrees + self.surface_camera_yaw).to_radians();
+        let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        let mut direction = GameplayVec3 {
+            x: input.x * cos_yaw - input.z * sin_yaw,
+            y: 0.0,
+            z: input.x * sin_yaw + input.z * cos_yaw,
+        };
+        let offset = GameplayVec3 {
+            x: player.position.x - center.x,
+            y: player.position.y - center.y,
+            z: player.position.z - center.z,
+        };
+        let length = (offset.x * offset.x + offset.y * offset.y + offset.z * offset.z)
+            .sqrt()
+            .max(0.0001);
+        let normal = GameplayVec3 {
+            x: offset.x / length,
+            y: offset.y / length,
+            z: offset.z / length,
+        };
+        let radial = direction.x * normal.x + direction.y * normal.y + direction.z * normal.z;
+        direction.x -= normal.x * radial;
+        direction.y -= normal.y * radial;
+        direction.z -= normal.z * radial;
+        let magnitude = (direction.x * direction.x + direction.z * direction.z).sqrt();
+        if magnitude > 0.0001 {
+            direction.x /= magnitude;
+            direction.z /= magnitude;
+            let candidate = GameplayVec3 {
+                x: player.position.x + direction.x * 4.0 * seconds,
+                y: player.position.y + direction.y * 4.0 * seconds,
+                z: player.position.z + direction.z * 4.0 * seconds,
+            };
+            self.session
+                .world_mut()
+                .initialize_player_position(self.player, candidate);
+        } else {
+            self.session
+                .world_mut()
+                .initialize_player_position(self.player, player.position);
+        }
+        let _ = self.session.world_mut().constrain_player_to_surface(
+            self.player,
+            center,
+            game::render_bridge::planet_visual_radius(planet),
+            game::render_bridge::PLAYER_SURFACE_CLEARANCE,
+        );
+        if !self.look_left && !self.look_right && !self.look_up && !self.look_down {
+            self.gamepad_flight = GameplayVec3::ZERO;
         }
     }
 
@@ -4066,7 +4155,7 @@ impl VisualBridge {
                 );
             }
         }
-        if self.lan_client.is_some() && !self.interior_mode {
+        if self.lan_client.is_some() && !self.interior_mode && !self.surface_mode {
             if let (Some(ship_position), Some(player_node)) = (
                 self.session.world().ship_position(),
                 snapshot
@@ -4096,7 +4185,7 @@ impl VisualBridge {
             return;
         };
         let now = Instant::now();
-        let ship_position = if self.interior_mode {
+        let ship_position = if self.interior_mode || self.surface_mode {
             GameplayVec3::ZERO
         } else {
             self.session
@@ -4136,11 +4225,17 @@ impl VisualBridge {
             let local_x = lerp(motion.from.position.x, motion.to.position.x);
             let local_y = lerp(motion.from.position.y, motion.to.position.y);
             let local_z = lerp(motion.from.position.z, motion.to.position.z);
-            node.transform.translation = render_core::Vec3::new(
-                ship_position.x + local_x * cos_yaw + local_z * sin_yaw,
-                ship_position.y + local_y,
-                ship_position.z - local_x * sin_yaw + local_z * cos_yaw,
-            );
+            node.transform.translation = if self.surface_mode {
+                // Surface clients already network absolute planetary
+                // coordinates. Do not apply the ship-local exterior offset.
+                render_core::Vec3::new(local_x, local_y, local_z)
+            } else {
+                render_core::Vec3::new(
+                    ship_position.x + local_x * cos_yaw + local_z * sin_yaw,
+                    ship_position.y + local_y,
+                    ship_position.z - local_x * sin_yaw + local_z * cos_yaw,
+                )
+            };
             node.transform.rotation = render_core::Quat::from_rotation_y(yaw.to_radians())
                 * render_core::Quat::from_rotation_x(pitch.to_radians());
             snapshot.nodes.push(node);
@@ -6657,6 +6752,42 @@ mod tests {
                 .count()
                 >= 2
         );
+    }
+
+    #[test]
+    fn parked_echo7_is_present_and_visible_in_clock_surface_snapshot() {
+        let mut bridge = VisualBridge::new().expect("visual bootstrap should work");
+        let center = bridge
+            .session
+            .world()
+            .planet_position_at(TESSARA_DESTINATION, bridge.session.world().time().elapsed)
+            .expect("clock planet should have a position");
+        bridge.surface_mode = true;
+        bridge.surface_planet = Some(TESSARA_DESTINATION);
+        bridge.clock_surface_transform = Some(game::render_bridge::clock_planet_transform(
+            render_core::from_engine(center),
+            bridge.session.world().time().elapsed.0 as f64 / 1_000.0,
+        ));
+        let camera = bridge
+            .camera(16.0 / 9.0)
+            .expect("surface camera should be valid");
+        let snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface_transform(
+            bridge.session.world(),
+            Default::default(),
+            &camera,
+            false,
+            false,
+            false,
+            bridge.surface_planet,
+            bridge.clock_surface_transform,
+        );
+        let ship = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == render_core::SnapshotId::Entity(bridge.ship))
+            .expect("parked ECHO-7 should be in the surface snapshot");
+        assert!(ship.visible, "parked ECHO-7 must be visible on the clock");
+        assert!(ship.transform.translation.is_finite());
     }
 
     #[test]
