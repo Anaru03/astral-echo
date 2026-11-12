@@ -2423,12 +2423,19 @@ impl VisualBridge {
             }
             return;
         }
-        let action = self
-            .session
-            .world()
-            .guidance_for_player(self.player)
-            .ok()
-            .and_then(|guidance| guidance.recommended_action);
+        // The object currently shown by the contextual HUD is authoritative
+        // for I. Mission guidance must not steal the interaction while the
+        // player is standing next to a visible console, door or panel.
+        let selected_interaction = self.selected_interactable().map(|value| value.entity_id);
+        let action = selected_interaction
+            .map(gameplay::GuidanceAction::Interact)
+            .or_else(|| {
+                self.session
+                    .world()
+                    .guidance_for_player(self.player)
+                    .ok()
+                    .and_then(|guidance| guidance.recommended_action)
+            });
         let pilot_console_available = action.is_none()
             && !self.pilot_mode
             && !self.legacy_exterior_controls
@@ -2628,7 +2635,9 @@ impl VisualBridge {
         let delta_ms = now
             .saturating_duration_since(self.last_interior_update)
             .as_millis()
-            .clamp(1, 50) as u64;
+            // Keep movement deterministic when the render loop temporarily
+            // runs faster than the display refresh rate.
+            .clamp(8, 50) as u64;
         self.last_interior_update = now;
         let seconds = delta_ms as f32 / 1_000.0;
         let local = self.current_flight_input();
@@ -2732,7 +2741,13 @@ impl VisualBridge {
                         })
                     })
                 });
-            let lower_deck_path_valid = if matches!(
+            let lower_deck_path_valid = if self.room_doors.is_empty() {
+                // The legacy test/runtime fixture has no authoritative room
+                // doors and uses the original rectangular interior layout.
+                // The real ECHO-7 scene always has room doors and follows the
+                // modeled floor validator below.
+                true
+            } else if matches!(
                 current_surface,
                 game::render_bridge::Echo7SupportSurface::LowerDeck
             ) {
@@ -2824,6 +2839,50 @@ impl VisualBridge {
             } else {
                 true
             };
+            // Always validate the proposed path against the authoritative
+            // floor/door geometry, even when the movement started on another
+            // deck. This closes the gaps where a large step could cross a
+            // wall or balcony edge between two specialized validators.
+            let model_path_valid = if self.room_doors.is_empty() {
+                true
+            } else if matches!(
+                current_surface,
+                game::render_bridge::Echo7SupportSurface::Stair
+            ) || game::render_bridge::echo7_stair_path_position_valid(
+                engine::Vec3 {
+                    x: updated.position.x,
+                    y: updated.position.y,
+                    z: updated.position.z,
+                },
+                interior_origin,
+                ship_yaw,
+            ) {
+                // The stair validator owns transitions between decks. A full
+                // horizontal floor test here would classify the sloped stair
+                // as a wall as soon as the player's height changes.
+                true
+            } else {
+                let distance = ((updated.position.x - player.position.x).powi(2)
+                    + (updated.position.z - player.position.z).powi(2))
+                .sqrt();
+                let samples = (distance / 0.05).ceil().max(1.0) as u32;
+                (1..=samples).all(|step| {
+                    let fraction = step as f32 / samples as f32;
+                    let candidate = GameplayVec3 {
+                        x: player.position.x + (updated.position.x - player.position.x) * fraction,
+                        y: player.position.y + (updated.position.y - player.position.y) * fraction,
+                        z: player.position.z + (updated.position.z - player.position.z) * fraction,
+                    };
+                    let upper = candidate.y > 1.0;
+                    game::render_bridge::echo7_model_floor_position_valid(
+                        candidate,
+                        interior_origin,
+                        ship_yaw,
+                        upper,
+                        &room_open,
+                    )
+                })
+            };
             let support = game::render_bridge::echo7_walkable_height(
                 updated.position,
                 interior_origin,
@@ -2835,7 +2894,8 @@ impl VisualBridge {
                     interior_origin,
                     ship_yaw,
                 );
-            if !lower_deck_path_valid
+            if !model_path_valid
+                || !lower_deck_path_valid
                 || !upper_deck_path_valid
                 || !stair_path_valid
                 || crossed_upper_edge
@@ -2929,13 +2989,15 @@ impl VisualBridge {
                 }
             }
         }
-        if let Some(planet) = self.landing_target() {
-            return Some(render_core::HudContextualAction {
-                target: planet.value() as u64,
-                object: Self::navigation_destination_label(planet).to_owned(),
-                action: "ATERRIZAR".to_owned(),
-                key: "L".to_owned(),
-            });
+        if !self.interior_mode && !self.pilot_mode {
+            if let Some(planet) = self.landing_target() {
+                return Some(render_core::HudContextualAction {
+                    target: planet.value() as u64,
+                    object: Self::navigation_destination_label(planet).to_owned(),
+                    action: "ATERRIZAR".to_owned(),
+                    key: "L".to_owned(),
+                });
+            }
         }
         if let Some(interactable) = self.selected_interactable() {
             let (object, action) = match interactable.behavior {

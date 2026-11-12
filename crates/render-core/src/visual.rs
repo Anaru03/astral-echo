@@ -40,6 +40,24 @@ impl Default for CullingConfig {
     }
 }
 
+impl CullingConfig {
+    /// Low-resolution windows should prefer the bounded mesh copies. This is
+    /// especially important for the full ECHO-7 mount, whose high meshes are
+    /// intentionally detailed for inspection and close-up screenshots.
+    pub fn for_viewport(width: u32, height: u32) -> Self {
+        let mut config = Self {
+            width,
+            height,
+            ..Default::default()
+        };
+        if width <= 640 && height <= 360 {
+            config.low_threshold_px = f32::MAX;
+            config.high_threshold_px = f32::MAX;
+        }
+        config
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedDraw {
     pub node: SnapshotNode,

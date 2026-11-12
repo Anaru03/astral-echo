@@ -398,10 +398,22 @@ fn echo7_model_room_floor_contains(local: Vec3, upper: bool) -> bool {
         && local.y.abs() <= 1.82 - radius;
     let central_corridor =
         local.x >= -10.8 + radius && local.x <= 10.8 - radius && local.y.abs() <= 1.82 - radius;
+    // The lower corridor continues to the stair footprint. Keep this narrow
+    // connector open so the modeled bulkheads do not seal off the stairwell.
+    let stair_connector = local.x >= -6.0 + radius
+        && local.x <= 4.5 - radius
+        && local.y >= ECHO7_STAIR_LOCAL_Y_MIN - radius
+        && local.y <= 1.82 - radius;
     let bow = echo7_model_rect_contains(local, (-42.3, -27.3, -4.0, 4.0));
     let lower_extra = echo7_model_rect_contains(local, (28.9, 35.9, -4.2, 4.2))
         || echo7_model_rect_contains(local, (30.4, 34.2, -10.3, -4.0));
-    module || branch || longitudinal || central_corridor || bow || (!upper && lower_extra)
+    module
+        || branch
+        || longitudinal
+        || central_corridor
+        || stair_connector
+        || bow
+        || (!upper && lower_extra)
 }
 
 fn echo7_model_door_portal(local: Vec3, index: usize) -> bool {
@@ -702,6 +714,10 @@ pub fn echo7_lower_deck_position_valid(
     }
     inside_x
         && inside_y
+        // The rectangular hull bounds are only the outer shell. Restrict the
+        // lower deck to the modeled rooms/corridors as well, otherwise the
+        // player can walk through the internal bulkheads between modules.
+        && echo7_model_room_floor_contains(local, false)
         && echo7_lower_core_obstacle_free(local, position.y)
         && !(local.x <= bounds.0 && !door_gap(local.x, local.y, ECHO7_INTERIOR_HALF_WIDTH))
         && !(local.x >= bounds.1 && !door_gap(local.x, local.y, ECHO7_INTERIOR_HALF_WIDTH))

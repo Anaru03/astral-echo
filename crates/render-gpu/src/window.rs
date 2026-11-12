@@ -385,11 +385,10 @@ impl SurfaceRenderer {
         {
             self.resize(self.config.width, self.config.height)?;
         }
-        let prepared = scene.prepare(render_core::CullingConfig {
-            width: self.config.width,
-            height: self.config.height,
-            ..Default::default()
-        });
+        let prepared = scene.prepare(render_core::CullingConfig::for_viewport(
+            self.config.width,
+            self.config.height,
+        ));
         let prepared_stats = prepared.stats();
         self.renderer.sync_prepared(&prepared)?;
         if let Some(renderer) = &mut self.hdr_renderer {
