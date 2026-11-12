@@ -304,6 +304,37 @@ impl ProjectEchoSession {
             .create_station(position, interaction_range, station_type)
     }
 
+    pub fn create_ship_station(
+        &mut self,
+        ship: engine::EntityId,
+        local_offset: engine::Vec3,
+        interaction_range: f32,
+        station_type: gameplay::StationType,
+    ) -> Result<engine::EntityId, gameplay::InteractionRegistrationError> {
+        self.world
+            .create_ship_station(ship, local_offset, interaction_range, station_type)
+    }
+
+    pub fn create_ship_door(
+        &mut self,
+        ship: engine::EntityId,
+        local_offset: engine::Vec3,
+        interaction_range: f32,
+    ) -> Result<engine::EntityId, gameplay::InteractionRegistrationError> {
+        self.world
+            .create_ship_door(ship, local_offset, interaction_range)
+    }
+
+    pub fn anchor_interactable_to_ship(
+        &mut self,
+        interactable: engine::EntityId,
+        ship: engine::EntityId,
+        local_offset: engine::Vec3,
+    ) -> Result<(), gameplay::InteractionRegistrationError> {
+        self.world
+            .anchor_interactable_to_ship(interactable, ship, local_offset)
+    }
+
     pub fn create_electrical_panel(
         &mut self,
         position: engine::Vec3,

@@ -101,6 +101,7 @@ pub struct GameplayWorld {
     players: BTreeMap<EntityId, Player>,
     companions: BTreeMap<EntityId, Companion>,
     interactables: BTreeMap<EntityId, Interactable>,
+    ship_interactable_anchors: BTreeMap<EntityId, (EntityId, engine::Vec3)>,
     missions: BTreeMap<crate::types::MissionId, Mission>,
     electrical_panels: BTreeMap<EntityId, ElectricalPanel>,
     life_support_panels: BTreeMap<EntityId, LifeSupportPanel>,
@@ -6189,14 +6190,18 @@ impl GameplayWorld {
         {
             return Err(crate::navigation::NavigationMovementError::InvalidInput);
         }
-        self.navigation.restore_position(position)
+        self.navigation.restore_position(position)?;
+        self.refresh_ship_interactable_positions();
+        Ok(())
     }
 
     pub fn restore_ship_position(
         &mut self,
         position: engine::Vec3,
     ) -> Result<(), crate::navigation::NavigationMovementError> {
-        self.navigation.restore_position(position)
+        self.navigation.restore_position(position)?;
+        self.refresh_ship_interactable_positions();
+        Ok(())
     }
 
     pub fn restore_ship_transform(
@@ -6209,7 +6214,9 @@ impl GameplayWorld {
             return Err(crate::navigation::NavigationMovementError::InvalidInput);
         }
         self.navigation
-            .restore_transform(position, orientation, velocity)
+            .restore_transform(position, orientation, velocity)?;
+        self.refresh_ship_interactable_positions();
+        Ok(())
     }
 
     pub fn resume_ship_from_landing(&mut self) -> bool {
@@ -6521,6 +6528,94 @@ impl GameplayWorld {
             ),
         );
         Ok(entity)
+    }
+    pub fn create_ship_station(
+        &mut self,
+        ship: EntityId,
+        local_offset: engine::Vec3,
+        interaction_range: f32,
+        station_type: StationType,
+    ) -> Result<EntityId, InteractionRegistrationError> {
+        let position = self.ship_interactable_position(ship, local_offset, interaction_range)?;
+        let station = self.create_station(position, interaction_range, station_type)?;
+        self.ship_interactable_anchors
+            .insert(station, (ship, local_offset));
+        Ok(station)
+    }
+
+    pub fn create_ship_door(
+        &mut self,
+        ship: EntityId,
+        local_offset: engine::Vec3,
+        interaction_range: f32,
+    ) -> Result<EntityId, InteractionRegistrationError> {
+        let position = self.ship_interactable_position(ship, local_offset, interaction_range)?;
+        let door = self.create_door(position, interaction_range)?;
+        self.ship_interactable_anchors
+            .insert(door, (ship, local_offset));
+        Ok(door)
+    }
+
+    pub fn anchor_interactable_to_ship(
+        &mut self,
+        interactable: EntityId,
+        ship: EntityId,
+        local_offset: engine::Vec3,
+    ) -> Result<(), InteractionRegistrationError> {
+        let range = self
+            .interactables
+            .get(&interactable)
+            .ok_or(InteractionRegistrationError::EntityNotFound)?
+            .interaction_range;
+        let position = self.ship_interactable_position(ship, local_offset, range)?;
+        self.ship_interactable_anchors
+            .insert(interactable, (ship, local_offset));
+        self.interactables.get_mut(&interactable).unwrap().position = position;
+        Ok(())
+    }
+
+    fn ship_interactable_position(
+        &self,
+        ship: EntityId,
+        local_offset: engine::Vec3,
+        interaction_range: f32,
+    ) -> Result<engine::Vec3, InteractionRegistrationError> {
+        if self.navigation.ship_id() != Some(ship) || !self.entities.contains(ship) {
+            return Err(InteractionRegistrationError::EntityNotFound);
+        }
+        validate_interactable_geometry(local_offset, interaction_range)?;
+        let offset = ship_world_offset(local_offset, self.navigation.orientation());
+        let ship_position = self.navigation.current_position();
+        Ok(engine::Vec3 {
+            x: ship_position.x + offset.x,
+            y: ship_position.y + offset.y,
+            z: ship_position.z + offset.z,
+        })
+    }
+
+    pub fn ship_station_anchor(&self, station: EntityId) -> Option<(EntityId, engine::Vec3)> {
+        self.ship_interactable_anchors.get(&station).copied()
+    }
+
+    pub(crate) fn refresh_ship_interactable_positions(&mut self) {
+        let Some(ship) = self.navigation.ship_id() else {
+            return;
+        };
+        let position = self.navigation.current_position();
+        let orientation = self.navigation.orientation();
+        for (station, (anchor_ship, offset)) in &self.ship_interactable_anchors {
+            if *anchor_ship != ship {
+                continue;
+            }
+            let rotated = ship_world_offset(*offset, orientation);
+            if let Some(interactable) = self.interactables.get_mut(station) {
+                interactable.position = engine::Vec3 {
+                    x: position.x + rotated.x,
+                    y: position.y + rotated.y,
+                    z: position.z + rotated.z,
+                };
+            }
+        }
     }
     pub fn create_electrical_panel(
         &mut self,
@@ -8383,6 +8478,21 @@ fn tactical_priority_rank(priority: crate::companion::TacticalPriority) -> u8 {
     }
 }
 
+fn ship_world_offset(
+    offset: engine::Vec3,
+    orientation: crate::navigation::ShipOrientation,
+) -> engine::Vec3 {
+    let (pitch_sin, pitch_cos) = orientation.pitch_degrees.to_radians().sin_cos();
+    let pitch_x = offset.x * pitch_cos - offset.y * pitch_sin;
+    let pitch_y = offset.x * pitch_sin + offset.y * pitch_cos;
+    let (yaw_sin, yaw_cos) = orientation.yaw_degrees.to_radians().sin_cos();
+    engine::Vec3 {
+        x: pitch_x * yaw_cos + offset.z * yaw_sin,
+        y: pitch_y,
+        z: -pitch_x * yaw_sin + offset.z * yaw_cos,
+    }
+}
+
 fn validate_interactable_geometry(
     position: engine::Vec3,
     interaction_range: f32,
@@ -8394,6 +8504,59 @@ fn validate_interactable_geometry(
         return Err(InteractionRegistrationError::InvalidRange);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod ship_station_anchor_tests {
+    use super::GameplayWorld;
+    use crate::{navigation::ShipOrientation, station::StationType};
+    use engine::Vec3;
+
+    #[test]
+    fn station_keeps_identity_and_follows_ship_translation_yaw_and_pitch() {
+        let mut world = GameplayWorld::new();
+        let ship = world.create_entity();
+        world.initialize_navigation_ship(ship).unwrap();
+        world
+            .initialize_ship_position(Vec3 {
+                x: 10.0,
+                y: 0.0,
+                z: 20.0,
+            })
+            .unwrap();
+        let offset = Vec3 {
+            x: 2.0,
+            y: 1.0,
+            z: -3.0,
+        };
+        let station = world
+            .create_ship_station(ship, offset, 3.0, StationType::Piloting)
+            .unwrap();
+        assert_eq!(world.ship_station_anchor(station), Some((ship, offset)));
+        world
+            .restore_ship_transform(
+                Vec3 {
+                    x: 30.0,
+                    y: 5.0,
+                    z: 40.0,
+                },
+                ShipOrientation {
+                    yaw_degrees: 90.0,
+                    pitch_degrees: 90.0,
+                },
+                Vec3::ZERO,
+            )
+            .unwrap();
+        let position = world.interactable(station).unwrap().position;
+        assert!((position.x - 27.0).abs() < 1e-5);
+        assert!((position.y - 7.0).abs() < 1e-5);
+        assert!((position.z - 41.0).abs() < 1e-5);
+        let save = world.save_state();
+        let mut restored = GameplayWorld::new();
+        restored.load_state(save).unwrap();
+        assert_eq!(restored.ship_station_anchor(station), Some((ship, offset)));
+        assert_eq!(restored.interactable(station).unwrap().position, position);
+    }
 }
 
 #[cfg(test)]

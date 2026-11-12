@@ -151,6 +151,9 @@ pub const INTERIOR_LEFT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_
 pub const INTERIOR_RIGHT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_404);
 pub const INTERIOR_CEILING_ENTITY: engine::EntityId = engine::EntityId::new(9_405);
 pub const INTERIOR_LIGHT_ENTITY: engine::EntityId = engine::EntityId::new(9_406);
+pub const INTERIOR_LOWER_ENTITY: engine::EntityId = engine::EntityId::new(9_407);
+pub const INTERIOR_UPPER_ENTITY: engine::EntityId = engine::EntityId::new(9_408);
+pub const INTERIOR_CORE_ENTITY: engine::EntityId = engine::EntityId::new(9_409);
 pub const EXTERIOR_STATION_IDS: [engine::EntityId; 4] = [
     engine::EntityId::new(9_500),
     engine::EntityId::new(9_501),
@@ -202,6 +205,240 @@ fn echo7_world_to_local(
         }) + rotation
             * (echo7_local_to_world_rotation() * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER)));
     model_local / ECHO7_VISUAL_SCALE
+}
+
+pub fn echo7_player_model_position(
+    position: engine::Vec3,
+    ship_position: engine::Vec3,
+    ship_yaw_degrees: f32,
+) -> Vec3 {
+    echo7_world_to_local(position, ship_position, ship_yaw_degrees)
+}
+
+pub fn echo7_model_to_world(
+    local: Vec3,
+    ship_position: engine::Vec3,
+    ship_yaw_degrees: f32,
+) -> engine::Vec3 {
+    let rotation =
+        Quat::from_rotation_y(ship_yaw_degrees.to_radians() + ECHO7_MODEL_YAW_OFFSET_RAD);
+    let position = from_engine(ship_position)
+        + rotation
+            * (echo7_local_to_world_rotation()
+                * (ECHO7_VISUAL_SCALE * (local - ECHO7_MODEL_CENTER)));
+    engine::Vec3 {
+        x: position.x,
+        y: position.y,
+        z: position.z,
+    }
+}
+
+pub const ECHO7_PILOT_CONTROL_LOCAL: Vec3 = Vec3::new(-38.09, -2.4, 5.53);
+pub const ECHO7_PILOT_INTERACTION_LOCAL: Vec3 = Vec3::new(-37.5, -2.4, 5.1);
+pub const ECHO7_PILOT_SEATED_LOCAL: Vec3 = Vec3::new(-35.5, -2.4, 5.8);
+pub const ECHO7_PILOT_EXIT_LOCAL: Vec3 = Vec3::new(-34.2, 0.0, 4.2);
+
+#[derive(Clone, Copy, Debug)]
+pub struct Echo7RoomDoor {
+    pub name: &'static str,
+    pub center: Vec3,
+    pub control: Vec3,
+    pub upper: bool,
+}
+
+pub const ECHO7_ROOM_DOORS: [Echo7RoomDoor; 16] = [
+    Echo7RoomDoor {
+        name: "Cabina",
+        center: Vec3::new(-27.4, 0.0, 4.2),
+        control: Vec3::new(-27.6, 1.78, 5.55),
+        upper: true,
+    },
+    Echo7RoomDoor {
+        name: "Control auxiliar",
+        center: Vec3::new(-27.4, 0.0, 0.0),
+        control: Vec3::new(-27.6, 1.78, 1.35),
+        upper: false,
+    },
+    Echo7RoomDoor {
+        name: "Carga",
+        center: Vec3::new(29.0, 0.0, 0.0),
+        control: Vec3::new(28.85, 1.78, 1.35),
+        upper: false,
+    },
+    Echo7RoomDoor {
+        name: "Esclusa intermedia",
+        center: Vec3::new(32.3, -4.1, 0.0),
+        control: Vec3::new(33.88, -4.3, 1.35),
+        upper: false,
+    },
+    Echo7RoomDoor {
+        name: "Clonacion",
+        center: Vec3::new(-20.0, 11.0, 0.0),
+        control: Vec3::new(-18.32, 10.84, 1.35),
+        upper: false,
+    },
+    Echo7RoomDoor {
+        name: "Despertar",
+        center: Vec3::new(-20.0, -11.0, 0.0),
+        control: Vec3::new(-21.68, -10.84, 1.35),
+        upper: false,
+    },
+    Echo7RoomDoor {
+        name: "Enfermeria",
+        center: Vec3::new(0.0, 11.0, 0.0),
+        control: Vec3::new(1.68, 10.84, 1.35),
+        upper: false,
+    },
+    Echo7RoomDoor {
+        name: "Archivo biologico",
+        center: Vec3::new(0.0, -11.0, 0.0),
+        control: Vec3::new(-1.68, -10.84, 1.35),
+        upper: false,
+    },
+    Echo7RoomDoor {
+        name: "Ingenieria",
+        center: Vec3::new(20.0, 11.0, 0.0),
+        control: Vec3::new(21.68, 10.84, 1.35),
+        upper: false,
+    },
+    Echo7RoomDoor {
+        name: "Almacen",
+        center: Vec3::new(20.0, -11.0, 0.0),
+        control: Vec3::new(18.32, -10.84, 1.35),
+        upper: false,
+    },
+    Echo7RoomDoor {
+        name: "Observatorio",
+        center: Vec3::new(-20.0, 11.0, 4.2),
+        control: Vec3::new(-18.32, 10.84, 5.55),
+        upper: true,
+    },
+    Echo7RoomDoor {
+        name: "Huerto",
+        center: Vec3::new(-20.0, -11.0, 4.2),
+        control: Vec3::new(-21.68, -10.84, 5.55),
+        upper: true,
+    },
+    Echo7RoomDoor {
+        name: "Sala comun",
+        center: Vec3::new(0.0, 11.0, 4.2),
+        control: Vec3::new(1.68, 10.84, 5.55),
+        upper: true,
+    },
+    Echo7RoomDoor {
+        name: "Dormitorios",
+        center: Vec3::new(0.0, -11.0, 4.2),
+        control: Vec3::new(-1.68, -10.84, 5.55),
+        upper: true,
+    },
+    Echo7RoomDoor {
+        name: "Control navegacion",
+        center: Vec3::new(20.0, 11.0, 4.2),
+        control: Vec3::new(21.68, 10.84, 5.55),
+        upper: true,
+    },
+    Echo7RoomDoor {
+        name: "Cocina",
+        center: Vec3::new(20.0, -11.0, 4.2),
+        control: Vec3::new(18.32, -10.84, 5.55),
+        upper: true,
+    },
+];
+
+fn echo7_upper_corridor_or_cabin(local: Vec3) -> bool {
+    echo7_model_room_floor_contains(local, true)
+}
+
+fn echo7_model_rect_contains(local: Vec3, bounds: (f32, f32, f32, f32)) -> bool {
+    let radius = ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.x;
+    local.x >= bounds.0 + radius
+        && local.x <= bounds.1 - radius
+        && local.y >= bounds.2 + radius
+        && local.y <= bounds.3 - radius
+}
+
+fn echo7_model_room_floor_contains(local: Vec3, upper: bool) -> bool {
+    let radius = ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.x;
+    let module = [-20.0, 0.0, 20.0].iter().any(|center| {
+        [-16.0, 16.0].iter().any(|side| {
+            echo7_model_rect_contains(local, (center - 8.0, center + 8.0, side - 5.0, side + 5.0))
+        })
+    });
+    let branch = [-20.0, 0.0, 20.0].iter().any(|center| {
+        [-1.0, 1.0].iter().any(|side| {
+            let (min_y, max_y) = if *side < 0.0 {
+                (-11.05 + radius, -1.59 + radius)
+            } else {
+                (1.59 - radius, 11.05 - radius)
+            };
+            local.x >= center - 1.52 + radius
+                && local.x <= center + 1.52 - radius
+                && local.y >= min_y
+                && local.y <= max_y
+        })
+    });
+    let longitudinal = (local.x >= -27.5 + radius && local.x <= -10.8 + radius
+        || local.x >= 10.8 - radius && local.x <= 29.1 - radius)
+        && local.y.abs() <= 1.82 - radius;
+    let bow = echo7_model_rect_contains(local, (-42.3, -27.3, -4.0, 4.0));
+    let lower_extra = echo7_model_rect_contains(local, (28.9, 35.9, -4.2, 4.2))
+        || echo7_model_rect_contains(local, (30.4, 34.2, -10.3, -4.0));
+    module || branch || longitudinal || bow || (!upper && lower_extra)
+}
+
+fn echo7_model_door_portal(local: Vec3, index: usize) -> bool {
+    let radius = ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.x;
+    let door = ECHO7_ROOM_DOORS[index];
+    if index <= 2 {
+        (local.x - door.center.x).abs() <= radius && local.y.abs() <= 1.63 - radius
+    } else if index == 3 {
+        (local.y - door.center.y).abs() <= radius
+            && (local.x - door.center.x).abs() <= 1.32 - radius
+    } else {
+        (local.y - door.center.y).abs() <= radius
+            && (local.x - door.center.x).abs() <= 1.52 - radius
+    }
+}
+
+pub fn echo7_model_floor_position_valid(
+    position: engine::Vec3,
+    ship_position: engine::Vec3,
+    ship_yaw_degrees: f32,
+    upper: bool,
+    open_doors: &[bool; ECHO7_ROOM_DOORS.len()],
+) -> bool {
+    let local = echo7_world_to_local(position, ship_position, ship_yaw_degrees);
+    if !upper
+        && (local.x * local.x + local.y * local.y).sqrt()
+            <= ECHO7_BALCONY_LOCAL_OUTER_RADIUS - ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.x
+        && !echo7_lower_core_obstacle_free(local, position.y)
+    {
+        return false;
+    }
+    if open_doors.iter().enumerate().any(|(index, open)| {
+        !*open && ECHO7_ROOM_DOORS[index].upper == upper && echo7_model_door_portal(local, index)
+    }) {
+        return false;
+    }
+    if open_doors.iter().enumerate().any(|(index, open)| {
+        *open && ECHO7_ROOM_DOORS[index].upper == upper && echo7_model_door_portal(local, index)
+    }) {
+        return true;
+    }
+    if echo7_model_room_floor_contains(local, upper) {
+        return true;
+    }
+    if upper {
+        echo7_upper_or_stair_surface_contains(position, ship_position, ship_yaw_degrees)
+    } else {
+        (local.x * local.x + local.y * local.y).sqrt()
+            <= ECHO7_BALCONY_LOCAL_OUTER_RADIUS - ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.x
+    }
+}
+
+fn echo7_upper_landing_contains(local: Vec3) -> bool {
+    let radius = ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.x;
+    local.x >= 3.0 && local.x <= 5.2 && local.y >= -7.9 + radius && local.y <= -6.1 - radius
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -275,7 +512,14 @@ pub fn echo7_upper_or_stair_surface_contains(
         && local.x <= ECHO7_BALCONY_LOCAL_CONNECTION_X_MAX
         && local.y >= ECHO7_BALCONY_LOCAL_CONNECTION_Y_MIN
         && local.y <= ECHO7_BALCONY_LOCAL_CONNECTION_Y_MAX;
-    on_balcony_ring || at_stair_connection
+    on_balcony_ring
+        || at_stair_connection
+        || echo7_upper_landing_contains(local)
+        || echo7_upper_corridor_or_cabin(local)
+        || ECHO7_ROOM_DOORS
+            .iter()
+            .enumerate()
+            .any(|(index, door)| door.upper && echo7_model_door_portal(local, index))
 }
 
 pub fn echo7_walkable_height(
@@ -296,6 +540,15 @@ pub fn echo7_walkable_height(
     if position.y > 1.0
         && echo7_upper_or_stair_surface_contains(position, ship_position, ship_yaw_degrees)
     {
+        if echo7_upper_corridor_or_cabin(local)
+            || echo7_upper_landing_contains(local)
+            || ECHO7_ROOM_DOORS
+                .iter()
+                .enumerate()
+                .any(|(index, door)| door.upper && echo7_model_door_portal(local, index))
+        {
+            return ECHO7_UPPER_DECK_Y;
+        }
         if (local.x * local.x + local.y * local.y).sqrt()
             >= ECHO7_BALCONY_LOCAL_INNER_RADIUS + ECHO7_PLAYER_RADIUS
         {
@@ -310,6 +563,43 @@ pub fn echo7_walkable_height(
         }
     }
     ECHO7_LOWER_DECK_Y
+}
+
+fn echo7_lower_core_obstacle_free(local: Vec3, feet_y: f32) -> bool {
+    let radius = ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.x;
+    let furniture = [
+        (0.0, 4.0, 0.8, 0.4, 1.4),
+        (-5.0, 2.8, 1.0, 0.5, 1.2),
+        (6.0, -2.8, 0.5, 0.8, 2.4),
+        (-6.0, -2.5, 0.2, 0.25, 1.0),
+    ];
+    let blocked_by_furniture =
+        furniture
+            .iter()
+            .any(|(center_x, center_y, half_x, half_y, height)| {
+                feet_y >= ECHO7_LOWER_DECK_Y
+                    && feet_y <= *height
+                    && local.x >= center_x - half_x - radius
+                    && local.x <= center_x + half_x + radius
+                    && local.y >= center_y - half_y - radius
+                    && local.y <= center_y + half_y + radius
+            });
+    let tree_trunks = [
+        (0.0, 0.0, 0.24),
+        (5.5, 5.5, 0.24),
+        (-5.5, 5.5, 0.24),
+        (-5.5, -5.5, 0.24),
+        (5.5, -4.0, 0.24),
+    ];
+    let blocked_by_tree_trunk = tree_trunks
+        .iter()
+        .any(|(center_x, center_y, trunk_radius)| {
+            feet_y >= ECHO7_LOWER_DECK_Y
+                && feet_y <= 1.8
+                && (local.x - center_x).powi(2) + (local.y - center_y).powi(2)
+                    <= (trunk_radius + radius).powi(2)
+        });
+    !blocked_by_furniture && !blocked_by_tree_trunk
 }
 
 pub fn echo7_lower_deck_position_valid(
@@ -360,42 +650,9 @@ pub fn echo7_lower_deck_position_valid(
     };
     let inside_x = local.x >= bounds.0 && local.x <= bounds.1;
     let inside_y = local.y >= bounds.2 && local.y <= bounds.3;
-    let furniture = [
-        (0.0, 4.0, 0.8, 0.4, 1.4),
-        (-5.0, 2.8, 1.0, 0.5, 1.2),
-        (6.0, -2.8, 0.5, 0.8, 2.4),
-        (-6.0, -2.5, 0.2, 0.25, 1.0),
-    ];
-    let blocked_by_furniture =
-        furniture
-            .iter()
-            .any(|(center_x, center_y, half_x, half_y, height)| {
-                position.y >= ECHO7_LOWER_DECK_Y
-                    && position.y <= *height
-                    && local.x >= center_x - half_x - radius
-                    && local.x <= center_x + half_x + radius
-                    && local.y >= center_y - half_y - radius
-                    && local.y <= center_y + half_y + radius
-            });
-    let tree_trunks = [
-        (0.0, 0.0, 0.24),
-        (5.5, 5.5, 0.24),
-        (-5.5, 5.5, 0.24),
-        (-5.5, -5.5, 0.24),
-        (5.5, -4.0, 0.24),
-    ];
-    let blocked_by_tree_trunk = tree_trunks
-        .iter()
-        .any(|(center_x, center_y, trunk_radius)| {
-            position.y >= ECHO7_LOWER_DECK_Y
-                && position.y <= 1.8
-                && (local.x - center_x).powi(2) + (local.y - center_y).powi(2)
-                    <= (trunk_radius + radius).powi(2)
-        });
     inside_x
         && inside_y
-        && !blocked_by_furniture
-        && !blocked_by_tree_trunk
+        && echo7_lower_core_obstacle_free(local, position.y)
         && !(local.x <= bounds.0 && !door_gap(local.x, local.y, ECHO7_INTERIOR_HALF_WIDTH))
         && !(local.x >= bounds.1 && !door_gap(local.x, local.y, ECHO7_INTERIOR_HALF_WIDTH))
         && !(local.y <= bounds.2 && !door_gap(local.y, local.x, ECHO7_INTERIOR_HALF_DEPTH))
@@ -842,9 +1099,6 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
 
     if interior {
         let interior_origin = world.ship_position().map(from_engine).unwrap_or(Vec3::ZERO);
-        for node in interior_nodes(interior_origin) {
-            snapshot.push_node(node);
-        }
         snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
             color: Vec3::new(1.0, 0.93, 0.82),
             intensity: 18.0,
@@ -906,7 +1160,12 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                 * Quat::from_rotation_x(orientation.pitch_degrees.to_radians())
         };
         let model_rotation = rotation * echo7_local_to_world_rotation();
-        let mut transform = Transform::new(pos, model_rotation, ECHO7_VISUAL_SCALE);
+        let visual_position = if interior || pilot_mode {
+            world.ship_position().map(from_engine).unwrap_or(pos)
+        } else {
+            pos
+        };
+        let mut transform = Transform::new(visual_position, model_rotation, ECHO7_VISUAL_SCALE);
         transform.translation -= rotation
             * (echo7_local_to_world_rotation() * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER));
         snapshot.push_node(SnapshotNode::new(
@@ -1153,78 +1412,6 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     snapshot.push_light(SnapshotLight::new(render_core::RenderLight::demo_sun()));
 
     snapshot
-}
-
-fn interior_nodes(origin: Vec3) -> [SnapshotNode; 6] {
-    let at = |local: Vec3| origin + local;
-    [
-        SnapshotNode::new(
-            INTERIOR_FLOOR_ENTITY,
-            Transform::new(
-                at(Vec3::new(0.0, ECHO7_INTERIOR_FLOOR_Y, 0.0)),
-                Quat::IDENTITY,
-                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 0.15, ECHO7_INTERIOR_HALF_DEPTH),
-            ),
-            MeshHandle::CUBE,
-            DESTINATION_MATERIAL,
-            true,
-        ),
-        SnapshotNode::new(
-            INTERIOR_BACK_WALL_ENTITY,
-            Transform::new(
-                at(Vec3::new(0.0, 2.6, -ECHO7_INTERIOR_HALF_DEPTH)),
-                Quat::IDENTITY,
-                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 3.8, 0.15),
-            ),
-            MeshHandle::CUBE,
-            DESTINATION_MATERIAL,
-            true,
-        ),
-        SnapshotNode::new(
-            INTERIOR_LEFT_WALL_ENTITY,
-            Transform::new(
-                at(Vec3::new(-ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0)),
-                Quat::IDENTITY,
-                Vec3::new(0.15, 3.8, ECHO7_INTERIOR_HALF_DEPTH),
-            ),
-            MeshHandle::CUBE,
-            DESTINATION_MATERIAL,
-            true,
-        ),
-        SnapshotNode::new(
-            INTERIOR_RIGHT_WALL_ENTITY,
-            Transform::new(
-                at(Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 2.6, 0.0)),
-                Quat::IDENTITY,
-                Vec3::new(0.15, 3.8, ECHO7_INTERIOR_HALF_DEPTH),
-            ),
-            MeshHandle::CUBE,
-            DESTINATION_MATERIAL,
-            true,
-        ),
-        SnapshotNode::new(
-            INTERIOR_CEILING_ENTITY,
-            Transform::new(
-                at(Vec3::new(0.0, ECHO7_INTERIOR_CEILING_Y, 0.0)),
-                Quat::IDENTITY,
-                Vec3::new(ECHO7_INTERIOR_HALF_WIDTH, 0.15, ECHO7_INTERIOR_HALF_DEPTH),
-            ),
-            MeshHandle::CUBE,
-            DESTINATION_MATERIAL,
-            true,
-        ),
-        SnapshotNode::new(
-            INTERIOR_LIGHT_ENTITY,
-            Transform::new(
-                at(Vec3::new(0.0, 5.8, 0.0)),
-                Quat::IDENTITY,
-                Vec3::new(0.8, 0.15, 0.8),
-            ),
-            MeshHandle::SUN_SPHERE,
-            SUN_MATERIAL,
-            true,
-        ),
-    ]
 }
 
 fn visual_event_nodes(snapshot: &RenderSnapshot) -> Vec<SnapshotNode> {
@@ -1623,6 +1810,27 @@ pub fn pilot_camera(
             fov_y_rad: 65.0_f32.to_radians(),
             aspect,
             near: 0.1,
+            far: 2_000.0,
+        },
+    )
+}
+
+pub fn pilot_seated_camera(world: &GameplayWorld, aspect: f32) -> Result<Camera, CameraError> {
+    let ship = world.ship_position().ok_or(CameraError::InvalidAspect)?;
+    let yaw = world
+        .ship_orientation()
+        .map(|orientation| orientation.yaw_degrees)
+        .unwrap_or_default();
+    let position = echo7_model_to_world(ECHO7_PILOT_SEATED_LOCAL, ship, yaw);
+    let target = echo7_model_to_world(Vec3::new(-40.0, -2.4, 5.8), ship, yaw);
+    Camera::new(
+        from_engine(position),
+        from_engine(target),
+        Vec3::Y,
+        Projection::Perspective {
+            fov_y_rad: 72.0_f32.to_radians(),
+            aspect,
+            near: 0.05,
             far: 2_000.0,
         },
     )
@@ -2272,7 +2480,7 @@ mod tests {
     }
 
     #[test]
-    fn interior_view_has_a_player_camera_and_spatial_shell() {
+    fn interior_view_has_a_player_camera_and_spatial_lighting() {
         let mut world = GameplayWorld::new();
         let player = world.create_player().expect("player should exist");
         let camera = super::interior_camera(&world, 16.0 / 9.0).expect("camera should be valid");
@@ -2287,16 +2495,10 @@ mod tests {
             &camera,
             true,
         );
-        assert!(snapshot.nodes.iter().any(|node| {
-            node.entity == render_core::SnapshotId::Entity(super::INTERIOR_FLOOR_ENTITY)
-        }));
         assert!(snapshot
             .nodes
             .iter()
             .any(|node| { node.entity == render_core::SnapshotId::Entity(player) }));
-        assert!(snapshot.nodes.iter().any(|node| {
-            node.entity == render_core::SnapshotId::Entity(super::INTERIOR_BACK_WALL_ENTITY)
-        }));
         assert!(snapshot.lights.iter().any(|light| {
             matches!(
                 light.light.kind,

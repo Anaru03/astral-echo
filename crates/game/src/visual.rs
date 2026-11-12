@@ -310,10 +310,12 @@ struct VisualBridge {
     player: EntityId,
     ship: EntityId,
     pilot_station: EntityId,
+    pilot_exit_local: Option<render_core::Vec3>,
     engineering_station: EntityId,
     electrical_panel: EntityId,
     life_support_panel: EntityId,
     bridge_door: EntityId,
+    room_doors: Vec<EntityId>,
     enemy: EntityId,
     feedback: String,
     observation: ObservationTransition,
@@ -368,13 +370,14 @@ impl VisualBridge {
 
     #[cfg(test)]
     fn new_with_mode(interior_mode: bool) -> Result<Self, String> {
-        Self::new_with_mode_and_enemy_distance(interior_mode, false, GameplayVec3::ZERO)
+        Self::new_with_mode_and_enemy_distance(interior_mode, false, GameplayVec3::ZERO, true)
     }
 
     fn new_with_mode_and_enemy_distance(
         interior_mode: bool,
         safe_interior_enemy_start: bool,
         initial_ship_position: GameplayVec3,
+        legacy_pilot_fixture: bool,
     ) -> Result<Self, String> {
         let mut session = ProjectEchoSession::new();
         let player = session.ids.first_player;
@@ -633,7 +636,7 @@ impl VisualBridge {
             gravitational_parameter: 24.0,
             atmosphere_height: 4.0,
         }) {
-            return Err("configurar la fÃ­sica planetaria visual".to_owned());
+            return Err("configurar la fÃsica planetaria visual".to_owned());
         }
         if !session.world_mut().configure_planet_physics(PlanetPhysics {
             destination: TESSARA_DESTINATION,
@@ -753,8 +756,8 @@ impl VisualBridge {
             y: initial_ship_position.y + local.y,
             z: initial_ship_position.z + local.z,
         };
-        let pilot_station = session
-            .create_station(
+        let pilot_station = if legacy_pilot_fixture {
+            session.create_station(
                 interior_position(GameplayVec3 {
                     x: 0.0,
                     y: 0.0,
@@ -763,7 +766,15 @@ impl VisualBridge {
                 3.0,
                 StationType::Piloting,
             )
-            .map_err(|error| format!("crear estación visual: {error:?}"))?;
+        } else {
+            let local_offset = game::render_bridge::echo7_model_to_world(
+                game::render_bridge::ECHO7_PILOT_INTERACTION_LOCAL,
+                GameplayVec3::ZERO,
+                0.0,
+            );
+            session.create_ship_station(ship, local_offset, 3.0, StationType::Piloting)
+        }
+        .map_err(|error| format!("crear estaci?n visual: {error:?}"))?;
         let engineering_station = session
             .create_station(
                 interior_position(GameplayVec3 {
@@ -837,6 +848,27 @@ impl VisualBridge {
                 3.0,
             )
             .map_err(|error| format!("crear puerta del puente visual: {error:?}"))?;
+        let room_doors = if legacy_pilot_fixture {
+            Vec::new()
+        } else {
+            let to_ship_offset =
+                |local| game::render_bridge::echo7_model_to_world(local, GameplayVec3::ZERO, 0.0);
+            let mut doors = vec![bridge_door];
+            session
+                .anchor_interactable_to_ship(
+                    bridge_door,
+                    ship,
+                    to_ship_offset(game::render_bridge::ECHO7_ROOM_DOORS[0].control),
+                )
+                .map_err(|error| format!("anclar puerta de cabina: {error:?}"))?;
+            for spec in game::render_bridge::ECHO7_ROOM_DOORS.iter().skip(1) {
+                let door = session
+                    .create_ship_door(ship, to_ship_offset(spec.control), 3.0)
+                    .map_err(|error| format!("crear puerta {}: {error:?}", spec.name))?;
+                doors.push(door);
+            }
+            doors
+        };
 
         let enemy_position = if interior_mode && safe_interior_enemy_start {
             interior_position(GameplayVec3 {
@@ -939,10 +971,12 @@ impl VisualBridge {
             player,
             ship,
             pilot_station,
+            pilot_exit_local: None,
             engineering_station,
             electrical_panel,
             life_support_panel,
             bridge_door,
+            room_doors,
             enemy,
             feedback: "ESCENA INICIALIZADA".to_owned(),
             observation: ObservationTransition::default(),
@@ -991,8 +1025,12 @@ impl VisualBridge {
     }
 
     fn new_visual_runtime() -> Result<Self, String> {
-        let mut bridge =
-            Self::new_with_mode_and_enemy_distance(true, true, VISUAL_INITIAL_SHIP_POSITION)?;
+        let mut bridge = Self::new_with_mode_and_enemy_distance(
+            true,
+            true,
+            VISUAL_INITIAL_SHIP_POSITION,
+            false,
+        )?;
         bridge.started = false;
         bridge.feedback = "ASTRAL ECHO - PULSA ENTER PARA COMENZAR".to_owned();
         Ok(bridge)
@@ -2033,6 +2071,32 @@ impl VisualBridge {
     }
 
     fn guided_interaction(&mut self) {
+        let at_pilot_station = self.interior_mode
+            && self.mission_one_completed()
+            && !self.legacy_exterior_controls
+            && self
+                .session
+                .world()
+                .player(self.player)
+                .zip(self.session.world().interactable(self.pilot_station))
+                .is_some_and(|(player, station)| {
+                    let dx = player.position.x - station.position.x;
+                    let dy = player.position.y - station.position.y;
+                    let dz = player.position.z - station.position.z;
+                    dx * dx + dy * dy + dz * dz
+                        <= station.interaction_range * station.interaction_range
+                });
+        if at_pilot_station {
+            if self.pilot_station_occupied_by(self.player)
+                || self.issue([GameplayCommand::Interact {
+                    player: self.player,
+                    target: self.pilot_station,
+                }])
+            {
+                self.enter_pilot();
+            }
+            return;
+        }
         let can_access_pilot_console = !self.pilot_mode
             && !self.legacy_exterior_controls
             && !self.interior_mode
@@ -2177,7 +2241,7 @@ impl VisualBridge {
                     &mut aggregate,
                 );
             }
-            if target == self.pilot_station {
+            if target == self.pilot_station && self.pilot_station_occupied_by(self.player) {
                 self.issue_into(
                     [GameplayCommand::ReleaseStation {
                         station: self.pilot_station,
@@ -2238,7 +2302,15 @@ impl VisualBridge {
                 self.enter_pilot();
                 return;
             }
-            if completed && target == self.bridge_door && self.interior_mode {
+            if completed
+                && target == self.bridge_door
+                && self.interior_mode
+                && self
+                    .session
+                    .world()
+                    .ship_station_anchor(self.pilot_station)
+                    .is_none()
+            {
                 self.interior_mode = false;
                 self.feedback = "PUERTA ABIERTA — EXPLORACION EXTERIOR DISPONIBLE".to_owned();
                 println!("visual gameplay: {}", self.feedback);
@@ -2250,7 +2322,15 @@ impl VisualBridge {
                     player: self.player,
                     target,
                 }]);
-                if completed && target == self.bridge_door && self.interior_mode {
+                if completed
+                    && target == self.bridge_door
+                    && self.interior_mode
+                    && self
+                        .session
+                        .world()
+                        .ship_station_anchor(self.pilot_station)
+                        .is_none()
+                {
                     self.interior_mode = false;
                     self.feedback = "PUERTA ABIERTA — EXPLORACION EXTERIOR DISPONIBLE".to_owned();
                     println!("visual gameplay: {}", self.feedback);
@@ -2345,6 +2425,18 @@ impl VisualBridge {
                         if matches!(door.state, gameplay::domains::door::DoorState::Open)
                 )
             });
+            let room_open: [bool; game::render_bridge::ECHO7_ROOM_DOORS.len()] =
+                std::array::from_fn(|index| {
+                    self.room_doors.get(index).is_some_and(|entity| {
+                        self.session.world().interactable(*entity).is_some_and(|value| {
+                            matches!(
+                                value.behavior,
+                                gameplay::InteractionBehavior::Door { door }
+                                    if matches!(door.state, gameplay::domains::door::DoorState::Open)
+                            )
+                        })
+                    })
+                });
             let lower_deck_path_valid = if matches!(
                 current_surface,
                 game::render_bridge::Echo7SupportSurface::LowerDeck
@@ -2355,7 +2447,44 @@ impl VisualBridge {
                 let samples = (distance / 0.05).ceil().max(1.0) as u32;
                 (1..=samples).all(|step| {
                     let fraction = step as f32 / samples as f32;
-                    game::render_bridge::echo7_lower_deck_position_valid(
+                    let candidate = GameplayVec3 {
+                        x: player.position.x + (updated.position.x - player.position.x) * fraction,
+                        y: player.position.y,
+                        z: player.position.z + (updated.position.z - player.position.z) * fraction,
+                    };
+                    if self.room_doors.is_empty() {
+                        game::render_bridge::echo7_lower_deck_position_valid(
+                            candidate,
+                            interior_origin,
+                            ship_yaw,
+                            door_position,
+                            door_open,
+                        )
+                    } else {
+                        game::render_bridge::echo7_model_floor_position_valid(
+                            candidate,
+                            interior_origin,
+                            ship_yaw,
+                            false,
+                            &room_open,
+                        )
+                    }
+                })
+            } else {
+                true
+            };
+            let upper_deck_path_valid = if !self.room_doors.is_empty()
+                && matches!(
+                    current_surface,
+                    game::render_bridge::Echo7SupportSurface::UpperBalcony
+                ) {
+                let distance = ((updated.position.x - player.position.x).powi(2)
+                    + (updated.position.z - player.position.z).powi(2))
+                .sqrt();
+                let samples = (distance / 0.05).ceil().max(1.0) as u32;
+                (1..=samples).all(|step| {
+                    let fraction = step as f32 / samples as f32;
+                    game::render_bridge::echo7_model_floor_position_valid(
                         GameplayVec3 {
                             x: player.position.x
                                 + (updated.position.x - player.position.x) * fraction,
@@ -2365,8 +2494,8 @@ impl VisualBridge {
                         },
                         interior_origin,
                         ship_yaw,
-                        door_position,
-                        door_open,
+                        true,
+                        &room_open,
                     )
                 })
             } else {
@@ -2411,7 +2540,11 @@ impl VisualBridge {
                     interior_origin,
                     ship_yaw,
                 );
-            if !lower_deck_path_valid || !stair_path_valid || crossed_upper_edge {
+            if !lower_deck_path_valid
+                || !upper_deck_path_valid
+                || !stair_path_valid
+                || crossed_upper_edge
+            {
                 let mut reverted_position = updated.position;
                 reverted_position.x = player.position.x;
                 reverted_position.z = player.position.z;
@@ -2959,6 +3092,24 @@ impl VisualBridge {
             &mut aggregate,
         );
         if accepted {
+            let ship_position = self
+                .session
+                .world()
+                .ship_position()
+                .unwrap_or(GameplayVec3::ZERO);
+            let ship_yaw = self
+                .session
+                .world()
+                .ship_orientation()
+                .map(|value| value.yaw_degrees)
+                .unwrap_or_default();
+            self.pilot_exit_local = self.session.world().player(self.player).map(|value| {
+                game::render_bridge::echo7_player_model_position(
+                    value.position,
+                    ship_position,
+                    ship_yaw,
+                )
+            });
             self.pilot_mode = true;
             self.interior_mode = false;
             self.fire_pressed = false;
@@ -3026,10 +3177,21 @@ impl VisualBridge {
                 println!("visual gameplay: {}", self.feedback);
                 return;
             }
-            if let Some(ship_position) = self.session.world().ship_position() {
+            if let (Some(ship_position), Some(local)) = (
+                self.session.world().ship_position(),
+                self.pilot_exit_local.take(),
+            ) {
+                let ship_yaw = self
+                    .session
+                    .world()
+                    .ship_orientation()
+                    .map(|value| value.yaw_degrees)
+                    .unwrap_or_default();
+                let position =
+                    game::render_bridge::echo7_model_to_world(local, ship_position, ship_yaw);
                 self.session
                     .world_mut()
-                    .initialize_player_position(self.player, ship_position);
+                    .initialize_player_position(self.player, position);
             }
             self.pilot_mode = false;
             self.interior_mode = true;
@@ -3850,6 +4012,12 @@ impl VisualBridge {
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
         }
         if self.pilot_mode {
+            if (self.pilot_camera_distance - game::render_bridge::PILOT_CAMERA_DEFAULT_DISTANCE)
+                .abs()
+                < f32::EPSILON
+            {
+                return game::render_bridge::pilot_seated_camera(world, aspect);
+            }
             return game::render_bridge::pilot_camera(world, aspect, self.pilot_camera_distance);
         }
         if self.interior_mode {
@@ -4162,8 +4330,12 @@ pub fn run() -> Result<(), String> {
                         println!("modelo cargado: {} ({} submallas)", path.display(), parts.len());
                         parts_for_setup.borrow_mut().insert((mesh, material), parts);
                     }
-                    Ok(_) => eprintln!("modelo sin submallas: {}", path.display()),
-                    Err(error) => eprintln!("modelo no cargado {}: {error}; se usa respaldo", path.display()),
+                    Ok(_) => {
+                        eprintln!("modelo sin submallas: {}", path.display());
+                    }
+                    Err(error) => {
+                        eprintln!("modelo no cargado {}: {error}; se usa respaldo", path.display());
+                    }
                 }
             }
 
@@ -4849,7 +5021,12 @@ mod tests {
             VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
-        for _ in 0..6 {
+        for _ in 0..3 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        walk_to_real_pilot_control(&mut bridge);
+        assert!(bridge.interior_mode);
+        for _ in 0..2 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
         }
         assert!(bridge.pilot_mode);
@@ -4917,7 +5094,11 @@ mod tests {
             VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
-        for _ in 0..6 {
+        for _ in 0..3 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        walk_to_real_pilot_control(&mut bridge);
+        for _ in 0..2 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
         }
         assert!(bridge.pilot_mode);
@@ -4999,7 +5180,11 @@ mod tests {
             VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
         bridge.handle_key(KeyCode::Enter, ElementState::Pressed);
         bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
-        for _ in 0..6 {
+        for _ in 0..3 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        walk_to_real_pilot_control(&mut bridge);
+        for _ in 0..2 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
         }
         assert!(bridge.pilot_mode);
@@ -5096,7 +5281,11 @@ mod tests {
             gameplay::domains::mission::MissionState::Active
         );
 
-        for _ in 0..6 {
+        for _ in 0..3 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        walk_to_real_pilot_control(&mut bridge);
+        for _ in 0..2 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
         }
         assert_eq!(
@@ -5215,6 +5404,599 @@ mod tests {
             .expect("player should remain present")
             .position;
         assert!(lower.y < 0.5, "player did not descend the stair: {lower:?}");
+    }
+
+    #[test]
+    fn interior_controller_reaches_upper_cabin_from_balcony_connection() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let ship_position = bridge.session.world().ship_position().unwrap();
+        let start = game::render_bridge::echo7_model_to_world(
+            render_core::Vec3::new(-10.9, 0.0, 4.2),
+            ship_position,
+            0.0,
+        );
+        bridge
+            .session
+            .world_mut()
+            .initialize_player_position(bridge.player, start);
+        bridge.flight_keys.forward = true;
+        let mut reached = false;
+        for _ in 0..220 {
+            bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(50);
+            bridge.update_interior_motion();
+            let position = bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .unwrap()
+                .position;
+            let local =
+                game::render_bridge::echo7_player_model_position(position, ship_position, 0.0);
+            if local.x < -31.0 {
+                reached = true;
+                assert!((position.y - 4.2 * 0.65).abs() < 0.1);
+                break;
+            }
+        }
+        assert!(reached, "the controller did not reach the cabin floor");
+    }
+
+    fn drive_to_model(bridge: &mut VisualBridge, waypoint: render_core::Vec3, tolerance: f32) {
+        let origin = bridge.session.world().ship_position().unwrap();
+        let yaw = bridge
+            .session
+            .world()
+            .ship_orientation()
+            .unwrap()
+            .yaw_degrees;
+        let target = game::render_bridge::echo7_model_to_world(waypoint, origin, yaw);
+        for _ in 0..700 {
+            let position = bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .unwrap()
+                .position;
+            let dx = target.x - position.x;
+            let dz = target.z - position.z;
+            let distance = (dx * dx + dz * dz).sqrt();
+            if distance < tolerance {
+                return;
+            }
+            bridge.gamepad_flight = GameplayVec3 {
+                x: dx / distance,
+                y: 0.0,
+                z: dz / distance,
+            };
+            bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(50);
+            bridge.update_interior_motion();
+        }
+        let position = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .unwrap()
+            .position;
+        let local = game::render_bridge::echo7_player_model_position(position, origin, yaw);
+        panic!("controller blocked: player={position:?}, local={local:?}, target={target:?}, model={waypoint:?}");
+    }
+
+    fn visit_room(
+        bridge: &mut VisualBridge,
+        index: usize,
+        approach: render_core::Vec3,
+        inside: render_core::Vec3,
+    ) {
+        if index >= 4 && game::render_bridge::ECHO7_ROOM_DOORS[index].center.x.abs() > 1.0 {
+            let spec = game::render_bridge::ECHO7_ROOM_DOORS[index];
+            drive_to_model(
+                bridge,
+                render_core::Vec3::new(spec.center.x, 0.0, spec.center.z),
+                0.15,
+            );
+            bridge.gamepad_flight = GameplayVec3::ZERO;
+            for _ in 0..20 {
+                bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(50);
+                bridge.update_interior_motion();
+            }
+        }
+        drive_to_model(bridge, approach, 0.2);
+        bridge.gamepad_flight = GameplayVec3::ZERO;
+        for _ in 0..20 {
+            bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(50);
+            bridge.update_interior_motion();
+        }
+        drive_to_model(bridge, approach, 0.15);
+        let door = bridge.room_doors[index];
+        if index == 0 {
+            assert!(bridge.issue([GameplayCommand::UnlockDoor { door }]));
+        }
+        assert!(bridge.issue([GameplayCommand::Interact {
+            player: bridge.player,
+            target: door,
+        }]));
+        assert!(bridge
+            .session
+            .world()
+            .interactable(door)
+            .is_some_and(|value| {
+                matches!(
+                    value.behavior,
+                    gameplay::InteractionBehavior::Door { door }
+                        if matches!(door.state, gameplay::domains::door::DoorState::Open)
+                )
+            }));
+        drive_to_model(bridge, inside, 0.2);
+        drive_to_model(bridge, approach, 0.2);
+    }
+
+    #[test]
+    fn lower_deck_room_doors_allow_entry_and_exit_with_real_controller() {
+        let mut bridge = VisualBridge::new_visual_runtime().unwrap();
+        bridge.started = true;
+        assert_eq!(
+            bridge.room_doors.len(),
+            game::render_bridge::ECHO7_ROOM_DOORS.len()
+        );
+        for waypoint in [
+            render_core::Vec3::new(2.0, 0.84, 0.0),
+            render_core::Vec3::new(2.0, -2.5, 0.0),
+            render_core::Vec3::new(-2.0, -2.5, 0.0),
+            render_core::Vec3::new(-8.0, 0.0, 0.0),
+            render_core::Vec3::new(-20.0, 0.0, 0.0),
+        ] {
+            drive_to_model(&mut bridge, waypoint, 0.2);
+        }
+        visit_room(
+            &mut bridge,
+            1,
+            render_core::Vec3::new(-26.0, 0.0, 0.0),
+            render_core::Vec3::new(-31.0, 0.0, 0.0),
+        );
+        drive_to_model(&mut bridge, render_core::Vec3::new(-20.0, 0.0, 0.0), 0.2);
+        visit_room(
+            &mut bridge,
+            4,
+            render_core::Vec3::new(-20.0, 9.5, 0.0),
+            render_core::Vec3::new(-20.0, 14.0, 0.0),
+        );
+        drive_to_model(&mut bridge, render_core::Vec3::new(-20.0, 0.0, 0.0), 0.2);
+        visit_room(
+            &mut bridge,
+            5,
+            render_core::Vec3::new(-20.0, -9.5, 0.0),
+            render_core::Vec3::new(-20.0, -14.0, 0.0),
+        );
+        for waypoint in [
+            render_core::Vec3::new(-20.0, 0.0, 0.0),
+            render_core::Vec3::new(-8.0, 0.0, 0.0),
+            render_core::Vec3::new(-2.0, -2.5, 0.0),
+            render_core::Vec3::new(2.0, -2.5, 0.0),
+            render_core::Vec3::new(2.0, 5.0, 0.0),
+        ] {
+            drive_to_model(&mut bridge, waypoint, 0.2);
+        }
+        visit_room(
+            &mut bridge,
+            6,
+            render_core::Vec3::new(0.0, 9.5, 0.0),
+            render_core::Vec3::new(0.0, 14.0, 0.0),
+        );
+        for waypoint in [
+            render_core::Vec3::new(2.0, 5.0, 0.0),
+            render_core::Vec3::new(2.0, -2.5, 0.0),
+            render_core::Vec3::new(4.0, -8.5, 0.0),
+        ] {
+            drive_to_model(&mut bridge, waypoint, 0.2);
+        }
+        visit_room(
+            &mut bridge,
+            7,
+            render_core::Vec3::new(0.0, -9.5, 0.0),
+            render_core::Vec3::new(0.0, -14.0, 0.0),
+        );
+        for waypoint in [
+            render_core::Vec3::new(4.0, -8.5, 0.0),
+            render_core::Vec3::new(2.0, -2.5, 0.0),
+            render_core::Vec3::new(8.0, 0.0, 0.0),
+            render_core::Vec3::new(20.0, 0.0, 0.0),
+        ] {
+            drive_to_model(&mut bridge, waypoint, 0.2);
+        }
+        visit_room(
+            &mut bridge,
+            8,
+            render_core::Vec3::new(20.0, 9.5, 0.0),
+            render_core::Vec3::new(20.0, 14.0, 0.0),
+        );
+        drive_to_model(&mut bridge, render_core::Vec3::new(20.0, 0.0, 0.0), 0.2);
+        visit_room(
+            &mut bridge,
+            9,
+            render_core::Vec3::new(20.0, -9.5, 0.0),
+            render_core::Vec3::new(20.0, -14.0, 0.0),
+        );
+        drive_to_model(&mut bridge, render_core::Vec3::new(20.0, 0.0, 0.0), 0.2);
+        visit_room(
+            &mut bridge,
+            2,
+            render_core::Vec3::new(27.5, 0.0, 0.0),
+            render_core::Vec3::new(31.0, 0.0, 0.0),
+        );
+        drive_to_model(&mut bridge, render_core::Vec3::new(32.3, 0.0, 0.0), 0.2);
+        visit_room(
+            &mut bridge,
+            3,
+            render_core::Vec3::new(32.3, -2.8, 0.0),
+            render_core::Vec3::new(32.3, -6.0, 0.0),
+        );
+    }
+
+    #[test]
+    fn upper_deck_room_doors_allow_entry_and_exit_with_real_controller() {
+        let mut bridge = VisualBridge::new_visual_runtime().unwrap();
+        bridge.started = true;
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..3 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        for (index, waypoint) in [
+            render_core::Vec3::new(2.0, 0.84, 0.0),
+            render_core::Vec3::new(2.0, -2.5, 0.0),
+            render_core::Vec3::new(-2.0, -2.5, 0.0),
+            render_core::Vec3::new(-4.4, -7.0, 0.0),
+            render_core::Vec3::new(-4.1, -7.0, 0.0),
+            render_core::Vec3::new(2.9, -7.0, 4.2),
+            render_core::Vec3::new(4.8, -7.0, 4.2),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            drive_to_model(&mut bridge, waypoint, if index <= 5 { 0.08 } else { 0.2 });
+        }
+        for waypoint in [
+            render_core::Vec3::new(4.0, -8.5, 4.2),
+            render_core::Vec3::new(0.0, -9.4, 4.2),
+        ] {
+            drive_to_model(&mut bridge, waypoint, 0.2);
+        }
+        visit_room(
+            &mut bridge,
+            13,
+            render_core::Vec3::new(0.0, -9.5, 4.2),
+            render_core::Vec3::new(0.0, -14.0, 4.2),
+        );
+        for waypoint in [
+            render_core::Vec3::new(4.0, -8.5, 4.2),
+            render_core::Vec3::new(7.0, -7.0, 4.2),
+            render_core::Vec3::new(9.0, -5.0, 4.2),
+            render_core::Vec3::new(9.4, 0.0, 4.2),
+            render_core::Vec3::new(7.0, 7.0, 4.2),
+            render_core::Vec3::new(0.0, 9.4, 4.2),
+        ] {
+            drive_to_model(&mut bridge, waypoint, 0.2);
+        }
+        visit_room(
+            &mut bridge,
+            12,
+            render_core::Vec3::new(0.0, 9.5, 4.2),
+            render_core::Vec3::new(0.0, 14.0, 4.2),
+        );
+        for waypoint in [
+            render_core::Vec3::new(0.0, 10.0, 4.2),
+            render_core::Vec3::new(4.5, 8.5, 4.2),
+            render_core::Vec3::new(7.0, 7.0, 4.2),
+            render_core::Vec3::new(9.4, 0.0, 4.2),
+            render_core::Vec3::new(11.5, 0.0, 4.2),
+            render_core::Vec3::new(20.0, 0.0, 4.2),
+        ] {
+            drive_to_model(&mut bridge, waypoint, 0.2);
+        }
+        visit_room(
+            &mut bridge,
+            14,
+            render_core::Vec3::new(20.0, 9.5, 4.2),
+            render_core::Vec3::new(20.0, 14.0, 4.2),
+        );
+        drive_to_model(&mut bridge, render_core::Vec3::new(20.0, 0.0, 4.2), 0.2);
+        visit_room(
+            &mut bridge,
+            15,
+            render_core::Vec3::new(20.0, -9.5, 4.2),
+            render_core::Vec3::new(20.0, -14.0, 4.2),
+        );
+        for waypoint in [
+            render_core::Vec3::new(20.0, 0.0, 4.2),
+            render_core::Vec3::new(11.5, 0.0, 4.2),
+            render_core::Vec3::new(9.4, 0.0, 4.2),
+            render_core::Vec3::new(7.0, 7.0, 4.2),
+            render_core::Vec3::new(0.0, 9.4, 4.2),
+            render_core::Vec3::new(-7.0, 7.0, 4.2),
+            render_core::Vec3::new(-9.4, 0.0, 4.2),
+            render_core::Vec3::new(-11.5, 0.0, 4.2),
+            render_core::Vec3::new(-20.0, 0.0, 4.2),
+        ] {
+            drive_to_model(&mut bridge, waypoint, 0.2);
+        }
+        visit_room(
+            &mut bridge,
+            10,
+            render_core::Vec3::new(-20.0, 9.5, 4.2),
+            render_core::Vec3::new(-20.0, 14.0, 4.2),
+        );
+        drive_to_model(&mut bridge, render_core::Vec3::new(-20.0, 0.0, 4.2), 0.2);
+        visit_room(
+            &mut bridge,
+            11,
+            render_core::Vec3::new(-20.0, -9.5, 4.2),
+            render_core::Vec3::new(-20.0, -14.0, 4.2),
+        );
+        drive_to_model(&mut bridge, render_core::Vec3::new(-20.0, 0.0, 4.2), 0.2);
+        visit_room(
+            &mut bridge,
+            0,
+            render_core::Vec3::new(-26.0, 0.0, 4.2),
+            render_core::Vec3::new(-31.0, 0.0, 4.2),
+        );
+    }
+
+    fn walk_to_real_pilot_control(bridge: &mut VisualBridge) {
+        let origin = bridge.session.world().ship_position().unwrap();
+        let waypoints = [
+            render_core::Vec3::new(2.0, 0.84, 0.0),
+            render_core::Vec3::new(2.0, -2.5, 0.0),
+            render_core::Vec3::new(-2.0, -2.5, 0.0),
+            render_core::Vec3::new(-4.4, -7.0, 0.0),
+            render_core::Vec3::new(-4.1, -7.0, 0.0),
+            render_core::Vec3::new(2.9, -7.0, 4.2),
+            render_core::Vec3::new(4.8, -7.0, 4.2),
+            render_core::Vec3::new(7.0, -7.0, 4.2),
+            render_core::Vec3::new(9.0, -5.0, 4.2),
+            render_core::Vec3::new(9.4, 0.0, 4.2),
+            render_core::Vec3::new(7.0, 7.0, 4.2),
+            render_core::Vec3::new(0.0, 9.4, 4.2),
+            render_core::Vec3::new(-7.0, 7.0, 4.2),
+            render_core::Vec3::new(-9.4, 0.0, 4.2),
+            render_core::Vec3::new(-11.5, 0.0, 4.2),
+            render_core::Vec3::new(-26.0, 0.0, 4.2),
+            game::render_bridge::ECHO7_PILOT_EXIT_LOCAL,
+        ];
+        for (index, waypoint) in waypoints.into_iter().enumerate() {
+            drive_to_model(bridge, waypoint, if index <= 5 { 0.08 } else { 0.3 });
+            let position = bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .unwrap()
+                .position;
+            if index == 5 {
+                let local = game::render_bridge::echo7_player_model_position(position, origin, 0.0);
+                assert!(
+                    position.y > 2.0,
+                    "stair ascent failed: {position:?}, local={local:?}"
+                );
+            }
+            if index == 15 {
+                let closed = bridge
+                    .session
+                    .world()
+                    .interactable(bridge.bridge_door)
+                    .is_some_and(|value| {
+                        !matches!(
+                            value.behavior,
+                            gameplay::InteractionBehavior::Door { door }
+                                if matches!(door.state, gameplay::domains::door::DoorState::Open)
+                        )
+                    });
+                if closed {
+                    assert!(bridge.issue([GameplayCommand::UnlockDoor {
+                        door: bridge.bridge_door,
+                    }]));
+                    assert!(bridge.issue([GameplayCommand::Interact {
+                        player: bridge.player,
+                        target: bridge.bridge_door,
+                    }]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn interior_controller_walks_from_spawn_to_real_pilot_control() {
+        let mut bridge =
+            VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        bridge.started = true;
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        for _ in 0..3 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        walk_to_real_pilot_control(&mut bridge);
+        let origin = bridge.session.world().ship_position().unwrap();
+        let station = bridge
+            .session
+            .world()
+            .interactable(bridge.pilot_station)
+            .unwrap();
+        let expected = game::render_bridge::echo7_model_to_world(
+            game::render_bridge::ECHO7_PILOT_INTERACTION_LOCAL,
+            origin,
+            0.0,
+        );
+        assert_eq!(station.position, expected);
+        let entry = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .unwrap()
+            .position;
+        let walking_snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
+            bridge.session.world(),
+            Default::default(),
+            &bridge.camera(16.0 / 9.0).unwrap(),
+            true,
+        );
+        let walking_ship = walking_snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == render_core::SnapshotId::Entity(bridge.ship))
+            .unwrap();
+        assert!(bridge.issue([GameplayCommand::Interact {
+            player: bridge.player,
+            target: bridge.pilot_station,
+        }]));
+        bridge.enter_pilot();
+        assert!(bridge.pilot_mode);
+        let pilot_snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
+            bridge.session.world(),
+            Default::default(),
+            &bridge.camera(16.0 / 9.0).unwrap(),
+            false,
+        );
+        let pilot_ship = pilot_snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == render_core::SnapshotId::Entity(bridge.ship))
+            .unwrap();
+        assert_eq!(walking_ship.mesh, pilot_ship.mesh);
+        assert_eq!(walking_ship.transform, pilot_ship.transform);
+        let seated = bridge.camera(16.0 / 9.0).unwrap();
+        let expected_eye = game::render_bridge::echo7_model_to_world(
+            game::render_bridge::ECHO7_PILOT_SEATED_LOCAL,
+            origin,
+            0.0,
+        );
+        assert!((seated.position().x - expected_eye.x).abs() < 0.01);
+        assert!((seated.position().y - expected_eye.y).abs() < 0.01);
+        let heading = bridge
+            .session
+            .world()
+            .ship_orientation()
+            .unwrap()
+            .yaw_degrees;
+        bridge.rotate_ship_from_input(1.0, 0.0);
+        assert_ne!(
+            bridge
+                .session
+                .world()
+                .ship_orientation()
+                .unwrap()
+                .yaw_degrees,
+            heading
+        );
+        let previous_ship = bridge.session.world().ship_position().unwrap();
+        bridge.gamepad_flight = GameplayVec3 {
+            x: 0.0,
+            y: 0.0,
+            z: -1.0,
+        };
+        for _ in 0..220 {
+            bridge.update_pilot_motion();
+            bridge.session.update([GameplayCommand::AdvanceTime {
+                delta: Duration(50),
+            }]);
+        }
+        let moved_ship = bridge.session.world().ship_position().unwrap();
+        assert_ne!(moved_ship, previous_ship);
+        let moved_station = bridge
+            .session
+            .world()
+            .interactable(bridge.pilot_station)
+            .unwrap()
+            .position;
+        let moved_yaw = bridge
+            .session
+            .world()
+            .ship_orientation()
+            .unwrap()
+            .yaw_degrees;
+        let expected_station = game::render_bridge::echo7_model_to_world(
+            game::render_bridge::ECHO7_PILOT_INTERACTION_LOCAL,
+            moved_ship,
+            moved_yaw,
+        );
+        let station_error = ((moved_station.x - expected_station.x).powi(2)
+            + (moved_station.y - expected_station.y).powi(2)
+            + (moved_station.z - expected_station.z).powi(2))
+        .sqrt();
+        assert!(station_error < 0.01);
+        let old_point_distance = ((moved_station.x - expected.x).powi(2)
+            + (moved_station.y - expected.y).powi(2)
+            + (moved_station.z - expected.z).powi(2))
+        .sqrt();
+        assert!(old_point_distance > 3.0);
+        let probe = bridge.session.world_mut().create_player().unwrap();
+        bridge
+            .session
+            .world_mut()
+            .initialize_player_position(probe, expected);
+        let old_point_attempt = bridge.session.update([GameplayCommand::Interact {
+            player: probe,
+            target: bridge.pilot_station,
+        }]);
+        assert!(matches!(
+            old_point_attempt.first().map(|result| &result.status),
+            Some(gameplay::CommandStatus::Rejected {
+                reason: gameplay::CommandRejection::OutOfInteractionRange
+            })
+        ));
+        bridge.exit_pilot();
+        assert!(bridge.interior_mode);
+        let exit = bridge
+            .session
+            .world()
+            .player(bridge.player)
+            .unwrap()
+            .position;
+        let yaw = bridge
+            .session
+            .world()
+            .ship_orientation()
+            .unwrap()
+            .yaw_degrees;
+        let exit_local = game::render_bridge::echo7_player_model_position(exit, moved_ship, yaw);
+        let entry_local = game::render_bridge::echo7_player_model_position(entry, origin, 0.0);
+        assert!((exit_local - entry_local).length() < 0.01);
+        assert!(game::render_bridge::echo7_upper_or_stair_surface_contains(
+            exit, moved_ship, yaw
+        ));
+        let beyond_cabin = game::render_bridge::echo7_model_to_world(
+            render_core::Vec3::new(-43.5, 0.0, 4.2),
+            moved_ship,
+            yaw,
+        );
+        assert!(!game::render_bridge::echo7_upper_or_stair_surface_contains(
+            beyond_cabin,
+            moved_ship,
+            yaw,
+        ));
+        let walking_camera = bridge.camera(16.0 / 9.0).unwrap();
+        assert!(
+            (walking_camera.position().y - exit.y - game::render_bridge::ECHO7_INTERIOR_EYE_HEIGHT)
+                .abs()
+                < 0.01
+        );
+        bridge.gamepad_flight = GameplayVec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(50);
+        bridge.update_interior_motion();
+        assert_ne!(
+            bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .unwrap()
+                .position,
+            exit
+        );
+        assert!(bridge.issue([GameplayCommand::Interact {
+            player: bridge.player,
+            target: bridge.pilot_station,
+        }]));
+        bridge.enter_pilot();
+        assert!(bridge.pilot_mode);
     }
 
     #[test]
@@ -5472,7 +6254,7 @@ mod tests {
     }
 
     #[test]
-    fn echo7_uses_ship_representation_and_not_station_model() {
+    fn echo7_interior_uses_one_full_ship_mesh_with_visible_hull() {
         let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         let camera = bridge
             .camera(16.0 / 9.0)
@@ -5490,6 +6272,14 @@ mod tests {
         assert_eq!(
             echo7.map(|node| node.mesh),
             Some(game::render_bridge::ECHO7_MESH)
+        );
+        assert_eq!(
+            snapshot
+                .nodes
+                .iter()
+                .filter(|node| node.mesh == game::render_bridge::ECHO7_MESH)
+                .count(),
+            1
         );
         assert_ne!(
             game::render_bridge::ECHO7_MESH,
@@ -5510,6 +6300,32 @@ mod tests {
                 .filter(|node| node.mesh == game::render_bridge::PLACEHOLDER_MESH)
                 .count()
                 >= 2
+        );
+    }
+
+    #[test]
+    fn echo7_exterior_uses_full_ship_representation() {
+        let bridge = VisualBridge::new_with_mode(false).expect("visual bootstrap should work");
+        let camera = bridge
+            .camera(16.0 / 9.0)
+            .expect("character camera should be valid");
+        let snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
+            bridge.session.world(),
+            Default::default(),
+            &camera,
+            false,
+        );
+        let echo7 = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == render_core::SnapshotId::Entity(bridge.ship));
+        assert_eq!(
+            echo7.map(|node| node.mesh),
+            Some(game::render_bridge::ECHO7_MESH)
+        );
+        assert_ne!(
+            game::render_bridge::ECHO7_MESH,
+            game::render_bridge::STATION_MESH
         );
     }
 
@@ -5659,7 +6475,7 @@ mod tests {
     #[test]
     fn interior_start_keeps_enemy_outside_immediate_weapon_range() {
         let mut bridge =
-            VisualBridge::new_with_mode_and_enemy_distance(true, true, GameplayVec3::ZERO)
+            VisualBridge::new_with_mode_and_enemy_distance(true, true, GameplayVec3::ZERO, true)
                 .expect("visual bridge should initialize");
         let enemy = bridge
             .session
@@ -5714,7 +6530,11 @@ mod tests {
                 .active
         );
 
-        for _ in 0..6 {
+        for _ in 0..3 {
+            bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        }
+        walk_to_real_pilot_control(&mut bridge);
+        for _ in 0..2 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
         }
 
