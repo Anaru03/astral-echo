@@ -7,7 +7,7 @@ use render_core::{
     from_engine, Camera, CameraError, HudAutopilotState, HudFlightState, HudMissionObjective,
     HudMissionState, HudObjectiveState, HudState, MaterialHandle, MeshHandle, Projection, Quat,
     RenderSnapshot, RenderVisualEvent, RenderVisualEventKind, SnapshotLight, SnapshotNode,
-    Transform, Vec3, VisualAssets,
+    Transform, Vec3, VisualAssets, RenderLightKind,
 };
 
 pub const SUN_ENTITY: engine::EntityId = engine::EntityId::new(9_100);
@@ -64,6 +64,9 @@ const TESSARA_PLANET_CENTER: Vec3 = Vec3::new(0.0, -0.95, 0.0);
 const TESSARA_PLANET_MAX_DIMENSION: f32 = 14.0043;
 const TESSARA_PLANET_VISUAL_SCALE: f32 =
     (TESSARA_VISUAL_RADIUS * 2.0) / TESSARA_PLANET_MAX_DIMENSION;
+// Bounds measured directly from clock_planet.obj. The clock is a thin,
+// mechanical disc rather than a spherical planet.
+const TESSARA_MODEL_TOP_Y: f32 = 5.724097;
 pub const TESSARA_MOON_MESH: MeshHandle = MeshHandle::MOON;
 const TESSARA_MOON_CENTER: Vec3 = Vec3::new(-0.001604, 0.011636, -0.0036585);
 const TESSARA_MOON_VISUAL_SCALE: f32 = 1.0;
@@ -85,7 +88,7 @@ pub const PLANET_OBSERVATION_RADIUS: f32 = 14.0;
 pub const OBSERVATION_TRANSITION_DURATION_MS: u64 = 1_000;
 pub const LANDING_CINEMATIC_DURATION_MS: u64 = 1_800;
 pub const TAKEOFF_CINEMATIC_DURATION_MS: u64 = 1_500;
-pub const SURFACE_RETURN_DISTANCE: f32 = 5.0;
+pub const SURFACE_RETURN_DISTANCE: f32 = 8.5;
 const SUN_POSITION: Vec3 = Vec3::new(0.0, 0.0, -18.0);
 const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 28.0, 46.0);
 pub const PILOT_CAMERA_DEFAULT_DISTANCE: f32 = 8.0;
@@ -114,7 +117,7 @@ pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::splat(ECHO7_VISUAL_SCALE_FACTOR);
 pub const ECHO7_VISUAL_LENGTH: f32 = 93.4 * ECHO7_VISUAL_SCALE_FACTOR;
 // Bounds measured from ECHO7_Exterior_DosCubiertas.obj. The source model uses
 // X for its longitudinal axis and Z as up.
-const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(3.7, 0.0, 5.532_477);
+const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(3.7, 0.0, 0.0);
 const ECHO7_MODEL_AFT_EDGE_X: f32 = 50.4;
 const ECHO7_AFT_EDGE_OFFSET: f32 =
     (ECHO7_MODEL_AFT_EDGE_X - ECHO7_MODEL_CENTER.x) * ECHO7_VISUAL_SCALE.x;
@@ -133,6 +136,9 @@ fn echo7_local_to_world_rotation() -> Quat {
 pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
 pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
 pub const PLAYER_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
+// The player mesh is 2.4 units high and is rendered at 0.5 scale. Its pivot
+// is in the middle, so the feet are 0.6 units below the gameplay position.
+pub const PLAYER_SURFACE_CLEARANCE: f32 = 0.6;
 pub const ECHO7_INTERIOR_HALF_WIDTH: f32 = 9.0;
 pub const ECHO7_INTERIOR_HALF_DEPTH: f32 = 7.0;
 pub const ECHO7_INTERIOR_FLOOR_Y: f32 = -1.2;
@@ -392,10 +398,22 @@ fn echo7_model_room_floor_contains(local: Vec3, upper: bool) -> bool {
         && local.y.abs() <= 1.82 - radius;
     let central_corridor =
         local.x >= -10.8 + radius && local.x <= 10.8 - radius && local.y.abs() <= 1.82 - radius;
+    // The lower corridor continues to the stair footprint. Keep this narrow
+    // connector open so the modeled bulkheads do not seal off the stairwell.
+    let stair_connector = local.x >= -6.0 + radius
+        && local.x <= 4.5 - radius
+        && local.y >= ECHO7_STAIR_LOCAL_Y_MIN - radius
+        && local.y <= 1.82 - radius;
     let bow = echo7_model_rect_contains(local, (-42.3, -27.3, -4.0, 4.0));
     let lower_extra = echo7_model_rect_contains(local, (28.9, 35.9, -4.2, 4.2))
         || echo7_model_rect_contains(local, (30.4, 34.2, -10.3, -4.0));
-    module || branch || longitudinal || central_corridor || bow || (!upper && lower_extra)
+    module
+        || branch
+        || longitudinal
+        || central_corridor
+        || stair_connector
+        || bow
+        || (!upper && lower_extra)
 }
 
 fn echo7_model_door_portal(local: Vec3, index: usize) -> bool {
@@ -696,6 +714,10 @@ pub fn echo7_lower_deck_position_valid(
     }
     inside_x
         && inside_y
+        // The rectangular hull bounds are only the outer shell. Restrict the
+        // lower deck to the modeled rooms/corridors as well, otherwise the
+        // player can walk through the internal bulkheads between modules.
+        && echo7_model_room_floor_contains(local, false)
         && echo7_lower_core_obstacle_free(local, position.y)
         && !(local.x <= bounds.0 && !door_gap(local.x, local.y, ECHO7_INTERIOR_HALF_WIDTH))
         && !(local.x >= bounds.1 && !door_gap(local.x, local.y, ECHO7_INTERIOR_HALF_WIDTH))
@@ -811,6 +833,128 @@ fn mission_interaction_nodes(
                 interactable.enabled,
             )
         })
+}
+
+fn echo7_guidance_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    let Some(player) = world.players().find(|value| value.is_active) else {
+        return Vec::new();
+    };
+    let target = world
+        .interactables()
+        .filter_map(|value| {
+            let priority = match value.behavior {
+                gameplay::InteractionBehavior::ElectricalPanel => world
+                    .electrical_panel(value.entity_id)
+                    .is_some_and(|panel| !panel.is_repaired())
+                    .then_some(1),
+                gameplay::InteractionBehavior::LifeSupportPanel => world
+                    .life_support_panel(value.entity_id)
+                    .is_some_and(|panel| !panel.progress().repaired)
+                    .then_some(1),
+                gameplay::InteractionBehavior::Console {
+                    state,
+                    role: gameplay::ConsoleRole::ShipStatus,
+                } => matches!(state, gameplay::ConsoleState::Off).then_some(0),
+                gameplay::InteractionBehavior::Door { door }
+                    if door.role == gameplay::DoorRole::CommandBridge => {
+                        (!matches!(
+                            door.state,
+                            gameplay::domains::door::DoorState::Open
+                        ))
+                        .then_some(2)
+                    }
+                gameplay::InteractionBehavior::Station { station }
+                    if station.station_type == gameplay::StationType::Piloting => {
+                        station.occupant.is_none().then_some(3)
+                    }
+                _ => None,
+            };
+            let Some(priority) = priority else {
+                return None;
+            };
+            if !value.enabled {
+                return None;
+            }
+            let dx = value.position.x - player.position.x;
+            let dz = value.position.z - player.position.z;
+            Some((priority, dx * dx + dz * dz, value.position))
+        })
+        .min_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| {
+                    left.1
+                    .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })
+        .map(|(_, _, position)| position);
+    let Some(target) = target else {
+        return Vec::new();
+    };
+    let distance = ((target.x - player.position.x).powi(2)
+        + (target.z - player.position.z).powi(2))
+    .sqrt();
+    let count = (distance / 1.8).ceil().clamp(1.0, 12.0) as usize;
+    (1..=count)
+        .map(|index| {
+            let fraction = index as f32 / count as f32;
+            let position = Vec3::new(
+                player.position.x + (target.x - player.position.x) * fraction,
+                player.position.y + 0.22,
+                player.position.z + (target.z - player.position.z) * fraction,
+            );
+            let scale = if index == count {
+                Vec3::splat(0.72)
+            } else {
+                Vec3::splat(0.32)
+            };
+            SnapshotNode::new(
+                engine::EntityId::new(9_700 + index as u64),
+                Transform::new(position, Quat::IDENTITY, scale),
+                COLLECTIBLE_MESH,
+                COLLECTIBLE_MATERIAL,
+                true,
+            )
+        })
+        .collect()
+}
+
+fn echo7_interaction_sign_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    let mut signs = Vec::new();
+    let mut next_id = 9_801;
+    for interactable in world.interactables() {
+        let is_minigame_point = matches!(
+            interactable.behavior,
+            gameplay::InteractionBehavior::ElectricalPanel
+                | gameplay::InteractionBehavior::LifeSupportPanel
+                | gameplay::InteractionBehavior::Console {
+                    role: gameplay::ConsoleRole::ShipStatus,
+                    ..
+                }
+                | gameplay::InteractionBehavior::Station {
+                    station: gameplay::Station {
+                        station_type: gameplay::StationType::Piloting,
+                        ..
+                    }
+                }
+        );
+        if is_minigame_point && interactable.enabled {
+            signs.push(SnapshotNode::new(
+                engine::EntityId::new(next_id),
+                Transform::new(
+                    from_engine(interactable.position) + Vec3::new(0.0, 0.28, 0.0),
+                    Quat::IDENTITY,
+                    Vec3::splat(0.62),
+                ),
+                COLLECTIBLE_MESH,
+                COLLECTIBLE_MATERIAL,
+                true,
+            ));
+            next_id += 1;
+        }
+    }
+    signs
 }
 
 fn is_echo_interior_position(world: &GameplayWorld, position: engine::Vec3) -> bool {
@@ -1071,12 +1215,46 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     pilot_mode: bool,
     surface_planet: Option<gameplay::DestinationId>,
 ) -> RenderSnapshot {
+    snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface_transform(
+        world,
+        params,
+        camera,
+        interior,
+        nareth_mesh_ready,
+        pilot_mode,
+        surface_planet,
+        None,
+    )
+}
+
+pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface_transform(
+    world: &GameplayWorld,
+    params: BridgeParams<'_>,
+    camera: &Camera,
+    interior: bool,
+    nareth_mesh_ready: bool,
+    pilot_mode: bool,
+    surface_planet: Option<gameplay::DestinationId>,
+    surface_transform: Option<Transform>,
+) -> RenderSnapshot {
     let tick = world.time().tick;
     let academic_planet = academic_planet_id(world);
     let tessara_planet = tessara_planet_id(world);
     let kharvex_planet = kharvex_planet_id(world);
     let nareth_planet = nareth_planet_id(world);
     let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
+    let landing_planet = match world.planet_flight_state() {
+        // Navigation reaches `Landed` on the first simulation tick, while
+        // the visual descent keeps running for the rest of the cinematic.
+        // Both states must therefore retain the lightweight landing scene.
+        gameplay::PlanetFlightState::Landing { planet }
+        | gameplay::PlanetFlightState::Landed { planet } => Some(planet),
+        _ => None,
+    };
+    // Cinematics and surface exploration keep a small deterministic scene
+    // budget, while the selected planet remains present as the gravity and
+    // visual reference for the player.
+    let limited_scene = surface_planet.is_some() || landing_planet.is_some();
     let mut snapshot = RenderSnapshot::new(
         tick,
         camera.position(),
@@ -1093,7 +1271,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         Transform::new(star_center, Quat::IDENTITY, Vec3::splat(STAR_SHELL_SCALE)),
         STARS_MESH,
         STARS_MATERIAL,
-        !interior && surface_planet.is_none(),
+        !interior && !limited_scene,
     ));
     if let Some(fade) = world.impact_fade_to_black() {
         snapshot.overlay.fade_to_black = fade;
@@ -1145,43 +1323,27 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         };
         snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
             color: Vec3::new(1.0, 0.93, 0.82),
-            intensity: 14.0,
+            intensity: 52.0,
             kind: render_core::RenderLightKind::Point {
                 position: from_engine(local_light(Vec3::new(0.0, 5.6, 0.0))),
-                range: 20.0,
+                range: 32.0,
             },
             casts_shadow: false,
         }));
         for local_position in [Vec3::new(-6.0, 3.5, 0.0), Vec3::new(6.0, 3.5, 0.0)] {
             snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
                 color: Vec3::new(0.86, 0.92, 1.0),
-                intensity: 8.0,
+                intensity: 34.0,
                 kind: render_core::RenderLightKind::Point {
                     position: from_engine(local_light(local_position)),
-                    range: 14.0,
+                    range: 24.0,
                 },
                 casts_shadow: false,
             }));
         }
     }
 
-    if let Some(planet) = surface_planet {
-        if let Some(origin) = planet_surface_origin(world, planet) {
-            snapshot.push_node(SnapshotNode::new(
-                LANDING_INDICATOR_ENTITY,
-                Transform::new(
-                    origin + Vec3::new(0.0, -0.8, 0.0),
-                    Quat::IDENTITY,
-                    Vec3::new(7.0, 0.15, 7.0),
-                ),
-                PLACEHOLDER_MESH,
-                DESTINATION_MATERIAL,
-                true,
-            ));
-        }
-    }
-
-    if world.navigation().ship_id().is_some() {
+    if !limited_scene && world.navigation().ship_id().is_some() {
         snapshot.push_node(SnapshotNode::new(
             SUN_ENTITY,
             sun_model_transform(),
@@ -1249,72 +1411,97 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         }
     }
 
-    for node in station_nodes_for_view(world, interior) {
-        snapshot.push_node(node);
-    }
+    if !limited_scene {
+        for node in station_nodes_for_view(world, interior) {
+            snapshot.push_node(node);
+        }
 
-    for node in mission_interaction_nodes(world, interior) {
-        snapshot.push_node(node);
-    }
+        for node in mission_interaction_nodes(world, interior) {
+            snapshot.push_node(node);
+        }
+        // The visual runtime is created in interior mode so the first gameplay
+        // camera is ready immediately, but the title screen has not started
+        // the simulation yet. Do not build gameplay guidance for that frame:
+        // it can make the initial snapshot do unnecessary world work and can
+        // leave the start screen looking frozen on slower machines.
+        if interior && world.time().elapsed.0 > 0 {
+            for node in echo7_guidance_nodes(world) {
+                snapshot.push_node(node);
+            }
+            for node in echo7_interaction_sign_nodes(world) {
+                snapshot.push_node(node);
+            }
+        }
 
-    for node in derelict_nodes(world) {
-        snapshot.push_node(node);
-    }
-    if !interior {
-        for node in ambient_derelict_nodes() {
+        for node in derelict_nodes(world) {
+            snapshot.push_node(node);
+        }
+        if !interior {
+            for node in ambient_derelict_nodes() {
+                snapshot.push_node(node);
+            }
+        }
+
+        for node in asteroid_field_nodes(world) {
             snapshot.push_node(node);
         }
     }
 
-    for node in asteroid_field_nodes(world) {
-        snapshot.push_node(node);
-    }
-
     for player in world.players() {
-        snapshot.push_node(SnapshotNode::new(
-            player.entity_id,
+        let transform = if let Some(planet) = surface_planet {
+            surface_player_transform(world, player, planet)
+        } else {
             visual_transform(
                 player.position,
                 player.orientation.yaw_degrees,
                 player.orientation.pitch_degrees,
-            ),
+            )
+        };
+        snapshot.push_node(SnapshotNode::new(
+            player.entity_id,
+            transform,
             PLAYER_MESH,
             PLAYER_MATERIAL,
             player.is_active && !pilot_mode && world.entities().contains(player.entity_id),
         ));
     }
 
-    for companion in world.companions() {
-        snapshot.push_node(SnapshotNode::new(
-            companion.entity,
-            Transform::from_translation(from_engine(companion.position)),
-            ERICK_MESH,
-            ERICK_MATERIAL,
-            companion.active && world.entities().contains(companion.entity),
-        ));
-    }
-
-    for enemy in world.enemies() {
-        if enemy.is_player {
-            continue;
+    if !limited_scene {
+        for companion in world.companions() {
+            snapshot.push_node(SnapshotNode::new(
+                companion.entity,
+                Transform::from_translation(from_engine(companion.position)),
+                ERICK_MESH,
+                ERICK_MATERIAL,
+                companion.active && world.entities().contains(companion.entity),
+            ));
         }
-        let visible =
-            enemy.active && !enemy.is_defeated() && world.entities().contains(enemy.entity);
-        snapshot.push_node(SnapshotNode::new(
-            enemy.entity,
-            Transform::new(
-                from_engine(enemy.position),
-                Quat::IDENTITY,
-                ENEMY_SHIP_VISUAL_SCALE,
-            ),
-            ENEMY_MESH,
-            enemy_material(enemy.archetype),
-            visible,
-        ));
+
+        for enemy in world.enemies() {
+            if enemy.is_player {
+                continue;
+            }
+            let visible =
+                enemy.active && !enemy.is_defeated() && world.entities().contains(enemy.entity);
+            snapshot.push_node(SnapshotNode::new(
+                enemy.entity,
+                Transform::new(
+                    from_engine(enemy.position),
+                    Quat::IDENTITY,
+                    ENEMY_SHIP_VISUAL_SCALE,
+                ),
+                ENEMY_MESH,
+                enemy_material(enemy.archetype),
+                visible,
+            ));
+        }
     }
 
     for dest in world.destinations() {
-        if surface_planet == Some(dest.id) {
+        if limited_scene
+            && landing_planet != Some(dest.id)
+            && surface_planet != Some(dest.id)
+        {
             continue;
         }
         if dest.id == gameplay::DestinationId::new(9_001) {
@@ -1350,23 +1537,36 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                     .planet_position_at(dest.id, world.time().elapsed)
                     .map(from_engine)
                     .unwrap_or_else(|| from_engine(dest.position));
-                tessara_planet_transform(position, elapsed_seconds)
+                if surface_planet == Some(dest.id) {
+                    surface_transform
+                        .unwrap_or_else(|| tessara_planet_transform(position, elapsed_seconds))
+                } else {
+                    tessara_planet_transform(position, elapsed_seconds)
+                }
             } else if kharvex_planet == Some(dest.id) {
                 let position = world
                     .planet_position_at(dest.id, world.time().elapsed)
                     .map(from_engine)
                     .unwrap_or_else(|| from_engine(dest.position));
                 kharvex_planet_transform(position, elapsed_seconds)
+            } else if nareth_planet == Some(dest.id) && nareth_mesh_ready {
+                let position = world
+                    .planet_position_at(dest.id, world.time().elapsed)
+                    .map(from_engine)
+                    .unwrap_or_else(|| from_engine(dest.position));
+                nareth_planet_transform(position, elapsed_seconds)
             } else if nareth_planet == Some(dest.id) {
                 let position = world
                     .planet_position_at(dest.id, world.time().elapsed)
                     .map(from_engine)
                     .unwrap_or_else(|| from_engine(dest.position));
-                if nareth_mesh_ready {
-                    nareth_planet_transform(position, elapsed_seconds)
-                } else {
-                    Transform::new(position, Quat::IDENTITY, scale)
-                }
+                Transform::new(
+                    position,
+                    Quat::from_rotation_y(
+                        NARETH_ROTATION_ANGULAR_SPEED_RAD_PER_SECOND * elapsed_seconds as f32,
+                    ),
+                    Vec3::splat(NARETH_VISUAL_RADIUS),
+                )
             } else {
                 Transform::new(from_engine(dest.position), Quat::IDENTITY, scale)
             };
@@ -1380,28 +1580,30 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         }
     }
 
-    if let Some(tessara_id) = tessara_planet {
-        let tessara_visible = world
-            .destination(tessara_id)
-            .is_some_and(|destination| destination.discovery != gameplay::DiscoveryState::Unknown);
-        if tessara_visible {
-            let tessara_position = world
-                .planet_position_at(tessara_id, world.time().elapsed)
-                .map(from_engine)
-                .unwrap_or_else(|| {
-                    world
-                        .destination(tessara_id)
-                        .map(|destination| from_engine(destination.position))
-                        .unwrap_or(TESSARA_POSITION)
-                });
-            let moon_transform = tessara_moon_transform(tessara_position, elapsed_seconds);
-            snapshot.push_node(SnapshotNode::new(
-                TESSARA_MOON_ENTITY,
-                moon_transform,
-                TESSARA_MOON_MESH,
-                PLANET_MATERIAL,
-                true,
-            ));
+    if !limited_scene {
+        if let Some(tessara_id) = tessara_planet {
+            let tessara_visible = world.destination(tessara_id).is_some_and(|destination| {
+                destination.discovery != gameplay::DiscoveryState::Unknown
+            });
+            if tessara_visible {
+                let tessara_position = world
+                    .planet_position_at(tessara_id, world.time().elapsed)
+                    .map(from_engine)
+                    .unwrap_or_else(|| {
+                        world
+                            .destination(tessara_id)
+                            .map(|destination| from_engine(destination.position))
+                            .unwrap_or(TESSARA_POSITION)
+                    });
+                let moon_transform = tessara_moon_transform(tessara_position, elapsed_seconds);
+                snapshot.push_node(SnapshotNode::new(
+                    TESSARA_MOON_ENTITY,
+                    moon_transform,
+                    TESSARA_MOON_MESH,
+                    PLANET_MATERIAL,
+                    true,
+                ));
+            }
         }
     }
 
@@ -1411,7 +1613,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                 destination.discovery != gameplay::DiscoveryState::Unknown
             })
     });
-    if academic_planet_visible {
+    if !limited_scene && academic_planet_visible {
         if let Some(planet_id) = academic_planet {
             if world.landing_available(planet_id) {
                 let position = world
@@ -1484,6 +1686,39 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
 
     snapshot.push_light(SnapshotLight::new(render_core::RenderLight::demo_point()));
     snapshot.push_light(SnapshotLight::new(render_core::RenderLight::demo_sun()));
+    if let Some(planet) = surface_planet {
+        if let Some(center) = world
+            .planet_position_at(planet, world.time().elapsed)
+            .map(from_engine)
+            .or_else(|| {
+                world
+                    .destination(planet)
+                    .map(|value| from_engine(value.position))
+            })
+        {
+            // A local fill light follows the explored planet. The fixed space
+            // lights are useful at orbital scale but leave the clock's
+            // detailed geometry almost black from the surface.
+            snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
+                color: Vec3::new(1.0, 0.88, 0.72),
+                intensity: 2.4,
+                kind: RenderLightKind::Point {
+                    position: center + Vec3::new(0.0, 32.0, 12.0),
+                    range: 95.0,
+                },
+                casts_shadow: false,
+            }));
+            snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
+                color: Vec3::new(0.55, 0.7, 1.0),
+                intensity: 0.8,
+                kind: RenderLightKind::Point {
+                    position: center + Vec3::new(-28.0, 8.0, -24.0),
+                    range: 80.0,
+                },
+                casts_shadow: false,
+            }));
+        }
+    }
 
     snapshot
 }
@@ -2028,7 +2263,7 @@ pub fn is_observable_planet(world: &GameplayWorld, destination: gameplay::Destin
     })
 }
 
-fn planet_visual_radius(destination: gameplay::DestinationId) -> f32 {
+pub fn planet_visual_radius(destination: gameplay::DestinationId) -> f32 {
     match destination.value() {
         ACADEMIC_PLANET_DESTINATION_ID => PLANET_VISUAL_RADIUS,
         TESSARA_DESTINATION_ID => TESSARA_VISUAL_RADIUS,
@@ -2058,6 +2293,29 @@ pub fn surface_ship_position(
     destination: gameplay::DestinationId,
 ) -> Option<Vec3> {
     planet_surface_origin(world, destination).map(|origin| origin + Vec3::new(4.0, 0.0, 4.0))
+}
+
+fn surface_player_transform(
+    world: &GameplayWorld,
+    player: &gameplay::Player,
+    destination: gameplay::DestinationId,
+) -> Transform {
+    let position = from_engine(player.position);
+    let center = world
+        .planet_position_at(destination, world.time().elapsed)
+        .map(from_engine)
+        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))
+        .unwrap_or(Vec3::ZERO);
+    let up = if destination.value() == TESSARA_DESTINATION_ID {
+        Vec3::Y
+    } else {
+        (position - center).normalize_or_zero()
+    };
+    let up = if up.length_squared() > 0.0 { up } else { Vec3::Y };
+    let gravity_alignment = Quat::from_rotation_arc(Vec3::Y, up);
+    let local_view = Quat::from_rotation_y(player.orientation.yaw_degrees.to_radians())
+        * Quat::from_rotation_x(player.orientation.pitch_degrees.to_radians());
+    Transform::new(position, gravity_alignment * local_view, PLAYER_VISUAL_SCALE)
 }
 
 fn observation_distance(visual_radius: f32) -> f32 {
@@ -2095,6 +2353,38 @@ pub fn interior_camera_for_player(
             near: 0.05,
             far: 120.0,
         },
+    )
+}
+
+pub fn surface_camera_for_player_with_view(
+    world: &GameplayWorld,
+    player_id: engine::EntityId,
+    destination: gameplay::DestinationId,
+    aspect: f32,
+    camera_yaw_offset: f32,
+    camera_pitch_offset: f32,
+) -> Result<Camera, CameraError> {
+    let player = world.player(player_id).ok_or(CameraError::InvalidAspect)?;
+    let center = world.planet_position_at(destination, world.time().elapsed).map(from_engine)
+        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))
+        .ok_or(CameraError::InvalidAspect)?;
+    let player_position = from_engine(player.position);
+    let up = if destination.value() == TESSARA_DESTINATION_ID { Vec3::Y }
+        else { (player_position - center).normalize_or_zero() };
+    let up = if up.length_squared() > 0.0 { up } else { Vec3::Y };
+    let yaw = (player.orientation.yaw_degrees + camera_yaw_offset).to_radians();
+    let pitch = (player.orientation.pitch_degrees + camera_pitch_offset).to_radians().clamp(-1.2, 1.2);
+    let horizontal = pitch.cos();
+    let raw_forward = Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal);
+    let forward = (raw_forward - up * raw_forward.dot(up)).normalize_or_zero();
+    let forward = if forward.length_squared() > 0.0 { forward } else {
+        up.cross(if up.dot(Vec3::Y).abs() < 0.9 { Vec3::Y } else { Vec3::X }).normalize_or_zero()
+    };
+    Camera::new(
+        player_position - forward * 4.5 + up * 2.2,
+        player_position + up * 0.25,
+        up,
+        Projection::Perspective { fov_y_rad: 72.0_f32.to_radians(), aspect, near: 0.05, far: 220.0 },
     )
 }
 
@@ -2411,8 +2701,15 @@ fn planet_mesh_for_destination(
         TESSARA_PLANET_MESH
     } else if kharvex_planet == Some(destination) {
         KHARVEX_PLANET_MESH
-    } else if nareth_planet == Some(destination) && nareth_mesh_ready {
-        NARETH_PLANET_MESH
+    } else if nareth_planet == Some(destination) {
+        if nareth_mesh_ready {
+            NARETH_PLANET_MESH
+        } else {
+            // This is Nareth's runtime LOD, deliberately separate from the
+            // generic Earth test sphere. It is always resident and therefore
+            // cannot vanish or trigger an OBJ upload during a cinematic.
+            MeshHandle::LANDING_PLANET_PROXY
+        }
     } else {
         PLANET_MESH
     }
@@ -2435,6 +2732,10 @@ fn tessara_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
     );
     transform.translation -= transform.rotation * (transform.scale * TESSARA_PLANET_CENTER);
     transform
+}
+
+pub fn clock_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
+    tessara_planet_transform(position, elapsed_seconds)
 }
 
 fn tessara_moon_transform(tessara_position: Vec3, elapsed_seconds: f64) -> Transform {

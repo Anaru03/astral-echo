@@ -730,6 +730,48 @@ impl NavigationState {
         self.velocity = Vec3::ZERO;
         true
     }
+
+    pub(crate) fn complete_landing(&mut self, destination: DestinationId, now: Duration) -> bool {
+        if matches!(
+            self.planet_flight_state,
+            PlanetFlightState::Landed { planet } if planet == destination
+        ) {
+            return true;
+        }
+        if !matches!(
+            self.planet_flight_state,
+            PlanetFlightState::Landing { planet } if planet == destination
+        ) {
+            return false;
+        }
+        let Some(physics) = self.planet_physics.get(&destination).copied() else {
+            return false;
+        };
+        let planet = physics.position_at(now);
+        let direction = sub_vec(planet, self.current_position);
+        let length = distance(self.current_position, planet);
+        self.current_position = if length > 0.0001 {
+            sub_vec(
+                planet,
+                scale_vec(direction, physics.collision_radius() / length),
+            )
+        } else {
+            add_vec(
+                planet,
+                Vec3 {
+                    x: 0.0,
+                    y: physics.collision_radius(),
+                    z: 0.0,
+                },
+            )
+        };
+        self.velocity = Vec3::ZERO;
+        self.planet_flight_state = PlanetFlightState::Landed {
+            planet: destination,
+        };
+        self.travel_state = TravelState::Completed { destination };
+        true
+    }
     pub fn speed_limit(&self) -> f32 {
         if self.boost_active {
             self.movement.max_speed * 1.5

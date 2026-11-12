@@ -1,5 +1,7 @@
 use std::fmt;
+use std::fs::File;
 use std::io::BufRead;
+use std::io::BufReader;
 use std::path::Path;
 
 use glam::{Vec2, Vec3, Vec4};
@@ -47,6 +49,81 @@ pub fn load_obj(path: impl AsRef<Path>) -> Result<RasterMesh, ObjLoadError> {
     .map_err(ObjLoadError::Parse)?;
 
     build_mesh(models.into_iter().map(|model| model.mesh))
+}
+
+/// Loads a dense OBJ as a bounded preview mesh by retaining one face every
+/// `face_stride` faces. This keeps cinematic/landing assets inexpensive.
+pub fn load_obj_decimated(
+    path: impl AsRef<Path>,
+    face_stride: usize,
+) -> Result<RasterMesh, ObjLoadError> {
+    let stride = face_stride.max(1);
+    let path = path.as_ref();
+    let mut faces = Vec::new();
+    let mut face_number = 0usize;
+    let file = File::open(path)?;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let mut tokens = line.split_whitespace();
+        if tokens.next() != Some("f") {
+            continue;
+        }
+        let indices = tokens
+            .filter_map(|token| token.split('/').next()?.parse::<usize>().ok())
+            .collect::<Vec<_>>();
+        if indices.len() >= 3 && face_number % stride == 0 {
+            for index in 1..indices.len() - 1 {
+                faces.push([indices[0], indices[index], indices[index + 1]]);
+            }
+        }
+        face_number = face_number.saturating_add(1);
+    }
+    if faces.is_empty() {
+        return Err(ObjLoadError::Empty);
+    }
+
+    let mut positions = std::collections::HashMap::new();
+    let file = File::open(path)?;
+    let mut vertex_index = 0usize;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let mut tokens = line.split_whitespace();
+        if tokens.next() != Some("v") {
+            continue;
+        }
+        vertex_index += 1;
+        let values = tokens
+            .take(3)
+            .map(str::parse::<f32>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| ObjLoadError::Invalid("invalid decimated vertex".into()))?;
+        if values.len() != 3 || values.iter().any(|value| !value.is_finite()) {
+            return Err(ObjLoadError::Invalid("invalid decimated vertex".into()));
+        }
+        positions.insert(vertex_index, Vec3::new(values[0], values[1], values[2]));
+    }
+
+    let mut vertices = Vec::with_capacity(faces.len() * 3);
+    let mut indices = Vec::with_capacity(faces.len() * 3);
+    for [a, b, c] in faces {
+        let (Some(a), Some(b), Some(c)) =
+            (positions.get(&a), positions.get(&b), positions.get(&c))
+        else {
+            continue;
+        };
+        let normal = (*b - *a).cross(*c - *a).normalize_or_zero();
+        let base = vertices.len() as u32;
+        vertices.extend([
+            RasterVertex::new(*a, Vec4::ONE).with_normal(normal),
+            RasterVertex::new(*b, Vec4::ONE).with_normal(normal),
+            RasterVertex::new(*c, Vec4::ONE).with_normal(normal),
+        ]);
+        indices.extend([base, base + 1, base + 2]);
+    }
+    if indices.is_empty() {
+        return Err(ObjLoadError::Empty);
+    }
+    Ok(RasterMesh::new(vertices, indices))
 }
 
 pub fn load_obj_reader<R: BufRead>(reader: &mut R) -> Result<RasterMesh, ObjLoadError> {

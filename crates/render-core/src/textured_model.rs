@@ -231,7 +231,18 @@ pub fn register_textured_model(
             );
         }
     }
-    let meshes = coalesce_textured_meshes(model.meshes)?;
+    // ECHO-7 exterior segments are addressable gameplay/render parts. Keep
+    // those names intact so individual habitat walls can be selected and
+    // textured; generic OBJ assets still benefit from material coalescing.
+    let preserve_named_echo7_parts = model.meshes.iter().any(|part| {
+        part.name
+            .starts_with("ECHO7_30_Exterior_Unificado__Drum_doble_altura_")
+    });
+    let meshes = if preserve_named_echo7_parts {
+        model.meshes
+    } else {
+        coalesce_textured_meshes(model.meshes)?
+    };
     let mut parts = Vec::with_capacity(meshes.len());
     for (i, mut part) in meshes.into_iter().enumerate() {
         let offset = u32::try_from(i).map_err(|e| e.to_string())?;

@@ -145,11 +145,10 @@ impl OffscreenTarget {
         scene: &SnapshotScene,
     ) -> Result<(), GpuError> {
         self.validate_renderer(renderer)?;
-        let prepared = scene.prepare(render_core::CullingConfig {
-            width: self.layout.width,
-            height: self.layout.height,
-            ..Default::default()
-        });
+        let prepared = scene.prepare(render_core::CullingConfig::for_viewport(
+            self.layout.width,
+            self.layout.height,
+        ));
         if prepared
             .draws()
             .any(|draw| prepared.texture_path(draw.node.material).is_some())
