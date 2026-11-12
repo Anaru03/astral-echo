@@ -225,7 +225,6 @@ impl PlanetMaze {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::planet_mazes;
 
     #[test]

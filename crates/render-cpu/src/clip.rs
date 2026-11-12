@@ -1,4 +1,4 @@
-use glam::Vec4;
+use glam::{Vec2, Vec4};
 
 use crate::error::RasterError;
 
@@ -29,15 +29,24 @@ pub struct ClipMetrics {
 pub struct ClipVertex {
     pub clip: Vec4,
     pub color: Vec4,
+    pub uv: Vec2,
 }
 
 impl ClipVertex {
     pub const fn new(clip: Vec4, color: Vec4) -> Self {
-        Self { clip, color }
+        Self {
+            clip,
+            color,
+            uv: Vec2::ZERO,
+        }
+    }
+
+    pub const fn with_uv(clip: Vec4, color: Vec4, uv: Vec2) -> Self {
+        Self { clip, color, uv }
     }
 
     pub fn is_finite(&self) -> bool {
-        self.clip.is_finite() && self.color.is_finite()
+        self.clip.is_finite() && self.color.is_finite() && self.uv.is_finite()
     }
 
     pub fn is_in_front(&self) -> bool {
@@ -86,9 +95,10 @@ impl ClipPlane {
 }
 
 fn interpolate(a: &ClipVertex, b: &ClipVertex, t: f32) -> ClipVertex {
-    ClipVertex::new(
+    ClipVertex::with_uv(
         a.clip + (b.clip - a.clip) * t,
         a.color + (b.color - a.color) * t,
+        a.uv + (b.uv - a.uv) * t,
     )
 }
 

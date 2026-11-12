@@ -185,6 +185,8 @@ fn tiled_matches_reference_for_depth_perspective_winding_and_modes() {
         z,
         inv_w,
         color,
+        uv: glam::Vec2::ZERO,
+        material: None,
     };
     let a = vertex(-2.0, 0.0, 0.2, 1.0, Vec4::new(1.0, 0.0, 0.0, 0.25));
     let b = vertex(10.0, 1.0, 0.7, 0.2, Vec4::new(0.0, 1.0, 0.0, 0.5));
@@ -246,6 +248,8 @@ fn tiled_top_left_shared_edge_is_filled_once() {
         z: 0.5,
         inv_w: 1.0,
         color: Vec4::ONE,
+        uv: glam::Vec2::ZERO,
+        material: None,
     };
     let a = vertex(0.0, 0.0);
     let b = vertex(8.0, 0.0);

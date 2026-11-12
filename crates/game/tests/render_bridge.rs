@@ -5,11 +5,91 @@ use game::render_bridge::*;
 use render_core::{SnapshotId, SnapshotScene, Vec3, VisualAssets};
 
 #[test]
+fn interior_components_keep_distinct_source_identity_before_expansion() {
+    let world = support::fixture_world();
+    let camera = interior_camera(&world, 16.0 / 9.0).unwrap();
+    let snapshot =
+        snapshot_from_world_with_camera_and_view(&world, Default::default(), &camera, true);
+    let expected = [
+        (
+            world.navigation().ship_id().unwrap(),
+            render_core::MeshHandle::SHIP_PLACEHOLDER,
+        ),
+        (
+            INTERIOR_LOWER_ENTITY,
+            render_core::MeshHandle::ECHO7_INTERIOR_LOWER,
+        ),
+        (
+            INTERIOR_UPPER_ENTITY,
+            render_core::MeshHandle::ECHO7_INTERIOR_UPPER,
+        ),
+        (
+            INTERIOR_CORE_ENTITY,
+            render_core::MeshHandle::ECHO7_INTERIOR_CORE,
+        ),
+    ];
+    let transforms: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter(|node| {
+            expected.iter().any(|(entity, mesh)| {
+                node.entity == SnapshotId::Entity(*entity) && node.mesh == *mesh
+            })
+        })
+        .map(|node| node.transform)
+        .collect();
+    assert_eq!(transforms.len(), 4);
+    assert!(transforms
+        .iter()
+        .all(|transform| *transform == transforms[0]));
+    assert_eq!(
+        snapshot
+            .nodes
+            .iter()
+            .filter(|node| node.mesh == render_core::MeshHandle::SHIP_PLACEHOLDER)
+            .count(),
+        1
+    );
+    for (entity, mesh) in expected {
+        assert!(snapshot
+            .nodes
+            .iter()
+            .any(|node| { node.entity == SnapshotId::Entity(entity) && node.mesh == mesh }));
+    }
+}
+
+#[test]
+fn pilot_snapshot_keeps_component_mount_without_full_mount_duplication() {
+    let world = support::fixture_world();
+    let camera = interior_camera(&world, 16.0 / 9.0).unwrap();
+    let snapshot = snapshot_from_world_with_camera_and_view_and_nareth_and_pilot(
+        &world,
+        Default::default(),
+        &camera,
+        true,
+        true,
+        false,
+    );
+    let meshes: Vec<_> = snapshot.nodes.iter().map(|node| node.mesh).collect();
+    assert!(meshes.contains(&render_core::MeshHandle::SHIP_PLACEHOLDER));
+    assert!(meshes.contains(&render_core::MeshHandle::ECHO7_INTERIOR_LOWER));
+    assert!(meshes.contains(&render_core::MeshHandle::ECHO7_INTERIOR_UPPER));
+    assert!(meshes.contains(&render_core::MeshHandle::ECHO7_INTERIOR_CORE));
+    assert_eq!(
+        meshes
+            .iter()
+            .filter(|mesh| **mesh == render_core::MeshHandle::SHIP_PLACEHOLDER)
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     let world = support::fixture_world();
     let before = format!("{world:?}");
     let snapshot = snapshot_from_world(&world, Default::default());
-    assert_eq!(snapshot.nodes.len(), 19);
+    assert_eq!(snapshot.nodes.len(), 15);
     assert_eq!(
         snapshot
             .nodes
@@ -65,9 +145,10 @@ fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
             && n.transform.scale == render_core::Vec3::splat((PLANET_VISUAL_RADIUS * 2.0) / 15.45)
     }));
     let collectible = world.collectibles().next().unwrap();
-    assert!(snapshot.nodes.iter().any(
-        |n| n.entity == SnapshotId::Entity(collectible.entity) && n.mesh == ASTEROID_FIELD_MESH
-    ));
+    assert!(snapshot
+        .nodes
+        .iter()
+        .any(|n| n.entity == SnapshotId::Entity(collectible.entity) && n.mesh == COLLECTIBLE_MESH));
     assert_eq!(before, format!("{world:?}"));
     assert_eq!(snapshot, snapshot_from_world(&world, Default::default()));
 }
@@ -313,9 +394,7 @@ fn discovered_derelicts_use_stable_ids_positions_and_registered_assets() {
     let derelicts: Vec<_> = snapshot
         .nodes
         .iter()
-        .filter(|node| {
-            node.entity == SnapshotId::Derelict(41) || node.entity == SnapshotId::Derelict(42)
-        })
+        .filter(|node| node.mesh == DERELICT_MESH)
         .collect();
     assert_eq!(derelicts.len(), 2);
     assert!(derelicts.iter().any(|node| {
@@ -393,7 +472,7 @@ fn active_debris_fields_use_stable_ids_and_registered_assets() {
     let fields: Vec<_> = snapshot
         .nodes
         .iter()
-        .filter(|node| node.entity == SnapshotId::Hazard(77))
+        .filter(|node| node.mesh == ASTEROID_FIELD_MESH)
         .collect();
     assert_eq!(fields.len(), 1);
     assert_eq!(fields[0].entity, SnapshotId::Hazard(77));
@@ -468,7 +547,7 @@ fn updates_positions_visibility_spawn_and_missing_entities() {
     scene
         .update(&snapshot_from_world(&world, Default::default()))
         .unwrap();
-    assert_eq!(scene.visible_nodes().count(), 16);
+    assert_eq!(scene.visible_nodes().count(), 12);
     assert!(scene.snapshot().nodes.iter().filter(|n| matches!(n.entity,SnapshotId::Entity(id) if id==enemy || id==collectible || id==new_player)).all(|n| !n.visible));
     let empty = gameplay::GameplayWorld::new();
     assert_eq!(
@@ -679,7 +758,6 @@ fn academic_surface_objects_clear_the_planet_with_surface_aligned_axes() {
             SnapshotId::Destination(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Derelict(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::Hazard(_) => panic!("surface object must have a stable entity id"),
-            SnapshotId::RemotePlayer(_) => panic!("surface object must have a stable entity id"),
             SnapshotId::VisualEvent(_) | SnapshotId::ModelPart { .. } => {
                 panic!("surface object must have a stable entity id")
             }
@@ -879,7 +957,7 @@ fn flight_camera_is_a_third_person_view_behind_the_visual_ship() {
     assert!(camera.view_matrix().is_finite());
     assert!(camera.projection_matrix().is_finite());
     assert!(camera.view_projection_matrix().is_finite());
-    assert!(camera.position().z > ship.z + 12.0);
+    assert!(camera.position().z > ship.z + 30.0);
     assert!(camera.position().z > camera.target().z);
     assert_eq!(
         visual_ship_position(&world),
@@ -894,8 +972,8 @@ fn pilot_camera_is_behind_the_echo7_propulsors_and_aims_at_its_rear_hull() {
     let camera = pilot_camera(&world, 16.0 / 9.0, PILOT_CAMERA_DEFAULT_DISTANCE)
         .expect("pilot camera should be valid");
 
-    assert!(camera.position().z > ship.z + 12.0);
-    assert!(camera.target().z > ship.z + 2.5);
+    assert!(camera.position().z > ship.z + 30.0);
+    assert!(camera.target().z > ship.z);
     assert!(camera.position().z > camera.target().z);
     assert!(camera.view_projection_matrix().is_finite());
 

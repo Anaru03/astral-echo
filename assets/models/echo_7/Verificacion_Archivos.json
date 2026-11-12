@@ -1,0 +1,261 @@
+{
+  "estado": "PASS",
+  "archivos": [
+    {
+      "archivo": "assets/models/echo_7/componentes/ECHO7_Exterior.obj",
+      "objetos": 3011,
+      "triangulos": 127004,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/componentes/ECHO7_Interior_Inferior.obj",
+      "objetos": 1137,
+      "triangulos": 78348,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/componentes/ECHO7_Interior_Superior.obj",
+      "objetos": 634,
+      "triangulos": 43304,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/componentes/ECHO7_Nucleo_Entre_Cubiertas.obj",
+      "objetos": 751,
+      "triangulos": 14732,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj",
+      "objetos": 5533,
+      "triangulos": 263388,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/repuestos/R01_REACTOR_Danado.obj",
+      "objetos": 1,
+      "triangulos": 128,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/repuestos/R01_REACTOR_Sano.obj",
+      "objetos": 1,
+      "triangulos": 60,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/repuestos/R02_SOPORTE_VITAL_Danado.obj",
+      "objetos": 1,
+      "triangulos": 128,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/repuestos/R02_SOPORTE_VITAL_Sano.obj",
+      "objetos": 1,
+      "triangulos": 60,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/repuestos/R03_ELECTRICO_Danado.obj",
+      "objetos": 1,
+      "triangulos": 128,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/repuestos/R03_ELECTRICO_Sano.obj",
+      "objetos": 1,
+      "triangulos": 60,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/repuestos/R04_BANCO_GENETICO_Danado.obj",
+      "objetos": 1,
+      "triangulos": 128,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/repuestos/R04_BANCO_GENETICO_Sano.obj",
+      "objetos": 1,
+      "triangulos": 60,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_01_Cabina.obj",
+      "objetos": 60,
+      "triangulos": 3616,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_02_Pasillos.obj",
+      "objetos": 282,
+      "triangulos": 16920,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_03_Clonacion.obj",
+      "objetos": 249,
+      "triangulos": 21260,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_04_Despertar.obj",
+      "objetos": 208,
+      "triangulos": 11664,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_05_Enfermeria_Laboratorio.obj",
+      "objetos": 175,
+      "triangulos": 10420,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_06_Dormitorios_Sanitarios.obj",
+      "objetos": 225,
+      "triangulos": 8556,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_07_Ingenieria_Taller.obj",
+      "objetos": 128,
+      "triangulos": 8080,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_08_Cocina_Comedor.obj",
+      "objetos": 248,
+      "triangulos": 9392,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_09_Habitat_Central.obj",
+      "objetos": 533,
+      "triangulos": 22228,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_10_Carga_Esclusa.obj",
+      "objetos": 23,
+      "triangulos": 1380,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_11_Propulsion_Paneles.obj",
+      "objetos": 148,
+      "triangulos": 10920,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_13_Esclusa_Intermedia.obj",
+      "objetos": 53,
+      "triangulos": 3212,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_14_Tren_Aterrizaje_Rampa.obj",
+      "objetos": 125,
+      "triangulos": 6764,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_15_Reactor_Soporte_Vital.obj",
+      "objetos": 95,
+      "triangulos": 6752,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_16_Equipo_Clonacion.obj",
+      "objetos": 55,
+      "triangulos": 2868,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_17_Equipo_Exploracion.obj",
+      "objetos": 71,
+      "triangulos": 5856,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_18_Kit_Dano_Reparacion.obj",
+      "objetos": 31,
+      "triangulos": 2832,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_19_Observatorio_Comunicaciones.obj",
+      "objetos": 249,
+      "triangulos": 9980,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_20_Huerto_Reserva.obj",
+      "objetos": 283,
+      "triangulos": 16308,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_21_Sala_Comun.obj",
+      "objetos": 227,
+      "triangulos": 8132,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_22_Control_Navegacion.obj",
+      "objetos": 251,
+      "triangulos": 10164,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_23_Archivo_Biologico.obj",
+      "objetos": 116,
+      "triangulos": 7296,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_24_Almacen_Logistica.obj",
+      "objetos": 116,
+      "triangulos": 7296,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_25_Control_Auxiliar.obj",
+      "objetos": 29,
+      "triangulos": 1660,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_26_Pasillos_Superiores.obj",
+      "objetos": 283,
+      "triangulos": 16980,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_27_Balcon_Habitat.obj",
+      "objetos": 675,
+      "triangulos": 10204,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_28_Escalera_Entre_Cubiertas.obj",
+      "objetos": 45,
+      "triangulos": 2780,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_29_Ascensor_Carga.obj",
+      "objetos": 31,
+      "triangulos": 1748,
+      "indices_uv_materiales_rutas": "OK"
+    },
+    {
+      "archivo": "assets/models/echo_7/separados/ECHO7_30_Exterior_Unificado.obj",
+      "objetos": 550,
+      "triangulos": 20952,
+      "indices_uv_materiales_rutas": "OK"
+    }
+  ],
+  "posiciones_y_vector_area_separados": "iguales al origen dentro de tolerancia de exportacion; poligonos no planos triangulados",
+  "png_verde": "copia exacta",
+  "blender": "no disponible: script incluido, no ejecutado",
+  "rust": "sin repositorio: importacion y rendimiento no verificados"
+}

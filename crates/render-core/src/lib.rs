@@ -4,6 +4,7 @@ mod textured_model;
 
 pub mod bounds;
 pub mod camera;
+pub mod character_animation;
 pub mod cpu_model_loader;
 pub mod demo;
 pub mod geometry;
@@ -23,6 +24,7 @@ pub mod visual_asset;
 
 pub use bounds::{Aabb, AabbError, Frustum, Plane};
 pub use camera::{Camera, CameraError, Projection};
+pub use character_animation::{skin_vertices, CpuPose, RigidSkinVertex};
 pub use cpu_model_loader::{CpuModelLoadManager, CpuModelLoadState};
 pub use demo::{
     demo_camera, demo_scene, grid_mesh, terrain_height, GRID_SUBDIVISIONS, TERRAIN_EXTENT,
@@ -41,7 +43,7 @@ pub use lighting::{
     MAX_POINT_LIGHTS,
 };
 pub use material::{MaterialHandle, MaterialInfo};
-pub use material_texture::MaterialTextureRegistry;
+pub use material_texture::{DecodedTexture, MaterialTextureRegistry, TextureAddressMode};
 pub use math::{
     from_engine, normal_matrix, normalize_direction, perspective_rh_wgpu, to_engine,
     transform_normal, Mat4, Quat, Vec2, Vec3, Vec4,
@@ -57,8 +59,8 @@ pub use snapshot::{
     SnapshotNode, GAME_OVER_GLYPHS,
 };
 pub use textured_model::{
-    append_model_parts, expand_model_parts, load_textured_obj, register_textured_model,
-    RegisteredModelPart, TexturedMaterial, TexturedMesh, TexturedModel,
+    expand_model_parts, load_textured_obj, register_textured_model, RegisteredModelPart,
+    TexturedMaterial, TexturedMesh, TexturedModel,
 };
 pub use transform::Transform;
 pub use visual::{

@@ -1,0 +1,29 @@
+newmtl olive
+Kd 0.20000000298023224 0.28999999165534973 0.17000000178813934
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_metal_oscuro.png
+newmtl ivory
+Kd 0.800000011920929 0.7599999904632568 0.5899999737739563
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_marfil_seamless.png
+newmtl dark
+Kd 0.07000000029802322 0.10000000149011612 0.07999999821186066
+d 1
+illum 1
+newmtl teal
+Kd 0.1599999964237213 0.3700000047683716 0.41999998688697815
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_vidrio_azul.png
+newmtl coral
+Kd 0.6200000047683716 0.28999999165534973 0.20999999344348907
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_coral.png
+newmtl metal
+Kd 0.3499999940395355 0.4000000059604645 0.36000001430511475
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_metal_gris.png

@@ -1,7 +1,9 @@
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Vec2, Vec3, Vec4};
+use render_core::MaterialHandle;
 use render_cpu::pipeline::raster::{
-    raster_triangle, shade_fragment_with_shader, shade_fragment_with_time, to_screen, FillRule,
-    Fragment, FragmentShader, ScreenVertex,
+    raster_triangle, sample_texture, shade_fragment_with_shader, shade_fragment_with_time,
+    shade_fragment_with_time_and_textures, to_screen, FillRule, Fragment, FragmentShader,
+    ScreenVertex,
 };
 use render_cpu::pipeline::CpuPipeline;
 use render_cpu::{
@@ -23,7 +25,86 @@ fn screen(x: f32, y: f32) -> ScreenVertex {
         z: 0.5,
         inv_w: 1.0,
         color: Vec4::ONE,
+        uv: glam::Vec2::ZERO,
+        material: None,
     }
+}
+
+#[test]
+fn raster_fragments_keep_perspective_uv_and_material_association() {
+    let material = MaterialHandle::new(17);
+    let mut a = screen(1.0, 1.0);
+    let mut b = screen(7.0, 1.0);
+    let mut c = screen(1.0, 7.0);
+    a.uv = Vec2::new(0.0, 0.0);
+    b.uv = Vec2::new(1.0, 0.0);
+    c.uv = Vec2::new(0.0, 1.0);
+    b.inv_w = 0.5;
+    c.inv_w = 0.5;
+    a.material = Some(material);
+    b.material = Some(material);
+    c.material = Some(material);
+    let mut fragments = Vec::new();
+    raster_triangle(&a, &b, &c, (8, 8), FillRule::All, &mut fragments);
+    let fragment = fragments.first().expect("fragment");
+    assert_eq!(fragment.material, Some(material));
+    assert!(fragment.uv.is_finite());
+    assert_ne!(fragment.uv, Vec2::ZERO);
+}
+
+#[test]
+fn texture_sampling_clamps_and_flips_png_rows() {
+    let texture = render_core::DecodedTexture {
+        width: 2,
+        height: 2,
+        pixels: std::sync::Arc::from([
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+        ]),
+    };
+    assert_eq!(
+        sample_texture(&texture, Vec2::new(0.0, 1.0)),
+        Vec4::new(1.0, 0.0, 0.0, 1.0)
+    );
+    assert_eq!(
+        sample_texture(&texture, Vec2::new(1.0, 0.0)),
+        Vec4::new(1.0, 1.0, 0.0, 1.0)
+    );
+    assert_eq!(
+        sample_texture(&texture, Vec2::new(-1.0, 2.0)),
+        Vec4::new(1.0, 0.0, 0.0, 1.0)
+    );
+}
+
+#[test]
+fn textured_fragment_uses_perspective_uv_once() {
+    let material = render_core::MaterialHandle::new(23);
+    let path = std::env::temp_dir().join(format!("astral-echo-raster-{}.png", std::process::id()));
+    let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 2, 1);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&[255, 0, 0, 255, 0, 255, 0, 255])
+        .unwrap();
+    writer.finish().unwrap();
+    let mut registry = render_core::MaterialTextureRegistry::new();
+    registry.try_register(material, &path).unwrap();
+    let fragment = Fragment {
+        x: 0,
+        y: 0,
+        depth: 0.5,
+        color: Vec4::ONE,
+        uv: Vec2::new(0.75, 0.0),
+        material: Some(material),
+    };
+    let color = shade_fragment_with_time_and_textures(
+        &fragment,
+        FragmentShader::VertexColor,
+        0.0,
+        Some(&registry),
+    );
+    assert_eq!(color, render_cpu::Color::new(0, 255, 0, 255));
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -34,12 +115,16 @@ fn solar_fragment_shader_applies_position_dependent_effect() {
         y: 0,
         depth: 0.5,
         color,
+        uv: glam::Vec2::ZERO,
+        material: None,
     };
     let right = Fragment {
         x: 16,
         y: 0,
         depth: 0.5,
         color,
+        uv: glam::Vec2::ZERO,
+        material: None,
     };
 
     assert_ne!(
@@ -59,6 +144,8 @@ fn solar_fragment_shader_is_deterministic_and_animated() {
         y: 3,
         depth: 0.5,
         color: glam::Vec4::new(0.8, 0.4, 0.2, 1.0),
+        uv: glam::Vec2::ZERO,
+        material: None,
     };
     let first = shade_fragment_with_time(&fragment, FragmentShader::SolarBands, 0.0);
     let repeat = shade_fragment_with_time(&fragment, FragmentShader::SolarBands, 0.0);

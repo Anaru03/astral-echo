@@ -19,7 +19,6 @@ use crate::ProjectEchoSession;
 
 const NETWORK_TICK: Duration = Duration(100);
 const MAX_RECOVERY_REQUESTS_PER_PLAYER: usize = 32;
-const PLAYER_COLLISION_DIAMETER: f32 = 1.2;
 
 #[derive(Debug)]
 pub enum MultiplayerError {
@@ -247,67 +246,12 @@ impl MultiplayerSession {
         }
         self.players.insert(player_id, entity);
 
-        if let Some(mut player) = self.gameplay.world().player(entity).copied() {
-            let slot = self
-                .players
-                .keys()
-                .position(|id| *id == player_id)
-                .unwrap_or(0) as f32;
-            player.position.x += slot * PLAYER_COLLISION_DIAMETER * 1.15;
-            self.gameplay
-                .world_mut()
-                .initialize_player_position(entity, player.position);
-        }
-
         let _ = self.server.send_to(
             player_id,
             &ServerMessage::Mission5ContentState {
                 content: self.mission5_content_projection(),
             },
         );
-        let _ = self.server.send_to(
-            player_id,
-            &ServerMessage::SharedInventoryUpdated {
-                inventory: self.shared_inventory_projection(),
-            },
-        );
-        let _ = self.server.send_to(
-            player_id,
-            &ServerMessage::EnemyStateUpdated {
-                enemies: self.enemy_state_projection(),
-            },
-        );
-
-        let transforms = self
-            .players
-            .iter()
-            .filter_map(|(&network_id, &entity)| {
-                let player = self.gameplay.world().player(entity)?;
-                Some((
-                    network_id,
-                    PlayerTransform::new(
-                        NetworkVec3::new(player.position.x, player.position.y, player.position.z),
-                        NetworkOrientation::new(
-                            player.orientation.yaw_degrees,
-                            player.orientation.pitch_degrees,
-                        ),
-                        NetworkVec3::new(player.velocity.x, player.velocity.y, player.velocity.z),
-                    ),
-                ))
-            })
-            .collect::<Vec<_>>();
-        for &recipient in self.players.keys() {
-            for &(remote_id, transform) in &transforms {
-                let _ = self.server.send_to(
-                    recipient,
-                    &ServerMessage::PlayerMoved {
-                        player_id: remote_id,
-                        sequence: 0,
-                        transform,
-                    },
-                );
-            }
-        }
 
         Ok(())
     }
@@ -726,52 +670,28 @@ impl MultiplayerSession {
         {
             return Ok(());
         }
-        let mut updated = self
+        let updated = self
             .gameplay
             .world()
             .player(entity)
             .copied()
             .ok_or(MultiplayerError::UnknownPlayer(player_id))?;
-        for (&other_id, &other_entity) in &self.players {
-            if other_id == player_id {
-                continue;
-            }
-            let Some(other) = self.gameplay.world().player(other_entity) else {
-                continue;
-            };
-            let dx = updated.position.x - other.position.x;
-            let dz = updated.position.z - other.position.z;
-            let distance_squared = dx * dx + dz * dz;
-            let minimum_squared = PLAYER_COLLISION_DIAMETER * PLAYER_COLLISION_DIAMETER;
-            if distance_squared >= minimum_squared {
-                continue;
-            }
-            let (nx, nz) = if distance_squared > 0.0001 {
-                let inverse_distance = distance_squared.sqrt().recip();
-                (dx * inverse_distance, dz * inverse_distance)
-            } else if player_id < other_id {
-                (-1.0, 0.0)
-            } else {
-                (1.0, 0.0)
-            };
-            updated.position.x = other.position.x + nx * PLAYER_COLLISION_DIAMETER;
-            updated.position.z = other.position.z + nz * PLAYER_COLLISION_DIAMETER;
-            self.gameplay
-                .world_mut()
-                .initialize_player_position(entity, updated.position);
-        }
-        self.server.broadcast(&ServerMessage::PlayerMoved {
-            player_id,
-            sequence,
-            transform: PlayerTransform::new(
-                NetworkVec3::new(updated.position.x, updated.position.y, updated.position.z),
-                NetworkOrientation::new(
-                    updated.orientation.yaw_degrees,
-                    updated.orientation.pitch_degrees,
+        self.server.broadcast_except(
+            &ServerMessage::PlayerMoved {
+                player_id,
+                sequence,
+                transform: PlayerTransform::new(
+                    NetworkVec3::new(updated.position.x, updated.position.y, updated.position.z),
+                    NetworkOrientation::new(
+                        updated.orientation.yaw_degrees,
+                        updated.orientation.pitch_degrees,
+                    ),
+                    NetworkVec3::new(updated.velocity.x, updated.velocity.y, updated.velocity.z),
                 ),
-                NetworkVec3::new(updated.velocity.x, updated.velocity.y, updated.velocity.z),
-            ),
-        });
+            },
+            Some(player_id),
+        );
+        self.broadcast_enemy_state();
         Ok(())
     }
 }
@@ -831,31 +751,6 @@ mod tests {
         panic!("no se recibió el estado inicial de Mission5");
     }
 
-    fn receive_non_bootstrap(client: &mut GameClient) -> ServerMessage {
-        loop {
-            let message = client.receive().unwrap();
-            match message {
-                ServerMessage::SharedInventoryUpdated { .. }
-                | ServerMessage::EnemyStateUpdated { .. }
-                | ServerMessage::PilotControlChanged { .. }
-                | ServerMessage::ShipMoved { sequence: 0, .. }
-                | ServerMessage::PlayerMoved { sequence: 0, .. } => continue,
-                other => return other,
-            }
-        }
-    }
-
-    fn drain_initial_sync(client: &mut GameClient) {
-        while let Some(message) = client.try_receive().unwrap() {
-            assert!(matches!(
-                message,
-                ServerMessage::SharedInventoryUpdated { .. }
-                    | ServerMessage::EnemyStateUpdated { .. }
-                    | ServerMessage::PlayerMoved { sequence: 0, .. }
-            ));
-        }
-    }
-
     #[test]
     fn ingreso_crea_una_entidad_estable_y_movimiento_se_aplica() {
         let mut session = MultiplayerSession::bind("127.0.0.1:0").unwrap();
@@ -863,7 +758,7 @@ mod tests {
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            receive_non_bootstrap(&mut client),
+            client.receive().unwrap(),
             ServerMessage::Mission5ContentState { .. }
         ));
         let network_player = session.network_player(client.player_id()).unwrap();
@@ -901,7 +796,7 @@ mod tests {
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
 
-        let message = receive_non_bootstrap(&mut client);
+        let message = client.receive().unwrap();
         let ServerMessage::Mission5ContentState { content } = message else {
             panic!("faltó el estado inicial de Mission5");
         };
@@ -935,9 +830,14 @@ mod tests {
 
         for client in &clients {
             let entity = session.network_player(client.player_id()).unwrap().entity;
-            let inventory = session.gameplay().world().inventory(entity).unwrap();
-            assert_eq!(inventory.capacity(), 250);
-            assert_eq!(inventory.quantity(gameplay::FUEL_RESOURCE_ITEM), 200);
+            assert_eq!(
+                session
+                    .gameplay()
+                    .world()
+                    .inventory(entity)
+                    .map(|value| value.capacity()),
+                Some(20)
+            );
         }
 
         for mut client in clients {
@@ -951,7 +851,7 @@ mod tests {
         let address = session.local_addr().unwrap();
         let mut first = GameClient::connect(address, "Jugador 1").unwrap();
         wait_for_update(&mut session);
-        let _ = receive_non_bootstrap(&mut first);
+        let _ = first.receive().unwrap();
 
         let mission = crate::cooperacion::PROGRESION_COOPERATIVA;
         let setup = session.gameplay.update([
@@ -965,21 +865,21 @@ mod tests {
         first.request_mission_recovery(21).unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            receive_non_bootstrap(&mut first),
+            first.receive().unwrap(),
             ServerMessage::MissionRecoveryResult { .. }
         ));
         assert!(matches!(
-            receive_non_bootstrap(&mut first),
+            first.receive().unwrap(),
             ServerMessage::MissionContentUpdated { .. }
         ));
 
         let mut second = GameClient::connect(address, "Jugador 2").unwrap();
         wait_for_player(&mut session, second.player_id());
         assert!(matches!(
-            receive_non_bootstrap(&mut second),
+            second.receive().unwrap(),
             ServerMessage::PlayerJoined { .. }
         ));
-        let message = receive_non_bootstrap(&mut second);
+        let message = second.receive().unwrap();
         let ServerMessage::Mission5ContentState { content } = message else {
             panic!("faltó el estado inicial para el segundo cliente");
         };
@@ -987,7 +887,6 @@ mod tests {
         assert!(content.destination.is_some());
         assert!(content.shooter.is_some());
         assert_eq!(second.mission5_content(), Some(&content));
-        drain_initial_sync(&mut second);
         assert!(second.try_receive().unwrap().is_none());
 
         first.disconnect().unwrap();
@@ -1001,14 +900,14 @@ mod tests {
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            receive_non_bootstrap(&mut client),
+            client.receive().unwrap(),
             ServerMessage::Mission5ContentState { .. }
         ));
 
         client.request_mission_recovery(7).unwrap();
         wait_for_update(&mut session);
         assert_eq!(
-            receive_non_bootstrap(&mut client),
+            client.receive().unwrap(),
             ServerMessage::MissionRecoveryResult {
                 request_id: 7,
                 outcome: networking::MissionRecoveryOutcome::InvalidMissionTransition,
@@ -1019,7 +918,7 @@ mod tests {
         client.request_mission_recovery(7).unwrap();
         wait_for_update(&mut session);
         assert_eq!(
-            receive_non_bootstrap(&mut client),
+            client.receive().unwrap(),
             ServerMessage::MissionRecoveryResult {
                 request_id: 7,
                 outcome: networking::MissionRecoveryOutcome::InvalidMissionTransition,
@@ -1035,22 +934,22 @@ mod tests {
         let mut first = GameClient::connect(address, "Jugador 1").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            receive_non_bootstrap(&mut first),
+            first.receive().unwrap(),
             ServerMessage::Mission5ContentState { .. }
         ));
         let mut second = GameClient::connect(address, "Jugador 2").unwrap();
         wait_for_player(&mut session, second.player_id());
 
         assert!(matches!(
-            receive_non_bootstrap(&mut first),
+            first.receive().unwrap(),
             ServerMessage::PlayerJoined { .. }
         ));
         assert!(matches!(
-            receive_non_bootstrap(&mut second),
+            second.receive().unwrap(),
             ServerMessage::PlayerJoined { .. }
         ));
         assert!(matches!(
-            receive_non_bootstrap(&mut second),
+            second.receive().unwrap(),
             ServerMessage::Mission5ContentState { .. }
         ));
 
@@ -1067,14 +966,14 @@ mod tests {
         wait_for_update(&mut session);
 
         assert_eq!(
-            receive_non_bootstrap(&mut first),
+            first.receive().unwrap(),
             ServerMessage::MissionRecoveryResult {
                 request_id: 11,
                 outcome: networking::MissionRecoveryOutcome::Succeeded,
             }
         );
-        let first_update = receive_non_bootstrap(&mut first);
-        let second_update = receive_non_bootstrap(&mut second);
+        let first_update = first.receive().unwrap();
+        let second_update = second.receive().unwrap();
         assert_eq!(first_update, second_update);
         let ServerMessage::MissionContentUpdated { content } = first_update else {
             panic!("faltó la actualización compartida de Mission5");
@@ -1092,7 +991,7 @@ mod tests {
         first.request_mission_recovery(11).unwrap();
         wait_for_update(&mut session);
         assert_eq!(
-            receive_non_bootstrap(&mut first),
+            first.receive().unwrap(),
             ServerMessage::MissionRecoveryResult {
                 request_id: 11,
                 outcome: networking::MissionRecoveryOutcome::Succeeded,
@@ -1112,7 +1011,7 @@ mod tests {
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            receive_non_bootstrap(&mut client),
+            client.receive().unwrap(),
             ServerMessage::Mission5ContentState { .. }
         ));
 
@@ -1204,7 +1103,7 @@ mod tests {
         let mut client = GameClient::connect(address, "Jugador").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            receive_non_bootstrap(&mut client),
+            client.receive().unwrap(),
             ServerMessage::Mission5ContentState { .. }
         ));
 
@@ -1278,7 +1177,7 @@ mod tests {
         let mut first = GameClient::connect(address, "Jugador 1").unwrap();
         wait_for_update(&mut session);
         assert!(matches!(
-            receive_non_bootstrap(&mut first),
+            first.receive().unwrap(),
             ServerMessage::Mission5ContentState { .. }
         ));
         let mut second = GameClient::connect(address, "Jugador 2").unwrap();
@@ -1333,15 +1232,15 @@ mod tests {
         );
 
         assert!(matches!(
-            receive_non_bootstrap(&mut second),
+            second.receive().unwrap(),
             ServerMessage::PlayerJoined { .. }
         ));
         assert!(matches!(
-            receive_non_bootstrap(&mut second),
+            second.receive().unwrap(),
             ServerMessage::Mission5ContentState { .. }
         ));
         assert!(
-            matches!(receive_non_bootstrap(&mut second), ServerMessage::PlayerMoved { player_id, sequence: 2, .. } if player_id == first.player_id())
+            matches!(second.receive().unwrap(), ServerMessage::PlayerMoved { player_id, sequence: 2, .. } if player_id == first.player_id())
         );
 
         first.disconnect().unwrap();

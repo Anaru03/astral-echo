@@ -22,6 +22,8 @@ fn quad(width: u32, height: u32, depth: f32, color: Vec4) -> Vec<Triangle> {
         z: depth,
         inv_w,
         color,
+        uv: glam::Vec2::ZERO,
+        material: None,
     };
     let a = vertex(0.0, 0.0, 1.0);
     let b = vertex(width as f32, 0.0, 0.5);
