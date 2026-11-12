@@ -3,7 +3,9 @@ use gameplay::events::GameplayEvent;
 use gameplay::types::MissionId;
 use gameplay::GameplayCommand;
 
-use crate::{ecos_anomalia, el_despertar, la_defensa_imposible, tormenta_gravitacional, ProjectEchoSession};
+use crate::{
+    ecos_anomalia, el_despertar, la_defensa_imposible, tormenta_gravitacional, ProjectEchoSession,
+};
 
 pub const CAMPAIGN_ORDER: [MissionId; 5] = [
     el_despertar::EL_DESPERTAR,
@@ -39,9 +41,10 @@ pub(crate) fn unlock_following_missions(session: &mut ProjectEchoSession) {
             .mission(next)
             .is_some_and(|value| value.state() == MissionState::Locked)
         {
-            let _ = session
-                .processor
-                .process_followup(&mut session.world, GameplayCommand::UnlockMission { mission: next });
+            let _ = session.processor.process_followup(
+                &mut session.world,
+                GameplayCommand::UnlockMission { mission: next },
+            );
         }
     }
 }
@@ -49,12 +52,12 @@ pub(crate) fn unlock_following_missions(session: &mut ProjectEchoSession) {
 #[cfg(test)]
 mod tests {
     use engine::{Duration, Vec3};
-    use gameplay::{
-        BreakerId, BreakerState, ElectricalBreakerConfiguration, ElectricalPanelConfiguration,
-        Destination, DestinationType, DiscoveryState, GameplayCommand, LifeSupportConfiguration,
-        OxygenCompartmentConfiguration, StationType,
-    };
     use gameplay::domains::mission::MissionState;
+    use gameplay::{
+        BreakerId, BreakerState, Destination, DestinationType, DiscoveryState,
+        ElectricalBreakerConfiguration, ElectricalPanelConfiguration, GameplayCommand,
+        LifeSupportConfiguration, OxygenCompartmentConfiguration, StationType,
+    };
 
     use super::*;
 
@@ -88,39 +91,78 @@ mod tests {
     #[test]
     fn cooperative_content_is_prepared_only_after_accepted_start() {
         let mut session = ProjectEchoSession::new();
-        assert!(session.world().destination(crate::cooperacion::SIGNAL_DESTINATION).is_none());
-        assert_eq!(session.world().combatants().filter(|value| {
-            !value.is_player
-                && value.active
-                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
-        }).count(), 0);
+        assert!(session
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .is_none());
+        assert_eq!(
+            session
+                .world()
+                .combatants()
+                .filter(|value| {
+                    !value.is_player
+                        && value.active
+                        && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+                })
+                .count(),
+            0
+        );
 
         let unlock = session.update([GameplayCommand::UnlockMission {
             mission: crate::cooperacion::PROGRESION_COOPERATIVA,
         }]);
-        assert!(matches!(unlock[0].status, gameplay::CommandStatus::Success { changed: true }));
-        assert!(session.world().destination(crate::cooperacion::SIGNAL_DESTINATION).is_none());
+        assert!(matches!(
+            unlock[0].status,
+            gameplay::CommandStatus::Success { changed: true }
+        ));
+        assert!(session
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .is_none());
 
         let start = session.update([GameplayCommand::StartMission {
             mission: crate::cooperacion::PROGRESION_COOPERATIVA,
         }]);
-        assert!(matches!(start[0].status, gameplay::CommandStatus::Success { changed: true }));
-        assert!(session.world().destination(crate::cooperacion::SIGNAL_DESTINATION).is_some());
-        assert_eq!(session.world().combatants().filter(|value| {
-            !value.is_player
-                && value.active
-                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
-        }).count(), 1);
+        assert!(matches!(
+            start[0].status,
+            gameplay::CommandStatus::Success { changed: true }
+        ));
+        assert!(session
+            .world()
+            .destination(crate::cooperacion::SIGNAL_DESTINATION)
+            .is_some());
+        assert_eq!(
+            session
+                .world()
+                .combatants()
+                .filter(|value| {
+                    !value.is_player
+                        && value.active
+                        && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+                })
+                .count(),
+            1
+        );
 
         let repeated = session.update([GameplayCommand::StartMission {
             mission: crate::cooperacion::PROGRESION_COOPERATIVA,
         }]);
-        assert!(matches!(repeated[0].status, gameplay::CommandStatus::Rejected { .. }));
-        assert_eq!(session.world().combatants().filter(|value| {
-            !value.is_player
-                && value.active
-                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
-        }).count(), 1);
+        assert!(matches!(
+            repeated[0].status,
+            gameplay::CommandStatus::Rejected { .. }
+        ));
+        assert_eq!(
+            session
+                .world()
+                .combatants()
+                .filter(|value| {
+                    !value.is_player
+                        && value.active
+                        && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+                })
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -142,18 +184,28 @@ mod tests {
         let result = session.update([GameplayCommand::StartMission {
             mission: crate::cooperacion::PROGRESION_COOPERATIVA,
         }]);
-        assert!(matches!(result[0].status, gameplay::CommandStatus::Success { changed: true }));
+        assert!(matches!(
+            result[0].status,
+            gameplay::CommandStatus::Success { changed: true }
+        ));
         assert!(matches!(
             result[1].status,
             gameplay::CommandStatus::Rejected {
                 reason: gameplay::CommandRejection::MissionContentUnavailable
             }
         ));
-        assert_eq!(session.world().combatants().filter(|value| {
-            !value.is_player
-                && value.active
-                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
-        }).count(), 0);
+        assert_eq!(
+            session
+                .world()
+                .combatants()
+                .filter(|value| {
+                    !value.is_player
+                        && value.active
+                        && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+                })
+                .count(),
+            0
+        );
         assert_eq!(
             session
                 .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
@@ -225,11 +277,18 @@ mod tests {
             .world()
             .destination(crate::cooperacion::SIGNAL_DESTINATION)
             .is_some());
-        assert_eq!(session.world().combatants().filter(|value| {
-            !value.is_player
-                && value.active
-                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
-        }).count(), 1);
+        assert_eq!(
+            session
+                .world()
+                .combatants()
+                .filter(|value| {
+                    !value.is_player
+                        && value.active
+                        && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+                })
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -241,22 +300,33 @@ mod tests {
         session.update([GameplayCommand::StartMission {
             mission: crate::cooperacion::PROGRESION_COOPERATIVA,
         }]);
-        let before = session.world().combatants().filter(|value| {
-            !value.is_player
-                && value.active
-                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
-        }).count();
+        let before = session
+            .world()
+            .combatants()
+            .filter(|value| {
+                !value.is_player
+                    && value.active
+                    && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+            })
+            .count();
         let retry = session.update([GameplayCommand::RetryCooperativeMissionContent]);
         let retry = &retry[0];
         assert!(matches!(
             retry.status,
             gameplay::CommandStatus::Success { changed: true }
         ));
-        assert_eq!(session.world().combatants().filter(|value| {
-            !value.is_player
-                && value.active
-                && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
-        }).count(), before);
+        assert_eq!(
+            session
+                .world()
+                .combatants()
+                .filter(|value| {
+                    !value.is_player
+                        && value.active
+                        && value.archetype == Some(gameplay::EnemyArchetype::Shooter)
+                })
+                .count(),
+            before
+        );
 
         let mut unavailable = ProjectEchoSession::new();
         let no_repair = unavailable.update([GameplayCommand::RetryCooperativeMissionContent]);
@@ -323,37 +393,101 @@ mod tests {
 
         let run = |session: &mut ProjectEchoSession, command| {
             let result = session.update([command]);
-            assert!(matches!(result.first().map(|value| &value.status), Some(gameplay::CommandStatus::Success { changed: true })));
+            assert!(matches!(
+                result.first().map(|value| &value.status),
+                Some(gameplay::CommandStatus::Success { changed: true })
+            ));
         };
-        run(&mut session, GameplayCommand::UnlockMission { mission: el_despertar::EL_DESPERTAR });
-        run(&mut session, GameplayCommand::StartMission { mission: el_despertar::EL_DESPERTAR });
-        run(&mut session, GameplayCommand::Interact { player, target: console });
-        run(&mut session, GameplayCommand::Interact { player, target: electrical });
-        run(&mut session, GameplayCommand::SetElectricalBreakerState {
-            player,
-            panel: electrical,
-            breaker: BreakerId::new(1),
-            state: BreakerState::On,
-        });
-        run(&mut session, GameplayCommand::Interact { player, target: life_support });
-        run(&mut session, GameplayCommand::SetOxygenAllocation {
-            player,
-            panel: life_support,
-            compartment: gameplay::CompartmentId::new(1),
-            allocation: 3,
-        });
-        run(&mut session, GameplayCommand::SetOxygenAllocation {
-            player,
-            panel: life_support,
-            compartment: gameplay::CompartmentId::new(2),
-            allocation: 2,
-        });
+        run(
+            &mut session,
+            GameplayCommand::UnlockMission {
+                mission: el_despertar::EL_DESPERTAR,
+            },
+        );
+        run(
+            &mut session,
+            GameplayCommand::StartMission {
+                mission: el_despertar::EL_DESPERTAR,
+            },
+        );
+        run(
+            &mut session,
+            GameplayCommand::Interact {
+                player,
+                target: console,
+            },
+        );
+        run(
+            &mut session,
+            GameplayCommand::Interact {
+                player,
+                target: electrical,
+            },
+        );
+        run(
+            &mut session,
+            GameplayCommand::SetElectricalBreakerState {
+                player,
+                panel: electrical,
+                breaker: BreakerId::new(1),
+                state: BreakerState::On,
+            },
+        );
+        run(
+            &mut session,
+            GameplayCommand::Interact {
+                player,
+                target: life_support,
+            },
+        );
+        run(
+            &mut session,
+            GameplayCommand::SetOxygenAllocation {
+                player,
+                panel: life_support,
+                compartment: gameplay::CompartmentId::new(1),
+                allocation: 3,
+            },
+        );
+        run(
+            &mut session,
+            GameplayCommand::SetOxygenAllocation {
+                player,
+                panel: life_support,
+                compartment: gameplay::CompartmentId::new(2),
+                allocation: 2,
+            },
+        );
         run(&mut session, GameplayCommand::UnlockDoor { door });
-        run(&mut session, GameplayCommand::Interact { player, target: door });
-        run(&mut session, GameplayCommand::Interact { player, target: station });
+        run(
+            &mut session,
+            GameplayCommand::Interact {
+                player,
+                target: door,
+            },
+        );
+        run(
+            &mut session,
+            GameplayCommand::Interact {
+                player,
+                target: station,
+            },
+        );
 
-        assert_eq!(session.mission_progress(el_despertar::EL_DESPERTAR).unwrap().state, MissionState::Completed);
-        assert_eq!(session.mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state, MissionState::Available);
+        assert_eq!(
+            session
+                .mission_progress(el_despertar::EL_DESPERTAR)
+                .unwrap()
+                .state,
+            MissionState::Completed
+        );
+        assert_eq!(
+            session
+                .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+                .unwrap()
+                .state,
+            MissionState::Available
+        );
         let guidance = session
             .world()
             .guidance_for_player(player)
@@ -366,7 +500,10 @@ mod tests {
                     ))
         }));
         for mission in CAMPAIGN_ORDER.iter().skip(2) {
-            assert_eq!(session.mission_progress(*mission).unwrap().state, MissionState::Locked);
+            assert_eq!(
+                session.mission_progress(*mission).unwrap().state,
+                MissionState::Locked
+            );
         }
 
         let before_repeat = session.save_state().serialize();
@@ -374,8 +511,22 @@ mod tests {
         assert_eq!(session.save_state().serialize(), before_repeat);
         let save = session.save_state();
         let mut restored = ProjectEchoSession::new();
-        restored.restore_state(save).expect("campaign state should restore");
-        assert_eq!(restored.mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state, MissionState::Available);
-        assert_ne!(restored.mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA).unwrap().state, MissionState::Active);
+        restored
+            .restore_state(save)
+            .expect("campaign state should restore");
+        assert_eq!(
+            restored
+                .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+                .unwrap()
+                .state,
+            MissionState::Available
+        );
+        assert_ne!(
+            restored
+                .mission_progress(ecos_anomalia::ECOS_DE_LA_ANOMALIA)
+                .unwrap()
+                .state,
+            MissionState::Active
+        );
     }
 }

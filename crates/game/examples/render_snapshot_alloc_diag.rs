@@ -37,12 +37,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         System.dealloc(pointer, layout);
     }
 
-    unsafe fn realloc(
-        &self,
-        pointer: *mut u8,
-        layout: Layout,
-        new_size: usize,
-    ) -> *mut u8 {
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let new_pointer = System.realloc(pointer, layout, new_size);
         if !new_pointer.is_null() {
             REALLOCATIONS.fetch_add(1, Ordering::Relaxed);
@@ -76,9 +71,7 @@ fn main() {
     diagnose("academic_surface_objects_filtered", &world, filtered_params);
 
     assert_eq!(before, format!("{world:?}"));
-    println!(
-        "iterations: warmup={WARMUP_ITERATIONS}, measured={MEASURED_ITERATIONS}"
-    );
+    println!("iterations: warmup={WARMUP_ITERATIONS}, measured={MEASURED_ITERATIONS}");
 }
 
 fn validate_scenario(
@@ -97,7 +90,10 @@ fn validate_scenario(
         })
         .count();
     assert_eq!(surface_count, if expects_surface_objects { 4 } else { 0 });
-    assert!(snapshot.nodes.iter().all(|node| node.transform.matrix().is_finite()));
+    assert!(snapshot
+        .nodes
+        .iter()
+        .all(|node| node.transform.matrix().is_finite()));
     black_box(snapshot);
 }
 
@@ -126,9 +122,7 @@ fn diagnose(name: &str, world: &gameplay::GameplayWorld, params: BridgeParams<'_
         black_box(snapshot);
     }
 
-    println!(
-        "{name}: nodes={node_len}/{node_capacity}, lights={light_len}/{light_capacity}, "
-    );
+    println!("{name}: nodes={node_len}/{node_capacity}, lights={light_len}/{light_capacity}, ");
     println!(
         "  avg_alloc_calls={:.2}, avg_allocated_bytes={:.2}, avg_realloc_calls={:.2}, avg_reallocated_bytes={:.2}",
         total.allocations as f64 / MEASURED_ITERATIONS as f64,

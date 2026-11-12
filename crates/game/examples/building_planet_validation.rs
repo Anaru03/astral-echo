@@ -2,12 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use game::render_bridge::{
-    academic_planet_transform, BUILDING_PLANET_MESH, PLANET_VISUAL_RADIUS,
-};
+use game::render_bridge::{academic_planet_transform, BUILDING_PLANET_MESH, PLANET_VISUAL_RADIUS};
 use render_core::{
-    Camera, LightingMode, MaterialInfo, Projection, RenderLight, RenderSnapshot,
-    SnapshotLight, SnapshotNode, SnapshotScene, Transform, Vec3, VisualAssets,
+    Camera, LightingMode, MaterialInfo, Projection, RenderLight, RenderSnapshot, SnapshotLight,
+    SnapshotNode, SnapshotScene, Transform, Vec3, VisualAssets,
 };
 use render_gpu::{GpuContext, GpuError, GpuOptions, GpuRenderer, OffscreenTarget};
 
@@ -120,12 +118,11 @@ fn render_cpu(
         let path = output_path(output_dir, "cpu", view);
         ensure_new(&path)?;
         let started = Instant::now();
-        let (prepared, pipeline, preparation_ns) =
-            render_cpu::render_snapshot_scene_with_timing(
-                &mut framebuffer,
-                &scene,
-                render_cpu::RasterMode::Secuencial,
-            )?;
+        let (prepared, pipeline, preparation_ns) = render_cpu::render_snapshot_scene_with_timing(
+            &mut framebuffer,
+            &scene,
+            render_cpu::RasterMode::Secuencial,
+        )?;
         let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
         render_cpu::write_png(&path, &framebuffer)?;
         println!(
@@ -198,7 +195,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .ok_or("usage: building_planet_validation <output-directory>")?;
     std::fs::create_dir_all(&output_dir)?;
-    let model_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../").join(MODEL_PATH);
+    let model_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../")
+        .join(MODEL_PATH);
     let load_started = Instant::now();
     let mesh = render_core::load_obj(&model_path)?;
     println!(

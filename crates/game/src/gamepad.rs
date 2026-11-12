@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Replay, Repeat, Ticks};
+use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Repeat, Replay, Ticks};
 use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
 
 pub const DEFAULT_DEADZONE: f32 = 0.18;
@@ -430,7 +430,11 @@ impl GamepadInput {
     }
 
     fn set_axis(state: &mut ControllerState, deadzone: f32, axis: Axis, value: f32) {
-        let value = if value.is_finite() { value.clamp(-1.0, 1.0) } else { 0.0 };
+        let value = if value.is_finite() {
+            value.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
         match axis {
             Axis::LeftStickX => state.left_stick.x = value,
             Axis::LeftStickY => state.left_stick.y = value,
@@ -438,16 +442,8 @@ impl GamepadInput {
             Axis::RightStickY => state.right_stick.y = value,
             _ => {}
         }
-        state.left_stick = radial_deadzone(
-            state.left_stick.x,
-            state.left_stick.y,
-            deadzone,
-        );
-        state.right_stick = radial_deadzone(
-            state.right_stick.x,
-            state.right_stick.y,
-            deadzone,
-        );
+        state.left_stick = radial_deadzone(state.left_stick.x, state.left_stick.y, deadzone);
+        state.right_stick = radial_deadzone(state.right_stick.x, state.right_stick.y, deadzone);
     }
 }
 
@@ -542,7 +538,10 @@ mod tests {
         state.connected = true;
         state.set_button(ControllerButton::South, true, true);
         state.set_button(ControllerButton::East, true, true);
-        assert_eq!(state.pressed, vec![ControllerButton::South, ControllerButton::East]);
+        assert_eq!(
+            state.pressed,
+            vec![ControllerButton::South, ControllerButton::East]
+        );
         state.begin_frame();
         state.set_button(ControllerButton::South, false, true);
         assert_eq!(state.released, vec![ControllerButton::South]);
