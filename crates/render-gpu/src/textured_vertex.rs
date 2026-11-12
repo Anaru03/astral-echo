@@ -1,4 +1,3 @@
-
 use bytemuck::{Pod, Zeroable};
 use render_core::RasterVertex;
 
@@ -21,12 +20,11 @@ impl From<&RasterVertex> for TexturedVertex {
 }
 
 impl TexturedVertex {
-    pub const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-        wgpu::vertex_attr_array![
-            0 => Float32x3,
-            1 => Float32x4,
-            2 => Float32x2
-        ];
+    pub const ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
+        0 => Float32x3,
+        1 => Float32x4,
+        2 => Float32x2
+    ];
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -44,11 +42,8 @@ mod tests {
 
     #[test]
     fn textured_vertex_preserves_position_color_and_uv() {
-        let source = RasterVertex::new(
-            Vec3::new(1.0, 2.0, 3.0),
-            Vec4::ONE,
-        )
-        .with_uv(Vec2::new(0.25, 0.75));
+        let source =
+            RasterVertex::new(Vec3::new(1.0, 2.0, 3.0), Vec4::ONE).with_uv(Vec2::new(0.25, 0.75));
 
         let result = TexturedVertex::from(&source);
 

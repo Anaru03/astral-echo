@@ -1,14 +1,14 @@
 use std::num::NonZeroU64;
 use std::ops::Range;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use render_core::{
     game_over_layout, hud_overlay, Camera, GpuAssetEvent, GpuAssetState, HudState, LodLevel, Mat4,
-    MaterialHandle, MeshHandle, PreparedScene, RasterMesh,
-    RasterVertex, SnapshotId, SnapshotScene, Transform, Vec3, Vec4, GAME_OVER_GLYPHS,
+    MaterialHandle, MeshHandle, PreparedScene, RasterMesh, RasterVertex, SnapshotId, SnapshotScene,
+    Transform, Vec3, Vec4, GAME_OVER_GLYPHS,
 };
 use wgpu::util::DeviceExt;
 
@@ -460,8 +460,7 @@ impl GpuRenderer {
         }
 
         let packed = PackedScene::new(scene)?;
-        let vertex_bytes = (packed.vertices.len() * std::mem::size_of::<GpuVertex>())
-            .max(4) as u64;
+        let vertex_bytes = (packed.vertices.len() * std::mem::size_of::<GpuVertex>()).max(4) as u64;
         let index_bytes = (packed.indices.len() * std::mem::size_of::<u32>()).max(4) as u64;
         let uniform_bytes = packed.draws.len().max(1) as u64 * u64::from(self.stride);
         let max = self.gpu.device.limits().max_buffer_size;
@@ -502,35 +501,34 @@ impl GpuRenderer {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.bind_group = self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("MVP bind group"),
-                layout: &self.uniform_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.uniforms,
-                        offset: 0,
-                        size: NonZeroU64::new(64),
-                    }),
-                }],
-            });
+            self.bind_group = self
+                .gpu
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("MVP bind group"),
+                    layout: &self.uniform_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.uniforms,
+                            offset: 0,
+                            size: NonZeroU64::new(64),
+                        }),
+                    }],
+                });
             self.uniform_capacity = uniform_bytes;
             self.stats.buffer_rebuilds += 1;
         }
 
         if !packed.vertices.is_empty() {
-            self.gpu.queue.write_buffer(
-                &self.vertices,
-                0,
-                bytemuck::cast_slice(&packed.vertices),
-            );
+            self.gpu
+                .queue
+                .write_buffer(&self.vertices, 0, bytemuck::cast_slice(&packed.vertices));
         }
         if !packed.indices.is_empty() {
-            self.gpu.queue.write_buffer(
-                &self.indices,
-                0,
-                bytemuck::cast_slice(&packed.indices),
-            );
+            self.gpu
+                .queue
+                .write_buffer(&self.indices, 0, bytemuck::cast_slice(&packed.indices));
         }
 
         self.draws = packed.draws;
@@ -554,9 +552,11 @@ impl GpuRenderer {
     }
 
     pub fn gpu_asset_state(&self, mesh: MeshHandle, lod: LodLevel) -> GpuAssetState {
-        self.instanced.as_ref().map_or(GpuAssetState::Unavailable, |scene| {
-            scene.gpu_asset_state((mesh, lod))
-        })
+        self.instanced
+            .as_ref()
+            .map_or(GpuAssetState::Unavailable, |scene| {
+                scene.gpu_asset_state((mesh, lod))
+            })
     }
 
     pub fn ensure_shared_mesh(
@@ -755,7 +755,10 @@ impl GpuRenderer {
                     ops: wgpu::Operations {
                         load: match clear {
                             Some(clear) => wgpu::LoadOp::Clear(wgpu::Color {
-                                r: channel(clear[0]), g: channel(clear[1]), b: channel(clear[2]), a: 1.0,
+                                r: channel(clear[0]),
+                                g: channel(clear[1]),
+                                b: channel(clear[2]),
+                                a: 1.0,
                             }),
                             None => wgpu::LoadOp::Load,
                         },
