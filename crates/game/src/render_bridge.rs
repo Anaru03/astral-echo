@@ -134,7 +134,9 @@ const ECHO7_CAMERA_TARGET_HEIGHT: f32 = 1.0;
 pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
 pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
 pub const PLAYER_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
-pub const PLAYER_SURFACE_CLEARANCE: f32 = 0.25;
+// The player mesh is 2.4 units high and is rendered at 0.5 scale. Its pivot
+// is in the middle, so the feet are 0.6 units below the gameplay position.
+pub const PLAYER_SURFACE_CLEARANCE: f32 = 0.6;
 pub const ECHO7_INTERIOR_HALF_WIDTH: f32 = 9.0;
 pub const ECHO7_INTERIOR_HALF_DEPTH: f32 = 7.0;
 pub const ECHO7_INTERIOR_FLOOR_Y: f32 = -1.2;
@@ -619,12 +621,14 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
             snapshot.push_node(SnapshotNode::new(
                 LANDING_INDICATOR_ENTITY,
                 Transform::new(
-                    origin + Vec3::new(0.0, -0.325, 0.0),
+                    // The cube is the local walkable patch. Its top face is
+                    // exactly at the player's feet (pivot minus 0.6).
+                    origin + Vec3::new(0.0, -0.675, 0.0),
                     Quat::IDENTITY,
-                    Vec3::new(7.0, 0.15, 7.0),
+                    Vec3::new(80.0, 0.15, 80.0),
                 ),
                 PLACEHOLDER_MESH,
-                DESTINATION_MATERIAL,
+                PLANET_MATERIAL,
                 true,
             ));
         }
@@ -1536,6 +1540,46 @@ pub fn interior_camera_for_player(
         position,
         position + direction,
         Vec3::Y,
+        Projection::Perspective {
+            fov_y_rad: 72.0_f32.to_radians(),
+            aspect,
+            near: 0.05,
+            far: 120.0,
+        },
+    )
+}
+
+pub fn surface_camera_for_player(
+    world: &GameplayWorld,
+    player_id: engine::EntityId,
+    destination: gameplay::DestinationId,
+    aspect: f32,
+) -> Result<Camera, CameraError> {
+    let player = world.player(player_id).ok_or(CameraError::InvalidAspect)?;
+    let center = world
+        .planet_position_at(destination, world.time().elapsed)
+        .map(from_engine)
+        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))
+        .ok_or(CameraError::InvalidAspect)?;
+    let player_position = from_engine(player.position);
+    let up = (player_position - center).normalize_or_zero();
+    let up = if up.length_squared() > 0.0 { up } else { Vec3::Y };
+    let yaw = player.orientation.yaw_degrees.to_radians();
+    let pitch = player.orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);
+    let horizontal = pitch.cos();
+    let raw_forward = Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal);
+    let forward = (raw_forward - up * raw_forward.dot(up)).normalize_or_zero();
+    let forward = if forward.length_squared() > 0.0 {
+        forward
+    } else {
+        let reference = if up.dot(Vec3::Y).abs() < 0.9 { Vec3::Y } else { Vec3::X };
+        up.cross(reference).normalize_or_zero()
+    };
+    let position = player_position + up * 0.05;
+    Camera::new(
+        position,
+        position + forward,
+        up,
         Projection::Perspective {
             fov_y_rad: 72.0_f32.to_radians(),
             aspect,

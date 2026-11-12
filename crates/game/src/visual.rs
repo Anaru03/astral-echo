@@ -2378,6 +2378,35 @@ impl VisualBridge {
             y: 0.0,
             z: local.x * sin_yaw + local.z * cos_yaw,
         };
+        if self.surface_mode {
+            if let Some(planet) = self.surface_planet {
+                if let Some(center) = self
+                    .session
+                    .world()
+                    .planet_position_at(planet, self.session.world().time().elapsed)
+                {
+                    let offset = GameplayVec3 {
+                        x: player.position.x - center.x,
+                        y: player.position.y - center.y,
+                        z: player.position.z - center.z,
+                    };
+                    let length = (offset.x * offset.x + offset.y * offset.y + offset.z * offset.z)
+                        .sqrt()
+                        .max(0.0001);
+                    let normal = GameplayVec3 {
+                        x: offset.x / length,
+                        y: offset.y / length,
+                        z: offset.z / length,
+                    };
+                    let radial = direction.x * normal.x
+                        + direction.y * normal.y
+                        + direction.z * normal.z;
+                    direction.x -= normal.x * radial;
+                    direction.y -= normal.y * radial;
+                    direction.z -= normal.z * radial;
+                }
+            }
+        }
         let look_yaw = self.look_right as i8 - self.look_left as i8;
         let look_pitch = self.look_down as i8 - self.look_up as i8;
         if look_yaw != 0 || look_pitch != 0 {
@@ -4311,6 +4340,14 @@ impl VisualBridge {
             );
         }
         if self.surface_mode {
+            if let Some(planet) = self.surface_planet {
+                return game::render_bridge::surface_camera_for_player(
+                    world,
+                    self.player,
+                    planet,
+                    aspect,
+                );
+            }
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
         }
         if self.pilot_mode {
