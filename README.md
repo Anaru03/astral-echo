@@ -160,3 +160,19 @@ El juego usa resolución baja por defecto, selección automática del rasterizad
 ## Música del juego
 
 Coloca aquí las canciones en formato MP3 (`.mp3`). El juego las reproduce en orden alfabético, continúa con la siguiente cuando termina una y permite saltar con `F6`.
+
+## Efectos de sonido adicionales
+
+| Archivo | Uso sugerido |
+|---|---|
+| `destination_select.wav` | Confirmar un destino |
+| `autopilot_engage.wav` | Iniciar el piloto automático |
+| `autopilot_arrival.wav` | Completar una ruta automática |
+| `ship_boost.wav` | Activar el impulso |
+| `ship_brake.wav` | Frenar la nave |
+| `shield_on.wav` | Activar el escudo |
+| `shield_off.wav` | Desactivar el escudo |
+| `shield_hit.wav` | Impacto absorbido por el escudo |
+| `warning_alert.wav` | Aviso urgente |
+| `takeoff.wav` | Despegue |
+| `turn.wav` | Giro breve de la nave |

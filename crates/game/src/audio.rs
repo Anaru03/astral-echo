@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, Cursor};
-use std::path::PathBuf;
+use std::num::{NonZeroU16, NonZeroU32};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
+use rodio::{buffer::SamplesBuffer, Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MusicTrack {
@@ -22,6 +23,17 @@ pub enum SoundEffect {
     PlayerImpacted,
     GameOver,
     ShipPropulsion,
+    ShipBoost,
+    ShipBrake,
+    ShipTurn,
+    DestinationSelect,
+    ShieldOn,
+    ShieldOff,
+    ShieldHit,
+    WarningAlert,
+    Takeoff,
+    AutopilotEngage,
+    AutopilotArrival,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -121,8 +133,68 @@ struct LoadedAudio {
     bytes: Result<Vec<u8>, AudioError>,
 }
 
+fn audio_asset_path(path: impl AsRef<Path>) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/audio")
+        .join(path)
+}
+
+fn decode_pcm_wav(bytes: &[u8]) -> Result<SamplesBuffer, AudioError> {
+    if bytes.get(0..4) != Some(&b"RIFF"[..]) || bytes.get(8..12) != Some(&b"WAVE"[..]) {
+        return Err(AudioError::LoadFailed);
+    }
+
+    let mut offset = 12usize;
+    let mut format = None;
+    let mut data = None;
+    while offset.checked_add(8).is_some_and(|end| end <= bytes.len()) {
+        let chunk_id = &bytes[offset..offset + 4];
+        let chunk_size = u32::from_le_bytes(
+            bytes[offset + 4..offset + 8]
+                .try_into()
+                .map_err(|_| AudioError::LoadFailed)?,
+        ) as usize;
+        let chunk_start = offset + 8;
+        let chunk_end = chunk_start
+            .checked_add(chunk_size)
+            .filter(|end| *end <= bytes.len())
+            .ok_or(AudioError::LoadFailed)?;
+        match chunk_id {
+            b"fmt " if chunk_size >= 16 => {
+                let chunk = &bytes[chunk_start..chunk_end];
+                format = Some((
+                    u16::from_le_bytes([chunk[0], chunk[1]]),
+                    u16::from_le_bytes([chunk[2], chunk[3]]),
+                    u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]),
+                    u16::from_le_bytes([chunk[14], chunk[15]]),
+                ));
+            }
+            b"data" => data = Some(&bytes[chunk_start..chunk_end]),
+            _ => {}
+        }
+        offset = chunk_end.saturating_add(chunk_size & 1);
+    }
+
+    let (encoding, channels, sample_rate, bits_per_sample) =
+        format.ok_or(AudioError::LoadFailed)?;
+    let samples = data.ok_or(AudioError::LoadFailed)?;
+    if encoding != 1 || bits_per_sample != 16 || samples.len() % 2 != 0 {
+        return Err(AudioError::LoadFailed);
+    }
+    let channels = NonZeroU16::new(channels).ok_or(AudioError::LoadFailed)?;
+    let sample_rate = NonZeroU32::new(sample_rate).ok_or(AudioError::LoadFailed)?;
+    if samples.len() % (channels.get() as usize * 2) != 0 {
+        return Err(AudioError::LoadFailed);
+    }
+    let decoded = samples
+        .chunks_exact(2)
+        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32768.0)
+        .collect::<Vec<_>>();
+    Ok(SamplesBuffer::new(channels, sample_rate, decoded))
+}
+
 fn discover_music_playlist() -> Vec<PathBuf> {
-    let directory = PathBuf::from("assets/audio/music");
+    let directory = audio_asset_path("music");
     let mut tracks = std::fs::read_dir(&directory)
         .ok()
         .into_iter()
@@ -135,7 +207,7 @@ fn discover_music_playlist() -> Vec<PathBuf> {
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"))
         })
         .collect::<Vec<_>>();
-    let legacy_track = PathBuf::from("assets/audio/exploration.mp3");
+    let legacy_track = audio_asset_path("exploration.mp3");
     if legacy_track.is_file() && !tracks.contains(&legacy_track) {
         tracks.push(legacy_track);
     }
@@ -208,24 +280,42 @@ pub struct AudioManager {
 impl AudioManager {
     pub fn new() -> Self {
         let (load_tx, load_rx) = mpsc::channel();
+        let output = match RodioOutput::open() {
+            Ok(output) => Some(output),
+            Err(error) => {
+                eprintln!("audio: salida de audio no disponible ({error:?})");
+                None
+            }
+        };
         Self {
-            output: RodioOutput::open().ok(),
+            output,
             resources: AudioResources {
-                music: [(MusicTrack::Exploration, PathBuf::from("assets/audio/exploration.mp3"))]
+                music: [(MusicTrack::Exploration, audio_asset_path("exploration.mp3"))]
                     .into_iter()
                     .collect(),
                 effects: [
-                    (SoundEffect::PlayerAttack, "assets/audio/attack.wav"),
-                    (SoundEffect::EnemyDefeated, "assets/audio/enemy_defeated.wav"),
-                    (SoundEffect::Collect, "assets/audio/collect.wav"),
-                    (SoundEffect::Scan, "assets/audio/scan.wav"),
-                    (SoundEffect::Landing, "assets/audio/landing.wav"),
-                    (SoundEffect::PlayerImpacted, "assets/audio/impact.wav"),
-                    (SoundEffect::GameOver, "assets/audio/game_over.wav"),
-                    (SoundEffect::ShipPropulsion, "assets/audio/ship_propulsion.wav"),
+                    (SoundEffect::PlayerAttack, "attack.wav"),
+                    (SoundEffect::EnemyDefeated, "enemy_defeated.wav"),
+                    (SoundEffect::Collect, "collect.wav"),
+                    (SoundEffect::Scan, "scan.wav"),
+                    (SoundEffect::Landing, "landing.wav"),
+                    (SoundEffect::PlayerImpacted, "impact.wav"),
+                    (SoundEffect::GameOver, "game_over.wav"),
+                    (SoundEffect::ShipPropulsion, "ship_propulsion.wav"),
+                    (SoundEffect::ShipBoost, "sfx/ship_boost.wav"),
+                    (SoundEffect::ShipBrake, "sfx/ship_brake.wav"),
+                    (SoundEffect::ShipTurn, "sfx/turn.wav"),
+                    (SoundEffect::DestinationSelect, "sfx/destination_select.wav"),
+                    (SoundEffect::ShieldOn, "sfx/shield_on.wav"),
+                    (SoundEffect::ShieldOff, "sfx/shield_off.wav"),
+                    (SoundEffect::ShieldHit, "sfx/shield_hit.wav"),
+                    (SoundEffect::WarningAlert, "sfx/warning_alert.wav"),
+                    (SoundEffect::Takeoff, "sfx/takeoff.wav"),
+                    (SoundEffect::AutopilotEngage, "sfx/autopilot_engage.wav"),
+                    (SoundEffect::AutopilotArrival, "sfx/autopilot_arrival.wav"),
                 ]
                 .into_iter()
-                .map(|(effect, path)| (effect, PathBuf::from(path)))
+                .map(|(effect, path)| (effect, audio_asset_path(path)))
                 .collect(),
             },
             playlist: Vec::new(),
@@ -571,18 +661,30 @@ impl AudioManager {
                 }
             }
             PendingAudioTarget::Effect(effect) => {
-                match Decoder::new(BufReader::new(Cursor::new(bytes))) {
-                    Ok(source) => {
-                        if let Some(output) = &mut self.output {
-                            let player = Player::connect_new(output.device.mixer());
-                            player.set_volume(self.config.effects_gain());
-                            player.append(source);
-                            output.effects.push(player);
-                        }
+                if bytes.get(0..4) == Some(&b"RIFF"[..]) {
+                    match decode_pcm_wav(&bytes) {
+                        Ok(source) => self.append_effect_source(source),
+                        Err(error) => self.report_error(error, Some(effect)),
                     }
-                    Err(_) => self.report_error(AudioError::LoadFailed, Some(effect)),
+                } else {
+                    match Decoder::new(BufReader::new(Cursor::new(bytes))) {
+                        Ok(source) => self.append_effect_source(source),
+                        Err(_) => self.report_error(AudioError::LoadFailed, Some(effect)),
+                    }
                 }
             }
+        }
+    }
+
+    fn append_effect_source<S>(&mut self, source: S)
+    where
+        S: Source + Send + 'static,
+    {
+        if let Some(output) = &mut self.output {
+            let player = Player::connect_new(output.device.mixer());
+            player.set_volume(self.config.effects_gain());
+            player.append(source);
+            output.effects.push(player);
         }
     }
 
@@ -645,20 +747,44 @@ mod tests {
 
         assert_eq!(
             audio.resources.music.get(&MusicTrack::Exploration),
-            Some(&PathBuf::from("assets/audio/exploration.mp3"))
+            Some(&audio_asset_path("exploration.mp3"))
         );
         let expected_effects = [
-            (SoundEffect::PlayerAttack, "assets/audio/attack.wav"),
-            (SoundEffect::EnemyDefeated, "assets/audio/enemy_defeated.wav"),
-            (SoundEffect::Collect, "assets/audio/collect.wav"),
-            (SoundEffect::Scan, "assets/audio/scan.wav"),
-            (SoundEffect::Landing, "assets/audio/landing.wav"),
-            (SoundEffect::PlayerImpacted, "assets/audio/impact.wav"),
-            (SoundEffect::GameOver, "assets/audio/game_over.wav"),
-            (SoundEffect::ShipPropulsion, "assets/audio/ship_propulsion.wav"),
+            (SoundEffect::PlayerAttack, "attack.wav"),
+            (SoundEffect::EnemyDefeated, "enemy_defeated.wav"),
+            (SoundEffect::Collect, "collect.wav"),
+            (SoundEffect::Scan, "scan.wav"),
+            (SoundEffect::Landing, "landing.wav"),
+            (SoundEffect::PlayerImpacted, "impact.wav"),
+            (SoundEffect::GameOver, "game_over.wav"),
+            (SoundEffect::ShipPropulsion, "ship_propulsion.wav"),
+            (SoundEffect::ShipBoost, "sfx/ship_boost.wav"),
+            (SoundEffect::ShipBrake, "sfx/ship_brake.wav"),
+            (SoundEffect::ShipTurn, "sfx/turn.wav"),
+            (SoundEffect::DestinationSelect, "sfx/destination_select.wav"),
+            (SoundEffect::ShieldOn, "sfx/shield_on.wav"),
+            (SoundEffect::ShieldOff, "sfx/shield_off.wav"),
+            (SoundEffect::ShieldHit, "sfx/shield_hit.wav"),
+            (SoundEffect::WarningAlert, "sfx/warning_alert.wav"),
+            (SoundEffect::Takeoff, "sfx/takeoff.wav"),
+            (SoundEffect::AutopilotEngage, "sfx/autopilot_engage.wav"),
+            (SoundEffect::AutopilotArrival, "sfx/autopilot_arrival.wav"),
         ];
         for (effect, path) in expected_effects {
-            assert_eq!(audio.resources.effects.get(&effect), Some(&PathBuf::from(path)));
+            assert_eq!(audio.resources.effects.get(&effect), Some(&audio_asset_path(path)));
+        }
+    }
+
+    #[test]
+    fn every_default_sound_effect_has_a_decodable_audio_file() {
+        let audio = AudioManager::new();
+        for (effect, path) in &audio.resources.effects {
+            let bytes = std::fs::read(path).unwrap_or_else(|error| {
+                panic!("could not open {effect:?} audio at {}: {error}", path.display())
+            });
+            decode_pcm_wav(&bytes).unwrap_or_else(|error| {
+                panic!("could not decode {effect:?} audio at {}: {error:?}", path.display())
+            });
         }
     }
 
