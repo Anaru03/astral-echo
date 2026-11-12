@@ -2352,6 +2352,64 @@ impl VisualBridge {
         }
     }
 
+    fn ship_minigame_label(task: &str) -> &'static str {
+        match task {
+            "wiring" => "PANEL ELECTRICO / CABLEADO",
+            "filter" => "SOPORTE VITAL / FILTRO O2",
+            "code" => "CONSOLA DE ESTADO / CODIGOS",
+            "asteroids" => "CONSOLA DE PILOTAJE / DEFENSA",
+            _ => "SISTEMA DE LA NAVE",
+        }
+    }
+
+    fn ship_minigame_waypoint_hint(&self) -> Option<String> {
+        if !self.interior_mode || self.pilot_mode {
+            return None;
+        }
+        if let Some(active) = self.active_ship_minigame.as_ref() {
+            return Some(format!(
+                "MINIJUEGO ACTIVO: {} | COMPLETALO PARA CONTINUAR",
+                Self::ship_minigame_label(active.task)
+            ));
+        }
+        let player = self.session.world().player(self.player)?;
+        let target = self
+            .session
+            .world()
+            .interactables()
+            .filter_map(|value| {
+                let task = self.ship_minigame_for_target(value.entity_id)?;
+                if self.completed_ship_minigames.contains(task) || !value.enabled {
+                    return None;
+                }
+                let dx = value.position.x - player.position.x;
+                let dz = value.position.z - player.position.z;
+                Some((dx * dx + dz * dz, dx, dz, task))
+            })
+            .min_by(|left, right| {
+                left.0
+                    .partial_cmp(&right.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })?;
+        let distance = target.0.sqrt();
+        let yaw = player.orientation.yaw_degrees.to_radians();
+        let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        let forward = target.2 * -cos_yaw + target.1 * sin_yaw;
+        let right = target.1 * cos_yaw + target.2 * sin_yaw;
+        let direction = if forward.abs() >= right.abs() {
+            if forward >= 0.0 { "ADELANTE" } else { "ATRAS" }
+        } else if right >= 0.0 {
+            "DERECHA"
+        } else {
+            "IZQUIERDA"
+        };
+        Some(format!(
+            "SIGUIENTE: {} | {} | {distance:.1} m",
+            Self::ship_minigame_label(target.3),
+            direction,
+        ))
+    }
+
     fn start_ship_minigame(&mut self, task: &'static str, _target: EntityId) -> bool {
         if self.completed_ship_minigames.contains(task)
             || self.active_ship_minigame.is_some()
@@ -3382,6 +3440,11 @@ impl VisualBridge {
             {
                 return "PULSA M PARA INICIAR LA MISION DISPONIBLE".to_owned();
             }
+            if let Some(waypoint) = self.ship_minigame_waypoint_hint() {
+                return format!(
+                    "EXPLORACION: {waypoint} | WASD MOVER | FLECHAS MIRAR | I ABRIR MINIJUEGO"
+                );
+            }
             return "EXPLORACION: F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned();
         }
         "EXTERIOR: SIGUE LA GUIA - F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned()
@@ -3436,7 +3499,9 @@ impl VisualBridge {
             ))
         };
         let result = result.map(|text| {
-            route_hint.map_or(text.clone(), |hint| format!("{text} | {hint}"))
+            route_hint
+                .or_else(|| self.ship_minigame_waypoint_hint())
+                .map_or(text.clone(), |hint| format!("{text} | {hint}"))
         });
         *self.guidance_cache.borrow_mut() = Some((Instant::now(), result.clone()));
         result
