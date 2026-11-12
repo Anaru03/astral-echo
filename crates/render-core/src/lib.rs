@@ -55,7 +55,7 @@ pub use snapshot::{
     SnapshotNode, GAME_OVER_GLYPHS,
 };
 pub use textured_model::{
-    expand_model_parts, load_textured_obj, register_textured_model,
+    append_model_parts, expand_model_parts, load_textured_obj, register_textured_model,
     RegisteredModelPart, TexturedMaterial, TexturedMesh, TexturedModel,
 };
 pub use transform::Transform;

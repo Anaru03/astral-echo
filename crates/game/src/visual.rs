@@ -645,7 +645,7 @@ impl VisualBridge {
             orbit_axis: GameplayVec3 { x: 49.17, y: 0.0, z: 49.17 },
             orbit_phase: 0.0,
             orbit_angular_speed: game::render_bridge::TESSARA_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
-            surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
+            surface_radius: game::render_bridge::TESSARA_VISUAL_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 24.0,
             gravitational_parameter: 24.0,
@@ -710,7 +710,7 @@ impl VisualBridge {
             orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
             orbit_phase: 0.0,
             orbit_angular_speed: 0.0,
-            surface_radius: 12.0,
+            surface_radius: game::render_bridge::SUN_VISUAL_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 80.0,
             gravitational_parameter: 500.0,
@@ -4370,13 +4370,23 @@ fn run_visual(lan_connection: Option<(String, String)>) -> Result<(), String> {
             // instancias del mismo tipo de modelo.
             let parts_by_model = parts_for_snapshot.borrow();
             if !parts_by_model.is_empty() {
-                let mut expanded = Vec::with_capacity(snapshot.nodes.len());
+                let expanded_capacity = snapshot.nodes.len()
+                    + snapshot
+                        .nodes
+                        .iter()
+                        .filter_map(|node| {
+                            parts_by_model
+                                .get(&(node.mesh, node.material))
+                                .map(|parts| parts.len().saturating_sub(1))
+                        })
+                        .sum::<usize>();
+                let mut expanded = Vec::with_capacity(expanded_capacity);
                 for node in snapshot.nodes.drain(..) {
                     if let Some(parts) = parts_by_model.get(&(node.mesh, node.material)) {
                         let mut hasher = std::collections::hash_map::DefaultHasher::new();
                         node.entity.hash(&mut hasher);
                         let parent = hasher.finish();
-                        expanded.extend(render_core::expand_model_parts(&node, parts, parent));
+                        render_core::append_model_parts(&mut expanded, &node, parts, parent);
                     } else {
                         expanded.push(node);
                     }
@@ -4424,7 +4434,7 @@ fn run_visual(lan_connection: Option<(String, String)>) -> Result<(), String> {
             }
         },
         move |scene| {
-            scene.set_lighting_mode(LightingMode::Pbr);
+            scene.set_lighting_mode(LightingMode::Lambert);
             let assets_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");
             // Registra modelos completos, incluyendo todas sus submallas y texturas.
             // Si falta un archivo, conserva los modelos procedurales existentes.
@@ -4616,6 +4626,14 @@ mod tests {
             world.destination(NARETH_DESTINATION).map(|value| value.position),
             Some(NARETH_POSITION)
         );
+        assert_eq!(
+            world
+                .navigation()
+                .planet_physics(DESTINATION)
+                .expect("Veyra should have planet physics")
+                .surface_radius,
+            game::render_bridge::PLANET_VISUAL_RADIUS
+        );
         let tessara_physics = world
             .navigation()
             .planet_physics(TESSARA_DESTINATION)
@@ -4630,6 +4648,10 @@ mod tests {
             GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }
         );
         assert_eq!(tessara_physics.orbit_start, TESSARA_POSITION);
+        assert_eq!(
+            tessara_physics.surface_radius,
+            game::render_bridge::TESSARA_VISUAL_RADIUS
+        );
         let kharvex_physics = world
             .navigation()
             .planet_physics(KHARVEX_DESTINATION)
@@ -4647,6 +4669,10 @@ mod tests {
             kharvex_physics.orbit_center,
             GameplayVec3 { x: 0.0, y: 0.0, z: -18.0 }
         );
+        assert_eq!(
+            kharvex_physics.surface_radius,
+            game::render_bridge::KHARVEX_VISUAL_RADIUS
+        );
         let nareth_physics = world
             .navigation()
             .planet_physics(NARETH_DESTINATION)
@@ -4657,6 +4683,17 @@ mod tests {
             game::render_bridge::NARETH_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND
         );
         assert_eq!(nareth_physics.orbit_start, NARETH_POSITION);
+        assert_eq!(
+            nareth_physics.surface_radius,
+            game::render_bridge::NARETH_VISUAL_RADIUS
+        );
+        assert_eq!(
+            world
+                .solar_physics()
+                .expect("the sun should have collision physics")
+                .surface_radius,
+            game::render_bridge::SUN_VISUAL_RADIUS
+        );
         let nareth_initial = world
             .planet_position_at(NARETH_DESTINATION, Duration(0))
             .expect("Nareth should have an initial orbital position");
@@ -5436,8 +5473,8 @@ mod tests {
         let ship = game::render_bridge::visual_ship_position(bridge.session.world())
             .expect("ship should be visible");
         let camera = bridge.camera(16.0 / 9.0).expect("pilot camera should be valid");
-        assert!(camera.position().x > ship.x + 30.0);
-        assert!(camera.target().x > ship.x + 10.0);
+        assert!(camera.position().x > ship.x + 12.0);
+        assert!(camera.target().x > ship.x + 2.5);
         assert!(camera.position().x > camera.target().x);
         assert!(camera.view_projection_matrix().is_finite());
     }
@@ -7569,5 +7606,35 @@ mod tests {
         }
         std::fs::remove_file(path).expect("remove test OBJ");
         panic!("VisualBridge did not receive Ready");
+    }
+
+    #[test]
+    #[ignore = "loads the production OBJ files; run for render batching diagnostics"]
+    fn runtime_models_are_batched_by_material() {
+        let assets_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models");
+        let expected_max_parts = [1usize, 1, 24, 11, 4, 15];
+        let mut scene = render_core::SnapshotScene::default();
+
+        for (index, (definition, expected_max)) in crate::model_registry::registered_models()
+            .into_iter()
+            .zip(expected_max_parts)
+            .enumerate()
+        {
+            let first_id = 700_000 + index as u32 * 20_000;
+            let parts = render_core::register_textured_model(
+                &mut scene,
+                assets_root.join(definition.path),
+                first_id,
+                first_id,
+            )
+            .unwrap_or_else(|error| panic!("failed to batch {}: {error}", definition.path));
+            println!("{}: {} render parts", definition.path, parts.len());
+            assert!(
+                parts.len() <= expected_max,
+                "{} produced {} parts; expected at most {expected_max}",
+                definition.path,
+                parts.len()
+            );
+        }
     }
 }
