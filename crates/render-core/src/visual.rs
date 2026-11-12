@@ -320,6 +320,14 @@ impl Default for VisualAssets {
                 RasterMesh::planet_surface(Vec3::ZERO, 1.0),
             ),
             (
+                (MeshHandle::LANDING_PLANET_PROXY, Self::PLANET),
+                RasterMesh::sphere(
+                    Vec3::ZERO,
+                    1.0,
+                    Vec4::new(0.22, 0.42, 0.58, 1.0),
+                ),
+            ),
+            (
                 (MeshHandle::BUILDING_PLANET, Self::PLANET),
                 RasterMesh::planet_surface(Vec3::ZERO, 1.0),
             ),
