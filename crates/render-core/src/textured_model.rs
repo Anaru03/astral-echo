@@ -204,6 +204,33 @@ pub fn register_textured_model(
     first_material_id: u32,
 ) -> Result<Vec<RegisteredModelPart>, String> {
     let model = load_textured_obj(path).map_err(|e| e.to_string())?;
+    if std::env::var_os("ASTRAL_ECHO_WALL_TRACE").is_some()
+        && model
+            .meshes
+            .iter()
+            .any(|mesh| mesh.name.contains("ECHO7_04_Despertar"))
+    {
+        for part in model.meshes.iter().filter(|mesh| {
+            mesh.name == "ECHO7_04_Despertar__Pared_presion_01" || mesh.name.contains("Losa")
+        }) {
+            let material = part
+                .material_index
+                .and_then(|index| model.materials.get(index));
+            eprintln!(
+                "wall-trace source object={} vertices={} triangles={} material={} texture={}",
+                part.name,
+                part.mesh.vertices.len(),
+                part.mesh.indices.len() / 3,
+                material
+                    .map(|value| value.name.as_str())
+                    .unwrap_or("<none>"),
+                material
+                    .and_then(|value| value.diffuse_texture.as_ref())
+                    .map(|value| value.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_owned())
+            );
+        }
+    }
     let meshes = coalesce_textured_meshes(model.meshes)?;
     let mut parts = Vec::with_capacity(meshes.len());
     for (i, mut part) in meshes.into_iter().enumerate() {

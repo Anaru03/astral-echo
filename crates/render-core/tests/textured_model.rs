@@ -367,6 +367,30 @@ fn cloning_cabinet_keeps_green_panels_and_metal_accessories_separate() {
 }
 
 #[test]
+fn echo7_exterior_preserves_structural_material_texture_associations() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/models/echo_7/componentes/ECHO7_Exterior.obj");
+    let model = load_textured_obj(path).expect("No se pudo cargar el exterior ECHO-7");
+    for (name, texture) in [
+        ("Casco_Marfil", "base_marfil.png"),
+        ("Panel_Verde", "panel_verde_original.png"),
+    ] {
+        let material = model
+            .materials
+            .iter()
+            .find(|material| material.name == name)
+            .unwrap();
+        let texture_path = material.diffuse_texture.as_ref().expect("textura ausente");
+        assert_eq!(texture_path.file_name().unwrap().to_str().unwrap(), texture);
+        assert!(texture_path.is_file());
+        assert!(model.meshes.iter().any(|mesh| mesh
+            .material_index
+            .and_then(|index| model.materials.get(index))
+            .is_some_and(|mesh_material| mesh_material.name == name)));
+    }
+}
+
+#[test]
 fn cloning_front_panels_select_only_the_green_panel_variant() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets/models/echo_7/montajes/ECHO7_Completa_DosCubiertas.obj");

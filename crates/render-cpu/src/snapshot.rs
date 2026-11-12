@@ -7,6 +7,61 @@ use crate::{
     RasterMode, TileConfig, Topology, Viewport,
 };
 
+fn trace_mount_draws(scene: &SnapshotScene, prepared: &PreparedScene) {
+    if std::env::var_os("ASTRAL_ECHO_MOUNT_TRACE").is_none() {
+        return;
+    }
+    static TRACED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if TRACED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let mut parents = std::collections::BTreeMap::<u64, (usize, usize, usize, Vec<_>)>::new();
+    for draw in prepared.draws() {
+        if let render_core::SnapshotId::ModelPart { parent, .. } = draw.node.entity {
+            let entry = parents.entry(parent).or_default();
+            entry.0 += 1;
+            entry.1 += draw.mesh.vertices.len();
+            entry.2 += draw.mesh.indices.len() / 3;
+            entry
+                .3
+                .push((draw.node.mesh, draw.node.material, draw.visibility));
+        }
+    }
+    if parents.is_empty() {
+        return;
+    }
+    let camera = scene.snapshot().camera_position;
+    let mut bounds = std::collections::BTreeMap::<u64, Vec<_>>::new();
+    for (node, mesh) in scene.draws() {
+        if let render_core::SnapshotId::ModelPart { parent, .. } = node.entity {
+            let mut min = render_core::Vec3::splat(f32::INFINITY);
+            let mut max = render_core::Vec3::splat(f32::NEG_INFINITY);
+            for vertex in &mesh.vertices {
+                min = min.min(vertex.position);
+                max = max.max(vertex.position);
+            }
+            let world = render_core::Aabb { min, max }.transformed(node.transform.matrix());
+            bounds.entry(parent).or_default().push((
+                node.mesh,
+                world,
+                world.contains_point(camera),
+                render_core::Frustum::from_view_projection(scene.view_projection())
+                    .intersects_aabb(world),
+            ));
+        }
+    }
+    TRACED.store(true, std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "mount-trace stage=cpu_prepare renderer={:p} camera={camera:?} snapshot_nodes={} considered={} visible={} discarded={} triangles={} model_parents={parents:?} bounds={bounds:?}",
+        scene,
+        scene.snapshot().nodes.len(),
+        prepared.considered,
+        prepared.visible,
+        prepared.discarded,
+        prepared.triangles
+    );
+}
+
 fn cpu_culling_config(framebuffer: &Framebuffer) -> render_core::CullingConfig {
     let mut config = render_core::CullingConfig {
         width: framebuffer.width(),
@@ -54,6 +109,7 @@ pub fn render_snapshot_scene_with_stats(
         ..Default::default()
     });
     let prepared_stats = prepared.stats();
+    trace_mount_draws(scene, &prepared);
     let pipeline_stats = render_prepared_scene_with_clear(
         framebuffer,
         &prepared,
@@ -164,6 +220,7 @@ pub fn render_snapshot_scene_with_timing(
     let prepared = scene.prepare(cpu_culling_config(framebuffer));
     let preparation_ns = preparation_started.elapsed().as_nanos() as u64;
     let prepared_stats = prepared.stats();
+    trace_mount_draws(scene, &prepared);
     let pipeline_stats = render_prepared_scene_with_config(
         framebuffer,
         &prepared,
@@ -201,6 +258,7 @@ pub fn render_snapshot_scene_with_shader_at_time_with_stats(
 ) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
     let prepared = scene.prepare(cpu_culling_config(framebuffer));
     let prepared_stats = prepared.stats();
+    trace_mount_draws(scene, &prepared);
     let pipeline_stats = render_prepared_scene_with_shader(
         framebuffer,
         &prepared,

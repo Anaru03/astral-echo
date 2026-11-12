@@ -257,6 +257,7 @@ impl<'a> CpuPipeline<'a> {
         material: Option<render_core::MaterialHandle>,
         entity: Option<render_core::SnapshotId>,
     ) -> Result<PipelineStats, RasterError> {
+        let before = self.stats;
         self.stats.draws += 1;
         let stage = VertexStage::new(mvp);
         self.draw_material = material;
@@ -316,6 +317,34 @@ impl<'a> CpuPipeline<'a> {
         }
         self.stats.metrics.timings.vertex_ns += vertex_ns;
         self.stats.metrics.timings.assembly_ns += assembly_ns;
+        if std::env::var_os("ASTRAL_ECHO_MOUNT_TRACE").is_some()
+            && matches!(entity, Some(render_core::SnapshotId::ModelPart { .. }))
+        {
+            static TRACED: std::sync::OnceLock<
+                std::sync::Mutex<std::collections::HashSet<render_core::SnapshotId>>,
+            > = std::sync::OnceLock::new();
+            let id = entity.expect("model part");
+            let first = TRACED
+                .get_or_init(Default::default)
+                .lock()
+                .expect("mount trace lock")
+                .insert(id);
+            if first {
+                let metrics = self.stats.metrics;
+                eprintln!(
+                    "mount-trace stage=cpu_draw entity={id:?} material={material:?} vertices={} triangles={} assembled={} clipped={} culled={} degenerate={} fragments={} depth_rejected={} pixels_written={}",
+                    mesh.vertices.len(),
+                    mesh.indices.len() / 3,
+                    metrics.triangles_assembled - before.metrics.triangles_assembled,
+                    metrics.triangles_clipped - before.metrics.triangles_clipped,
+                    metrics.triangles_culled - before.metrics.triangles_culled,
+                    metrics.triangles_degenerate - before.metrics.triangles_degenerate,
+                    metrics.fragments_rasterized - before.metrics.fragments_rasterized,
+                    metrics.fragments_depth_rejected - before.metrics.fragments_depth_rejected,
+                    metrics.pixels_written - before.metrics.pixels_written
+                );
+            }
+        }
         Ok(self.stats)
     }
 

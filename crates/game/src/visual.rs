@@ -2555,39 +2555,13 @@ impl VisualBridge {
                 self.enter_pilot();
                 return;
             }
-            if completed
-                && target == self.bridge_door
-                && self.interior_mode
-                && self
-                    .session
-                    .world()
-                    .ship_station_anchor(self.pilot_station)
-                    .is_none()
-            {
-                self.interior_mode = false;
-                self.feedback = "PUERTA ABIERTA — EXPLORACION EXTERIOR DISPONIBLE".to_owned();
-                println!("visual gameplay: {}", self.feedback);
-            }
         } else {
             let target = self.selected_interactable().map(|value| value.entity_id);
             if let Some(target) = target {
-                let completed = self.issue([GameplayCommand::Interact {
+                self.issue([GameplayCommand::Interact {
                     player: self.player,
                     target,
                 }]);
-                if completed
-                    && target == self.bridge_door
-                    && self.interior_mode
-                    && self
-                        .session
-                        .world()
-                        .ship_station_anchor(self.pilot_station)
-                        .is_none()
-                {
-                    self.interior_mode = false;
-                    self.feedback = "PUERTA ABIERTA — EXPLORACION EXTERIOR DISPONIBLE".to_owned();
-                    println!("visual gameplay: {}", self.feedback);
-                }
             } else {
                 self.feedback = "NO HAY INTERACCION DISPONIBLE — ACERCATE A UN OBJETO".to_owned();
                 println!("visual gameplay: {}", self.feedback);
@@ -2798,6 +2772,30 @@ impl VisualBridge {
                 || !stair_path_valid
                 || crossed_upper_edge
             {
+                static COLLISION_REJECTION_REPORTED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if std::env::var_os("ASTRAL_ECHO_COLLISION_TRACE").is_some()
+                    && !COLLISION_REJECTION_REPORTED
+                        .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    let local_current = game::render_bridge::echo7_player_model_position(
+                        player.position,
+                        interior_origin,
+                        ship_yaw,
+                    );
+                    let local_proposed = game::render_bridge::echo7_player_model_position(
+                        updated.position,
+                        interior_origin,
+                        ship_yaw,
+                    );
+                    let selected = self
+                        .selected_interactable()
+                        .map(|value| (value.entity_id, value.position, value.interaction_range));
+                    eprintln!(
+                        "collision-reject current={:?} proposed={:?} local_current={local_current:?} local_proposed={local_proposed:?} support={support:.3} lower={lower_deck_path_valid} upper={upper_deck_path_valid} stair={stair_path_valid} crossed_upper={crossed_upper_edge} selected={selected:?}",
+                        player.position, updated.position
+                    );
+                }
                 let mut reverted_position = updated.position;
                 reverted_position.x = player.position.x;
                 reverted_position.z = player.position.z;
@@ -2873,7 +2871,20 @@ impl VisualBridge {
         }
         if let Some(interactable) = self.selected_interactable() {
             let (object, action) = match interactable.behavior {
-                InteractionBehavior::Door { .. } => ("PUERTA DEL PUENTE", "ABRIR"),
+                InteractionBehavior::Door { .. } => {
+                    let object = if interactable.entity_id == self.bridge_door {
+                        "PUERTA DEL PUENTE"
+                    } else if let Some(index) = self
+                        .room_doors
+                        .iter()
+                        .position(|entity| *entity == interactable.entity_id)
+                    {
+                        game::render_bridge::ECHO7_ROOM_DOORS[index].name
+                    } else {
+                        "PUERTA"
+                    };
+                    (object, "ABRIR")
+                }
                 InteractionBehavior::Station { station } => match station.station_type {
                     StationType::Piloting => ("CONSOLA DE PILOTAJE", "ACCEDER"),
                     StationType::Navigation => ("ESTACION DE NAVEGACION", "ACCEDER"),
@@ -4510,19 +4521,54 @@ pub fn run() -> Result<(), String> {
             // El hash de SnapshotId es estable dentro de una ejecucion y distingue
             // instancias del mismo tipo de modelo.
             let parts_by_model = parts_for_snapshot.borrow();
-            if !parts_by_model.is_empty() {
-                let mut expanded = Vec::with_capacity(snapshot.nodes.len());
-                for node in snapshot.nodes.drain(..) {
-                    if let Some(parts) = parts_by_model.get(&(node.mesh, node.material)) {
-                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                        node.entity.hash(&mut hasher);
-                        let parent = hasher.finish();
-                        expanded.extend(render_core::expand_model_parts(&node, parts, parent));
-                    } else {
-                        expanded.push(node);
+            let mut expanded = Vec::with_capacity(snapshot.nodes.len());
+            let trace_mount = std::env::var_os("ASTRAL_ECHO_MOUNT_TRACE").is_some();
+            static MOUNT_EXPANSION_TRACED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            let trace_expansion = trace_mount
+                && !MOUNT_EXPANSION_TRACED.load(std::sync::atomic::Ordering::Relaxed);
+            let mut ready_interior_pieces = 0;
+            for node in snapshot.nodes.drain(..) {
+                if let Some(parts) = parts_by_model.get(&(node.mesh, node.material)) {
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    node.entity.hash(&mut hasher);
+                    let parent = hasher.finish();
+                    if trace_expansion
+                        && matches!(
+                            node.mesh,
+                            MeshHandle::ECHO7_INTERIOR_LOWER
+                                | MeshHandle::ECHO7_INTERIOR_UPPER
+                                | MeshHandle::ECHO7_INTERIOR_CORE
+                        )
+                    {
+                        ready_interior_pieces += 1;
+                        let handles: Vec<_> = parts
+                            .iter()
+                            .map(|part| (part.mesh, part.material))
+                            .collect();
+                        eprintln!(
+                            "mount-trace stage=expand state=ready origin_entity={:?} origin_parent={} original_mesh={:?} original_material={:?} transform={:?} parts={} result_handles={handles:?}",
+                            node.entity, parent, node.mesh, node.material, node.transform, parts.len()
+                        );
                     }
+                    expanded.extend(render_core::expand_model_parts(&node, parts, parent));
+                } else if !matches!(
+                    node.mesh,
+                    MeshHandle::ECHO7_INTERIOR_LOWER
+                        | MeshHandle::ECHO7_INTERIOR_UPPER
+                        | MeshHandle::ECHO7_INTERIOR_CORE
+                ) {
+                    expanded.push(node);
+                } else if trace_expansion {
+                    eprintln!(
+                        "mount-trace stage=expand state=pending origin_entity={:?} original_mesh={:?} original_material={:?} transform={:?} parts=0",
+                        node.entity, node.mesh, node.material, node.transform
+                    );
                 }
-                snapshot.nodes = expanded;
+            }
+            snapshot.nodes = expanded;
+            if ready_interior_pieces == 3 {
+                MOUNT_EXPANSION_TRACED.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             drop(parts_by_model);
             if std::env::var_os("ASTRAL_ECHO_FRAME_TRACE").is_some() {
@@ -4627,9 +4673,23 @@ pub fn run() -> Result<(), String> {
                 let path = assets_root.join(relative_path);
                 // Reservar rangos diferentes por modelo y separados de handles del motor.
                 let first_id = 100_000u32 + (model_index as u32) * 20_000;
+                if std::env::var_os("ASTRAL_ECHO_MOUNT_TRACE").is_some()
+                    && matches!(
+                        mesh,
+                        MeshHandle::SHIP_PLACEHOLDER
+                            | MeshHandle::ECHO7_INTERIOR_LOWER
+                            | MeshHandle::ECHO7_INTERIOR_UPPER
+                            | MeshHandle::ECHO7_INTERIOR_CORE
+                    )
+                {
+                    eprintln!(
+                        "mount-trace stage=load state=pending path={} original_mesh={:?} original_material={:?} renderer={:p}",
+                        path.display(), mesh, material, scene
+                    );
+                }
                 match render_core::register_textured_model(scene, &path, first_id, first_id) {
                     Ok(parts) if !parts.is_empty() => {
-                        if relative_path == "echo_7/montajes/ECHO7_Completa_DosCubiertas.obj" {
+                        if relative_path == "echo_7/componentes/ECHO7_Exterior.obj" {
                             match render_core::load_textured_obj(&path) {
                                 Ok(model) => *inspection_model_for_setup.borrow_mut() = Some(model),
                                 Err(error) => eprintln!("diagnÃ³stico ECHO-7 no disponible: {error}"),
@@ -4656,6 +4716,30 @@ pub fn run() -> Result<(), String> {
                         }
 
                         println!("modelo cargado: {} ({} submallas)", path.display(), parts.len());
+                        if std::env::var_os("ASTRAL_ECHO_MOUNT_TRACE").is_some()
+                            && matches!(
+                                mesh,
+                                MeshHandle::SHIP_PLACEHOLDER
+                                    | MeshHandle::ECHO7_INTERIOR_LOWER
+                                    | MeshHandle::ECHO7_INTERIOR_UPPER
+                                    | MeshHandle::ECHO7_INTERIOR_CORE
+                            )
+                        {
+                            let vertices: usize = parts
+                                .iter()
+                                .filter_map(|part| scene.mesh_statistics(part.mesh, part.material))
+                                .map(|stats| stats.0)
+                                .sum();
+                            let triangles: usize = parts
+                                .iter()
+                                .filter_map(|part| scene.mesh_statistics(part.mesh, part.material))
+                                .map(|stats| stats.1)
+                                .sum();
+                            eprintln!(
+                                "mount-trace stage=load state=ready path={} original_mesh={:?} original_material={:?} parts={} vertices={} triangles={} renderer={:p}",
+                                path.display(), mesh, material, parts.len(), vertices, triangles, scene
+                            );
+                        }
                         parts_for_setup.borrow_mut().insert((mesh, material), parts);
                     }
                     Ok(_) => {
@@ -4668,6 +4752,20 @@ pub fn run() -> Result<(), String> {
                     }
                     Err(error) => {
                         eprintln!("modelo no cargado {}: {error}; se usa respaldo", path.display());
+                        if std::env::var_os("ASTRAL_ECHO_MOUNT_TRACE").is_some()
+                            && matches!(
+                                mesh,
+                                MeshHandle::SHIP_PLACEHOLDER
+                                    | MeshHandle::ECHO7_INTERIOR_LOWER
+                                    | MeshHandle::ECHO7_INTERIOR_UPPER
+                                    | MeshHandle::ECHO7_INTERIOR_CORE
+                            )
+                        {
+                            eprintln!(
+                                "mount-trace stage=load state=error path={} original_mesh={:?} original_material={:?} error={error}",
+                                path.display(), mesh, material
+                            );
+                        }
                         if relative_path == "characters/astronauta/astronauta.obj" {
                             match render_core::load_obj(&path) {
                                 Ok(mesh_data) => scene.register_mesh(mesh, material, mesh_data),
@@ -5916,6 +6014,12 @@ mod tests {
             bridge.room_doors.len(),
             game::render_bridge::ECHO7_ROOM_DOORS.len()
         );
+        visit_room(
+            &mut bridge,
+            5,
+            render_core::Vec3::new(-20.0, -9.5, 0.0),
+            render_core::Vec3::new(-20.0, -6.0, 0.0),
+        );
         for waypoint in [
             render_core::Vec3::new(2.0, 0.84, 0.0),
             render_core::Vec3::new(2.0, -2.5, 0.0),
@@ -5939,12 +6043,6 @@ mod tests {
             render_core::Vec3::new(-20.0, 14.0, 0.0),
         );
         drive_to_model(&mut bridge, render_core::Vec3::new(-20.0, 0.0, 0.0), 0.2);
-        visit_room(
-            &mut bridge,
-            5,
-            render_core::Vec3::new(-20.0, -9.5, 0.0),
-            render_core::Vec3::new(-20.0, -14.0, 0.0),
-        );
         for waypoint in [
             render_core::Vec3::new(-20.0, 0.0, 0.0),
             render_core::Vec3::new(-8.0, 0.0, 0.0),
@@ -6018,6 +6116,12 @@ mod tests {
         for _ in 0..3 {
             bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
         }
+        visit_room(
+            &mut bridge,
+            5,
+            render_core::Vec3::new(-20.0, -9.5, 0.0),
+            render_core::Vec3::new(-20.0, -6.0, 0.0),
+        );
         for (index, waypoint) in [
             render_core::Vec3::new(2.0, 0.84, 0.0),
             render_core::Vec3::new(2.0, -2.5, 0.0),
@@ -7574,6 +7678,9 @@ mod tests {
         let local = game::render_bridge::echo7_player_model_position(player, ship, 0.0);
         assert!(local.x < -12.0 && local.y < -10.0);
         assert!(local.z > 0.0 && local.z < 1.5);
+        assert!(game::render_bridge::echo7_lower_deck_position_valid(
+            player, ship, 0.0, None, false
+        ));
         let camera = bridge.camera(16.0 / 9.0).unwrap();
         assert!((camera.position().x - player.x).abs() < 2.0);
         assert!((camera.position().z - player.z).abs() < 2.0);
@@ -7637,10 +7744,10 @@ mod tests {
             bridge.surface_planet,
         );
         assert_eq!(snapshot.overlay.fade_to_black, 0.0);
-        assert!(snapshot
-            .nodes
-            .iter()
-            .any(|node| { node.entity == render_core::SnapshotId::Entity(bridge.ship) }));
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.entity
+                == render_core::SnapshotId::Entity(game::render_bridge::INTERIOR_LOWER_ENTITY)
+        }));
         let player = bridge
             .session
             .world()

@@ -40,7 +40,7 @@ Ka 0 0 0
 Kd 1 1 1
 Ks 0 0 0
 Ns 1
-d 1
+d 0.35
 illum 1
 map_Kd ../../../textures/ships/echo_7/base_vidrio_azul.png
 

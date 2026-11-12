@@ -122,7 +122,9 @@ pub fn run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
 ) -> Result<HotSwapReport, String> {
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let wake_proxy = event_loop.create_proxy();
-    let native_menu = config.title.starts_with("Astral Echo") && !config.raster_controls;
+    let native_menu = config.title.starts_with("Astral Echo")
+        && !config.raster_controls
+        && std::env::var_os("ASTRAL_ECHO_SKIP_NATIVE_MENU").is_none();
     let mut app = Host {
         config,
         source,

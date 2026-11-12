@@ -60,7 +60,7 @@ const FONT: [([u8; 7], char); 39] = [
     ([1, 2, 4, 8, 16, 0, 0], '/'),
 ];
 
-fn glyph(ch: char) -> Option<[u8; 7]> {
+pub(crate) fn glyph(ch: char) -> Option<[u8; 7]> {
     FONT.iter().find_map(|(p, c)| (*c == ch).then_some(*p))
 }
 

@@ -398,13 +398,28 @@ pub fn depth_resolve(
             return Ok(false);
         }
     }
+    let translucent = color.a < 255;
+    let color = if translucent {
+        let background = framebuffer
+            .pixel(fragment.x, fragment.y)
+            .unwrap_or(crate::Color::BLACK);
+        let alpha = f32::from(color.a) / 255.0;
+        crate::Color::new(
+            (f32::from(color.r) * alpha + f32::from(background.r) * (1.0 - alpha)) as u8,
+            (f32::from(color.g) * alpha + f32::from(background.g) * (1.0 - alpha)) as u8,
+            (f32::from(color.b) * alpha + f32::from(background.b) * (1.0 - alpha)) as u8,
+            255,
+        )
+    } else {
+        color
+    };
     framebuffer.set_pixel(fragment.x, fragment.y, color);
     if (fragment.x, fragment.y) == crate::pipeline::trace_pixel_target()
         && std::env::var("ASTRAL_ECHO_TRACE_PIXEL").ok().as_deref() == Some("center")
     {
         crate::pipeline::trace_pixel_write_committed();
     }
-    if depth_write {
+    if depth_write && !translucent {
         framebuffer.set_depth(fragment.x, fragment.y, fragment.depth);
     }
     Ok(true)

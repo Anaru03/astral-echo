@@ -747,6 +747,17 @@ impl SnapshotScene {
         self.assets.register_mesh(mesh, material, raster_mesh);
     }
 
+    pub fn mesh_statistics(
+        &self,
+        mesh: MeshHandle,
+        material: MaterialHandle,
+    ) -> Option<(usize, usize)> {
+        self.assets
+            .meshes
+            .get(&(mesh, material))
+            .map(|mesh| (mesh.vertices.len(), mesh.indices.len() / 3))
+    }
+
     pub fn register_shared_mesh(
         &mut self,
         mesh: MeshHandle,

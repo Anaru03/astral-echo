@@ -5,6 +5,86 @@ use game::render_bridge::*;
 use render_core::{SnapshotId, SnapshotScene, Vec3, VisualAssets};
 
 #[test]
+fn interior_components_keep_distinct_source_identity_before_expansion() {
+    let world = support::fixture_world();
+    let camera = interior_camera(&world, 16.0 / 9.0).unwrap();
+    let snapshot =
+        snapshot_from_world_with_camera_and_view(&world, Default::default(), &camera, true);
+    let expected = [
+        (
+            world.navigation().ship_id().unwrap(),
+            render_core::MeshHandle::SHIP_PLACEHOLDER,
+        ),
+        (
+            INTERIOR_LOWER_ENTITY,
+            render_core::MeshHandle::ECHO7_INTERIOR_LOWER,
+        ),
+        (
+            INTERIOR_UPPER_ENTITY,
+            render_core::MeshHandle::ECHO7_INTERIOR_UPPER,
+        ),
+        (
+            INTERIOR_CORE_ENTITY,
+            render_core::MeshHandle::ECHO7_INTERIOR_CORE,
+        ),
+    ];
+    let transforms: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter(|node| {
+            expected.iter().any(|(entity, mesh)| {
+                node.entity == SnapshotId::Entity(*entity) && node.mesh == *mesh
+            })
+        })
+        .map(|node| node.transform)
+        .collect();
+    assert_eq!(transforms.len(), 4);
+    assert!(transforms
+        .iter()
+        .all(|transform| *transform == transforms[0]));
+    assert_eq!(
+        snapshot
+            .nodes
+            .iter()
+            .filter(|node| node.mesh == render_core::MeshHandle::SHIP_PLACEHOLDER)
+            .count(),
+        1
+    );
+    for (entity, mesh) in expected {
+        assert!(snapshot
+            .nodes
+            .iter()
+            .any(|node| { node.entity == SnapshotId::Entity(entity) && node.mesh == mesh }));
+    }
+}
+
+#[test]
+fn pilot_snapshot_keeps_component_mount_without_full_mount_duplication() {
+    let world = support::fixture_world();
+    let camera = interior_camera(&world, 16.0 / 9.0).unwrap();
+    let snapshot = snapshot_from_world_with_camera_and_view_and_nareth_and_pilot(
+        &world,
+        Default::default(),
+        &camera,
+        true,
+        true,
+        false,
+    );
+    let meshes: Vec<_> = snapshot.nodes.iter().map(|node| node.mesh).collect();
+    assert!(meshes.contains(&render_core::MeshHandle::SHIP_PLACEHOLDER));
+    assert!(meshes.contains(&render_core::MeshHandle::ECHO7_INTERIOR_LOWER));
+    assert!(meshes.contains(&render_core::MeshHandle::ECHO7_INTERIOR_UPPER));
+    assert!(meshes.contains(&render_core::MeshHandle::ECHO7_INTERIOR_CORE));
+    assert_eq!(
+        meshes
+            .iter()
+            .filter(|mesh| **mesh == render_core::MeshHandle::SHIP_PLACEHOLDER)
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn maps_all_classes_with_real_ids_and_stable_handles_without_mutation() {
     let world = support::fixture_world();
     let before = format!("{world:?}");

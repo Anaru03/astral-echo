@@ -109,7 +109,7 @@ pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
 pub const ECHO7_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
 pub const ECHO7_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const STARS_MATERIAL: MaterialHandle = VisualAssets::STARS;
-const ECHO7_VISUAL_SCALE_FACTOR: f32 = 0.12;
+const ECHO7_VISUAL_SCALE_FACTOR: f32 = 1.0;
 pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::splat(ECHO7_VISUAL_SCALE_FACTOR);
 pub const ECHO7_VISUAL_LENGTH: f32 = 93.4 * ECHO7_VISUAL_SCALE_FACTOR;
 // Bounds measured from ECHO7_Exterior_DosCubiertas.obj. The source model uses
@@ -196,7 +196,7 @@ pub const STATION_MATERIAL: MaterialHandle = VisualAssets::STATION;
 pub const DERELICT_MATERIAL: MaterialHandle = VisualAssets::DERELICT;
 pub const ASTEROID_MATERIAL: MaterialHandle = VisualAssets::ASTEROID;
 
-fn echo7_world_to_local(
+pub(crate) fn echo7_world_to_local(
     position: engine::Vec3,
     ship_position: engine::Vec3,
     ship_yaw_degrees: f32,
@@ -390,10 +390,12 @@ fn echo7_model_room_floor_contains(local: Vec3, upper: bool) -> bool {
     let longitudinal = (local.x >= -27.5 + radius && local.x <= -10.8 + radius
         || local.x >= 10.8 - radius && local.x <= 29.1 - radius)
         && local.y.abs() <= 1.82 - radius;
+    let central_corridor =
+        local.x >= -10.8 + radius && local.x <= 10.8 - radius && local.y.abs() <= 1.82 - radius;
     let bow = echo7_model_rect_contains(local, (-42.3, -27.3, -4.0, 4.0));
     let lower_extra = echo7_model_rect_contains(local, (28.9, 35.9, -4.2, 4.2))
         || echo7_model_rect_contains(local, (30.4, 34.2, -10.3, -4.0));
-    module || branch || longitudinal || bow || (!upper && lower_extra)
+    module || branch || longitudinal || central_corridor || bow || (!upper && lower_extra)
 }
 
 fn echo7_model_door_portal(local: Vec3, index: usize) -> bool {
@@ -418,6 +420,27 @@ pub fn echo7_model_floor_position_valid(
     open_doors: &[bool; ECHO7_ROOM_DOORS.len()],
 ) -> bool {
     let local = echo7_world_to_local(position, ship_position, ship_yaw_degrees);
+    let stair_approach = local.x >= ECHO7_STAIR_LOCAL_X_MIN - ECHO7_PLAYER_RADIUS
+        && local.x <= ECHO7_STAIR_LOCAL_X_MAX + ECHO7_PLAYER_RADIUS
+        && local.y >= ECHO7_STAIR_LOCAL_Y_MIN - ECHO7_PLAYER_RADIUS
+        && local.y <= ECHO7_STAIR_LOCAL_Y_MAX + ECHO7_PLAYER_RADIUS;
+    if stair_approach {
+        return true;
+    }
+    if !upper {
+        let radius = ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.x;
+        let inside_despertar = local.x >= ECHO7_DESPERTAR_ROOM_X.0 + radius
+            && local.x <= ECHO7_DESPERTAR_ROOM_X.1 - radius
+            && local.y >= ECHO7_DESPERTAR_ROOM_Y.0 + radius
+            && local.y <= ECHO7_DESPERTAR_ROOM_Y.1 - radius;
+        let despertar_connector = local.x >= ECHO7_DESPERTAR_ROOM_X.0 + radius
+            && local.x <= -ECHO7_INTERIOR_HALF_WIDTH + radius
+            && local.y >= -20.0 + radius
+            && local.y <= 1.82 - radius;
+        if inside_despertar || despertar_connector {
+            return echo7_lower_core_obstacle_free(local, position.y);
+        }
+    }
     if !upper
         && (local.x * local.x + local.y * local.y).sqrt()
             <= ECHO7_BALCONY_LOCAL_OUTER_RADIUS - ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.x
@@ -1113,22 +1136,29 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
 
     if interior {
         let interior_origin = world.ship_position().map(from_engine).unwrap_or(Vec3::ZERO);
+        let ship_yaw = world
+            .ship_orientation()
+            .map(|orientation| orientation.yaw_degrees)
+            .unwrap_or_default();
+        let local_light = |local: Vec3| {
+            echo7_model_to_world(local, render_core::to_engine(interior_origin), ship_yaw)
+        };
         snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
             color: Vec3::new(1.0, 0.93, 0.82),
-            intensity: 18.0,
+            intensity: 14.0,
             kind: render_core::RenderLightKind::Point {
-                position: interior_origin + Vec3::new(0.0, 5.6, 0.0),
-                range: 18.0,
+                position: from_engine(local_light(Vec3::new(0.0, 5.6, 0.0))),
+                range: 20.0,
             },
             casts_shadow: false,
         }));
         for local_position in [Vec3::new(-6.0, 3.5, 0.0), Vec3::new(6.0, 3.5, 0.0)] {
             snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
                 color: Vec3::new(0.86, 0.92, 1.0),
-                intensity: 10.0,
+                intensity: 8.0,
                 kind: render_core::RenderLightKind::Point {
-                    position: interior_origin + local_position,
-                    range: 12.0,
+                    position: from_engine(local_light(local_position)),
+                    range: 14.0,
                 },
                 casts_shadow: false,
             }));
@@ -1184,17 +1214,33 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
             * (echo7_local_to_world_rotation() * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER));
         let meshes = if interior || pilot_mode {
             [
+                ECHO7_MESH,
                 MeshHandle::ECHO7_INTERIOR_LOWER,
                 MeshHandle::ECHO7_INTERIOR_UPPER,
                 MeshHandle::ECHO7_INTERIOR_CORE,
             ]
         } else {
-            [ECHO7_MESH, MeshHandle::new(0), MeshHandle::new(0)]
+            [
+                ECHO7_MESH,
+                MeshHandle::new(0),
+                MeshHandle::new(0),
+                MeshHandle::new(0),
+            ]
         };
-        let count = if interior || pilot_mode { 3 } else { 1 };
-        for mesh in meshes.into_iter().take(count) {
+        let count = if interior || pilot_mode { 4 } else { 1 };
+        for (index, mesh) in meshes.into_iter().take(count).enumerate() {
+            let entity = if interior || pilot_mode {
+                [
+                    ship,
+                    INTERIOR_LOWER_ENTITY,
+                    INTERIOR_UPPER_ENTITY,
+                    INTERIOR_CORE_ENTITY,
+                ][index]
+            } else {
+                ship
+            };
             snapshot.push_node(SnapshotNode::new(
-                ship,
+                entity,
                 transform,
                 mesh,
                 ECHO7_MATERIAL,
@@ -2566,6 +2612,20 @@ mod tests {
 
         assert!((up - render_core::Vec3::Y).length() < 1e-5);
         assert!((right.cross(forward) - up).length() < 1e-5);
+    }
+
+    #[test]
+    fn interior_eye_height_matches_model_space_height() {
+        let ship = engine::Vec3::ZERO;
+        let feet = super::echo7_model_to_world(super::ECHO7_DESPERTAR_SPAWN_LOCAL, ship, 0.0);
+        let eye = engine::Vec3 {
+            x: feet.x,
+            y: feet.y + super::ECHO7_INTERIOR_EYE_HEIGHT,
+            z: feet.z,
+        };
+        let local_eye = super::echo7_player_model_position(eye, ship, 0.0);
+        let delta = local_eye.z - super::ECHO7_DESPERTAR_SPAWN_LOCAL.z;
+        assert!((delta - super::ECHO7_INTERIOR_EYE_HEIGHT).abs() < 1e-5);
     }
 
     #[test]
