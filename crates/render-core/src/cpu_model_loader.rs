@@ -50,7 +50,16 @@ impl Default for CpuModelLoadManager {
 
 impl CpuModelLoadManager {
     pub fn new() -> Self {
-        Self::with_loader(|path| load_obj(path))
+        Self::with_loader(|path| {
+            if path
+                .file_name()
+                .is_some_and(|name| name == "Seraphim_planet.obj")
+            {
+                crate::load_obj_decimated(path, 32)
+            } else {
+                load_obj(path)
+            }
+        })
     }
 
     pub fn with_loader<F>(loader: F) -> Self

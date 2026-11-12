@@ -5821,6 +5821,26 @@ impl GameplayWorld {
         self.navigation.resume_from_landing()
     }
 
+    pub fn complete_planet_landing(&mut self, destination: DestinationId) -> bool {
+        let was_landed = matches!(
+            self.navigation.planet_flight_state(),
+            PlanetFlightState::Landed { planet } if planet == destination
+        );
+        let completed = self
+            .navigation
+            .complete_landing(destination, self.time().elapsed);
+        if completed && !was_landed {
+            if let Some(ship) = self.navigation.ship_id() {
+                self.publish(crate::events::GameplayEvent::PlanetLanded {
+                    ship,
+                    planet: destination,
+                    position: self.navigation.current_position(),
+                });
+            }
+        }
+        completed
+    }
+
     pub fn initialize_ship_integrity(
         &mut self,
         ship: EntityId,

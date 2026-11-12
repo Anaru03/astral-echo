@@ -549,6 +549,10 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     let kharvex_planet = kharvex_planet_id(world);
     let nareth_planet = nareth_planet_id(world);
     let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
+    let landing_planet = match world.planet_flight_state() {
+        gameplay::PlanetFlightState::Landing { planet } => Some(planet),
+        _ => None,
+    };
     let mut snapshot = RenderSnapshot::new(
         tick,
         camera.position(),
@@ -634,7 +638,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         }
     }
 
-    if world.navigation().ship_id().is_some() {
+    if surface_planet.is_none() && world.navigation().ship_id().is_some() {
         snapshot.push_node(SnapshotNode::new(
             SUN_ENTITY,
             sun_model_transform(),
@@ -670,25 +674,27 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         ));
     }
 
-    for node in station_nodes_for_view(world, interior) {
-        snapshot.push_node(node);
-    }
-
-    for node in mission_interaction_nodes(world, interior) {
-        snapshot.push_node(node);
-    }
-
-    for node in derelict_nodes(world) {
-        snapshot.push_node(node);
-    }
-    if !interior {
-        for node in ambient_derelict_nodes() {
+    if surface_planet.is_none() {
+        for node in station_nodes_for_view(world, interior) {
             snapshot.push_node(node);
         }
-    }
 
-    for node in asteroid_field_nodes(world) {
-        snapshot.push_node(node);
+        for node in mission_interaction_nodes(world, interior) {
+            snapshot.push_node(node);
+        }
+
+        for node in derelict_nodes(world) {
+            snapshot.push_node(node);
+        }
+        if !interior {
+            for node in ambient_derelict_nodes() {
+                snapshot.push_node(node);
+            }
+        }
+
+        for node in asteroid_field_nodes(world) {
+            snapshot.push_node(node);
+        }
     }
 
     for player in world.players() {
@@ -705,36 +711,50 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         ));
     }
 
-    for companion in world.companions() {
-        snapshot.push_node(SnapshotNode::new(
-            companion.entity,
-            Transform::from_translation(from_engine(companion.position)),
-            ERICK_MESH,
-            ERICK_MATERIAL,
-            companion.active && world.entities().contains(companion.entity),
-        ));
-    }
-
-    for enemy in world.enemies() {
-        if enemy.is_player {
-            continue;
+    if surface_planet.is_none() {
+        for companion in world.companions() {
+            snapshot.push_node(SnapshotNode::new(
+                companion.entity,
+                Transform::from_translation(from_engine(companion.position)),
+                ERICK_MESH,
+                ERICK_MATERIAL,
+                companion.active && world.entities().contains(companion.entity),
+            ));
         }
-        let visible =
-            enemy.active && !enemy.is_defeated() && world.entities().contains(enemy.entity);
-        snapshot.push_node(SnapshotNode::new(
-            enemy.entity,
-            Transform::new(
-                from_engine(enemy.position),
-                Quat::IDENTITY,
-                ENEMY_SHIP_VISUAL_SCALE,
-            ),
-            ENEMY_MESH,
-            enemy_material(enemy.archetype),
-            visible,
-        ));
+
+        for enemy in world.enemies() {
+            if enemy.is_player {
+                continue;
+            }
+            let visible =
+                enemy.active && !enemy.is_defeated() && world.entities().contains(enemy.entity);
+            snapshot.push_node(SnapshotNode::new(
+                enemy.entity,
+                Transform::new(
+                    from_engine(enemy.position),
+                    Quat::IDENTITY,
+                    ENEMY_SHIP_VISUAL_SCALE,
+                ),
+                ENEMY_MESH,
+                enemy_material(enemy.archetype),
+                visible,
+            ));
+        }
     }
 
     for dest in world.destinations() {
+        // Do not draw the full high-density planet mesh from inside its
+        // surface volume. The local exploration patch below is the playable
+        // ground and prevents the close-up planet model from stalling the
+        // renderer during the landing-to-surface transition.
+        if surface_planet.is_some() || landing_planet == Some(dest.id) {
+            continue;
+        }
+        // Nareth must never fall back to the generic Earth test sphere. It is
+        // hidden until its asynchronous model is genuinely ready.
+        if nareth_planet == Some(dest.id) && !nareth_mesh_ready {
+            continue;
+        }
         if dest.id == gameplay::DestinationId::new(9_001) {
             // Echo-7's origin is the player's spawn marker, not a world object.
             continue;
@@ -784,11 +804,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                     .planet_position_at(dest.id, world.time().elapsed)
                     .map(from_engine)
                     .unwrap_or_else(|| from_engine(dest.position));
-                if nareth_mesh_ready {
-                    nareth_planet_transform(position, elapsed_seconds)
-                } else {
-                    Transform::new(position, Quat::IDENTITY, scale)
-                }
+                nareth_planet_transform(position, elapsed_seconds)
             } else {
                 Transform::new(from_engine(dest.position), Quat::IDENTITY, scale)
             };
@@ -798,6 +814,33 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                 mesh,
                 material,
                 dest.discovery != gameplay::DiscoveryState::Unknown,
+            ));
+        }
+    }
+
+    // Keep a visible, low-cost planet silhouette throughout the approach.
+    // This is deliberately separate from PLANET_SPHERE (the old Earth test
+    // mesh) and from the asynchronously loaded production model.
+    if let Some(planet_id) = landing_planet {
+        let position = world
+            .planet_position_at(planet_id, world.time().elapsed)
+            .map(from_engine)
+            .or_else(|| {
+                world
+                    .destination(planet_id)
+                    .map(|destination| from_engine(destination.position))
+            });
+        if let Some(position) = position {
+            snapshot.push_node(SnapshotNode::destination(
+                planet_id.value(),
+                Transform::new(
+                    position,
+                    Quat::IDENTITY,
+                    Vec3::splat(planet_visual_radius(planet_id)),
+                ),
+                MeshHandle::LANDING_PLANET_PROXY,
+                PLANET_MATERIAL,
+                true,
             ));
         }
     }

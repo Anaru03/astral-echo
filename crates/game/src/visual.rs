@@ -375,7 +375,9 @@ struct VisualBridge {
     pilot_camera_distance: f32,
     surface_mode: bool,
     surface_planet: Option<DestinationId>,
+    landing_planet: Option<DestinationId>,
     landing_cinematic_started_at: Option<u64>,
+    landing_cinematic_wall_started_at: Option<Instant>,
     takeoff_cinematic_started_at: Option<u64>,
     fire_pressed: bool,
     boost_pressed: bool,
@@ -967,7 +969,9 @@ impl VisualBridge {
             pilot_camera_distance: game::render_bridge::PILOT_CAMERA_DEFAULT_DISTANCE,
             surface_mode: false,
             surface_planet: None,
+            landing_planet: None,
             landing_cinematic_started_at: None,
+            landing_cinematic_wall_started_at: None,
             takeoff_cinematic_started_at: None,
             fire_pressed: false,
             boost_pressed: false,
@@ -1149,6 +1153,12 @@ impl VisualBridge {
     }
 
     fn request_nareth_visual_asset(&mut self) {
+        if matches!(
+            self.visual_asset_states.get(NARETH_RESOURCE_ID),
+            Some(VisualAssetState::Loading | VisualAssetState::Ready)
+        ) {
+            return;
+        }
         let request = nareth_visual_asset_request();
         let size = std::fs::metadata(&request.path).map(|metadata| metadata.len()).ok();
         let resource_id = request.resource_id.clone();
@@ -4204,7 +4214,9 @@ impl VisualBridge {
             return;
         };
         if self.session.world_mut().request_planet_landing(planet) {
+            self.landing_planet = Some(planet);
             self.landing_cinematic_started_at = Some(self.session.world().time().elapsed.0);
+            self.landing_cinematic_wall_started_at = Some(Instant::now());
             self.pilot_mode = false;
             self.flight_keys = FlightKeys::default();
             self.feedback = format!(
@@ -4218,15 +4230,26 @@ impl VisualBridge {
 
     fn update_planet_surface_transition(&mut self) {
         let now = self.session.world().time().elapsed.0;
-        if let (Some(started), Some(planet)) = (
-            self.landing_cinematic_started_at,
-            self.session
-                .world()
-                .planet_flight_state()
-                .landed_planet(),
-        ) {
-            if now.saturating_sub(started) >= game::render_bridge::LANDING_CINEMATIC_DURATION_MS {
+        if let (Some(started), Some(planet)) = (self.landing_cinematic_started_at, self.landing_planet)
+        {
+            let simulation_elapsed = now.saturating_sub(started);
+            let wall_elapsed = self
+                .landing_cinematic_wall_started_at
+                .map(|value| Instant::now().saturating_duration_since(value).as_millis() as u64)
+                .unwrap_or(0);
+            if simulation_elapsed.max(wall_elapsed)
+                >= game::render_bridge::LANDING_CINEMATIC_DURATION_MS
+            {
+                // The visual transition is authoritative for the local
+                // character. If the navigation event was delayed by asset
+                // work, finish the pending landing before changing cameras.
+                let _ = self
+                    .session
+                    .world_mut()
+                    .complete_planet_landing(planet);
                 self.landing_cinematic_started_at = None;
+                self.landing_cinematic_wall_started_at = None;
+                self.landing_planet = None;
                 self.surface_mode = true;
                 self.surface_planet = Some(planet);
                 self.interior_mode = false;
@@ -4322,13 +4345,18 @@ impl VisualBridge {
     fn camera(&self, aspect: f32) -> Result<render_core::Camera, render_core::CameraError> {
         let world = self.session.world();
         if let Some(started) = self.landing_cinematic_started_at {
-            let progress = (world.time().elapsed.0.saturating_sub(started) as f32
+            let simulation_elapsed = world.time().elapsed.0.saturating_sub(started);
+            let wall_elapsed = self
+                .landing_cinematic_wall_started_at
+                .map(|value| Instant::now().saturating_duration_since(value).as_millis() as u64)
+                .unwrap_or(0);
+            let progress = (simulation_elapsed.max(wall_elapsed) as f32
                 / game::render_bridge::LANDING_CINEMATIC_DURATION_MS as f32)
                 .clamp(0.0, 1.0);
             let target = match world.planet_flight_state() {
                 gameplay::PlanetFlightState::Landing { planet }
                 | gameplay::PlanetFlightState::Landed { planet } => Some(planet),
-                _ => self.landing_target(),
+                _ => self.landing_planet.or_else(|| self.landing_target()),
             };
             return game::render_bridge::observation_camera_for_destination(
                 world,
@@ -4400,6 +4428,9 @@ fn run_visual(lan_connection: Option<(String, String)>) -> Result<(), String> {
     }
     let (asset_client, asset_host) = visual_asset_channel();
     runtime.borrow_mut().attach_visual_asset_client(asset_client);
+    // Preload Nareth while the title/space view is active. Never start a
+    // heavyweight model upload from the landing cinematic itself.
+    runtime.borrow_mut().request_nareth_visual_asset();
     let snapshot_runtime = Rc::clone(&runtime);
     let input_runtime = Rc::clone(&runtime);
     let focus_runtime = Rc::clone(&runtime);
@@ -5081,12 +5112,10 @@ mod tests {
             false,
             false,
         );
-        let nareth = snapshot
+        assert!(!snapshot
             .nodes
             .iter()
-            .find(|node| node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value()))
-            .expect("Nareth should remain in the snapshot while loading");
-        assert_eq!(nareth.mesh, render_core::MeshHandle::PLANET_SPHERE);
+            .any(|node| node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value())));
 
         bridge
             .visual_asset_states
@@ -6355,6 +6384,44 @@ mod tests {
             bridge.session.world().planet_flight_state(),
             gameplay::PlanetFlightState::Landing { planet } if planet == DESTINATION
         ));
+    }
+
+    #[test]
+    fn landing_cinematic_finishes_and_releases_the_observation_camera() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let ship_position = bridge
+            .session
+            .world()
+            .ship_position()
+            .expect("visual session should have a ship");
+        assert!(bridge.session.world_mut().configure_planet_physics(PlanetPhysics {
+            destination: DESTINATION,
+            orbit_center: GameplayVec3::ZERO,
+            orbit_radius: 0.0,
+            orbit_start: ship_position,
+            orbit_axis: GameplayVec3 { x: 0.0, y: 1.0, z: 0.0 },
+            orbit_phase: 0.0,
+            orbit_angular_speed: 0.0,
+            surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
+            ship_radius: 1.0,
+            gravity_influence_radius: 24.0,
+            gravitational_parameter: 80.0,
+            atmosphere_height: 4.0,
+        }));
+        bridge.request_landing_from_current_position();
+        assert!(bridge.landing_cinematic_started_at.is_some());
+
+        bridge.advance_visual_time_by(Duration(100));
+        assert!(bridge.landing_cinematic_started_at.is_some());
+        bridge.advance_visual_time_by(Duration(
+            game::render_bridge::LANDING_CINEMATIC_DURATION_MS,
+        ));
+
+        assert!(bridge.surface_mode);
+        assert_eq!(bridge.surface_planet, Some(DESTINATION));
+        assert!(bridge.landing_cinematic_started_at.is_none());
+        let camera = bridge.camera(16.0 / 9.0).expect("surface camera should be valid");
+        assert!(camera.position().is_finite());
     }
 
     #[test]
