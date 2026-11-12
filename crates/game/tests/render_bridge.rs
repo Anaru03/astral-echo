@@ -872,12 +872,15 @@ fn only_the_selected_academic_planet_orbits() {
 }
 
 #[test]
-fn flight_camera_tracks_visual_ship_and_keeps_projection_valid() {
+fn flight_camera_is_a_third_person_view_behind_the_visual_ship() {
     let world = support::fixture_world();
+    let ship = visual_ship_position(&world).expect("fixture ship should be visible");
     let camera = flight_camera(&world, 16.0 / 9.0).unwrap();
     assert!(camera.view_matrix().is_finite());
     assert!(camera.projection_matrix().is_finite());
     assert!(camera.view_projection_matrix().is_finite());
+    assert!(camera.position().z > ship.z + 30.0);
+    assert!(camera.position().z > camera.target().z);
     assert_eq!(visual_ship_position(&world), world.ship_position().map(render_core::from_engine));
 }
 
@@ -888,10 +891,8 @@ fn pilot_camera_is_behind_the_echo7_propulsors_and_aims_at_its_rear_hull() {
     let camera = pilot_camera(&world, 16.0 / 9.0, PILOT_CAMERA_DEFAULT_DISTANCE)
         .expect("pilot camera should be valid");
 
-    // The fixture starts with yaw/pitch = 0. Echo-7's visual nose points -Z
-    // toward the solar system, so its propulsion/camera side is +Z.
-    assert!(camera.position().z > ship.z + 6.8);
-    assert!(camera.target().z > ship.z);
+    assert!(camera.position().z > ship.z + 30.0);
+    assert!(camera.target().z > ship.z + 10.0);
     assert!(camera.position().z > camera.target().z);
     assert!(camera.view_projection_matrix().is_finite());
 
@@ -903,7 +904,16 @@ fn pilot_camera_is_behind_the_echo7_propulsors_and_aims_at_its_rear_hull() {
         .find(|node| node.entity == SnapshotId::Entity(ship_id))
         .expect("fixture ship should be rendered");
     let nose_direction = ship_node.transform.rotation * Vec3::NEG_X;
+    let model_up = ship_node.transform.rotation * Vec3::Z;
+    let model_right = ship_node.transform.rotation * Vec3::Y;
     assert!(nose_direction.dot(Vec3::NEG_Z) > 0.99);
+    assert!(model_up.dot(Vec3::Y) > 0.99, "the Z-up OBJ must be converted to renderer Y-up");
+    assert!(model_right.dot(Vec3::X) > 0.99, "the ship must not be rendered on its side");
+    let rendered_center = ship_node
+        .transform
+        .matrix()
+        .transform_point3(Vec3::new(3.7, 0.0, 5.532_477));
+    assert!((rendered_center - ship).length() < 0.001);
 }
 
 #[test]

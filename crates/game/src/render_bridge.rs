@@ -85,9 +85,9 @@ pub const TAKEOFF_CINEMATIC_DURATION_MS: u64 = 1_500;
 pub const SURFACE_RETURN_DISTANCE: f32 = 5.0;
 const SUN_POSITION: Vec3 = Vec3::new(0.0, 0.0, -18.0);
 const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 28.0, 46.0);
-pub const PILOT_CAMERA_DEFAULT_DISTANCE: f32 = 2.0;
-pub const PILOT_CAMERA_MIN_DISTANCE: f32 = 0.75;
-pub const PILOT_CAMERA_MAX_DISTANCE: f32 = 40.0;
+pub const PILOT_CAMERA_DEFAULT_DISTANCE: f32 = 12.0;
+pub const PILOT_CAMERA_MIN_DISTANCE: f32 = 4.0;
+pub const PILOT_CAMERA_MAX_DISTANCE: f32 = 60.0;
 pub const SHIP_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
 pub const ENEMY_MESH: MeshHandle = MeshHandle::ENEMY_PLACEHOLDER;
 pub const PLAYER_MESH: MeshHandle = MeshHandle::CUBE;
@@ -107,10 +107,10 @@ pub const ECHO7_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
 pub const ECHO7_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const STARS_MATERIAL: MaterialHandle = VisualAssets::STARS;
 pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::splat(0.65);
-const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(0.5759995, 0.8370645, 0.0);
-// The OBJ's propulsion nozzles reach approximately +X=11.11. Account for
-// the model-center correction and visual scale when anchoring the camera.
-const ECHO7_MODEL_AFT_EDGE_X: f32 = 11.11;
+// Bounds measured from ECHO7_Exterior_DosCubiertas.obj. The source model uses
+// X for its longitudinal axis and Z as up.
+const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(3.7, 0.0, 5.532_477);
+const ECHO7_MODEL_AFT_EDGE_X: f32 = 50.4;
 const ECHO7_AFT_EDGE_OFFSET: f32 =
     (ECHO7_MODEL_AFT_EDGE_X - ECHO7_MODEL_CENTER.x) * ECHO7_VISUAL_SCALE.x;
 // The OBJ faces -X, while gameplay considers yaw=0 forward along -Z.
@@ -120,7 +120,10 @@ const ECHO7_MODEL_YAW_OFFSET_RAD: f32 = -core::f32::consts::FRAC_PI_2;
 // Aim at the rear third of the hull. Aiming at the bow made the camera look
 // through the entire ship even though its position was already behind the
 // engines.
-const ECHO7_CAMERA_TARGET_AFT_OFFSET: f32 = 2.0;
+const ECHO7_MODEL_UP_CONVERSION_RAD: f32 = -core::f32::consts::FRAC_PI_2;
+const ECHO7_CAMERA_TARGET_AFT_OFFSET: f32 = ECHO7_AFT_EDGE_OFFSET * 0.55;
+const ECHO7_CAMERA_HEIGHT: f32 = 8.5;
+const ECHO7_CAMERA_TARGET_HEIGHT: f32 = 1.5;
 pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
 pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
 pub const PLAYER_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
@@ -178,6 +181,17 @@ fn enemy_material(archetype: Option<gameplay::EnemyArchetype>) -> MaterialHandle
     }
 }
 
+fn echo7_visual_rotation(orientation: gameplay::ShipOrientation) -> Quat {
+    let yaw = orientation.yaw_degrees.to_radians();
+    let pitch = orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);
+    // Rotation order matters: first convert the Z-up OBJ to Y-up, then align
+    // its -X bow with gameplay -Z, and finally apply the ship controls.
+    Quat::from_rotation_y(yaw)
+        * Quat::from_rotation_x(pitch)
+        * Quat::from_rotation_y(ECHO7_MODEL_YAW_OFFSET_RAD)
+        * Quat::from_rotation_x(ECHO7_MODEL_UP_CONVERSION_RAD)
+}
+
 pub fn station_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
     station_nodes_for_view(world, false)
 }
@@ -222,10 +236,15 @@ fn station_nodes_for_view(world: &GameplayWorld, interior: bool) -> Vec<Snapshot
     nodes
 }
 
-fn mission_interaction_nodes(world: &GameplayWorld, interior: bool) -> Vec<SnapshotNode> {
+fn mission_interaction_nodes(
+    world: &GameplayWorld,
+    interior: bool,
+) -> impl Iterator<Item = SnapshotNode> + '_ {
     world
         .interactables()
-        .filter(|interactable| interior || !is_echo_interior_position(world, interactable.position))
+        .filter(move |interactable| {
+            interior || !is_echo_interior_position(world, interactable.position)
+        })
         .filter(|interactable| {
             matches!(
                 interactable.behavior,
@@ -244,13 +263,9 @@ fn mission_interaction_nodes(world: &GameplayWorld, interior: bool) -> Vec<Snaps
                 interactable.enabled,
             )
         })
-        .collect()
 }
 
 fn is_echo_interior_position(world: &GameplayWorld, position: engine::Vec3) -> bool {
-    // Anchor interior interactables to Echo-7's origin destination instead of
-    // the ship's current position. Otherwise, after the ship moves away, the
-    // old cockpit stations would be misclassified as exterior stations.
     let origin = world
         .destination(gameplay::DestinationId::new(9_001))
         .map(|destination| destination.position)
@@ -258,9 +273,6 @@ fn is_echo_interior_position(world: &GameplayWorld, position: engine::Vec3) -> b
     let Some(origin) = origin else {
         return false;
     };
-    // A zero position is the uninitialized origin used by lightweight render
-    // fixtures. Only classify interior interactables once the runtime has an
-    // initialized ECHO-7 position to anchor the interior around.
     if origin == engine::Vec3::ZERO {
         return false;
     }
@@ -272,7 +284,7 @@ fn is_echo_interior_position(world: &GameplayWorld, position: engine::Vec3) -> b
         && position.y <= ECHO7_INTERIOR_CEILING_Y
 }
 
-pub fn derelict_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+pub fn derelict_nodes(world: &GameplayWorld) -> impl Iterator<Item = SnapshotNode> + '_ {
     world
         .derelicts()
         .filter(|derelict| derelict.state != gameplay::DerelictState::Undiscovered)
@@ -285,33 +297,26 @@ pub fn derelict_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
                 true,
             )
         })
-        .collect()
 }
 
-fn ambient_derelict_nodes(interior: bool) -> Vec<SnapshotNode> {
-    if interior {
-        return Vec::new();
-    }
-    AMBIENT_DERELICT_IDS
-        .into_iter()
-        .zip(AMBIENT_DERELICT_POSITIONS)
-        .map(|(id, position)| {
-            SnapshotNode::derelict(
-                id,
-                Transform::new(
-                    position,
-                    Quat::from_rotation_y((id as f32) * 0.37),
-                    Vec3::splat(0.5),
-                ),
-                DERELICT_MESH,
-                DERELICT_MATERIAL,
-                true,
-            )
-        })
-        .collect()
+fn ambient_derelict_nodes() -> [SnapshotNode; 4] {
+    std::array::from_fn(|index| {
+        let id = AMBIENT_DERELICT_IDS[index];
+        SnapshotNode::derelict(
+            id,
+            Transform::new(
+                AMBIENT_DERELICT_POSITIONS[index],
+                Quat::from_rotation_y((id as f32) * 0.37),
+                Vec3::splat(0.5),
+            ),
+            DERELICT_MESH,
+            DERELICT_MATERIAL,
+            true,
+        )
+    })
 }
 
-pub fn asteroid_field_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+pub fn asteroid_field_nodes(world: &GameplayWorld) -> impl Iterator<Item = SnapshotNode> + '_ {
     world
         .active_environmental_hazards()
         .filter(|hazard| {
@@ -326,7 +331,6 @@ pub fn asteroid_field_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
                 true,
             )
         })
-        .collect()
 }
 
 pub fn academic_surface_objects(elapsed_seconds: f64) -> [SnapshotNode; 4] {
@@ -356,9 +360,6 @@ pub fn academic_surface_objects_with_seed(
         );
         let (mesh, material) = match index % 4 {
             0 => (PLAYER_MESH, PLAYER_MATERIAL),
-            // This is a planetary surface prop, not a gameplay enemy. Keep
-            // enemy identity reserved for world.enemies() so it cannot look
-            // like an enemy ship permanently attached to the planet orbit.
             1 => (PLACEHOLDER_MESH, PLACEHOLDER_MATERIAL),
             2 => (DESTINATION_MESH, DESTINATION_MATERIAL),
             _ => (COLLECTIBLE_MESH, COLLECTIBLE_MATERIAL),
@@ -424,12 +425,6 @@ pub struct BridgeParams<'a> {
     pub include_collectibles: bool,
 }
 
-/// Selects the mission that the visual presentation should expose.
-///
-/// Active missions have priority over available missions.  The final fallback
-/// is only for presenting the initial locked campaign state; callers that want
-/// to start a mission must still require `Available` (or use the legacy
-/// first-mission bootstrap in `VisualBridge`).
 pub fn presentation_mission(world: &GameplayWorld) -> Option<MissionId> {
     crate::campaign::CAMPAIGN_ORDER
         .iter()
@@ -551,6 +546,9 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         camera.projection_matrix(),
     );
     snapshot.simulation_time = world.time().elapsed;
+    snapshot
+        .nodes
+        .reserve(1 + expected_snapshot_node_count(world, params, academic_planet, interior));
     let star_center = visual_ship_position(world).unwrap_or(Vec3::ZERO);
     snapshot.push_node(SnapshotNode::new(
         STARS_ENTITY,
@@ -559,9 +557,6 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         STARS_MATERIAL,
         !interior && surface_planet.is_none(),
     ));
-    snapshot
-        .nodes
-        .reserve(expected_snapshot_node_count(world, params, academic_planet));
     if let Some(fade) = world.impact_fade_to_black() {
         snapshot.overlay.fade_to_black = fade;
         snapshot.overlay.game_over = fade >= 1.0;
@@ -644,12 +639,9 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     ) {
         let orientation = world.ship_orientation().unwrap_or_default();
         let rotation = if surface_ship.is_some() {
-            Quat::IDENTITY
+            echo7_visual_rotation(gameplay::ShipOrientation::default())
         } else {
-            Quat::from_rotation_y(
-            orientation.yaw_degrees.to_radians() + ECHO7_MODEL_YAW_OFFSET_RAD,
-        )
-            * Quat::from_rotation_x(orientation.pitch_degrees.to_radians())
+            echo7_visual_rotation(orientation)
         };
         let mut transform = Transform::new(
             pos,
@@ -677,8 +669,10 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     for node in derelict_nodes(world) {
         snapshot.push_node(node);
     }
-    for node in ambient_derelict_nodes(interior) {
-        snapshot.push_node(node);
+    if !interior {
+        for node in ambient_derelict_nodes() {
+            snapshot.push_node(node);
+        }
     }
 
     for node in asteroid_field_nodes(world) {
@@ -1245,6 +1239,7 @@ fn expected_snapshot_node_count(
     world: &GameplayWorld,
     params: BridgeParams<'_>,
     academic_planet: Option<gameplay::DestinationId>,
+    interior: bool,
 ) -> usize {
     let mut count = 0;
     if world.navigation().ship_id().is_some() {
@@ -1255,11 +1250,19 @@ fn expected_snapshot_node_count(
     }
     count += world.players().count();
     count += world.companions().count();
-    count += station_nodes(world).len();
-    count += mission_interaction_nodes(world, false).len();
-    count += derelict_nodes(world).len();
-    count += ambient_derelict_nodes(false).len();
-    count += asteroid_field_nodes(world).len();
+    if !interior {
+        count += EXTERIOR_STATION_IDS.len() + AMBIENT_DERELICT_IDS.len();
+    }
+    count += world
+        .derelicts()
+        .filter(|derelict| derelict.state != gameplay::DerelictState::Undiscovered)
+        .count();
+    count += world
+        .active_environmental_hazards()
+        .filter(|hazard| {
+            hazard.hazard_type == gameplay::EnvironmentalHazardType::DebrisField
+        })
+        .count();
     count += world.enemies().filter(|enemy| !enemy.is_player).count();
     count += world
         .destinations()
@@ -1316,7 +1319,7 @@ pub fn interpolate_visual_ship_position(current: Vec3, target: Vec3, progress: f
 }
 
 pub fn flight_camera(world: &GameplayWorld, aspect: f32) -> Result<Camera, CameraError> {
-    observation_camera(world, aspect, 0.0, 0.0, 0.0)
+    pilot_camera(world, aspect, PILOT_CAMERA_DEFAULT_DISTANCE)
 }
 
 pub fn pilot_camera(
@@ -1326,27 +1329,25 @@ pub fn pilot_camera(
 ) -> Result<Camera, CameraError> {
     let ship = visual_ship_position(world).ok_or(CameraError::InvalidAspect)?;
     let orientation = world.ship_orientation().unwrap_or_default();
-    let yaw = orientation.yaw_degrees.to_radians();
-    let pitch = orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);
-    let rotation = Quat::from_rotation_y(yaw + ECHO7_MODEL_YAW_OFFSET_RAD)
-        * Quat::from_rotation_x(pitch);
+    let rotation = echo7_visual_rotation(orientation);
     // echo-7.obj is longitudinal on X and its propulsion groups are on +X.
     // Keep the ship's existing visual orientation and derive the chase camera
     // from that same local axis, so the camera starts behind the engines.
     let aft = (rotation * Vec3::X).normalize_or_zero();
+    let up = (rotation * Vec3::Z).normalize_or_zero();
     let distance = distance.clamp(PILOT_CAMERA_MIN_DISTANCE, PILOT_CAMERA_MAX_DISTANCE);
     // `ship` is the gameplay/model-center anchor, not the rear of the mesh.
     // Start immediately behind the actual propulsion edge.
     let position = ship
         + aft * (ECHO7_AFT_EDGE_OFFSET + distance)
-        + Vec3::new(0.0, 3.0, 0.0);
+        + up * ECHO7_CAMERA_HEIGHT;
     let target = ship
         + aft * ECHO7_CAMERA_TARGET_AFT_OFFSET
-        + Vec3::new(0.0, 1.15, 0.0);
+        + up * ECHO7_CAMERA_TARGET_HEIGHT;
     Camera::new(
         position,
         target,
-        Vec3::Y,
+        up,
         Projection::Perspective {
             fov_y_rad: 65.0_f32.to_radians(),
             aspect,

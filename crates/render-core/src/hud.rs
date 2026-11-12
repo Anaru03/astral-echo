@@ -94,13 +94,13 @@ fn wrap_lines(lines: &[String], max_chars: usize) -> Vec<String> {
 }
 
 fn panel_text_width(lines: &[String], char_width: u32, margin: u32) -> u32 {
-    (lines
+    lines
         .iter()
         .map(|line| line.chars().count())
         .max()
         .unwrap_or(1) as u32
         * char_width
-        + margin * 2)
+        + margin * 2
 }
 
 fn panel_char_capacity(width: u32, char_width: u32, margin: u32) -> usize {
@@ -109,6 +109,16 @@ fn panel_char_capacity(width: u32, char_width: u32, margin: u32) -> usize {
         .checked_div(char_width.max(1))
         .unwrap_or(1)
         .max(1) as usize
+}
+
+fn visible_text_rows(y: u32, margin: u32, height: u32, scale: u32) -> usize {
+    let first_row = y.saturating_add(margin);
+    let glyph_height = 7_u32.saturating_mul(scale);
+    if first_row.saturating_add(glyph_height) > height {
+        return 0;
+    }
+    let row_height = 10_u32.saturating_mul(scale).max(1);
+    (1 + height.saturating_sub(first_row + glyph_height) / row_height) as usize
 }
 
 fn push_text_panel(
@@ -139,7 +149,11 @@ fn push_text_panel(
         color: background_color,
     };
     glyphs.push(panel);
-    for (row, source) in lines.iter().enumerate() {
+    for (row, source) in lines
+        .iter()
+        .take(visible_text_rows(panel.y, margin, height, scale))
+        .enumerate()
+    {
         let text: String = source.chars().take(max_chars).collect();
         for (column, ch) in text.chars().enumerate() {
             let Some(pattern) = glyph(normalize(ch)) else { continue };
@@ -206,7 +220,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         hud.mission_description.as_deref().map(|v| format!("CONTEXTO: {v}")),
         hud.objective_name.as_deref().map(|v| format!("OBJETIVO: {v}")),
         Some("OBJETIVOS:".to_owned()).filter(|_| !hud.mission_objectives.is_empty()),
-        hud.guidance.as_deref().map(|v| format!("GUIA: {v}")),
+        hud.guidance.as_deref().map(|v| format!("ERICK: {v}")),
         hud.instructions.as_deref().map(|v| format!("MODO: {v}")),
     ].into_iter().flatten().collect::<Vec<_>>();
     let inventory_lines = hud.inventory_open.then(|| {
@@ -242,8 +256,18 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     let terminal = hud.feedback.as_deref().is_some_and(|v| v.contains("DERROTADO"));
     let color = if terminal { [255,96,80,255] } else { [210,240,255,255] };
     let background = HudOverlayRect { x: margin, y: margin, width: panel_width, height: panel_height, color: [5,12,24,220] };
-    let mut glyphs = Vec::new();
-    for (row, text) in lines.iter().enumerate() {
+    let visible_left_rows = visible_text_rows(margin, 0, height, scale);
+    let visible_left_chars = lines
+        .iter()
+        .take(visible_left_rows)
+        .map(|line| line.chars().count())
+        .sum::<usize>();
+    let mut glyphs = Vec::with_capacity(visible_left_chars.saturating_mul(12).max(256));
+    for (row, text) in lines
+        .iter()
+        .take(visible_left_rows)
+        .enumerate()
+    {
         for (column, ch) in text.chars().enumerate() {
             let Some(pattern) = glyph(normalize(ch)) else { continue };
             for (glyph_row, bits) in pattern.iter().copied().enumerate() {
@@ -309,7 +333,11 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
                 && (!hud.quick_actions.is_empty() || terminal || value.starts_with("ERICK:"))
         })
     {
-        center_lines.push(format!("FEEDBACK: {value}"));
+        if value.starts_with("ERICK:") {
+            center_lines.push(value.to_owned());
+        } else {
+            center_lines.push(format!("FEEDBACK: {value}"));
+        }
     }
     if !center_lines.is_empty() {
         let center_max_width = (width * 78 / 100).max(char_width + margin);
@@ -357,7 +385,11 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             height: inventory_height,
             color: [12, 24, 44, 245],
         });
-        for (row, text) in inventory_lines.iter().enumerate() {
+        for (row, text) in inventory_lines
+            .iter()
+            .take(visible_text_rows(margin, margin / 2, height, scale))
+            .enumerate()
+        {
             for (column, ch) in text.chars().enumerate() {
                 let Some(pattern) = glyph(normalize(ch)) else { continue };
                 for (glyph_row, bits) in pattern.iter().copied().enumerate() {
@@ -457,7 +489,11 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             color: [5, 18, 36, 245],
         };
         glyphs.insert(0, panel);
-        for (row, text) in panel_lines.iter().enumerate() {
+        for (row, text) in panel_lines
+            .iter()
+            .take(visible_text_rows(panel.y, margin, height, scale))
+            .enumerate()
+        {
             for (column, ch) in text.chars().enumerate() {
                 let Some(pattern) = glyph(normalize(ch)) else { continue };
                 for (glyph_row, bits) in pattern.iter().copied().enumerate() {
@@ -542,6 +578,24 @@ mod tests {
         let overlay = hud_overlay(&hud, 320, 180);
         assert!(overlay.background.x + overlay.background.width <= 320);
         assert!(overlay.glyphs.iter().all(|r| r.x + r.width <= 320 && r.y + r.height <= 180));
+    }
+
+    #[test]
+    fn crowded_inventory_and_controls_stay_inside_small_viewports() {
+        let hud = HudState {
+            inventory_open: true,
+            inventory_items: vec!["RECURSO MUY LARGO".repeat(20); 20],
+            controls_panel: crate::HudControlsPanel {
+                open: true,
+                entries: vec!["CONTROL MUY LARGO".repeat(20); 20],
+            },
+            ..Default::default()
+        };
+        let overlay = hud_overlay(&hud, 320, 180);
+        assert!(overlay
+            .glyphs
+            .iter()
+            .all(|rect| rect.x + rect.width <= 320 && rect.y + rect.height <= 180));
     }
 
     #[test]

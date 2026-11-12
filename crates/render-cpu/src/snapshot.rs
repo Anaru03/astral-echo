@@ -8,6 +8,19 @@ use crate::{
     TileConfig, Topology, Viewport,
 };
 
+fn cpu_culling_config(framebuffer: &Framebuffer) -> render_core::CullingConfig {
+    let mut config = render_core::CullingConfig {
+        width: framebuffer.width(),
+        height: framebuffer.height(),
+        ..Default::default()
+    };
+    if config.width <= 640 && config.height <= 360 {
+        config.low_threshold_px = f32::MAX;
+        config.high_threshold_px = f32::MAX;
+    }
+    config
+}
+
 pub fn render_snapshot_scene(
     framebuffer: &mut Framebuffer,
     scene: &SnapshotScene,
@@ -36,11 +49,7 @@ pub fn render_snapshot_scene_with_stats_and_scratch(
     mode: RasterMode,
     scratch: &mut CpuPipelineScratch,
 ) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
-    let prepared = scene.prepare(render_core::CullingConfig {
-        width: framebuffer.width(),
-        height: framebuffer.height(),
-        ..Default::default()
-    });
+    let prepared = scene.prepare(cpu_culling_config(framebuffer));
     let prepared_stats = prepared.stats();
     let pipeline_stats = render_prepared_scene_with_scratch(
         framebuffer,
@@ -99,11 +108,7 @@ pub fn render_snapshot_scene_with_timing(
     mode: RasterMode,
 ) -> Result<(PreparedSceneStats, PipelineStats, u64), RasterError> {
     let preparation_started = std::time::Instant::now();
-    let prepared = scene.prepare(render_core::CullingConfig {
-        width: framebuffer.width(),
-        height: framebuffer.height(),
-        ..Default::default()
-    });
+    let prepared = scene.prepare(cpu_culling_config(framebuffer));
     let preparation_ns = preparation_started.elapsed().as_nanos() as u64;
     let prepared_stats = prepared.stats();
     let pipeline_stats = render_prepared_scene_with_config(
@@ -145,11 +150,7 @@ pub fn render_snapshot_scene_with_shader_at_time_with_stats(
     shader: FragmentShader,
     time: f32,
 ) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
-    let prepared = scene.prepare(render_core::CullingConfig {
-        width: framebuffer.width(),
-        height: framebuffer.height(),
-        ..Default::default()
-    });
+    let prepared = scene.prepare(cpu_culling_config(framebuffer));
     let prepared_stats = prepared.stats();
     let pipeline_stats = render_prepared_scene_with_shader(
         framebuffer,
