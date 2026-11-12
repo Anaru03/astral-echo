@@ -5681,6 +5681,20 @@ impl GameplayWorld {
     pub fn interactable(&self, entity: EntityId) -> Option<&Interactable> {
         self.interactables.get(&entity)
     }
+    pub fn set_interactable_position(
+        &mut self,
+        entity: EntityId,
+        position: engine::Vec3,
+    ) -> Result<(), InteractionRegistrationError> {
+        if !position.x.is_finite() || !position.y.is_finite() || !position.z.is_finite() {
+            return Err(InteractionRegistrationError::InvalidPosition);
+        }
+        let Some(interactable) = self.interactables.get_mut(&entity) else {
+            return Err(InteractionRegistrationError::EntityNotFound);
+        };
+        interactable.position = position;
+        Ok(())
+    }
     pub fn interactables(&self) -> impl Iterator<Item = &Interactable> {
         self.interactables.values()
     }

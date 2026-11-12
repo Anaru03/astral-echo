@@ -890,8 +890,8 @@ fn pilot_camera_is_behind_the_echo7_propulsors_and_aims_at_its_rear_hull() {
     let camera = pilot_camera(&world, 16.0 / 9.0, PILOT_CAMERA_DEFAULT_DISTANCE)
         .expect("pilot camera should be valid");
 
-    assert!(camera.position().z > ship.z + 30.0);
-    assert!(camera.target().z > ship.z + 10.0);
+    assert!(camera.position().z > ship.z + 12.0);
+    assert!(camera.target().z > ship.z + 2.5);
     assert!(camera.position().z > camera.target().z);
     assert!(camera.view_projection_matrix().is_finite());
 

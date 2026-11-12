@@ -23,11 +23,10 @@ impl Preset {
     }
 
     pub fn fps(self) -> NonZeroU32 {
-        NonZeroU32::new(match self {
-            Self::Low => 30,
-            Self::Medium | Self::High => 60,
-        })
-        .unwrap()
+        // Resolution and model LOD carry the low-end performance policy. Keep
+        // input/camera presentation at 60 Hz so the low preset does not feel
+        // artificially sluggish after a frame finishes within budget.
+        NonZeroU32::new(60).unwrap()
     }
 }
 

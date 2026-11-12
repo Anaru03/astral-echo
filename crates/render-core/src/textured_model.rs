@@ -683,3 +683,38 @@ mod model_expansion_tests {
         assert!(result.is_empty());
     }
 }
+
+#[cfg(test)]
+mod mesh_coalescing_tests {
+    use super::*;
+
+    fn triangle(name: &str, material_index: Option<usize>, x: f32) -> TexturedMesh {
+        let color = crate::Vec4::ONE;
+        TexturedMesh {
+            name: name.to_owned(),
+            material_index,
+            mesh: RasterMesh::triangle(
+                crate::RasterVertex::new(crate::Vec3::new(x, 0.0, 0.0), color),
+                crate::RasterVertex::new(crate::Vec3::new(x + 1.0, 0.0, 0.0), color),
+                crate::RasterVertex::new(crate::Vec3::new(x, 1.0, 0.0), color),
+            ),
+        }
+    }
+
+    #[test]
+    fn compatible_obj_parts_are_merged_and_indices_are_rebased() {
+        let grouped = coalesce_textured_meshes(vec![
+            triangle("hull-a", Some(0), 0.0),
+            triangle("glass", Some(1), 10.0),
+            triangle("hull-b", Some(0), 20.0),
+        ])
+        .unwrap();
+
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].material_index, Some(0));
+        assert_eq!(grouped[0].mesh.vertices.len(), 6);
+        assert_eq!(grouped[0].mesh.indices, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(grouped[1].material_index, Some(1));
+        assert_eq!(grouped[1].mesh.vertices.len(), 3);
+    }
+}
