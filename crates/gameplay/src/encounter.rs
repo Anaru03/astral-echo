@@ -1,4 +1,6 @@
-use crate::{combat::EnemyConfiguration, hazard::HazardId, navigation::DestinationId, types::ItemId};
+use crate::{
+    combat::EnemyConfiguration, hazard::HazardId, navigation::DestinationId, types::ItemId,
+};
 use engine::{EntityId, Vec3};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

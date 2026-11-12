@@ -1,4 +1,3 @@
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -16,35 +15,22 @@ impl MaterialTextureRegistry {
     }
 
     /// Asocia una imagen PNG con un material.
-    pub fn register(
-        &mut self,
-        material: MaterialHandle,
-        path: impl Into<PathBuf>,
-    ) {
+    pub fn register(&mut self, material: MaterialHandle, path: impl Into<PathBuf>) {
         self.textures.insert(material, path.into());
     }
 
     /// Obtiene la ruta de la textura de un material.
-    pub fn get(
-        &self,
-        material: MaterialHandle,
-    ) -> Option<&Path> {
+    pub fn get(&self, material: MaterialHandle) -> Option<&Path> {
         self.textures.get(&material).map(PathBuf::as_path)
     }
 
     /// Elimina una textura registrada.
-    pub fn remove(
-        &mut self,
-        material: MaterialHandle,
-    ) -> Option<PathBuf> {
+    pub fn remove(&mut self, material: MaterialHandle) -> Option<PathBuf> {
         self.textures.remove(&material)
     }
 
     /// Comprueba si un material tiene textura.
-    pub fn contains(
-        &self,
-        material: MaterialHandle,
-    ) -> bool {
+    pub fn contains(&self, material: MaterialHandle) -> bool {
         self.textures.contains_key(&material)
     }
 
@@ -58,9 +44,7 @@ impl MaterialTextureRegistry {
     }
 
     /// Itera sobre las texturas registradas.
-    pub fn iter(
-        &self,
-    ) -> impl Iterator<Item = (MaterialHandle, &Path)> {
+    pub fn iter(&self) -> impl Iterator<Item = (MaterialHandle, &Path)> {
         self.textures
             .iter()
             .map(|(handle, path)| (*handle, path.as_path()))
@@ -85,15 +69,9 @@ mod tests {
         assert!(registry.contains(wings));
         assert!(registry.contains(core));
 
-        assert_eq!(
-            registry.get(wings),
-            Some(Path::new("textures/wings.png"))
-        );
+        assert_eq!(registry.get(wings), Some(Path::new("textures/wings.png")));
 
-        assert_eq!(
-            registry.get(core),
-            Some(Path::new("textures/core.png"))
-        );
+        assert_eq!(registry.get(core), Some(Path::new("textures/core.png")));
     }
 
     #[test]

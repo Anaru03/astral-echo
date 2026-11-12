@@ -1,8 +1,7 @@
 use render_core::{
     normal_matrix, shade_surface, shade_surface_sanitized_normalized, LightingEnvironment,
-    LightingMode, Mat4, MaterialInfo,
-    RasterMesh, RasterVertex, RenderLight, RenderLightKind, RenderSnapshot, SnapshotScene, Vec3,
-    Vec4,
+    LightingMode, Mat4, MaterialInfo, RasterMesh, RasterVertex, RenderLight, RenderLightKind,
+    RenderSnapshot, SnapshotScene, Vec3, Vec4,
 };
 
 #[test]
@@ -203,19 +202,19 @@ fn normalized_internal_lighting_path_matches_defensive_path() {
     let color = Vec4::new(0.8, 0.6, 0.4, 1.0);
     let normal = Vec3::new(0.3, 0.4, 0.8660254).normalize();
     let defensive = shade_surface(
-            &environment,
-            material,
-            color,
-            Vec3::new(0.2, -0.1, 0.5),
-            normal,
-        );
+        &environment,
+        material,
+        color,
+        Vec3::new(0.2, -0.1, 0.5),
+        normal,
+    );
     let fast = shade_surface_sanitized_normalized(
-            &environment,
-            material.sanitized(),
-            color,
-            Vec3::new(0.2, -0.1, 0.5),
-            normal,
-        );
+        &environment,
+        material.sanitized(),
+        color,
+        Vec3::new(0.2, -0.1, 0.5),
+        normal,
+    );
     assert!((defensive - fast).abs().max_element() < 1e-6);
 }
 

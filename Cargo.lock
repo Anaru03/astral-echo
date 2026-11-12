@@ -4591,6 +4591,7 @@ dependencies = [
 name = "render-present"
 version = "0.1.0"
 dependencies = [
+ "image",
  "render-core",
  "render-cpu",
  "render-gpu",

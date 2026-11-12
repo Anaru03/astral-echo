@@ -1,15 +1,13 @@
-
 use std::path::Path;
 
 use render_core::load_textured_obj;
 
 #[test]
 fn loads_obj_with_multiple_materials_and_textures() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/textured_model/example.obj");
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/textured_model/example.obj");
 
-    let model = load_textured_obj(&path)
-        .expect("No se pudo cargar el OBJ con materiales");
+    let model = load_textured_obj(&path).expect("No se pudo cargar el OBJ con materiales");
 
     // Comprobar que existen dos materiales y dos mallas.
     assert_eq!(model.materials.len(), 2);
@@ -31,13 +29,15 @@ fn loads_obj_with_multiple_materials_and_textures() {
     assert_ne!(wings, core);
 
     // Comprobar que cada malla tiene su material.
-    assert!(model.meshes.iter().any(|mesh| {
-        mesh.material_index == Some(wings)
-    }));
+    assert!(model
+        .meshes
+        .iter()
+        .any(|mesh| { mesh.material_index == Some(wings) }));
 
-    assert!(model.meshes.iter().any(|mesh| {
-        mesh.material_index == Some(core)
-    }));
+    assert!(model
+        .meshes
+        .iter()
+        .any(|mesh| { mesh.material_index == Some(core) }));
 
     // Comprobar las rutas de las texturas PNG.
     assert!(model.materials[wings]
@@ -54,9 +54,10 @@ fn loads_obj_with_multiple_materials_and_textures() {
 
     // Comprobar que las coordenadas UV son validas.
     assert!(model.meshes.iter().all(|mesh| {
-        mesh.mesh.vertices.iter().all(|vertex| {
-            vertex.uv.is_finite()
-        })
+        mesh.mesh
+            .vertices
+            .iter()
+            .all(|vertex| vertex.uv.is_finite())
     }));
 
     println!("OBJ cargado correctamente");
@@ -64,18 +65,13 @@ fn loads_obj_with_multiple_materials_and_textures() {
     println!("Materiales: {}", model.materials.len());
 
     for mesh in &model.meshes {
-        println!(
-            "Malla: {} | Material: {:?}",
-            mesh.name,
-            mesh.material_index
-        );
+        println!("Malla: {} | Material: {:?}", mesh.name, mesh.material_index);
     }
 
     for material in &model.materials {
         println!(
             "Material: {} | Textura: {:?}",
-            material.name,
-            material.diffuse_texture
+            material.name, material.diffuse_texture
         );
     }
 }

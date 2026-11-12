@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
 use std::any::Any;
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 use std::thread;
@@ -112,7 +112,9 @@ impl CpuModelLoadManager {
     /// Returns a shared immutable mesh when the resource reached CpuReady.
     pub fn mesh(&mut self, path: impl Into<PathBuf>) -> Option<Arc<RasterMesh>> {
         self.poll();
-        self.entries.get(&path.into()).and_then(|entry| entry.mesh.clone())
+        self.entries
+            .get(&path.into())
+            .and_then(|entry| entry.mesh.clone())
     }
 
     /// Applies completed worker results without blocking the caller.
@@ -206,7 +208,9 @@ mod tests {
             "astral_echo_cpu_loader_{}_{}_{}.obj",
             name,
             std::process::id(),
-            COUNTER.get_or_init(|| AtomicUsize::new(0)).fetch_add(1, Ordering::Relaxed)
+            COUNTER
+                .get_or_init(|| AtomicUsize::new(0))
+                .fetch_add(1, Ordering::Relaxed)
         ));
         fs::write(&path, source).expect("write controlled OBJ");
         path
@@ -326,7 +330,10 @@ mod tests {
             }
             std::thread::yield_now();
         }
-        assert_eq!(manager.request(&path), CpuModelLoadState::Failed("OBJ contains no renderable geometry".into()));
+        assert_eq!(
+            manager.request(&path),
+            CpuModelLoadState::Failed("OBJ contains no renderable geometry".into())
+        );
         assert_eq!(executions.load(Ordering::SeqCst), 1);
         assert!(manager.retry(&path));
         for _ in 0..10_000 {
@@ -367,14 +374,17 @@ mod tests {
         }
         let old_generation = manager.entries.get(&path).expect("entry").generation;
         assert!(manager.retry(&path));
-        manager.completion_tx.send(Completion {
-            path: path.clone(),
-            generation: old_generation,
-            result: Ok(Arc::new(
-                crate::load_obj_reader(&mut std::io::Cursor::new(triangle().as_bytes()))
-                    .expect("controlled mesh"),
-            )),
-        }).expect("send stale completion");
+        manager
+            .completion_tx
+            .send(Completion {
+                path: path.clone(),
+                generation: old_generation,
+                result: Ok(Arc::new(
+                    crate::load_obj_reader(&mut std::io::Cursor::new(triangle().as_bytes()))
+                        .expect("controlled mesh"),
+                )),
+            })
+            .expect("send stale completion");
         manager.poll();
         assert_eq!(manager.state(&path), CpuModelLoadState::LoadingCpu);
         release_tx.send(()).expect("release retried worker");
@@ -391,9 +401,10 @@ mod tests {
     #[test]
     fn loader_panic_reaches_failed_with_distinct_error() {
         let path = temp_obj("panic", triangle());
-        let mut manager = CpuModelLoadManager::with_loader(|_| -> Result<RasterMesh, ObjLoadError> {
-            panic!("controlled loader panic");
-        });
+        let mut manager =
+            CpuModelLoadManager::with_loader(|_| -> Result<RasterMesh, ObjLoadError> {
+                panic!("controlled loader panic");
+            });
         manager.request(&path);
         for _ in 0..10_000 {
             if let CpuModelLoadState::Failed(error) = manager.state(&path) {
@@ -413,7 +424,10 @@ mod tests {
         let panic_path = temp_obj("panic_isolated", triangle());
         let valid_path = temp_obj("valid_after_panic", triangle());
         let mut manager = CpuModelLoadManager::with_loader(move |path| {
-            if path.file_name().is_some_and(|name| name.to_string_lossy().contains("panic_isolated")) {
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().contains("panic_isolated"))
+            {
                 panic!("isolated panic");
             }
             load_obj(path)
@@ -448,11 +462,14 @@ mod tests {
         }
         let old_generation = manager.entries.get(&path).expect("entry").generation;
         assert!(manager.retry(&path));
-        manager.completion_tx.send(Completion {
-            path: path.clone(),
-            generation: old_generation,
-            result: Err("loader panic: stale generation".into()),
-        }).expect("send stale panic");
+        manager
+            .completion_tx
+            .send(Completion {
+                path: path.clone(),
+                generation: old_generation,
+                result: Err("loader panic: stale generation".into()),
+            })
+            .expect("send stale panic");
         manager.poll();
         assert_eq!(manager.state(&path), CpuModelLoadState::LoadingCpu);
         for _ in 0..10_000 {

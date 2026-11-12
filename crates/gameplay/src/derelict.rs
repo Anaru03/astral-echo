@@ -1,7 +1,5 @@
 use crate::{
-    combat::EnemyConfiguration,
-    encounter::EncounterId,
-    reward::RewardDistributionPolicy,
+    combat::EnemyConfiguration, encounter::EncounterId, reward::RewardDistributionPolicy,
     types::ItemId,
 };
 use engine::{EntityId, Vec3};

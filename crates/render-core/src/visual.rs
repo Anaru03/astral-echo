@@ -4,8 +4,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::{
-    Aabb, Camera, Frustum, Mat4, MaterialHandle, MaterialTextureRegistry, MeshHandle, RasterMesh, RasterVertex,
-    RenderSnapshot, SnapshotId, SnapshotNode, Transform, Vec3, Vec4,
+    Aabb, Camera, Frustum, Mat4, MaterialHandle, MaterialTextureRegistry, MeshHandle, RasterMesh,
+    RasterVertex, RenderSnapshot, SnapshotId, SnapshotNode, Transform, Vec3, Vec4,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -72,10 +72,7 @@ pub struct PreparedSceneStats {
 }
 
 impl PreparedScene {
-    pub fn texture_path(
-        &self,
-        material: MaterialHandle,
-    ) -> Option<&std::path::Path> {
+    pub fn texture_path(&self, material: MaterialHandle) -> Option<&std::path::Path> {
         self.textures.get(material)
     }
 
@@ -433,7 +430,11 @@ mod tests {
     #[test]
     fn enemy_archetype_fallbacks_are_registered_with_distinct_material_handles() {
         let assets = VisualAssets::default();
-        for material in [VisualAssets::ENEMY, VisualAssets::ENEMY_CHARGER, VisualAssets::ENEMY_SHIELDED] {
+        for material in [
+            VisualAssets::ENEMY,
+            VisualAssets::ENEMY_CHARGER,
+            VisualAssets::ENEMY_SHIELDED,
+        ] {
             assert!(assets.mesh(MeshHandle::ENEMY_PLACEHOLDER, material).is_ok());
         }
         assert_ne!(VisualAssets::ENEMY, VisualAssets::ENEMY_CHARGER);
@@ -515,11 +516,17 @@ mod tests {
             Err(VisualError::MeshAlreadyRegistered(mesh, material))
         );
         assert!(Arc::ptr_eq(
-            assets.meshes.get(&(mesh, material)).expect("original high mesh"),
+            assets
+                .meshes
+                .get(&(mesh, material))
+                .expect("original high mesh"),
             &original
         ));
         assert_eq!(
-            *assets.bounds.get(&(mesh, material)).expect("original bounds"),
+            *assets
+                .bounds
+                .get(&(mesh, material))
+                .expect("original bounds"),
             original_bounds
         );
     }

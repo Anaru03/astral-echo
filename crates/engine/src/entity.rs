@@ -52,7 +52,7 @@ impl EntityRegistry {
 
     pub fn create(&mut self) -> EntityId {
         let id = EntityId::new(self.next_id);
-        
+
         self.next_id = self.next_id.saturating_add(1);
         self.known.insert(id);
         self.active.insert(id);
@@ -110,7 +110,10 @@ impl EntityRegistry {
             return Err(EntityRegistrySnapshotError::ActiveEntityUnknown);
         }
 
-        if known.iter().any(|entity| entity.value() >= snapshot.next_id) {
+        if known
+            .iter()
+            .any(|entity| entity.value() >= snapshot.next_id)
+        {
             return Err(EntityRegistrySnapshotError::InvalidNextId);
         }
 

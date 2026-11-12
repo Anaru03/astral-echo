@@ -139,7 +139,8 @@ impl InstancedScene {
         state: GpuAssetState,
         error: Option<String>,
     ) {
-        self.gpu_asset_states.insert(key, (generation, state.clone()));
+        self.gpu_asset_states
+            .insert(key, (generation, state.clone()));
         self.gpu_asset_events.push(GpuAssetEvent {
             mesh: key.0,
             lod: key.1,
@@ -154,10 +155,7 @@ impl InstancedScene {
         std::mem::take(&mut self.gpu_asset_events)
     }
 
-    pub(crate) fn gpu_asset_state(
-        &self,
-        key: (MeshHandle, LodLevel),
-    ) -> GpuAssetState {
+    pub(crate) fn gpu_asset_state(&self, key: (MeshHandle, LodLevel)) -> GpuAssetState {
         self.gpu_asset_states
             .get(&key)
             .map_or(GpuAssetState::Unavailable, |(_, state)| state.clone())
@@ -184,20 +182,29 @@ impl InstancedScene {
             return Ok(index);
         }
         let generation = self.begin_gpu_asset(key);
-        let index_count =
-            match u32::try_from(mesh.indices.len()) {
-                Ok(value) => value,
-                Err(error) => {
-                    let message = error.to_string();
-                    self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
-                    return Err(GpuError::InvalidInput(message));
-                }
-            };
+        let index_count = match u32::try_from(mesh.indices.len()) {
+            Ok(value) => value,
+            Err(error) => {
+                let message = error.to_string();
+                self.finish_gpu_asset(
+                    key,
+                    generation,
+                    GpuAssetState::GpuFailed,
+                    Some(message.clone()),
+                );
+                return Err(GpuError::InvalidInput(message));
+            }
+        };
         let vertex_bytes = match (mesh.vertices.len() as u64).checked_mul(28) {
             Some(value) => value.max(4),
             None => {
                 let message = "vertex buffer size overflow".to_owned();
-                self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
+                self.finish_gpu_asset(
+                    key,
+                    generation,
+                    GpuAssetState::GpuFailed,
+                    Some(message.clone()),
+                );
                 return Err(GpuError::InvalidInput(message));
             }
         };
@@ -205,7 +212,12 @@ impl InstancedScene {
             Some(value) => value.max(4),
             None => {
                 let message = "index buffer size overflow".to_owned();
-                self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
+                self.finish_gpu_asset(
+                    key,
+                    generation,
+                    GpuAssetState::GpuFailed,
+                    Some(message.clone()),
+                );
                 return Err(GpuError::InvalidInput(message));
             }
         };
@@ -221,7 +233,12 @@ impl InstancedScene {
             || vertex_bytes.max(index_bytes) > gpu.device.limits().max_buffer_size
         {
             let message = "invalid cached geometry".to_owned();
-            self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message.clone()));
+            self.finish_gpu_asset(
+                key,
+                generation,
+                GpuAssetState::GpuFailed,
+                Some(message.clone()),
+            );
             return Err(GpuError::InvalidInput(message));
         }
         let vertices: Vec<_> = mesh
@@ -312,24 +329,21 @@ impl InstancedScene {
             }
             return Err(GpuError::InvalidInput(message));
         }
-        let buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cached mesh normals"),
-            contents: if normals.is_empty() {
-                &[0; 4]
-            } else {
-                bytemuck::cast_slice(&normals)
-            },
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("cached mesh normals"),
+                contents: if normals.is_empty() {
+                    &[0; 4]
+                } else {
+                    bytemuck::cast_slice(&normals)
+                },
+                usage: wgpu::BufferUsages::VERTEX,
+            });
         if let Err(error) = gpu.check() {
             let message = error.to_string();
             if let Some((generation, _)) = self.gpu_asset_states.get(&key).cloned() {
-                self.finish_gpu_asset(
-                    key,
-                    generation,
-                    GpuAssetState::GpuFailed,
-                    Some(message),
-                );
+                self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message));
             }
             return Err(error);
         }
@@ -351,12 +365,7 @@ impl InstancedScene {
         if let Err(error) = gpu.check() {
             let message = error.to_string();
             if let Some((generation, _)) = self.gpu_asset_states.get(&key).cloned() {
-                self.finish_gpu_asset(
-                    key,
-                    generation,
-                    GpuAssetState::GpuFailed,
-                    Some(message),
-                );
+                self.finish_gpu_asset(key, generation, GpuAssetState::GpuFailed, Some(message));
             }
             return Err(error);
         }
@@ -536,14 +545,22 @@ impl InstancedScene {
                     needed.insert(batch.material, path.to_path_buf());
                 }
             }
-            self.material_textures.retain(|material, _| needed.contains_key(material));
-            self.texture_bind_groups.retain(|(material, _), _| needed.contains_key(material));
+            self.material_textures
+                .retain(|material, _| needed.contains_key(material));
+            self.texture_bind_groups
+                .retain(|(material, _), _| needed.contains_key(material));
             for (material, path) in needed {
-                let reload = self.material_textures.get(&material).is_none_or(|(old, _)| old != &path);
+                let reload = self
+                    .material_textures
+                    .get(&material)
+                    .is_none_or(|(old, _)| old != &path);
                 if reload {
-                    let image = crate::texture_loader::TextureImage::load_png(&path)
-                        .map_err(|e| GpuError::InvalidInput(format!("texture {}: {e}", path.display())))?;
-                    let texture = if let Some(existing) = self.material_textures
+                    let image =
+                        crate::texture_loader::TextureImage::load_png(&path).map_err(|e| {
+                            GpuError::InvalidInput(format!("texture {}: {e}", path.display()))
+                        })?;
+                    let texture = if let Some(existing) = self
+                        .material_textures
                         .values()
                         .find(|(existing_path, _)| existing_path == &path)
                         .map(|(_, texture)| std::sync::Arc::clone(texture))
@@ -561,14 +578,26 @@ impl InstancedScene {
                 if let Some((_, texture)) = self.material_textures.get(&batch.material) {
                     let key = (batch.material, batch.geometry);
                     if !self.texture_bind_groups.contains_key(&key) {
-                        let uv = self.geometries[batch.geometry].uvs.as_ref().expect("UV buffer");
+                        let uv = self.geometries[batch.geometry]
+                            .uvs
+                            .as_ref()
+                            .expect("UV buffer");
                         let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                             label: Some("material texture and geometry UVs"),
                             layout: &lighting.texture_layout,
                             entries: &[
-                                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&texture.view) },
-                                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&texture.sampler) },
-                                wgpu::BindGroupEntry { binding: 2, resource: uv.as_entire_binding() },
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(&texture.view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(&texture.sampler),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: uv.as_entire_binding(),
+                                },
                             ],
                         });
                         self.texture_bind_groups.insert(key, group);
@@ -744,7 +773,10 @@ impl InstancedScene {
         }
         for batch in &self.batches {
             if let Some(lighting) = lighting {
-                if let Some(group) = self.texture_bind_groups.get(&(batch.material, batch.geometry)) {
+                if let Some(group) = self
+                    .texture_bind_groups
+                    .get(&(batch.material, batch.geometry))
+                {
                     lighting.bind_textured(pass);
                     pass.set_bind_group(1, group, &[]);
                 } else {
@@ -755,9 +787,7 @@ impl InstancedScene {
                 }
             }
             let geometry = &self.geometries[batch.geometry];
-            if batch.key.0 == MeshHandle::NARETH_PLANET
-                && !self.nareth_draw_logged.get()
-            {
+            if batch.key.0 == MeshHandle::NARETH_PLANET && !self.nareth_draw_logged.get() {
                 self.nareth_draw_logged.set(true);
                 eprintln!(
                     "nareth-diag state=REAL_MODEL_PREPARED destination=9603 draw_mesh={} draw_lod={:?} renderer_epoch={} geometry_index={} arc_ptr={:p} index_count={} instances={:?}",
