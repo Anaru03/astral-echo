@@ -1395,7 +1395,7 @@ impl VisualBridge {
         self.awakening_elapsed_ms = 0;
         self.last_world_update = Instant::now();
         self.last_interior_update = Instant::now();
-        self.feedback = "DESPERTAR: SECUENCIA DE DESPERTAR EN CURSO".to_owned();
+        self.feedback = "ECHO-7: DESPERTAR: SECUENCIA DE DESPERTAR EN CURSO".to_owned();
         println!("visual gameplay: {}", self.feedback);
     }
 
@@ -2358,12 +2358,13 @@ impl VisualBridge {
             "filter" => "SOPORTE VITAL / FILTRO O2",
             "code" => "CONSOLA DE ESTADO / CODIGOS",
             "asteroids" => "CONSOLA DE PILOTAJE / DEFENSA",
+            "bridge" => "PUERTA DEL PUENTE / ACCESO",
             _ => "SISTEMA DE LA NAVE",
         }
     }
 
     fn ship_minigame_waypoint_hint(&self) -> Option<String> {
-        if !self.interior_mode || self.pilot_mode {
+        if !self.started || !self.interior_mode || self.pilot_mode {
             return None;
         }
         if let Some(active) = self.active_ship_minigame.as_ref() {
@@ -2378,24 +2379,45 @@ impl VisualBridge {
             .world()
             .interactables()
             .filter_map(|value| {
-                let task = self.ship_minigame_for_target(value.entity_id)?;
-                if self.completed_ship_minigames.contains(task) || !value.enabled {
+                let (priority, task) = match value.behavior {
+                    InteractionBehavior::Console {
+                        role: gameplay::ConsoleRole::ShipStatus,
+                        state: gameplay::ConsoleState::Off,
+                    } => (0, "code"),
+                    InteractionBehavior::ElectricalPanel => (1, "wiring"),
+                    InteractionBehavior::LifeSupportPanel => (1, "filter"),
+                    InteractionBehavior::Door { door }
+                        if door.role == gameplay::DoorRole::CommandBridge
+                            && !matches!(
+                                door.state,
+                                gameplay::domains::door::DoorState::Open
+                            ) => (2, "bridge"),
+                    InteractionBehavior::Station { station }
+                        if station.station_type == StationType::Piloting
+                            && station.occupant.is_none() => (3, "asteroids"),
+                    _ => return None,
+                };
+                if task != "bridge" && self.completed_ship_minigames.contains(task) {
                     return None;
                 }
                 let dx = value.position.x - player.position.x;
                 let dz = value.position.z - player.position.z;
-                Some((dx * dx + dz * dz, dx, dz, task))
+                Some((priority, dx * dx + dz * dz, dx, dz, task))
             })
             .min_by(|left, right| {
                 left.0
-                    .partial_cmp(&right.0)
+                    .cmp(&right.0)
+                    .then_with(|| {
+                        left.1
+                    .partial_cmp(&right.1)
                     .unwrap_or(std::cmp::Ordering::Equal)
+                    })
             })?;
-        let distance = target.0.sqrt();
+        let distance = target.1.sqrt();
         let yaw = player.orientation.yaw_degrees.to_radians();
         let (sin_yaw, cos_yaw) = yaw.sin_cos();
-        let forward = target.2 * -cos_yaw + target.1 * sin_yaw;
-        let right = target.1 * cos_yaw + target.2 * sin_yaw;
+        let forward = target.3 * -cos_yaw + target.2 * sin_yaw;
+        let right = target.2 * cos_yaw + target.3 * sin_yaw;
         let direction = if forward.abs() >= right.abs() {
             if forward >= 0.0 { "ADELANTE" } else { "ATRAS" }
         } else if right >= 0.0 {
@@ -2405,7 +2427,7 @@ impl VisualBridge {
         };
         Some(format!(
             "CAMINO DORADO >> {} | {} | {distance:.1} m",
-            Self::ship_minigame_label(target.3),
+            Self::ship_minigame_label(target.4),
             direction,
         ))
     }
@@ -2623,10 +2645,18 @@ impl VisualBridge {
                     .and_then(|guidance| guidance.recommended_action)
             });
         if let Some(target) = selected_interaction {
-            if let Some(task) = self.ship_minigame_for_target(target) {
-                if !self.completed_ship_minigames.contains(task) {
-                    self.start_ship_minigame(task, target);
-                    return;
+            let first_mission_active = self
+                .session
+                .mission_progress(crate::el_despertar::EL_DESPERTAR)
+                .is_some_and(|mission| {
+                    mission.state == gameplay::domains::mission::MissionState::Active
+                });
+            if first_mission_active {
+                if let Some(task) = self.ship_minigame_for_target(target) {
+                    if !self.completed_ship_minigames.contains(task) {
+                        self.start_ship_minigame(task, target);
+                        return;
+                    }
                 }
             }
         }
@@ -3463,10 +3493,10 @@ impl VisualBridge {
             }
             if let Some(waypoint) = self.ship_minigame_waypoint_hint() {
                 return format!(
-                    "EXPLORACION: {waypoint} | WASD MOVER | FLECHAS MIRAR | I ABRIR MINIJUEGO"
+                    "EXPLORACION: {waypoint} | 4 PUNTOS: ESTADO-ENERGIA-O2-PILOTAJE | WASD | FLECHAS | I"
                 );
             }
-            return "EXPLORACION: F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned();
+            return "EXPLORACION: CAMINO DORADO | 4 PUNTOS: ESTADO-ENERGIA-O2-PILOTAJE | F1 CONTROLES | F2 HUD | F3 INVENTARIO".to_owned();
         }
         "EXTERIOR: SIGUE LA GUIA - F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned()
     }

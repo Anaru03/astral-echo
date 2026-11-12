@@ -835,6 +835,128 @@ fn mission_interaction_nodes(
         })
 }
 
+fn echo7_guidance_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    let Some(player) = world.players().find(|value| value.is_active) else {
+        return Vec::new();
+    };
+    let target = world
+        .interactables()
+        .filter_map(|value| {
+            let priority = match value.behavior {
+                gameplay::InteractionBehavior::ElectricalPanel => world
+                    .electrical_panel(value.entity_id)
+                    .is_some_and(|panel| !panel.is_repaired())
+                    .then_some(1),
+                gameplay::InteractionBehavior::LifeSupportPanel => world
+                    .life_support_panel(value.entity_id)
+                    .is_some_and(|panel| !panel.progress().repaired)
+                    .then_some(1),
+                gameplay::InteractionBehavior::Console {
+                    state,
+                    role: gameplay::ConsoleRole::ShipStatus,
+                } => matches!(state, gameplay::ConsoleState::Off).then_some(0),
+                gameplay::InteractionBehavior::Door { door }
+                    if door.role == gameplay::DoorRole::CommandBridge => {
+                        (!matches!(
+                            door.state,
+                            gameplay::domains::door::DoorState::Open
+                        ))
+                        .then_some(2)
+                    }
+                gameplay::InteractionBehavior::Station { station }
+                    if station.station_type == gameplay::StationType::Piloting => {
+                        station.occupant.is_none().then_some(3)
+                    }
+                _ => None,
+            };
+            let Some(priority) = priority else {
+                return None;
+            };
+            if !value.enabled {
+                return None;
+            }
+            let dx = value.position.x - player.position.x;
+            let dz = value.position.z - player.position.z;
+            Some((priority, dx * dx + dz * dz, value.position))
+        })
+        .min_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| {
+                    left.1
+                    .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })
+        .map(|(_, _, position)| position);
+    let Some(target) = target else {
+        return Vec::new();
+    };
+    let distance = ((target.x - player.position.x).powi(2)
+        + (target.z - player.position.z).powi(2))
+    .sqrt();
+    let count = (distance / 1.8).ceil().clamp(1.0, 12.0) as usize;
+    (1..=count)
+        .map(|index| {
+            let fraction = index as f32 / count as f32;
+            let position = Vec3::new(
+                player.position.x + (target.x - player.position.x) * fraction,
+                player.position.y + 0.22,
+                player.position.z + (target.z - player.position.z) * fraction,
+            );
+            let scale = if index == count {
+                Vec3::splat(0.72)
+            } else {
+                Vec3::splat(0.32)
+            };
+            SnapshotNode::new(
+                engine::EntityId::new(9_700 + index as u64),
+                Transform::new(position, Quat::IDENTITY, scale),
+                COLLECTIBLE_MESH,
+                COLLECTIBLE_MATERIAL,
+                true,
+            )
+        })
+        .collect()
+}
+
+fn echo7_interaction_sign_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
+    let mut signs = Vec::new();
+    let mut next_id = 9_801;
+    for interactable in world.interactables() {
+        let is_minigame_point = matches!(
+            interactable.behavior,
+            gameplay::InteractionBehavior::ElectricalPanel
+                | gameplay::InteractionBehavior::LifeSupportPanel
+                | gameplay::InteractionBehavior::Console {
+                    role: gameplay::ConsoleRole::ShipStatus,
+                    ..
+                }
+                | gameplay::InteractionBehavior::Station {
+                    station: gameplay::Station {
+                        station_type: gameplay::StationType::Piloting,
+                        ..
+                    }
+                }
+        );
+        if is_minigame_point && interactable.enabled {
+            signs.push(SnapshotNode::new(
+                engine::EntityId::new(next_id),
+                Transform::new(
+                    from_engine(interactable.position) + Vec3::new(0.0, 0.28, 0.0),
+                    Quat::IDENTITY,
+                    Vec3::splat(0.62),
+                ),
+                COLLECTIBLE_MESH,
+                COLLECTIBLE_MATERIAL,
+                true,
+            ));
+            next_id += 1;
+        }
+    }
+    signs
+}
+
 fn is_echo_interior_position(world: &GameplayWorld, position: engine::Vec3) -> bool {
     let origin = world
         .destination(gameplay::DestinationId::new(9_001))
@@ -1296,6 +1418,19 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
 
         for node in mission_interaction_nodes(world, interior) {
             snapshot.push_node(node);
+        }
+        // The visual runtime is created in interior mode so the first gameplay
+        // camera is ready immediately, but the title screen has not started
+        // the simulation yet. Do not build gameplay guidance for that frame:
+        // it can make the initial snapshot do unnecessary world work and can
+        // leave the start screen looking frozen on slower machines.
+        if interior && world.time().elapsed.0 > 0 {
+            for node in echo7_guidance_nodes(world) {
+                snapshot.push_node(node);
+            }
+            for node in echo7_interaction_sign_nodes(world) {
+                snapshot.push_node(node);
+            }
         }
 
         for node in derelict_nodes(world) {

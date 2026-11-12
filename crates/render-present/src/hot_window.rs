@@ -211,6 +211,7 @@ struct HostState {
     cursor_position: (f64, f64),
     deferred_meshes: DeferredMeshRegistry,
     visual_assets: VisualAssetHost,
+    scene_configured: bool,
 }
 
 struct PendingGpu {
@@ -223,6 +224,7 @@ impl ApplicationHandler for Host {
             return;
         }
         let size = self.config.preset.resolution();
+        let starting_from_splash = self.splash_starting;
         if self.native_menu && self.splash.is_none() && !self.splash_starting {
             let window = match event_loop.create_window(
                 Window::default_attributes()
@@ -343,8 +345,15 @@ impl ApplicationHandler for Host {
             event_loop.exit();
             return;
         };
+        // Keep the native start screen responsive while the game scene is
+        // being prepared. The visual game registers many textured models and
+        // doing that synchronously here leaves the splash visible for a long
+        // time after Enter.
+        let scene_configured = !starting_from_splash;
         let mut scene = SnapshotScene::default();
-        (self.configure_scene)(&mut scene);
+        if scene_configured {
+            (self.configure_scene)(&mut scene);
+        }
         if let Err(error) = scene.update(&snapshot) {
             self.failure = Some(error.to_string());
             event_loop.exit();
@@ -379,6 +388,7 @@ impl ApplicationHandler for Host {
             cursor_position: (0.0, 0.0),
             deferred_meshes: DeferredMeshRegistry::default(),
             visual_assets: std::mem::replace(&mut self.visual_assets, VisualAssetHost::default()),
+            scene_configured,
         });
         if self.start_gpu {
             self.toggle();
@@ -415,10 +425,16 @@ impl ApplicationHandler for Host {
                             }
                             KeyCode::Escape if splash.controls => splash.controls = false,
                             KeyCode::Escape => event_loop.exit(),
-                            KeyCode::Enter if splash.controls => splash.controls = false,
-                            KeyCode::Enter if splash.selected == 1 => splash.controls = true,
-                            KeyCode::Enter if splash.selected == 2 => event_loop.exit(),
-                            KeyCode::Enter => {
+                            KeyCode::Enter | KeyCode::NumpadEnter if splash.controls => {
+                                splash.controls = false
+                            }
+                            KeyCode::Enter | KeyCode::NumpadEnter if splash.selected == 1 => {
+                                splash.controls = true
+                            }
+                            KeyCode::Enter | KeyCode::NumpadEnter if splash.selected == 2 => {
+                                event_loop.exit()
+                            }
+                            KeyCode::Enter | KeyCode::NumpadEnter => {
                                 // Presentar la carga ANTES de inicializar los recursos 3D.
                                 if let Err(e) = splash.present(true) {
                                     self.failure = Some(e);
@@ -427,7 +443,12 @@ impl ApplicationHandler for Host {
                                 }
                                 (self.input)(KeyCode::Enter, ElementState::Pressed);
                                 self.splash_starting = true;
-                                self.resumed(event_loop);
+                                // Complete the window hand-off from the
+                                // event-loop lifecycle callback. Calling
+                                // `resumed` recursively from `window_event`
+                                // leaves some Winit backends displaying the
+                                // splash forever.
+                                splash.window.request_redraw();
                                 return;
                             }
                             _ => {}
@@ -547,14 +568,17 @@ impl ApplicationHandler for Host {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        self.poll_pending_gpu(_event_loop);
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.splash_starting && self.state.is_none() {
+            self.resumed(event_loop);
+        }
+        self.poll_pending_gpu(event_loop);
         if self
             .config
             .max_frames
             .is_some_and(|limit| self.frames >= limit.get())
         {
-            _event_loop.exit();
+            event_loop.exit();
             return;
         }
         if let Some(state) = &self.state {
@@ -578,7 +602,7 @@ impl ApplicationHandler for Host {
                         state.backend.backend()
                     );
                 }
-                _event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
                     Instant::now() + Duration::from_millis(16),
                 ));
             }
@@ -1238,6 +1262,28 @@ impl Host {
     }
 
     fn draw(&mut self) {
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| !state.scene_configured)
+        {
+            let snapshot = self
+                .state
+                .as_ref()
+                .map(|state| state.snapshot.snapshot().clone());
+            let mut scene = SnapshotScene::default();
+            (self.configure_scene)(&mut scene);
+            if let Some(snapshot) = snapshot {
+                if let Err(error) = scene.update(&snapshot) {
+                    self.failure = Some(error.to_string());
+                    return;
+                }
+            }
+            if let Some(state) = self.state.as_mut() {
+                state.snapshot = Rc::new(scene);
+                state.scene_configured = true;
+            }
+        }
         let Some(state) = self.state.as_mut() else {
             return;
         };

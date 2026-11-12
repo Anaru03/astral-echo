@@ -226,7 +226,11 @@ if __name__ == "__main__":
                     stream.write(json.dumps({"task": args.task}) + "\n")
             root.destroy()
 
-        opener(root, on_success=task_complete)
+        task = opener(root, on_success=task_complete)
+        # The game launches this process from a running renderer. Explicitly
+        # raise and focus the Tk window so it cannot remain behind the game.
+        task.master.lift()
+        task.master.focus_force()
     else:
         open_ship_maintenance_mission(
             root,
