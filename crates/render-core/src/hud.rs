@@ -272,7 +272,9 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     };
     let mut glyphs = Vec::new();
     for (row, text) in lines.iter().enumerate() {
-        let line_color = if text.starts_with("GUIA:") {
+        let line_color = if text.starts_with("GUIA:") && text.contains("CAMINO DORADO") {
+            [255, 218, 112, 255]
+        } else if text.starts_with("GUIA:") {
             [104, 224, 255, 255]
         } else if text.starts_with("OBJETIVO:") || text == "OBJETIVOS:" {
             [255, 218, 112, 255]

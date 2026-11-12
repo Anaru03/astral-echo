@@ -2404,7 +2404,7 @@ impl VisualBridge {
             "IZQUIERDA"
         };
         Some(format!(
-            "SIGUIENTE: {} | {} | {distance:.1} m",
+            "CAMINO DORADO >> {} | {} | {distance:.1} m",
             Self::ship_minigame_label(target.3),
             direction,
         ))
@@ -2434,15 +2434,36 @@ impl VisualBridge {
         let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("ship_minigames")
             .join("ship_mission.py");
-        let python = std::env::var("ASTRAL_ECHO_PYTHON").unwrap_or_else(|_| "python".to_owned());
-        let child = std::process::Command::new(python)
-            .arg(script)
-            .arg("--task")
-            .arg(task)
-            .arg("--event-file")
-            .arg(&event_file)
-            .spawn();
-        let Ok(child) = child else {
+        let configured_python = std::env::var("ASTRAL_ECHO_PYTHON").ok();
+        let mut launchers = configured_python
+            .into_iter()
+            .map(|value| (value, false))
+            .chain([
+                ("python".to_owned(), false),
+                ("py".to_owned(), true),
+            ])
+            .collect::<Vec<_>>();
+        launchers.dedup_by(|left, right| left.0 == right.0);
+        let mut child = None;
+        for (launcher, python_launcher) in launchers {
+            let mut command = std::process::Command::new(launcher);
+            if python_launcher {
+                command.arg("-3");
+            }
+            if let Ok(process) = command
+                .current_dir(script.parent().unwrap_or(Path::new(".")))
+                .arg(&script)
+                .arg("--task")
+                .arg(task)
+                .arg("--event-file")
+                .arg(&event_file)
+                .spawn()
+            {
+                child = Some(process);
+                break;
+            }
+        }
+        let Some(child) = child else {
             self.feedback = format!(
                 "NO SE PUDO ABRIR EL MINIJUEGO {task} — CONFIGURA ASTRAL_ECHO_PYTHON"
             );
