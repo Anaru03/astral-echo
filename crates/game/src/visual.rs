@@ -325,9 +325,11 @@ struct VisualBridge {
     ship: EntityId,
     pilot_station: EntityId,
     engineering_station: EntityId,
+    status_console: EntityId,
     electrical_panel: EntityId,
     life_support_panel: EntityId,
     bridge_door: EntityId,
+    interior_anchor: GameplayVec3,
     enemy: EntityId,
     feedback: String,
     observation: ObservationTransition,
@@ -629,7 +631,7 @@ impl VisualBridge {
             ship_radius: 1.0,
             gravity_influence_radius: 24.0,
             gravitational_parameter: 24.0,
-            atmosphere_height: 4.0,
+            atmosphere_height: 8.0,
         }) {
             return Err("configurar la fÃ­sica planetaria visual".to_owned());
         }
@@ -649,7 +651,7 @@ impl VisualBridge {
             ship_radius: 1.0,
             gravity_influence_radius: 24.0,
             gravitational_parameter: 24.0,
-            atmosphere_height: 4.0,
+            atmosphere_height: 9.0,
         }) {
             return Err("configurar la física de Tessara".to_owned());
         }
@@ -669,7 +671,7 @@ impl VisualBridge {
             ship_radius: 1.0,
             gravity_influence_radius: 28.0,
             gravitational_parameter: 30.0,
-            atmosphere_height: 4.0,
+            atmosphere_height: 10.0,
         }) {
             return Err("configurar la fisica de Kharvex".to_owned());
         }
@@ -693,7 +695,7 @@ impl VisualBridge {
             ship_radius: 1.0,
             gravity_influence_radius: 48.0,
             gravitational_parameter: 40.0,
-            atmosphere_height: 8.0,
+            atmosphere_height: 12.0,
         }) {
             return Err("configurar la fisica de Nareth".to_owned());
         }
@@ -753,7 +755,7 @@ impl VisualBridge {
                 StationType::Engineering,
             )
             .map_err(|error| format!("engineering station: {error:?}"))?;
-        let _status_console = session
+        let status_console = session
             .create_ship_status_console(
                 interior_position(GameplayVec3 {
                     x: -2.0,
@@ -915,9 +917,11 @@ impl VisualBridge {
             ship,
             pilot_station,
             engineering_station,
+            status_console,
             electrical_panel,
             life_support_panel,
             bridge_door,
+            interior_anchor: initial_ship_position,
             enemy,
             feedback: "ESCENA INICIALIZADA".to_owned(),
             observation: ObservationTransition::default(),
@@ -2173,10 +2177,10 @@ impl VisualBridge {
         let pilot_console_available = action.is_none()
             && !self.pilot_mode
             && !self.legacy_exterior_controls
-            && !self.interior_mode
-            && self.mission_one_completed()
-            && self.player_in_interaction_range(self.player, self.pilot_station);
-        if (self.interior_mode || pilot_console_available) && action.is_none() {
+            && self
+                .selected_interactable()
+                .is_some_and(|value| value.entity_id == self.pilot_station);
+        if pilot_console_available {
             let mut aggregate = FeedbackAggregate::default();
             self.issue_into(
                 [GameplayCommand::ReleaseStation {
@@ -2193,6 +2197,7 @@ impl VisualBridge {
                 &mut aggregate,
             );
             if occupied {
+                self.finish_issue(aggregate);
                 self.enter_pilot();
             } else {
                 self.feedback = aggregate.message();
@@ -2314,9 +2319,41 @@ impl VisualBridge {
         }]);
     }
 
+    fn sync_ship_interior(&mut self) {
+        let Some(origin) = self.session.world().ship_position() else {
+            return;
+        };
+        if origin == self.interior_anchor {
+            return;
+        }
+        let placements = [
+            (self.pilot_station, GameplayVec3 { x: 0.0, y: 0.0, z: 1.5 }),
+            (self.engineering_station, GameplayVec3 { x: 2.5, y: 0.0, z: 0.0 }),
+            (self.status_console, GameplayVec3 { x: -2.0, y: 0.0, z: 0.0 }),
+            (self.electrical_panel, GameplayVec3 { x: 0.0, y: 0.0, z: -2.0 }),
+            (self.life_support_panel, GameplayVec3 { x: 2.0, y: 0.0, z: 0.0 }),
+            (self.bridge_door, GameplayVec3 { x: 0.0, y: 0.0, z: 2.0 }),
+        ];
+        for (entity, local) in placements {
+            let position = GameplayVec3 {
+                x: origin.x + local.x,
+                y: origin.y + local.y,
+                z: origin.z + local.z,
+            };
+            let _ = self
+                .session
+                .world_mut()
+                .set_interactable_position(entity, position);
+        }
+        self.interior_anchor = origin;
+    }
+
     fn update_interior_motion(&mut self) {
         if (!self.interior_mode && !self.surface_mode) || self.player_defeated {
             return;
+        }
+        if self.interior_mode {
+            self.sync_ship_interior();
         }
         let Some(player) = self.session.world().player(self.player).copied() else {
             return;
@@ -2675,6 +2712,12 @@ impl VisualBridge {
                     "SELECCIÓN DE DESTINO | CANDIDATO: {candidate} | FLECHAS CAMBIAR | P ELEGIR Y AUTOPILOTO | N CERRAR"
                 );
             }
+            if let Some(planet) = self.landing_target() {
+                return format!(
+                    "{} EN RANGO | L ATERRIZAR | X FRENAR | I VOLVER A LA CABINA",
+                    Self::navigation_destination_label(planet)
+                );
+            }
             let pilot_label = if self.lan_client.is_some() && !self.has_network_pilot_control() {
                 self.pilot_owner.map_or_else(
                     || "CAMARA DE PILOTO - SOLICITANDO CONTROL".to_owned(),
@@ -2808,6 +2851,12 @@ impl VisualBridge {
                 .enemies()
                 .any(|enemy| enemy.active && !enemy.is_defeated());
             let mut actions = Vec::new();
+            if let Some(planet) = self.landing_target() {
+                actions.push(format!(
+                    "L ATERRIZAR EN {}",
+                    Self::navigation_destination_label(planet)
+                ));
+            }
             if active_enemies {
                 if !self.shield_active {
                     actions.push("G ACTIVAR ESCUDO".to_owned());
@@ -3074,6 +3123,7 @@ impl VisualBridge {
                 println!("visual gameplay: {}", self.feedback);
                 return;
             }
+            self.sync_ship_interior();
             if let Some(ship_position) = self.session.world().ship_position() {
                 self.session
                     .world_mut()
@@ -3756,6 +3806,8 @@ impl VisualBridge {
         match destination {
             id if id == DESTINATION => "VEYRA",
             id if id == TESSARA_DESTINATION => "TESSARA",
+            id if id == KHARVEX_DESTINATION => "KHARVEX",
+            id if id == NARETH_DESTINATION => "NARETH",
             _ => "DESTINO",
         }
     }
@@ -5410,12 +5462,76 @@ mod tests {
         assert!(!bridge.interior_mode);
         assert_eq!(bridge.session.world().ship_control_active(), Some(true));
 
+        let relocated_ship = GameplayVec3 {
+            x: 96.0,
+            y: 4.0,
+            z: -72.0,
+        };
+        bridge
+            .session
+            .world_mut()
+            .restore_ship_position(relocated_ship)
+            .expect("the piloted ship should relocate for this regression scenario");
         bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
         assert!(!bridge.pilot_mode);
         assert!(bridge.interior_mode);
         assert_eq!(bridge.session.world().ship_control_active(), Some(false));
         let ship_after_exit = bridge.session.world().ship_position().unwrap();
+        assert_eq!(ship_after_exit, relocated_ship);
+        assert_eq!(
+            bridge.session.world().player(bridge.player).unwrap().position,
+            relocated_ship
+        );
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .interactable(bridge.pilot_station)
+                .unwrap()
+                .position,
+            GameplayVec3 {
+                x: relocated_ship.x,
+                y: relocated_ship.y,
+                z: relocated_ship.z + 1.5,
+            }
+        );
+
+        let status_position = bridge
+            .session
+            .world()
+            .interactable(bridge.status_console)
+            .unwrap()
+            .position;
+        bridge
+            .session
+            .world_mut()
+            .initialize_player_position(bridge.player, status_position);
+        bridge.guided_interaction();
+        assert!(!bridge.pilot_mode, "I should use the nearby status console");
+        assert!(matches!(
+            bridge
+                .session
+                .world()
+                .interactable(bridge.status_console)
+                .unwrap()
+                .behavior,
+            InteractionBehavior::Console {
+                state: gameplay::ConsoleState::On,
+                ..
+            }
+        ));
+
         let heading_after_exit = bridge.session.world().ship_orientation().unwrap();
+        let pilot_position = bridge
+            .session
+            .world()
+            .interactable(bridge.pilot_station)
+            .unwrap()
+            .position;
+        bridge
+            .session
+            .world_mut()
+            .initialize_player_position(bridge.player, pilot_position);
         bridge.guided_interaction();
         assert!(bridge.pilot_mode);
         assert_eq!(bridge.session.world().ship_position(), Some(ship_after_exit));
@@ -6188,6 +6304,66 @@ mod tests {
             bridge.session.world().planet_flight_state(),
             gameplay::PlanetFlightState::Landing { planet } if planet == DESTINATION
         ));
+    }
+
+    #[test]
+    fn every_planet_shows_the_landing_action_and_accepts_l_at_cruise_speed() {
+        for destination in [
+            DESTINATION,
+            TESSARA_DESTINATION,
+            KHARVEX_DESTINATION,
+            NARETH_DESTINATION,
+        ] {
+            let mut bridge =
+                VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+            let world = bridge.session.world();
+            let physics = world
+                .navigation()
+                .planet_physics(destination)
+                .expect("every visible planet should have landing physics");
+            let planet_position = world
+                .planet_position_at(destination, world.time().elapsed)
+                .expect("planet position should be available");
+            let landing_position = GameplayVec3 {
+                x: planet_position.x + physics.collision_radius() + physics.atmosphere_height - 1.0,
+                y: planet_position.y,
+                z: planet_position.z,
+            };
+            let orientation = world.ship_orientation().unwrap();
+            bridge
+                .session
+                .world_mut()
+                .restore_ship_transform(
+                    landing_position,
+                    orientation,
+                    GameplayVec3 {
+                        x: 8.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                )
+                .expect("ship should enter the landing corridor");
+            bridge.pilot_mode = true;
+            bridge.interior_mode = false;
+
+            assert!(bridge.session.world().landing_available(destination));
+            let action = bridge
+                .contextual_action()
+                .expect("landing action should appear near every planet");
+            assert_eq!(action.key, "L");
+            assert_eq!(action.object, VisualBridge::navigation_destination_label(destination));
+            assert!(bridge.instructions_hint().contains("L ATERRIZAR"));
+            assert!(bridge
+                .quick_action_hints()
+                .iter()
+                .any(|value| value.contains("L ATERRIZAR")));
+
+            bridge.handle_key(KeyCode::KeyL, ElementState::Pressed);
+            assert!(matches!(
+                bridge.session.world().planet_flight_state(),
+                gameplay::PlanetFlightState::Landing { planet } if planet == destination
+            ));
+        }
     }
 
     #[test]
