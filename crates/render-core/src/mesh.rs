@@ -157,6 +157,10 @@ impl MeshHandle {
     pub const NARETH_PLANET: Self = Self(15);
     pub const STARS: Self = Self(16);
     pub const MOON: Self = Self(17);
+    pub const ASTRONAUT: Self = Self(18);
+    pub const ECHO7_INTERIOR_LOWER: Self = Self(19);
+    pub const ECHO7_INTERIOR_UPPER: Self = Self(20);
+    pub const ECHO7_INTERIOR_CORE: Self = Self(21);
 
     pub const fn new(value: u32) -> Self {
         Self(value)

@@ -1,6 +1,4 @@
-use game::planet_mazes::{
-    building, tessara, kharvex, nareth,
-};
+use game::planet_mazes::{building, kharvex, nareth, tessara};
 use std::fs;
 
 fn main() -> std::io::Result<()> {
@@ -15,10 +13,7 @@ fn main() -> std::io::Result<()> {
     ];
 
     for (name, maze) in mazes {
-        fs::write(
-            format!("{output}/{name}.txt"),
-            maze.as_text(),
-        )?;
+        fs::write(format!("{output}/{name}.txt"), maze.as_text())?;
 
         println!(
             "{}: {} pasos",

@@ -1,8 +1,10 @@
+pub mod game_over_ui;
 mod material_texture;
 mod textured_model;
 
 pub mod bounds;
 pub mod camera;
+pub mod character_animation;
 pub mod cpu_model_loader;
 pub mod demo;
 pub mod geometry;
@@ -22,6 +24,7 @@ pub mod visual_asset;
 
 pub use bounds::{Aabb, AabbError, Frustum, Plane};
 pub use camera::{Camera, CameraError, Projection};
+pub use character_animation::{skin_vertices, CpuPose, RigidSkinVertex};
 pub use cpu_model_loader::{CpuModelLoadManager, CpuModelLoadState};
 pub use demo::{
     demo_camera, demo_scene, grid_mesh, terrain_height, GRID_SUBDIVISIONS, TERRAIN_EXTENT,

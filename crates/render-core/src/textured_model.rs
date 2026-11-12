@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::model_loader::build_mesh;
@@ -203,8 +204,9 @@ pub fn register_textured_model(
     first_material_id: u32,
 ) -> Result<Vec<RegisteredModelPart>, String> {
     let model = load_textured_obj(path).map_err(|e| e.to_string())?;
-    let mut parts = Vec::with_capacity(model.meshes.len());
-    for (i, mut part) in model.meshes.into_iter().enumerate() {
+    let meshes = coalesce_textured_meshes(model.meshes)?;
+    let mut parts = Vec::with_capacity(meshes.len());
+    for (i, mut part) in meshes.into_iter().enumerate() {
         let offset = u32::try_from(i).map_err(|e| e.to_string())?;
         let mesh_id = first_mesh_id
             .checked_add(offset)
@@ -605,6 +607,38 @@ pub fn register_textured_model(
         });
     }
     Ok(parts)
+}
+
+fn coalesce_textured_meshes(meshes: Vec<TexturedMesh>) -> Result<Vec<TexturedMesh>, String> {
+    let mut groups = HashMap::<Option<usize>, usize>::new();
+    let mut result: Vec<TexturedMesh> = Vec::new();
+    for part in meshes {
+        if let Some(&index) = groups.get(&part.material_index) {
+            append_mesh(&mut result[index].mesh, part.mesh)?;
+        } else {
+            groups.insert(part.material_index, result.len());
+            result.push(part);
+        }
+    }
+    Ok(result)
+}
+
+fn append_mesh(target: &mut RasterMesh, source: RasterMesh) -> Result<(), String> {
+    let offset = u32::try_from(target.vertices.len())
+        .map_err(|_| "model has more vertices than the index format supports".to_owned())?;
+    target.vertices.extend(source.vertices);
+    target.indices.extend(
+        source
+            .indices
+            .into_iter()
+            .map(|index| {
+                index
+                    .checked_add(offset)
+                    .ok_or_else(|| "model index overflow".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    Ok(())
 }
 
 /// Expande un nodo en submallas registradas.

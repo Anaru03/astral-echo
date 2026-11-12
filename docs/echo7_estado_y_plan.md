@@ -1,5 +1,16 @@
 # Auditoría de ECHO-7 y plan por fases
 
+## Actualización de arranque y despertar (12 de noviembre de 2026)
+
+La partida nueva conserva `started=false` hasta recibir `Enter`. Cuando `interior_mode` está activo, la cámara sigue al jugador autoritativo antes y después de `Enter`; no usa la cámara de inspección ni la observación exterior. La regresión `new_game_starts_inside_despertar_and_keeps_player_camera_after_mission_start` comprueba esta transición, la posición local OBJ y varias actualizaciones.
+
+`Enter` inicia una secuencia visual de despertar de 1.5 s (`awakening_sequence`). Durante ella se bloquean movimiento, rotación e interacciones; el HUD muestra `DESPERTAR EN CURSO — ESPERA`. Al finalizar se recuperan controles y aparece `DESPERTAR COMPLETADO - EXPLORACION INTERIOR`. Actualmente es una animación visual CPU del nodo del jugador (inclinación y escala progresivas); el skinning por huesos de `assets/models/characters/astronauta/animaciones_cpu.json` aún no está conectado al rasterizador.
+
+Validación ejecutada: `cargo check -p game` y `cargo test -p game --bin game new_game_starts_inside_despertar_and_keeps_player_camera_after_mission_start` pasan. La ventana completa aún requiere validación manual: `cargo run -p game -- --visual`, pulsar `Enter`, esperar la secuencia y pulsar `M`.
+
+El cuadrado verde interior procede de estaciones lógicas dibujadas por `station_nodes_for_view` con `PLACEHOLDER_MESH`/`DESTINATION_MATERIAL`; no se oculta por color ni representa automáticamente una pieza del OBJ.
+
+Pendientes: traza de frame desde `handle_key` hasta presentación CPU, validación visual de la animación, skinning CPU del astronauta y cierre de la salida física de Despertar.
 Fecha de auditoría: 2026-11-09. Alcance: inspección del árbol actual, código, assets y comprobaciones ejecutadas en este entorno. No se eliminaron ni modificaron assets. El único archivo nuevo de esta auditoría es este informe.
 
 ## A. Resumen del estado real

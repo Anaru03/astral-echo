@@ -9,8 +9,28 @@ pub struct ModelDefinition {
 pub fn registered_models() -> Vec<ModelDefinition> {
     vec![
         ModelDefinition {
+            path: "characters/astronauta/astronauta.obj",
+            mesh: MeshHandle::ASTRONAUT,
+            material: VisualAssets::PLAYER,
+        },
+        ModelDefinition {
             path: "echo_7/montajes/ECHO7_Completa_DosCubiertas.obj",
             mesh: MeshHandle::SHIP_PLACEHOLDER,
+            material: VisualAssets::SHIP,
+        },
+        ModelDefinition {
+            path: "echo_7/interiores/ECHO7_Interior_Inferior.obj",
+            mesh: MeshHandle::ECHO7_INTERIOR_LOWER,
+            material: VisualAssets::SHIP,
+        },
+        ModelDefinition {
+            path: "echo_7/interiores/ECHO7_Interior_Superior.obj",
+            mesh: MeshHandle::ECHO7_INTERIOR_UPPER,
+            material: VisualAssets::SHIP,
+        },
+        ModelDefinition {
+            path: "echo_7/interiores/ECHO7_Nucleo_Entre_Cubiertas.obj",
+            mesh: MeshHandle::ECHO7_INTERIOR_CORE,
             material: VisualAssets::SHIP,
         },
         ModelDefinition {

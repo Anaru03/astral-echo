@@ -93,10 +93,8 @@ pub fn copy_nearest_rgba(
         }
     }
     let layout = ScaleLayout::fit(source, target)?;
-    let fills_target = layout.x == 0
-        && layout.y == 0
-        && layout.width == target.0
-        && layout.height == target.1;
+    let fills_target =
+        layout.x == 0 && layout.y == 0 && layout.width == target.0 && layout.height == target.1;
     if !fills_target {
         output.fill(0);
     }

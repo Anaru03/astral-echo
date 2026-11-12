@@ -19,7 +19,9 @@ pub enum ClientMessage {
         sequence: u64,
         transform: crate::sync::PlayerTransform,
     },
-    SetPilotControl { active: bool },
+    SetPilotControl {
+        active: bool,
+    },
     ShipMove {
         sequence: u64,
         transform: crate::sync::PlayerTransform,
@@ -181,7 +183,9 @@ pub enum ServerMessage {
         sequence: u64,
         transform: crate::sync::PlayerTransform,
     },
-    PilotControlChanged { player_id: Option<NetworkPlayerId> },
+    PilotControlChanged {
+        player_id: Option<NetworkPlayerId>,
+    },
     ShipMoved {
         player_id: NetworkPlayerId,
         sequence: u64,

@@ -4,10 +4,11 @@ pub mod ecos_anomalia;
 pub mod el_despertar;
 pub mod la_defensa_imposible;
 pub mod multiplayer;
+pub mod planet_maze;
+pub mod planet_mazes;
 pub mod render_backend;
 pub mod render_bridge;
 pub mod tormenta_gravitacional;
-pub mod planet_maze;
 
 use engine::EntityId;
 use gameplay::types::MissionId;

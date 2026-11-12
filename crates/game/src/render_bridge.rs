@@ -244,6 +244,9 @@ pub const ECHO7_PILOT_CONTROL_LOCAL: Vec3 = Vec3::new(-38.09, -2.4, 5.53);
 pub const ECHO7_PILOT_INTERACTION_LOCAL: Vec3 = Vec3::new(-37.5, -2.4, 5.1);
 pub const ECHO7_PILOT_SEATED_LOCAL: Vec3 = Vec3::new(-35.5, -2.4, 5.8);
 pub const ECHO7_PILOT_EXIT_LOCAL: Vec3 = Vec3::new(-34.2, 0.0, 4.2);
+pub const ECHO7_DESPERTAR_SPAWN_LOCAL: Vec3 = Vec3::new(-14.0, -17.5, 0.85);
+const ECHO7_DESPERTAR_ROOM_X: (f32, f32) = (-24.0, -12.0);
+const ECHO7_DESPERTAR_ROOM_Y: (f32, f32) = (-20.0, -10.0);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Echo7RoomDoor {
@@ -657,6 +660,17 @@ pub fn echo7_lower_deck_position_valid(
     };
     let inside_x = local.x >= bounds.0 && local.x <= bounds.1;
     let inside_y = local.y >= bounds.2 && local.y <= bounds.3;
+    let inside_despertar = local.x >= ECHO7_DESPERTAR_ROOM_X.0 + radius
+        && local.x <= ECHO7_DESPERTAR_ROOM_X.1 - radius
+        && local.y >= ECHO7_DESPERTAR_ROOM_Y.0 + radius
+        && local.y <= ECHO7_DESPERTAR_ROOM_Y.1 - radius;
+    let despertar_connector = local.x >= ECHO7_DESPERTAR_ROOM_X.0 + radius
+        && local.x <= -ECHO7_INTERIOR_HALF_WIDTH + radius
+        && local.y >= -20.0 + radius
+        && local.y <= -6.0 - radius;
+    if inside_despertar || despertar_connector {
+        return echo7_lower_core_obstacle_free(local, position.y);
+    }
     inside_x
         && inside_y
         && echo7_lower_core_obstacle_free(local, position.y)
@@ -682,7 +696,7 @@ fn echo7_visual_rotation(orientation: gameplay::ShipOrientation) -> Quat {
     Quat::from_rotation_y(yaw)
         * Quat::from_rotation_x(pitch)
         * Quat::from_rotation_y(ECHO7_MODEL_YAW_OFFSET_RAD)
-        * Quat::from_rotation_x(ECHO7_MODEL_UP_CONVERSION_RAD)
+        * echo7_local_to_world_rotation()
 }
 
 pub fn station_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
@@ -755,6 +769,7 @@ fn mission_interaction_nodes(
         .filter(move |interactable| {
             interior || !is_echo_interior_position(world, interactable.position)
         })
+        .filter(move |_| !(interior && ECHO7_MESH != PLACEHOLDER_MESH))
         .filter(|interactable| {
             matches!(
                 interactable.behavior,
@@ -1167,13 +1182,25 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         let mut transform = Transform::new(visual_position, model_rotation, ECHO7_VISUAL_SCALE);
         transform.translation -= rotation
             * (echo7_local_to_world_rotation() * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER));
-        snapshot.push_node(SnapshotNode::new(
-            ship,
-            transform,
-            ECHO7_MESH,
-            ECHO7_MATERIAL,
-            world.entities().contains(ship),
-        ));
+        let meshes = if interior || pilot_mode {
+            [
+                MeshHandle::ECHO7_INTERIOR_LOWER,
+                MeshHandle::ECHO7_INTERIOR_UPPER,
+                MeshHandle::ECHO7_INTERIOR_CORE,
+            ]
+        } else {
+            [ECHO7_MESH, MeshHandle::new(0), MeshHandle::new(0)]
+        };
+        let count = if interior || pilot_mode { 3 } else { 1 };
+        for mesh in meshes.into_iter().take(count) {
+            snapshot.push_node(SnapshotNode::new(
+                ship,
+                transform,
+                mesh,
+                ECHO7_MATERIAL,
+                world.entities().contains(ship),
+            ));
+        }
     }
 
     for node in station_nodes_for_view(world, interior) {
@@ -1722,9 +1749,7 @@ fn expected_snapshot_node_count(
         .count();
     count += world
         .active_environmental_hazards()
-        .filter(|hazard| {
-            hazard.hazard_type == gameplay::EnvironmentalHazardType::DebrisField
-        })
+        .filter(|hazard| hazard.hazard_type == gameplay::EnvironmentalHazardType::DebrisField)
         .count();
     count += world.enemies().filter(|enemy| !enemy.is_player).count();
     count += world

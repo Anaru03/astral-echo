@@ -63,6 +63,17 @@ const FONT: [([u8; 7], char); 39] = [
 fn glyph(ch: char) -> Option<[u8; 7]> {
     FONT.iter().find_map(|(p, c)| (*c == ch).then_some(*p))
 }
+
+fn visible_text_rows(y: u32, margin: u32, height: u32, scale: u32) -> usize {
+    let first_row = y.saturating_add(margin);
+    let glyph_height = 7_u32.saturating_mul(scale);
+    if first_row.saturating_add(glyph_height) > height {
+        return 0;
+    }
+    let row_height = 10_u32.saturating_mul(scale).max(1);
+    (1 + height.saturating_sub(first_row + glyph_height) / row_height) as usize
+}
+
 fn normalize(ch: char) -> char {
     if ch == '—' {
         return '-';
@@ -205,7 +216,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     .collect::<Vec<_>>();
     let inventory_lines = hud.inventory_open.then(|| {
         std::iter::once("INVENTARIO".to_owned())
-            .chain(hud.inventory_items.iter().cloned())
+            .chain(hud.inventory_items.iter().map(|item| format!("    {item}")))
             .collect::<Vec<_>>()
     });
     if !hud.mission_objectives.is_empty() {

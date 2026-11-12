@@ -190,19 +190,19 @@ impl AudioManager {
                 .into_iter()
                 .collect(),
                 effects: [
-                    (SoundEffect::PlayerAttack, "assets/audio/attack.wav"),
+                    (SoundEffect::PlayerAttack, "assets/audio/sfx/attack.wav"),
                     (
                         SoundEffect::EnemyDefeated,
-                        "assets/audio/enemy_defeated.wav",
+                        "assets/audio/sfx/enemy_defeated.wav",
                     ),
-                    (SoundEffect::Collect, "assets/audio/collect.wav"),
-                    (SoundEffect::Scan, "assets/audio/scan.wav"),
-                    (SoundEffect::Landing, "assets/audio/landing.wav"),
-                    (SoundEffect::PlayerImpacted, "assets/audio/impact.wav"),
-                    (SoundEffect::GameOver, "assets/audio/game_over.wav"),
+                    (SoundEffect::Collect, "assets/audio/sfx/collect.wav"),
+                    (SoundEffect::Scan, "assets/audio/sfx/scan.wav"),
+                    (SoundEffect::Landing, "assets/audio/sfx/landing.wav"),
+                    (SoundEffect::PlayerImpacted, "assets/audio/sfx/impact.wav"),
+                    (SoundEffect::GameOver, "assets/audio/sfx/game_over.wav"),
                     (
                         SoundEffect::ShipPropulsion,
-                        "assets/audio/ship_propulsion.wav",
+                        "assets/audio/sfx/ship_propulsion.wav",
                     ),
                 ]
                 .into_iter()
@@ -546,19 +546,19 @@ mod tests {
             Some(&PathBuf::from("assets/audio/exploration.ogg"))
         );
         let expected_effects = [
-            (SoundEffect::PlayerAttack, "assets/audio/attack.wav"),
+            (SoundEffect::PlayerAttack, "assets/audio/sfx/attack.wav"),
             (
                 SoundEffect::EnemyDefeated,
-                "assets/audio/enemy_defeated.wav",
+                "assets/audio/sfx/enemy_defeated.wav",
             ),
-            (SoundEffect::Collect, "assets/audio/collect.wav"),
-            (SoundEffect::Scan, "assets/audio/scan.wav"),
-            (SoundEffect::Landing, "assets/audio/landing.wav"),
-            (SoundEffect::PlayerImpacted, "assets/audio/impact.wav"),
-            (SoundEffect::GameOver, "assets/audio/game_over.wav"),
+            (SoundEffect::Collect, "assets/audio/sfx/collect.wav"),
+            (SoundEffect::Scan, "assets/audio/sfx/scan.wav"),
+            (SoundEffect::Landing, "assets/audio/sfx/landing.wav"),
+            (SoundEffect::PlayerImpacted, "assets/audio/sfx/impact.wav"),
+            (SoundEffect::GameOver, "assets/audio/sfx/game_over.wav"),
             (
                 SoundEffect::ShipPropulsion,
-                "assets/audio/ship_propulsion.wav",
+                "assets/audio/sfx/ship_propulsion.wav",
             ),
         ];
         for (effect, path) in expected_effects {

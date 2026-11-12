@@ -1,3 +1,6 @@
+#[path = "native_splash.rs"]
+mod native_splash;
+
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -119,6 +122,7 @@ pub fn run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
 ) -> Result<HotSwapReport, String> {
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let wake_proxy = event_loop.create_proxy();
+    let native_menu = config.title.starts_with("Astral Echo") && !config.raster_controls;
     let mut app = Host {
         config,
         source,
@@ -142,6 +146,9 @@ pub fn run_hot_swap_window_with_input_and_scene_and_focus_and_assets(
         auto_capture_requested: false,
         wake_proxy,
         visual_assets,
+        splash: None,
+        native_menu: native_menu,
+        splash_starting: false,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
     app.failure.map_or_else(|| Ok(app.report), Err)
@@ -177,6 +184,9 @@ struct Host {
     auto_capture_requested: bool,
     wake_proxy: EventLoopProxy<()>,
     visual_assets: VisualAssetHost,
+    splash: Option<native_splash::NativeSplash>,
+    native_menu: bool,
+    splash_starting: bool,
 }
 
 struct HostState {
@@ -211,41 +221,98 @@ impl ApplicationHandler for Host {
             return;
         }
         let size = self.config.preset.resolution();
-        let window = match event_loop.create_window(
-            Window::default_attributes()
-                .with_title(&self.config.title)
-                .with_inner_size(LogicalSize::new(size.0, size.1)),
-        ) {
-            Ok(w) => Arc::new(w),
-            Err(e) => {
-                self.failure = Some(e.to_string());
-                event_loop.exit();
-                return;
+        if self.native_menu && self.splash.is_none() && !self.splash_starting {
+            let window = match event_loop.create_window(
+                Window::default_attributes()
+                    .with_title(&self.config.title)
+                    .with_inner_size(LogicalSize::new(size.0, size.1)),
+            ) {
+                Ok(w) => Arc::new(w),
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            let context = match Context::new(window.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            let surface = match Surface::new(&context, window.clone()) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            self.splash = Some(native_splash::NativeSplash {
+                window,
+                context,
+                surface,
+                selected: 0,
+                controls: false,
+            });
+            if let Some(splash) = &mut self.splash {
+                splash.window.request_redraw();
             }
-        };
-        let context = match Context::new(window.clone()) {
-            Ok(c) => c,
-            Err(e) => {
-                self.failure = Some(e.to_string());
-                event_loop.exit();
-                return;
-            }
-        };
-        let mut surface = match Surface::new(&context, window.clone()) {
-            Ok(s) => s,
-            Err(e) => {
-                self.failure = Some(e.to_string());
-                event_loop.exit();
-                return;
-            }
-        };
-        let framebuffer = match Framebuffer::new(size.0, size.1) {
-            Ok(f) => f,
-            Err(e) => {
-                self.failure = Some(e.to_string());
-                event_loop.exit();
-                return;
-            }
+            return;
+        }
+        let (window, context, mut surface, framebuffer) = if self.splash_starting {
+            self.splash_starting = false;
+            let splash = self.splash.take().expect("native splash must exist");
+            let framebuffer = match Framebuffer::new(size.0, size.1) {
+                Ok(f) => f,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            (splash.window, splash.context, splash.surface, framebuffer)
+        } else {
+            let size = self.config.preset.resolution();
+            let window = match event_loop.create_window(
+                Window::default_attributes()
+                    .with_title(&self.config.title)
+                    .with_inner_size(LogicalSize::new(size.0, size.1)),
+            ) {
+                Ok(w) => Arc::new(w),
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            let context = match Context::new(window.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            let mut surface = match Surface::new(&context, window.clone()) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            let framebuffer = match Framebuffer::new(size.0, size.1) {
+                Ok(f) => f,
+                Err(e) => {
+                    self.failure = Some(e.to_string());
+                    event_loop.exit();
+                    return;
+                }
+            };
+            (window, context, surface, framebuffer)
         };
         let snapshot = match (self.source)(size.0, size.1) {
             Ok(s) => s,
@@ -321,6 +388,57 @@ impl ApplicationHandler for Host {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(splash) = &mut self.splash {
+            if splash.window.id() != id {
+                return;
+            }
+            match event {
+                WindowEvent::CloseRequested => event_loop.exit(),
+                WindowEvent::Resized(_) | WindowEvent::RedrawRequested => {
+                    if let Err(e) = splash.present(false) {
+                        self.failure = Some(e);
+                        event_loop.exit();
+                    }
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed && !event.repeat =>
+                {
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        match code {
+                            KeyCode::ArrowUp | KeyCode::KeyW if !splash.controls => {
+                                splash.selected = (splash.selected + 2) % 3
+                            }
+                            KeyCode::ArrowDown | KeyCode::KeyS if !splash.controls => {
+                                splash.selected = (splash.selected + 1) % 3
+                            }
+                            KeyCode::Escape if splash.controls => splash.controls = false,
+                            KeyCode::Escape => event_loop.exit(),
+                            KeyCode::Enter if splash.controls => splash.controls = false,
+                            KeyCode::Enter if splash.selected == 1 => splash.controls = true,
+                            KeyCode::Enter if splash.selected == 2 => event_loop.exit(),
+                            KeyCode::Enter => {
+                                // Presentar la carga ANTES de inicializar los recursos 3D.
+                                if let Err(e) = splash.present(true) {
+                                    self.failure = Some(e);
+                                    event_loop.exit();
+                                    return;
+                                }
+                                (self.input)(KeyCode::Enter, ElementState::Pressed);
+                                self.splash_starting = true;
+                                self.resumed(event_loop);
+                                return;
+                            }
+                            _ => {}
+                        }
+                        if let Some(splash) = &mut self.splash {
+                            splash.window.request_redraw();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         let Some(window_id) = self.state.as_ref().map(|state| state.window.id()) else {
             return;
         };

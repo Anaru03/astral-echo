@@ -7,6 +7,19 @@ use crate::{
     RasterMode, TileConfig, Topology, Viewport,
 };
 
+fn cpu_culling_config(framebuffer: &Framebuffer) -> render_core::CullingConfig {
+    let mut config = render_core::CullingConfig {
+        width: framebuffer.width(),
+        height: framebuffer.height(),
+        ..Default::default()
+    };
+    if config.width <= 640 && config.height <= 360 {
+        config.low_threshold_px = f32::MAX;
+        config.high_threshold_px = f32::MAX;
+    }
+    config
+}
+
 pub fn diagnostic_fragment_shader() -> Option<FragmentShader> {
     let target = std::env::var("ASTRAL_ECHO_CPU_DIAGNOSTIC_HANDLE")
         .ok()
@@ -49,11 +62,17 @@ pub fn render_snapshot_scene_with_stats(
         overlay_clear_color(scene.overlay()),
         scene.overlay().game_over,
     )?;
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, scene, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats))
 }
 
-pub fn compose_hud_overlay(framebuffer: &mut Framebuffer, hud: &render_core::HudState) {
+pub fn compose_hud_overlay(
+    framebuffer: &mut Framebuffer,
+    scene: &SnapshotScene,
+    hud: &render_core::HudState,
+) {
     let overlay = render_core::hud_overlay(hud, framebuffer.width(), framebuffer.height());
     for rect in std::iter::once(overlay.background).chain(overlay.glyphs) {
         for y in rect.y..rect.y.saturating_add(rect.height) {
@@ -75,6 +94,62 @@ pub fn compose_hud_overlay(framebuffer: &mut Framebuffer, hud: &render_core::Hud
                         255,
                     ),
                 );
+            }
+        }
+    }
+    if hud.inventory_open {
+        let scale = (framebuffer.width() / 480).clamp(1, 3);
+        let margin = 12 * scale;
+        let char_width = 7 * scale;
+        let max_chars = std::iter::once("INVENTARIO".chars().count())
+            .chain(
+                hud.inventory_items
+                    .iter()
+                    .map(|item| item.chars().count() + 4),
+            )
+            .max()
+            .unwrap_or(12);
+        let inventory_width = (max_chars as u32 * char_width + margin * 2)
+            .min(framebuffer.width().saturating_sub(margin * 2));
+        let inventory_x = framebuffer.width().saturating_sub(margin + inventory_width);
+        for (index, item) in hud.inventory_items.iter().enumerate() {
+            let Some(item_id) = item
+                .strip_prefix("ITEM ")
+                .and_then(|value| value.split_whitespace().next())
+                .and_then(|value| value.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            let material = render_core::MaterialHandle::new(500 + item_id);
+            let Some(texture) = scene.texture_image(material) else {
+                continue;
+            };
+            let size = (8 * scale).min(16);
+            let x = inventory_x + margin / 2;
+            let y = margin + margin / 2 + 8 * scale + index as u32 * 8 * scale;
+            for py in 0..size {
+                for px in 0..size {
+                    let sx = (px * texture.width / size).min(texture.width.saturating_sub(1));
+                    let sy = (py * texture.height / size).min(texture.height.saturating_sub(1));
+                    let offset = ((sy * texture.width + sx) * 4) as usize;
+                    if offset + 3 >= texture.pixels.len() {
+                        continue;
+                    }
+                    let alpha = texture.pixels[offset + 3];
+                    if alpha == 0 {
+                        continue;
+                    }
+                    framebuffer.set_pixel(
+                        x + px,
+                        y + py,
+                        Color::new(
+                            texture.pixels[offset],
+                            texture.pixels[offset + 1],
+                            texture.pixels[offset + 2],
+                            alpha,
+                        ),
+                    );
+                }
             }
         }
     }
@@ -101,7 +176,9 @@ pub fn render_snapshot_scene_with_timing(
             ..Default::default()
         },
     )?;
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, scene, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats, preparation_ns))
 }
 
@@ -135,7 +212,9 @@ pub fn render_snapshot_scene_with_shader_at_time_with_stats(
         time,
         PipelineConfig::default(),
     )?;
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, scene, &scene.overlay().hud);
+    }
     Ok((prepared_stats, pipeline_stats))
 }
 
@@ -185,7 +264,9 @@ pub fn render_snapshot_scene_reference(
     }
     let stats = pipeline.stats;
     drop(pipeline);
-    compose_hud_overlay(framebuffer, &scene.overlay().hud);
+    if !scene.overlay().game_over {
+        compose_hud_overlay(framebuffer, scene, &scene.overlay().hud);
+    }
     Ok(stats)
 }
 
@@ -277,23 +358,13 @@ fn render_prepared_scene_with_shader(
 }
 
 fn draw_game_over(framebuffer: &mut Framebuffer) {
-    let (left, top, scale) = game_over_layout(framebuffer.width(), framebuffer.height());
-    let color = Color::new(255, 64, 48, 255);
-    for (glyph_index, glyph) in GAME_OVER_GLYPHS.iter().enumerate() {
-        let word_gap = u32::from(glyph_index >= 4) * 2 * scale;
-        let glyph_left = left + glyph_index as u32 * 6 * scale + word_gap;
-        for (row, bits) in glyph.iter().copied().enumerate() {
-            for column in 0..5u32 {
-                if bits & (1 << (4 - column)) == 0 {
-                    continue;
-                }
-                let x = glyph_left + column * scale;
-                let y = top + row as u32 * scale;
-                for dy in 0..scale {
-                    for dx in 0..scale {
-                        framebuffer.set_pixel(x + dx, y + dy, color);
-                    }
-                }
+    for rect in
+        render_core::game_over_ui::game_over_rects(framebuffer.width(), framebuffer.height())
+    {
+        let color = Color::new(rect.color[0], rect.color[1], rect.color[2], rect.color[3]);
+        for y in rect.y..rect.y + rect.height {
+            for x in rect.x..rect.x + rect.width {
+                framebuffer.set_pixel(x, y, color);
             }
         }
     }
