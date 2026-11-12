@@ -507,6 +507,7 @@ struct VisualBridge {
     surface_camera_pitch: f32,
     last_interior_update: Instant,
     last_world_update: Instant,
+    guidance_cache: RefCell<Option<(Instant, Option<String>)>>,
     visual_asset_client: Option<VisualAssetClient>,
     visual_asset_states: BTreeMap<String, VisualAssetState>,
     gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, u64, GpuAssetState)>,
@@ -1188,6 +1189,7 @@ impl VisualBridge {
             surface_camera_pitch: 0.0,
             last_interior_update: Instant::now(),
             last_world_update: Instant::now(),
+            guidance_cache: RefCell::new(None),
             visual_asset_client: None,
             visual_asset_states: BTreeMap::new(),
             gpu_asset_states: BTreeMap::new(),
@@ -3209,12 +3211,17 @@ impl VisualBridge {
     }
 
     fn guidance_prompt(&self) -> Option<String> {
+        if let Some((created, cached)) = self.guidance_cache.borrow().as_ref() {
+            if created.elapsed() < std::time::Duration::from_millis(180) {
+                return cached.clone();
+            }
+        }
         let guidance = self.session.world().guidance_for_player(self.player).ok()?;
         let objective = guidance
             .current_objective
             .and_then(|id| guidance.objectives.iter().find(|value| value.id == id));
         let Some(objective) = objective else {
-            return self
+            let result = self
                 .session
                 .world()
                 .missions()
@@ -3231,19 +3238,51 @@ impl VisualBridge {
                         .then_some("M DESPERTAR Y COMENZAR MISION 1".to_owned())
                 })
                 .or_else(|| Some("SIN OBJETIVO ACTIVO".to_owned()));
+            *self.guidance_cache.borrow_mut() = Some((Instant::now(), result.clone()));
+            return result;
         };
-        if let Some(requirement) = objective.missing_requirements.first() {
-            return Some(format!(
+        let route_hint = objective
+            .recommended_action
+            .and_then(|action| self.guidance_destination_hint(action));
+        let result = if let Some(requirement) = objective.missing_requirements.first() {
+            Some(format!(
                 "{} | {} | PENDIENTE: {}",
                 objective.name,
                 guidance_action_label(objective.recommended_action),
                 guidance_requirement_label(*requirement),
-            ));
-        }
+            ))
+        } else {
+            Some(format!(
+                "{} | {}",
+                objective.name,
+                guidance_action_label(objective.recommended_action)
+            ))
+        };
+        let result = result.map(|text| {
+            route_hint.map_or(text.clone(), |hint| format!("{text} | {hint}"))
+        });
+        *self.guidance_cache.borrow_mut() = Some((Instant::now(), result.clone()));
+        result
+    }
+
+    fn guidance_destination_hint(&self, action: gameplay::GuidanceAction) -> Option<String> {
+        let destination = match action {
+            gameplay::GuidanceAction::TravelTo(destination)
+            | gameplay::GuidanceAction::DiscoverDestination(destination) => destination,
+            _ => return None,
+        };
+        let world = self.session.world();
+        let player = world.player(self.player)?;
+        let target = world
+            .planet_position_at(destination, world.time().elapsed)
+            .or_else(|| world.destination(destination).map(|value| value.position))?;
+        let dx = target.x - player.position.x;
+        let dy = target.y - player.position.y;
+        let dz = target.z - player.position.z;
+        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
         Some(format!(
-            "{} | {}",
-            objective.name,
-            guidance_action_label(objective.recommended_action)
+            "RUMBO DESTINO-{} | DISTANCIA {distance:.0}",
+            destination.value()
         ))
     }
 
@@ -4758,7 +4797,10 @@ pub fn run() -> Result<(), String> {
             }
             Ok(snapshot)
         }),
-        false,
+        !matches!(
+            std::env::var("ASTRAL_ECHO_FORCE_CPU").as_deref(),
+            Ok("1") | Ok("true")
+        ),
         move |key, state| input_runtime.borrow_mut().handle_key(key, state),
         move |focused| {
             let mut bridge = focus_runtime.borrow_mut();

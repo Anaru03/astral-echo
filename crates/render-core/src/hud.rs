@@ -272,6 +272,15 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     };
     let mut glyphs = Vec::new();
     for (row, text) in lines.iter().enumerate() {
+        let line_color = if text.starts_with("GUIA:") {
+            [104, 224, 255, 255]
+        } else if text.starts_with("OBJETIVO:") || text == "OBJETIVOS:" {
+            [255, 218, 112, 255]
+        } else if text.starts_with("ALERTA:") {
+            [255, 110, 96, 255]
+        } else {
+            color
+        };
         for (column, ch) in text.chars().enumerate() {
             let Some(pattern) = glyph(normalize(ch)) else {
                 continue;
@@ -284,7 +293,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
                             y: margin + row as u32 * 8 * scale + glyph_row as u32 * scale,
                             width: scale,
                             height: scale,
-                            color,
+                            color: line_color,
                         });
                     }
                 }
