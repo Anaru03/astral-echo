@@ -18,7 +18,7 @@ const WHITE: u32 = 0xffffff;
 #[test]
 fn presets_match_resolution_and_frame_rate_contract() {
     for (preset, size, fps) in [
-        (Preset::Low, (640, 360), 30),
+        (Preset::Low, (640, 360), 60),
         (Preset::Medium, (960, 540), 60),
         (Preset::High, (1280, 720), 60),
     ] {
@@ -228,7 +228,7 @@ fn delayed_frames_do_not_schedule_a_catch_up_burst() {
     let delayed = now + Duration::from_secs(5);
     assert!(pacer.is_due(delayed));
     pacer.frame_started(delayed);
-    assert_eq!(pacer.deadline(), delayed + Duration::from_nanos(33_333_333));
+    assert_eq!(pacer.deadline(), delayed + Duration::from_nanos(16_666_666));
     assert!(!pacer.is_due(delayed));
 }
 

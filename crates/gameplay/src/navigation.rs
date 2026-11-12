@@ -684,7 +684,10 @@ impl NavigationState {
         let planet = physics.position_at(now);
         let distance = distance(self.current_position, planet);
         let landing_radius = physics.collision_radius() + physics.atmosphere_height;
-        if distance <= landing_radius && dot(self.velocity, self.velocity) <= 36.0 {
+        // Manual flight is capped at 8 u/s. Accepting that normal cruise speed
+        // keeps the landing action from disappearing just as the player enters
+        // the atmosphere; the cinematic safely takes control from here.
+        if distance <= landing_radius && dot(self.velocity, self.velocity) <= 64.0 {
             true
         } else {
             false
