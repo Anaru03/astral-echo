@@ -3,9 +3,8 @@ use render_core::{
 };
 
 use crate::{
-    Color, CpuPipeline, CpuPipelineScratch, Framebuffer, FragmentShader, PipelineConfig,
-    PipelineStats, RasterError, RasterMode,
-    TileConfig, Topology, Viewport,
+    Color, CpuPipeline, CpuPipelineScratch, FragmentShader, Framebuffer, PipelineConfig,
+    PipelineStats, RasterError, RasterMode, TileConfig, Topology, Viewport,
 };
 
 fn cpu_culling_config(framebuffer: &Framebuffer) -> render_core::CullingConfig {
@@ -103,12 +102,12 @@ pub fn compose_hud_overlay(framebuffer: &mut Framebuffer, hud: &render_core::Hud
             let start = (y * width + x0) * 4;
             let end = (y * width + x1) * 4;
             for pixel in pixels[start..end].chunks_exact_mut(4) {
-                pixel[0] = (f32::from(rect.color[0]) * alpha
-                    + f32::from(pixel[0]) * inverse_alpha) as u8;
-                pixel[1] = (f32::from(rect.color[1]) * alpha
-                    + f32::from(pixel[1]) * inverse_alpha) as u8;
-                pixel[2] = (f32::from(rect.color[2]) * alpha
-                    + f32::from(pixel[2]) * inverse_alpha) as u8;
+                pixel[0] =
+                    (f32::from(rect.color[0]) * alpha + f32::from(pixel[0]) * inverse_alpha) as u8;
+                pixel[1] =
+                    (f32::from(rect.color[1]) * alpha + f32::from(pixel[1]) * inverse_alpha) as u8;
+                pixel[2] =
+                    (f32::from(rect.color[2]) * alpha + f32::from(pixel[2]) * inverse_alpha) as u8;
                 pixel[3] = 255;
             }
         }
@@ -147,13 +146,7 @@ pub fn render_snapshot_scene_with_shader_with_stats(
     shader: FragmentShader,
 ) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
     let time = (scene.snapshot().tick.0 % 4096) as f32;
-    render_snapshot_scene_with_shader_at_time_with_stats(
-        framebuffer,
-        scene,
-        mode,
-        shader,
-        time,
-    )
+    render_snapshot_scene_with_shader_at_time_with_stats(framebuffer, scene, mode, shader, time)
 }
 
 pub fn render_snapshot_scene_with_shader_at_time_with_stats(
@@ -203,12 +196,8 @@ pub fn render_snapshot_scene_with_shader(
     mode: RasterMode,
     shader: FragmentShader,
 ) -> Result<PipelineStats, RasterError> {
-    let (_, stats) = render_snapshot_scene_with_shader_with_stats(
-        framebuffer,
-        scene,
-        mode,
-        shader,
-    )?;
+    let (_, stats) =
+        render_snapshot_scene_with_shader_with_stats(framebuffer, scene, mode, shader)?;
     Ok(stats)
 }
 
@@ -329,18 +318,14 @@ fn render_prepared_scene_with_scratch(
     scratch: &mut CpuPipelineScratch,
 ) -> Result<PipelineStats, RasterError> {
     let viewport = Viewport::from_size(framebuffer.width(), framebuffer.height())?;
-    let mut pipeline = CpuPipeline::new_with_scratch(
-        framebuffer,
-        viewport,
-        config,
-        std::mem::take(scratch),
-    )
-        .with_fragment_shader(shader)
-        .with_fragment_time(time)
-        .with_tile_config(TileConfig {
-            tile_size: 16,
-            mode,
-        });
+    let mut pipeline =
+        CpuPipeline::new_with_scratch(framebuffer, viewport, config, std::mem::take(scratch))
+            .with_fragment_shader(shader)
+            .with_fragment_time(time)
+            .with_tile_config(TileConfig {
+                tile_size: 16,
+                mode,
+            });
     pipeline.clear(clear);
     if game_over {
         let stats = pipeline.stats;

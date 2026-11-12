@@ -1,4 +1,3 @@
-
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
@@ -126,8 +125,7 @@ pub fn load_obj_decimated(
     let mut indices = Vec::with_capacity(faces.len() * 3);
     for face in faces {
         let [a, b, c] = face;
-        let (Some(a), Some(b), Some(c)) =
-            (positions.get(&a), positions.get(&b), positions.get(&c))
+        let (Some(a), Some(b), Some(c)) = (positions.get(&a), positions.get(&b), positions.get(&c))
         else {
             continue;
         };
@@ -146,9 +144,7 @@ pub fn load_obj_decimated(
     Ok(RasterMesh::new(vertices, indices))
 }
 
-pub fn load_obj_reader<R: BufRead>(
-    reader: &mut R,
-) -> Result<RasterMesh, ObjLoadError> {
+pub fn load_obj_reader<R: BufRead>(reader: &mut R) -> Result<RasterMesh, ObjLoadError> {
     let (models, _materials) = tobj::load_obj_buf(
         reader,
         &tobj::LoadOptions {
@@ -193,18 +189,14 @@ pub(crate) fn build_mesh(
             ));
         }
 
-        if !mesh.normals.is_empty()
-            && mesh.normals.len() != vertex_count * 3
-        {
+        if !mesh.normals.is_empty() && mesh.normals.len() != vertex_count * 3 {
             return Err(ObjLoadError::Invalid(
                 "single-index normals do not match positions".into(),
             ));
         }
 
         // Validar las coordenadas UV del modelo OBJ.
-        if !mesh.texcoords.is_empty()
-            && mesh.texcoords.len() != vertex_count * 2
-        {
+        if !mesh.texcoords.is_empty() && mesh.texcoords.len() != vertex_count * 2 {
             return Err(ObjLoadError::Invalid(
                 "texture coordinates do not match positions".into(),
             ));
@@ -220,9 +212,7 @@ pub(crate) fn build_mesh(
             );
 
             if !position.is_finite() {
-                return Err(ObjLoadError::Invalid(
-                    "non-finite position".into(),
-                ));
+                return Err(ObjLoadError::Invalid("non-finite position".into()));
             }
 
             let normal = if mesh.normals.is_empty() {
@@ -236,19 +226,14 @@ pub(crate) fn build_mesh(
             };
 
             if !normal.is_finite() {
-                return Err(ObjLoadError::Invalid(
-                    "non-finite normal".into(),
-                ));
+                return Err(ObjLoadError::Invalid("non-finite normal".into()));
             }
 
             // Leer UVs. Los modelos sin UVs usan (0, 0).
             let uv = if mesh.texcoords.is_empty() {
                 Vec2::ZERO
             } else {
-                Vec2::new(
-                    mesh.texcoords[index * 2],
-                    mesh.texcoords[index * 2 + 1],
-                )
+                Vec2::new(mesh.texcoords[index * 2], mesh.texcoords[index * 2 + 1])
             };
 
             if !uv.is_finite() {
@@ -266,9 +251,7 @@ pub(crate) fn build_mesh(
 
         for index in mesh.indices {
             if index as usize >= vertex_count {
-                return Err(ObjLoadError::Invalid(
-                    "index outside vertex data".into(),
-                ));
+                return Err(ObjLoadError::Invalid("index outside vertex data".into()));
             }
 
             indices.push(base + index);
@@ -286,9 +269,7 @@ pub(crate) fn build_mesh(
         .iter()
         .any(|vertex| !vertex.position.is_finite())
     {
-        return Err(ObjLoadError::Invalid(
-            "non-finite vertex data".into(),
-        ));
+        return Err(ObjLoadError::Invalid("non-finite vertex data".into()));
     }
 
     if result
@@ -319,51 +300,30 @@ mod tests {
 
     #[test]
     fn loads_triangle_and_generates_default_color() {
-        let mesh = load(
-            "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n",
-        )
-        .unwrap();
+        let mesh = load("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").unwrap();
 
         assert_eq!(mesh.vertices.len(), 3);
         assert_eq!(mesh.indices, vec![0, 1, 2]);
 
-        assert!(mesh
-            .vertices
-            .iter()
-            .all(|vertex| vertex.color == Vec4::ONE));
+        assert!(mesh.vertices.iter().all(|vertex| vertex.color == Vec4::ONE));
 
-        assert!(mesh
-            .vertices
-            .iter()
-            .all(|vertex| vertex.normal.is_finite()));
+        assert!(mesh.vertices.iter().all(|vertex| vertex.normal.is_finite()));
 
-        assert!(mesh
-            .vertices
-            .iter()
-            .all(|vertex| vertex.uv == Vec2::ZERO));
+        assert!(mesh.vertices.iter().all(|vertex| vertex.uv == Vec2::ZERO));
     }
 
     #[test]
     fn triangulates_polygon() {
-        let mesh = load(
-            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3 4\n",
-        )
-        .unwrap();
+        let mesh = load("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3 4\n").unwrap();
 
         assert_eq!(mesh.indices.len(), 6);
     }
 
     #[test]
     fn loads_explicit_normals() {
-        let mesh = load(
-            "v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nf 1//1 2//1 3//1\n",
-        )
-        .unwrap();
+        let mesh = load("v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nf 1//1 2//1 3//1\n").unwrap();
 
-        assert!(mesh
-            .vertices
-            .iter()
-            .all(|vertex| vertex.normal == Vec3::Z));
+        assert!(mesh.vertices.iter().all(|vertex| vertex.normal == Vec3::Z));
     }
 
     #[test]
@@ -405,10 +365,7 @@ mod tests {
 
     #[test]
     fn resolves_negative_indices() {
-        let mesh = load(
-            "v 0 0 0\nv 1 0 0\nv 0 1 0\nf -3 -2 -1\n",
-        )
-        .unwrap();
+        let mesh = load("v 0 0 0\nv 1 0 0\nv 0 1 0\nf -3 -2 -1\n").unwrap();
 
         assert_eq!(mesh.indices, vec![0, 1, 2]);
     }
@@ -437,32 +394,20 @@ mod tests {
     fn rejects_empty_and_invalid_geometry() {
         assert!(load("# empty\n").is_err());
 
-        assert!(
-            load("v 0 0 0\nv 1 0 0\nf 1 2 3\n").is_err()
-        );
+        assert!(load("v 0 0 0\nv 1 0 0\nf 1 2 3\n").is_err());
     }
 
     #[test]
     fn registers_and_resolves_loaded_mesh() {
-        let mesh = load(
-            "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n",
-        )
-        .unwrap();
+        let mesh = load("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").unwrap();
 
         let mut assets = VisualAssets::default();
 
-        assets.register_mesh(
-            MeshHandle::SHIP_PLACEHOLDER,
-            VisualAssets::SHIP,
-            mesh,
-        );
+        assets.register_mesh(MeshHandle::SHIP_PLACEHOLDER, VisualAssets::SHIP, mesh);
 
         assert_eq!(
             assets
-                .mesh(
-                    MeshHandle::SHIP_PLACEHOLDER,
-                    VisualAssets::SHIP,
-                )
+                .mesh(MeshHandle::SHIP_PLACEHOLDER, VisualAssets::SHIP,)
                 .unwrap()
                 .indices
                 .len(),
@@ -474,30 +419,23 @@ mod tests {
     fn loads_repository_shooter_obj() {
         use std::collections::HashSet;
 
-        let path = std::path::Path::new(
-            env!("CARGO_MANIFEST_DIR"),
-        )
-        .join("../../assets/models/shooter/shooter.obj");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/models/shooter/shooter.obj");
 
-        let mesh = load_obj(path)
-            .expect("repository Shooter OBJ should load");
+        let mesh = load_obj(path).expect("repository Shooter OBJ should load");
 
         assert!(!mesh.vertices.is_empty());
         assert!(!mesh.indices.is_empty());
         assert_eq!(mesh.indices.len() % 3, 0);
 
         assert!(mesh.vertices.iter().all(|vertex| {
-            vertex.position.is_finite()
-                && vertex.normal.is_finite()
-                && vertex.uv.is_finite()
+            vertex.position.is_finite() && vertex.normal.is_finite() && vertex.uv.is_finite()
         }));
 
         let unique_positions: HashSet<_> = mesh
             .vertices
             .iter()
-            .map(|vertex| {
-                vertex.position.to_array().map(f32::to_bits)
-            })
+            .map(|vertex| vertex.position.to_array().map(f32::to_bits))
             .collect();
 
         let degenerate_triangles = mesh
@@ -508,10 +446,7 @@ mod tests {
                 let b = mesh.vertices[triangle[1] as usize].position;
                 let c = mesh.vertices[triangle[2] as usize].position;
 
-                (b - a)
-                    .cross(c - a)
-                    .length_squared()
-                    <= 1e-12
+                (b - a).cross(c - a).length_squared() <= 1e-12
             })
             .count();
 
@@ -530,28 +465,19 @@ mod tests {
 
     #[test]
     fn loads_repository_enemy_archetype_models_with_normals() {
-        for relative in [
-            "charger/charger.obj",
-            "shielded/shielded.obj",
-        ] {
-            let path = std::path::Path::new(
-                env!("CARGO_MANIFEST_DIR"),
-            )
-            .join("../../assets/models")
-            .join(relative);
+        for relative in ["charger/charger.obj", "shielded/shielded.obj"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/models")
+                .join(relative);
 
-            let mesh = load_obj(path)
-                .expect("repository enemy model should load");
+            let mesh = load_obj(path).expect("repository enemy model should load");
 
             assert!(!mesh.vertices.is_empty());
 
             assert!(mesh
                 .vertices
                 .iter()
-                .all(|vertex| {
-                    vertex.normal.is_finite()
-                        && vertex.uv.is_finite()
-                }));
+                .all(|vertex| { vertex.normal.is_finite() && vertex.uv.is_finite() }));
 
             assert!(mesh
                 .resolved_normals()
@@ -559,7 +485,6 @@ mod tests {
                 .all(|normal| normal.is_finite()));
         }
     }
-
 
     #[test]
     fn loads_repository_building_planet_obj() {

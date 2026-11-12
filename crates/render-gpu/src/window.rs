@@ -1,9 +1,9 @@
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::future::Future;
-use std::pin::Pin;
-use std::path::PathBuf;
-use std::sync::mpsc;
 
 use render_core::{
     Camera, GpuAssetEvent, HudState, Mat4, PreparedSceneStats, RasterMesh, RenderSnapshot,
@@ -17,8 +17,8 @@ use winit::window::{Window, WindowId};
 use crate::postprocess::PostProcessPass;
 use crate::renderer::DepthTarget;
 use crate::{
-    block_on, game_over_overlay_scene, hud_overlay_scene, GpuContext, GpuError, GpuOptions, GpuRenderer, PostProcessConfig,
-    PostProcessPreset, GpuImage, ReadbackLayout,
+    block_on, game_over_overlay_scene, hud_overlay_scene, GpuContext, GpuError, GpuImage,
+    GpuOptions, GpuRenderer, PostProcessConfig, PostProcessPreset, ReadbackLayout,
 };
 
 pub struct SurfaceRenderer {
@@ -100,12 +100,8 @@ impl SurfaceRenderer {
         let started = Instant::now();
         println!("hot-swap gpu-surface-start");
         let WindowSurface { instance, surface } = window_surface;
-        let gpu = Arc::new(GpuContext::from_instance_async(
-            instance,
-            Some(&surface),
-            options,
-        )
-        .await?);
+        let gpu =
+            Arc::new(GpuContext::from_instance_async(instance, Some(&surface), options).await?);
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
@@ -176,12 +172,7 @@ impl SurfaceRenderer {
         self.resize_with_wait(width, height, false)
     }
 
-    fn resize_with_wait(
-        &mut self,
-        width: u32,
-        height: u32,
-        wait: bool,
-    ) -> Result<(), GpuError> {
+    fn resize_with_wait(&mut self, width: u32, height: u32, wait: bool) -> Result<(), GpuError> {
         if width == 0 || height == 0 {
             self.depth = None;
             return Ok(());
@@ -380,7 +371,8 @@ impl SurfaceRenderer {
     }
 
     pub fn present_snapshot(&mut self, scene: &SnapshotScene) -> Result<bool, GpuError> {
-        self.present_snapshot_with_stats(scene).map(|(presented, _)| presented)
+        self.present_snapshot_with_stats(scene)
+            .map(|(presented, _)| presented)
     }
 
     pub fn present_snapshot_with_stats(
@@ -408,7 +400,10 @@ impl SurfaceRenderer {
             renderer.sync_prepared(&prepared)?;
         }
         let overlay = scene.overlay();
-        Ok((self.present_matrix(scene.view_projection(), overlay)?, prepared_stats))
+        Ok((
+            self.present_matrix(scene.view_projection(), overlay)?,
+            prepared_stats,
+        ))
     }
 
     fn present_matrix(
@@ -465,9 +460,12 @@ impl SurfaceRenderer {
                 [0, 0, 0, 255],
             )?;
             let hud_size = (self.config.width, self.config.height);
-            let hud_changed = self.hud_cache.as_ref().is_none_or(|(cached, width, height)| {
-                cached != &overlay.hud || (*width, *height) != hud_size
-            });
+            let hud_changed = self
+                .hud_cache
+                .as_ref()
+                .is_none_or(|(cached, width, height)| {
+                    cached != &overlay.hud || (*width, *height) != hud_size
+                });
             if hud_changed {
                 let hud_scene = hud_overlay_scene(&overlay.hud, hud_size.0, hud_size.1);
                 if let Some(renderer) = &mut self.hud_renderer {
@@ -519,9 +517,12 @@ impl SurfaceRenderer {
             self.capture_surface_texture(&texture.texture, &path)?;
         }
         let hud_size = (self.config.width, self.config.height);
-        let hud_changed = self.hud_cache.as_ref().is_none_or(|(cached, width, height)| {
-            cached != &overlay.hud || (*width, *height) != hud_size
-        });
+        let hud_changed = self
+            .hud_cache
+            .as_ref()
+            .is_none_or(|(cached, width, height)| {
+                cached != &overlay.hud || (*width, *height) != hud_size
+            });
         if hud_changed {
             let hud_scene = hud_overlay_scene(&overlay.hud, hud_size.0, hud_size.1);
             if let Some(renderer) = &mut self.hud_renderer {
@@ -593,9 +594,11 @@ impl SurfaceRenderer {
         self.gpu.queue.submit([encoder.finish()]);
         self.gpu.wait()?;
         let (sender, receiver) = mpsc::sync_channel(1);
-        buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
         self.gpu.wait()?;
         receiver
             .recv_timeout(Duration::from_secs(20))
@@ -605,7 +608,10 @@ impl SurfaceRenderer {
         let mut rgba = layout.unpack(&mapped)?;
         drop(mapped);
         buffer.unmap();
-        if matches!(self.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+        if matches!(
+            self.config.format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        ) {
             for pixel in rgba.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
             }
@@ -623,7 +629,12 @@ impl SurfaceRenderer {
 
 fn overlay_clear_color(overlay: &render_core::RenderOverlay) -> [u8; 4] {
     let scale = 1.0 - overlay.fade_to_black.clamp(0.0, 1.0);
-    [(8.0 * scale) as u8, (10.0 * scale) as u8, (18.0 * scale) as u8, 255]
+    [
+        (8.0 * scale) as u8,
+        (10.0 * scale) as u8,
+        (18.0 * scale) as u8,
+        255,
+    ]
 }
 
 #[derive(Default, Debug)]

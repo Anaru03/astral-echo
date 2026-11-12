@@ -1,11 +1,6 @@
-
 use std::path::Path;
 
-use render_gpu::{
-    GpuContext,
-    GpuTexture,
-    texture_loader::TextureImage,
-};
+use render_gpu::{texture_loader::TextureImage, GpuContext, GpuTexture};
 
 #[test]
 fn uploads_seraphim_texture_to_gpu() {
@@ -24,8 +19,7 @@ fn uploads_seraphim_texture_to_gpu() {
         .join("seraphim_gold.png");
 
     // Decodificar PNG.
-    let image = TextureImage::load_png(&path)
-        .expect("No se pudo cargar la textura PNG");
+    let image = TextureImage::load_png(&path).expect("No se pudo cargar la textura PNG");
 
     assert_eq!(
         image.pixels.len(),
@@ -33,19 +27,13 @@ fn uploads_seraphim_texture_to_gpu() {
     );
 
     // Crear textura GPU.
-    let texture = GpuTexture::from_image(&gpu, &image)
-        .expect("No se pudo crear la textura GPU");
+    let texture = GpuTexture::from_image(&gpu, &image).expect("No se pudo crear la textura GPU");
 
     assert_eq!(texture.width, image.width);
     assert_eq!(texture.height, image.height);
 
     // Verificar errores reportados por el contexto.
-    gpu.check()
-        .expect("La GPU reporto un error");
+    gpu.check().expect("La GPU reporto un error");
 
-    println!(
-        "Textura GPU creada: {}x{}",
-        texture.width,
-        texture.height
-    );
+    println!("Textura GPU creada: {}x{}", texture.width, texture.height);
 }

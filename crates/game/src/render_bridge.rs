@@ -630,24 +630,6 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         }
     }
 
-    if let Some(planet) = surface_planet {
-        if let Some(origin) = planet_surface_origin(world, planet) {
-            snapshot.push_node(SnapshotNode::new(
-                LANDING_INDICATOR_ENTITY,
-                Transform::new(
-                    // The cube is the local walkable patch. Its top face is
-                    // exactly at the player's feet (pivot minus 0.6).
-                    origin + Vec3::new(0.0, -0.675, 0.0),
-                    Quat::IDENTITY,
-                    Vec3::new(80.0, 0.15, 80.0),
-                ),
-                PLACEHOLDER_MESH,
-                PLANET_MATERIAL,
-                true,
-            ));
-        }
-    }
-
     if !limited_scene && world.navigation().ship_id().is_some() {
         snapshot.push_node(SnapshotNode::new(
             SUN_ENTITY,
@@ -706,13 +688,18 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     }
 
     for player in world.players() {
-        snapshot.push_node(SnapshotNode::new(
-            player.entity_id,
+        let transform = if let Some(planet) = surface_planet {
+            surface_player_transform(world, player, planet)
+        } else {
             visual_transform(
                 player.position,
                 player.orientation.yaw_degrees,
                 player.orientation.pitch_degrees,
-            ),
+            )
+        };
+        snapshot.push_node(SnapshotNode::new(
+            player.entity_id,
+            transform,
             PLAYER_MESH,
             PLAYER_MATERIAL,
             player.is_active && !pilot_mode && world.entities().contains(player.entity_id),
@@ -751,7 +738,10 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     }
 
     for dest in world.destinations() {
-        if limited_scene && landing_planet != Some(dest.id) {
+        if limited_scene
+            && landing_planet != Some(dest.id)
+            && surface_planet != Some(dest.id)
+        {
             continue;
         }
         if dest.id == gameplay::DestinationId::new(9_001) {
@@ -1560,7 +1550,43 @@ pub fn surface_ship_position(
     world: &GameplayWorld,
     destination: gameplay::DestinationId,
 ) -> Option<Vec3> {
-    planet_surface_origin(world, destination).map(|origin| origin + Vec3::new(4.0, 0.0, 4.0))
+    let center = world
+        .planet_position_at(destination, world.time().elapsed)
+        .map(from_engine)
+        .or_else(|| {
+            world
+                .destination(destination)
+                .map(|value| from_engine(value.position))
+        })?;
+    let surface_radius = planet_visual_radius(destination) + PLAYER_SURFACE_CLEARANCE;
+    let direction = Vec3::new(4.0, surface_radius, 4.0).normalize_or_zero();
+    Some(center + direction * surface_radius)
+}
+
+fn surface_player_transform(
+    world: &GameplayWorld,
+    player: &gameplay::Player,
+    destination: gameplay::DestinationId,
+) -> Transform {
+    let position = from_engine(player.position);
+    let center = world
+        .planet_position_at(destination, world.time().elapsed)
+        .map(from_engine)
+        .or_else(|| {
+            world
+                .destination(destination)
+                .map(|value| from_engine(value.position))
+        })
+        .unwrap_or(Vec3::ZERO);
+    let up = (position - center).normalize_or_zero();
+    let up = if up.length_squared() > 0.0 { up } else { Vec3::Y };
+    // Player meshes are authored with +Y as their head direction. Align that
+    // axis with the outward radial vector so gravity always points toward the
+    // planet centre, including while walking over the sides and underside.
+    let gravity_alignment = Quat::from_rotation_arc(Vec3::Y, up);
+    let local_view = Quat::from_rotation_y(player.orientation.yaw_degrees.to_radians())
+        * Quat::from_rotation_x(player.orientation.pitch_degrees.to_radians());
+    Transform::new(position, gravity_alignment * local_view, PLAYER_VISUAL_SCALE)
 }
 
 fn observation_distance(visual_radius: f32) -> f32 {
