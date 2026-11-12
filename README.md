@@ -148,7 +148,7 @@ Cuando el HUD muestra una acción contextual, puede activarse con la tecla indic
 - Teclas `1`, `2` y `3`: cambiar entre los presets de resolución bajo, medio y alto cuando el host de renderizado permite cambiar presets.
 - Teclas `S`, `P` y `A`: seleccionar rasterizado secuencial, paralelo o automático únicamente cuando los controles de rasterizado están habilitados.
 
-El juego usa resolución baja por defecto, selección automática del rasterizador y LOD para reducir el coste de modelos lejanos. Si el equipo tiene problemas de rendimiento, usa `--backend cpu`, mantén el preset bajo y evita capturas gráficas durante el juego.
+El juego usa resolución baja por defecto, selección automática del rasterizador y LOD para reducir el coste de los modelos. En CPU, el preset bajo usa siempre las mallas simplificadas para impedir que una nave cercana de alta resolución consuma todo el tiempo del cuadro. Si el equipo tiene problemas de rendimiento, usa `--backend cpu`, mantén el preset bajo y evita capturas gráficas durante el juego.
 
 ## Problemas frecuentes
 
@@ -163,16 +163,24 @@ Coloca aquí las canciones en formato MP3 (`.mp3`). El juego las reproduce en or
 
 ## Efectos de sonido adicionales
 
-| Archivo | Uso sugerido |
+| Archivo | Acción en el juego |
 |---|---|
-| `destination_select.wav` | Confirmar un destino |
-| `autopilot_engage.wav` | Iniciar el piloto automático |
-| `autopilot_arrival.wav` | Completar una ruta automática |
-| `ship_boost.wav` | Activar el impulso |
-| `ship_brake.wav` | Frenar la nave |
-| `shield_on.wav` | Activar el escudo |
-| `shield_off.wav` | Desactivar el escudo |
-| `shield_hit.wav` | Impacto absorbido por el escudo |
-| `warning_alert.wav` | Aviso urgente |
+| `attack.wav` | Disparo |
+| `autopilot_arrival.wav` | Llegada del piloto automático |
+| `autopilot_engage.wav` | Inicio del piloto automático |
+| `collect.wav` | Recoger un objeto |
+| `destination_select.wav` | Confirmar destino |
+| `enemy_defeated.wav` | Enemigo derrotado |
+| `game_over.wav` | Fin de partida |
+| `impact.wav` | Daño al casco o impacto planetario |
+| `landing.wav` | Aterrizaje |
+| `scan.wav` | Escaneo |
+| `shield_hit.wav` | Golpe absorbido por el escudo |
+| `shield_off.wav` | Desactivar escudo |
+| `shield_on.wav` | Activar escudo |
+| `ship_boost.wav` | Boost |
+| `ship_brake.wav` | Frenado |
+| `ship_propulsion.wav` | Inicio del empuje |
 | `takeoff.wav` | Despegue |
-| `turn.wav` | Giro breve de la nave |
+| `turn.wav` | Giro |
+| `warning_alert.wav` | Daño crítico |

@@ -86,11 +86,7 @@ pub fn render_snapshot_scene_with_timing(
     mode: RasterMode,
 ) -> Result<(PreparedSceneStats, PipelineStats, u64), RasterError> {
     let preparation_started = std::time::Instant::now();
-    let prepared = scene.prepare(render_core::CullingConfig {
-        width: framebuffer.width(),
-        height: framebuffer.height(),
-        ..Default::default()
-    });
+    let prepared = scene.prepare(cpu_culling_config(framebuffer));
     let preparation_ns = preparation_started.elapsed().as_nanos() as u64;
     let prepared_stats = prepared.stats();
     let pipeline_stats = render_prepared_scene_with_config(
@@ -126,11 +122,7 @@ pub fn render_snapshot_scene_with_shader_at_time_with_stats(
     shader: FragmentShader,
     time: f32,
 ) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
-    let prepared = scene.prepare(render_core::CullingConfig {
-        width: framebuffer.width(),
-        height: framebuffer.height(),
-        ..Default::default()
-    });
+    let prepared = scene.prepare(cpu_culling_config(framebuffer));
     let prepared_stats = prepared.stats();
     let pipeline_stats = render_prepared_scene_with_shader(
         framebuffer,

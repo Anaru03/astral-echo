@@ -4490,6 +4490,17 @@ impl EnemyAiSystem {
         delta: engine::Duration,
         distance_squared: f64,
     ) {
+        Self::move_towards_scaled(world, enemy, target, delta, distance_squared, 1.0);
+    }
+
+    fn move_towards_scaled(
+        world: &mut GameplayWorld,
+        enemy: crate::combat::Combatant,
+        target: engine::Vec3,
+        delta: engine::Duration,
+        distance_squared: f64,
+        speed_scale: f64,
+    ) {
         if !finite_position(enemy.position) || !finite_position(target) {
             return;
         }
@@ -4498,7 +4509,7 @@ impl EnemyAiSystem {
             return;
         }
         let seconds = delta.0 as f64 / 1_000.0;
-        let travel = f64::from(enemy.mobility) * seconds;
+        let travel = f64::from(enemy.mobility) * seconds * speed_scale;
         if !travel.is_finite() || travel <= 0.0 {
             return;
         }
@@ -4512,6 +4523,50 @@ impl EnemyAiSystem {
             z: (f64::from(enemy.position.z) + delta_z * factor) as f32,
         });
         Self::apply_position(world, enemy, position);
+    }
+
+    fn move_for_archetype(
+        world: &mut GameplayWorld,
+        enemy: crate::combat::Combatant,
+        target: engine::Vec3,
+        delta: engine::Duration,
+        distance_squared: f64,
+    ) {
+        let distance = distance_squared.sqrt();
+        match enemy.archetype.unwrap_or(crate::combat::EnemyArchetype::Shooter) {
+            crate::combat::EnemyArchetype::Shooter => {
+                let preferred = f64::from(enemy.weapon.range) * 0.72;
+                if distance > preferred + 2.0 {
+                    Self::move_towards_scaled(world, enemy, target, delta, distance_squared, 0.85);
+                } else if distance < preferred - 2.0 {
+                    let fallback = if distance < 0.001 { 1.0 } else { 0.0 };
+                    let retreat = engine::Vec3 {
+                        x: enemy.position.x + (enemy.position.x - target.x) + fallback,
+                        y: enemy.position.y + (enemy.position.y - target.y) * 0.25,
+                        z: enemy.position.z + (enemy.position.z - target.z),
+                    };
+                    let retreat_distance = safe_distance_squared(enemy.position, retreat)
+                        .unwrap_or(distance_squared);
+                    Self::move_towards_scaled(world, enemy, retreat, delta, retreat_distance, 0.75);
+                } else {
+                    let clockwise = if enemy.entity.value() % 2 == 0 { 1.0 } else { -1.0 };
+                    let tangent = engine::Vec3 {
+                        x: enemy.position.x + (target.z - enemy.position.z) * clockwise,
+                        y: enemy.position.y,
+                        z: enemy.position.z - (target.x - enemy.position.x) * clockwise,
+                    };
+                    let tangent_distance = safe_distance_squared(enemy.position, tangent)
+                        .unwrap_or(distance_squared);
+                    Self::move_towards_scaled(world, enemy, tangent, delta, tangent_distance, 0.65);
+                }
+            }
+            crate::combat::EnemyArchetype::Shielded => {
+                Self::move_towards_scaled(world, enemy, target, delta, distance_squared, 0.55);
+            }
+            crate::combat::EnemyArchetype::Charger => {
+                Self::move_towards_scaled(world, enemy, target, delta, distance_squared, 1.65);
+            }
+        }
     }
 
     fn move_on_patrol(
@@ -4529,10 +4584,25 @@ impl EnemyAiSystem {
         // engagement and reward positions.
         let radius = (f64::from(enemy.mobility) * 0.01).clamp(0.05, 0.1);
         let angle = phase + elapsed * angular_speed;
+        let (x, y, z) = match enemy.archetype.unwrap_or(crate::combat::EnemyArchetype::Shooter) {
+            crate::combat::EnemyArchetype::Shooter => {
+                (anchor.x, anchor.y + (angle.sin() * radius) as f32, anchor.z)
+            }
+            crate::combat::EnemyArchetype::Shielded => (
+                anchor.x + (angle.cos() * radius) as f32,
+                anchor.y,
+                anchor.z + (angle.sin() * radius) as f32,
+            ),
+            crate::combat::EnemyArchetype::Charger => (
+                anchor.x + (angle.sin() * radius * 2.0) as f32,
+                anchor.y,
+                anchor.z,
+            ),
+        };
         let target = engine::Vec3 {
-            x: anchor.x,
-            y: anchor.y + (angle.sin() * radius) as f32,
-            z: anchor.z,
+            x,
+            y,
+            z,
         };
         let Some(distance_squared) = safe_distance_squared(enemy.position, target) else {
             return;
@@ -4669,6 +4739,10 @@ mod enemy_ai_tests {
         (world, processor, enemy, player)
     }
 
+    fn session_with_enemy(position: engine::Vec3) -> (GameplayWorld, GameplayProcessor, engine::EntityId, engine::EntityId) {
+        session_with_archetype(EnemyArchetype::Shooter, position)
+    }
+
     #[test]
     fn enemy_moves_autonomously_even_when_player_is_in_weapon_range() {
         let (mut world, mut processor, enemy, _) = session_with_enemy(engine::Vec3::ZERO);
@@ -4792,6 +4866,26 @@ mod enemy_ai_tests {
             ai.state_for_enemy(&world, enemy, world.combatant(enemy).unwrap().position),
             EnemyAiState::Patrol
         );
+    }
+
+    #[test]
+    fn archetypes_use_distinct_balanced_engagement_patterns() {
+        let start = engine::Vec3 { x: 15.0, y: 0.0, z: 0.0 };
+        let advance = |archetype| {
+            let (mut world, mut processor, enemy, _) = session_with_archetype(archetype, start);
+            processor.update(
+                &mut world,
+                [GameplayCommand::AdvanceTime { delta: engine::Duration(500) }],
+            );
+            world.combatant(enemy).unwrap().position
+        };
+
+        let shooter = advance(EnemyArchetype::Shooter);
+        let shielded = advance(EnemyArchetype::Shielded);
+        let charger = advance(EnemyArchetype::Charger);
+        assert!(shooter.x >= start.x, "shooter should preserve standoff distance");
+        assert!(shielded.x < start.x, "shielded ship should advance steadily");
+        assert!(charger.x < shielded.x, "charger should close distance fastest");
     }
 }
 

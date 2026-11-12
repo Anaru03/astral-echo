@@ -22,8 +22,8 @@ fn main() {
         include_collectibles: false,
     };
 
-    validate_scenario(&world, full_params, 10, true);
-    validate_scenario(&world, filtered_params, 4, false);
+    validate_scenario(&world, full_params, 19, true);
+    validate_scenario(&world, filtered_params, 13, false);
 
     measure("academic_with_surface_objects", &world, full_params);
     measure("academic_surface_objects_filtered", &world, filtered_params);

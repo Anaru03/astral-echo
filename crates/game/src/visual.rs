@@ -1916,12 +1916,17 @@ impl VisualBridge {
             self.enemy = enemy;
             return true;
         }
-        let position = self
+        let player_position = self
             .session
             .world()
             .player(self.player)
             .map(|player| player.position)
             .unwrap_or(GameplayVec3::ZERO);
+        let position = GameplayVec3 {
+            x: player_position.x + 4.0,
+            y: player_position.y,
+            z: player_position.z,
+        };
         if !self.issue_into(
             [GameplayCommand::CreateEnemy {
                 configuration: EnemyConfiguration::for_archetype(
@@ -2858,7 +2863,7 @@ impl VisualBridge {
             );
         }
         if let Some(prompt) = self.contextual_prompt() {
-            return format!("{prompt} - ACERCATE Y USA I");
+            return format!("{prompt} | PULSA LA TECLA INDICADA");
         }
         if self.surface_mode {
             return "EXPLORACION PLANETARIA: WASD MOVER | FLECHAS MIRAR | ACERCATE A ECHO-7 Y PULSA I PARA DESPEGAR".to_owned();
@@ -2901,12 +2906,17 @@ impl VisualBridge {
         };
         if let Some(requirement) = objective.missing_requirements.first() {
             return Some(format!(
-                "{} | PENDIENTE: {}",
+                "{} | {} | PENDIENTE: {}",
+                objective.name,
                 guidance_action_label(objective.recommended_action),
                 guidance_requirement_label(*requirement),
             ));
         }
-        Some(guidance_action_label(objective.recommended_action))
+        Some(format!(
+            "{} | {}",
+            objective.name,
+            guidance_action_label(objective.recommended_action)
+        ))
     }
 
     fn controls_hint(&self) -> String {
@@ -2954,6 +2964,7 @@ impl VisualBridge {
                 "G ESCUDO - PILOTAJE".to_owned(),
                 "SHIFT BOOST - PILOTAJE".to_owned(),
                 "X FRENAR - PILOTAJE".to_owned(),
+                "L ATERRIZAR CUANDO EL PLANETA ESTE CERCA - PILOTAJE".to_owned(),
                 "[/] CAMBIAR PLANETA OBSERVADO - PILOTAJE".to_owned(),
                 "N SELECCIONAR DESTINO LIBRE - PILOTAJE".to_owned(),
                 "U USAR COMBUSTIBLE - PILOTAJE".to_owned(),
@@ -2972,13 +2983,19 @@ impl VisualBridge {
                 "FLECHAS MIRAR - EXPLORACION".to_owned(),
                 "I INTERACTUAR - OBJETOS".to_owned(),
                 "M INICIAR MISION - GENERAL".to_owned(),
+                "R RESTAURAR ENERGIA - PANEL ELECTRICO".to_owned(),
+                "Y RESTAURAR SOPORTE VITAL - PANEL DE OXIGENO".to_owned(),
+                "TAB CAMBIAR ARMA - INVENTARIO".to_owned(),
             ]);
         } else {
             entries.extend([
                 "Q ESCANEAR - EXTERIOR".to_owned(),
                 "P VIAJAR - EXTERIOR".to_owned(),
+                "O OBSERVAR PLANETAS | [/] CAMBIAR OBJETIVO".to_owned(),
+                "L ATERRIZAR AL ESTAR CERCA DE UN PLANETA".to_owned(),
                 "F ATACAR - COMBATE".to_owned(),
                 "E RECOGER - EXTERIOR".to_owned(),
+                "TAB CAMBIAR ARMA - INVENTARIO".to_owned(),
             ]);
             if self
                 .session
@@ -3504,21 +3521,6 @@ impl VisualBridge {
             id if id == TESSARA_DESTINATION => "TESSARA",
             _ => "DESTINO",
         }
-    }
-
-    fn free_navigation_proposal_status(&self) -> &'static str {
-        if self.free_navigation_proposal_is_stale() {
-            return "OBSOLETA";
-        }
-        self.session
-            .world()
-            .free_navigation_proposal()
-            .map(|value| match value.evaluation {
-                gameplay::FreeNavigationEvaluation::Viable => "VIABLE",
-                gameplay::FreeNavigationEvaluation::NotViable => "NO VIABLE",
-                gameplay::FreeNavigationEvaluation::Incomplete => "INCOMPLETA",
-            })
-            .unwrap_or("SIN EVALUAR")
     }
 
     fn free_navigation_proposal_is_stale(&self) -> bool {
@@ -6063,6 +6065,27 @@ mod tests {
     }
 
     #[test]
+    fn pilot_camera_remains_behind_the_propulsors_after_ship_rotation() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.guided_interaction();
+        bridge.issue([GameplayCommand::RotateShip {
+            player: bridge.player,
+            pilot_station: bridge.pilot_station,
+            yaw_input: 1.0,
+            pitch_input: 0.0,
+            delta: Duration(1_200),
+        }]);
+
+        let ship = game::render_bridge::visual_ship_position(bridge.session.world())
+            .expect("ship should be visible");
+        let camera = bridge.camera(16.0 / 9.0).expect("pilot camera should be valid");
+        assert!(camera.position().x > ship.x + 30.0);
+        assert!(camera.target().x > ship.x + 10.0);
+        assert!(camera.position().x > camera.target().x);
+        assert!(camera.view_projection_matrix().is_finite());
+    }
+
+    #[test]
     fn pilot_shield_mitigates_damage_and_resets_when_disabled() {
         let mut bridge =
             VisualBridge::new_with_mode(false).expect("visual bridge should initialize");
@@ -6186,7 +6209,9 @@ mod tests {
         assert_eq!(bridge.controls_hint(), "ENTER COMENZAR");
 
         bridge.start_game();
-        assert!(bridge.instructions_hint().contains("USA I"));
+        assert!(bridge
+            .instructions_hint()
+            .contains("PULSA LA TECLA INDICADA"));
         bridge.guided_interaction();
         assert!(bridge.pilot_mode);
         assert!(bridge.instructions_hint().contains("PILOTAJE ACTIVO"));

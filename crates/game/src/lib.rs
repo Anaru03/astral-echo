@@ -7,6 +7,7 @@ pub mod multiplayer;
 pub mod render_backend;
 pub mod render_bridge;
 pub mod tormenta_gravitacional;
+pub mod planet_maze;
 
 use engine::EntityId;
 use gameplay::types::MissionId;

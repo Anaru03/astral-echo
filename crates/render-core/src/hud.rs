@@ -335,7 +335,11 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             height: inventory_height,
             color: [12, 24, 44, 245],
         });
-        for (row, text) in inventory_lines.iter().enumerate() {
+        for (row, text) in inventory_lines
+            .iter()
+            .take(visible_text_rows(margin, margin / 2, height, scale))
+            .enumerate()
+        {
             for (column, ch) in text.chars().enumerate() {
                 let Some(pattern) = glyph(normalize(ch)) else {
                     continue;
@@ -468,7 +472,11 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             color: [5, 18, 36, 245],
         };
         glyphs.insert(0, panel);
-        for (row, text) in panel_lines.iter().enumerate() {
+        for (row, text) in panel_lines
+            .iter()
+            .take(visible_text_rows(panel.y, margin, height, scale))
+            .enumerate()
+        {
             for (column, ch) in text.chars().enumerate() {
                 let Some(pattern) = glyph(normalize(ch)) else {
                     continue;
@@ -565,6 +573,24 @@ mod tests {
             .glyphs
             .iter()
             .all(|r| r.x + r.width <= 320 && r.y + r.height <= 180));
+    }
+
+    #[test]
+    fn crowded_inventory_and_controls_stay_inside_small_viewports() {
+        let hud = HudState {
+            inventory_open: true,
+            inventory_items: vec!["RECURSO MUY LARGO".repeat(20); 20],
+            controls_panel: crate::HudControlsPanel {
+                open: true,
+                entries: vec!["CONTROL MUY LARGO".repeat(20); 20],
+            },
+            ..Default::default()
+        };
+        let overlay = hud_overlay(&hud, 320, 180);
+        assert!(overlay
+            .glyphs
+            .iter()
+            .all(|rect| rect.x + rect.width <= 320 && rect.y + rect.height <= 180));
     }
 
     #[test]
