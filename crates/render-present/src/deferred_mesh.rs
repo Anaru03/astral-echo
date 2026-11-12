@@ -4,8 +4,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use render_core::{
     CpuModelLoadManager, CpuModelLoadState, GpuAssetEvent, GpuAssetState, MaterialHandle,
-    MeshHandle, SnapshotScene,
-    VisualAssetEvent, VisualAssetRequest, VisualAssetState,
+    MeshHandle, SnapshotScene, VisualAssetEvent, VisualAssetRequest, VisualAssetState,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -244,11 +243,7 @@ impl VisualAssetHost {
     }
 
     fn emit_failure(&self, request: &VisualAssetRequest, error: &str) -> VisualAssetEvent {
-        self.emit(
-            request,
-            VisualAssetState::Failed,
-            Some(error.to_owned()),
-        )
+        self.emit(request, VisualAssetState::Failed, Some(error.to_owned()))
     }
 
     fn emit(
@@ -336,35 +331,27 @@ impl DeferredMeshRegistry {
         if let Some(request) = self.requests.get(&path) {
             if request.mesh == mesh && request.material == material {
                 return Err(DeferredMeshRequestError::AlreadyRequested(
-                    path,
-                    mesh,
-                    material,
+                    path, mesh, material,
                 ));
             }
             return Err(DeferredMeshRequestError::ConflictingHandles(
-                path,
-                mesh,
-                material,
+                path, mesh, material,
             ));
         }
         if self.requests.iter().any(|(existing_path, request)| {
-            request.mesh == mesh
-                && request.material == material
-                && *existing_path != path
+            request.mesh == mesh && request.material == material && *existing_path != path
         }) {
             return Err(DeferredMeshRequestError::ConflictingHandles(
-                path,
-                mesh,
-                material,
+                path, mesh, material,
             ));
         }
         let status = match self.manager.request(path.clone()) {
             CpuModelLoadState::LoadingCpu => DeferredMeshStatus::LoadingCpu,
             CpuModelLoadState::CpuReady => DeferredMeshStatus::LoadingCpu,
             CpuModelLoadState::Failed(error) => DeferredMeshStatus::Failed(error),
-            CpuModelLoadState::Unloaded => DeferredMeshStatus::Failed(
-                "CPU model request did not enter a loading state".into(),
-            ),
+            CpuModelLoadState::Unloaded => {
+                DeferredMeshStatus::Failed("CPU model request did not enter a loading state".into())
+            }
         };
         if mesh == MeshHandle::NARETH_PLANET {
             eprintln!(
@@ -385,7 +372,9 @@ impl DeferredMeshRegistry {
 
     pub fn status(&mut self, path: impl AsRef<Path>) -> Option<DeferredMeshStatus> {
         self.poll_manager();
-        self.requests.get(path.as_ref()).map(|request| request.status.clone())
+        self.requests
+            .get(path.as_ref())
+            .map(|request| request.status.clone())
     }
 
     /// Collects completed results and registers them on the scene owner.
@@ -467,7 +456,7 @@ impl DeferredMeshRegistry {
 mod tests {
     use super::*;
     use render_core::{
-        load_obj, CullingConfig, CpuModelLoadManager, RenderSnapshot, SnapshotNode, Transform,
+        load_obj, CpuModelLoadManager, CullingConfig, RenderSnapshot, SnapshotNode, Transform,
         VisualError,
     };
     use std::fs;
@@ -486,8 +475,7 @@ mod tests {
     }
 
     fn write_triangle(path: &Path) {
-        fs::write(path, "v -1 -1 0\nv 1 -1 0\nv 0 1 0\nf 1 2 3\n")
-            .expect("write fixture OBJ");
+        fs::write(path, "v -1 -1 0\nv 1 -1 0\nv 0 1 0\nf 1 2 3\n").expect("write fixture OBJ");
     }
 
     #[test]
@@ -553,7 +541,10 @@ mod tests {
             registry.request(&path, mesh, material),
             Ok(DeferredMeshStatus::LoadingCpu)
         );
-        assert_eq!(scene.update(&snapshot(mesh, material)), Err(VisualError::UnknownAsset(mesh, material)));
+        assert_eq!(
+            scene.update(&snapshot(mesh, material)),
+            Err(VisualError::UnknownAsset(mesh, material))
+        );
         wait_registered(&mut registry, &mut scene, &path);
         assert!(scene.update(&snapshot(mesh, material)).is_ok());
         fs::remove_file(path).expect("remove fixture");
@@ -614,7 +605,9 @@ mod tests {
         assert_eq!(
             registry.request(&path, mesh, material),
             Err(DeferredMeshRequestError::AlreadyRequested(
-                path.clone(), mesh, material
+                path.clone(),
+                mesh,
+                material
             ))
         );
         wait_registered(&mut registry, &mut scene, &path);
@@ -638,14 +631,19 @@ mod tests {
             }
             std::thread::yield_now();
         }
-        assert!(matches!(registry.status(&path), Some(DeferredMeshStatus::Failed(_))));
-        assert!(scene.mesh(&SnapshotNode::destination(
-            1,
-            Transform::default(),
-            MeshHandle::CUBE,
-            render_core::VisualAssets::DESTINATION,
-            true,
-        )).is_ok());
+        assert!(matches!(
+            registry.status(&path),
+            Some(DeferredMeshStatus::Failed(_))
+        ));
+        assert!(scene
+            .mesh(&SnapshotNode::destination(
+                1,
+                Transform::default(),
+                MeshHandle::CUBE,
+                render_core::VisualAssets::DESTINATION,
+                true,
+            ))
+            .is_ok());
         fs::remove_file(path).expect("remove fixture");
     }
 
@@ -679,7 +677,9 @@ mod tests {
             mesh: MeshHandle::new(30_010),
             material: MaterialHandle::new(30_010),
         };
-        client.request(request.clone()).expect("request should send");
+        client
+            .request(request.clone())
+            .expect("request should send");
         let mut registry = DeferredMeshRegistry::new();
         let mut scene = SnapshotScene::default();
         let loading = host.poll(&mut registry, Some(&mut scene));
@@ -691,10 +691,11 @@ mod tests {
         for _ in 0..10_000 {
             host.poll(&mut registry, Some(&mut scene));
             let events = client.poll_events();
-            if events.iter().any(|event| event.state == VisualAssetState::Ready) {
-                assert!(scene
-                    .shared_mesh(request.mesh, request.material)
-                    .is_ok());
+            if events
+                .iter()
+                .any(|event| event.state == VisualAssetState::Ready)
+            {
+                assert!(scene.shared_mesh(request.mesh, request.material).is_ok());
                 fs::remove_file(path).expect("remove fixture");
                 return;
             }
