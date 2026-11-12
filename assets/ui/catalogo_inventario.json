@@ -1,0 +1,116 @@
+{
+  "columns": 12,
+  "rows": 6,
+  "units": "cells",
+  "items": [
+    {
+      "id": "propuesta_oxigeno",
+      "name": "Cartucho de oxígeno",
+      "w": 2,
+      "h": 3,
+      "rotatable": true,
+      "icon": "assets/ui/items/oxigeno.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    },
+    {
+      "id": "propuesta_botiquin",
+      "name": "Kit médico",
+      "w": 2,
+      "h": 2,
+      "rotatable": true,
+      "icon": "assets/ui/items/botiquin.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    },
+    {
+      "id": "propuesta_bateria",
+      "name": "Batería",
+      "w": 1,
+      "h": 2,
+      "rotatable": true,
+      "icon": "assets/ui/items/bateria.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    },
+    {
+      "id": "propuesta_escaner",
+      "name": "Escáner",
+      "w": 2,
+      "h": 2,
+      "rotatable": true,
+      "icon": "assets/ui/items/escaner.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    },
+    {
+      "id": "propuesta_multiherramienta",
+      "name": "Multiherramienta",
+      "w": 1,
+      "h": 3,
+      "rotatable": true,
+      "icon": "assets/ui/items/multiherramienta.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    },
+    {
+      "id": "propuesta_parche",
+      "name": "Parche de reparación",
+      "w": 2,
+      "h": 1,
+      "rotatable": true,
+      "icon": "assets/ui/items/parche.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    },
+    {
+      "id": "propuesta_mineral",
+      "name": "Mineral",
+      "w": 2,
+      "h": 2,
+      "rotatable": true,
+      "icon": "assets/ui/items/mineral.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    },
+    {
+      "id": "propuesta_muestra",
+      "name": "Muestra biológica",
+      "w": 1,
+      "h": 2,
+      "rotatable": true,
+      "icon": "assets/ui/items/muestra.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    },
+    {
+      "id": "propuesta_datos",
+      "name": "Módulo de datos",
+      "w": 1,
+      "h": 1,
+      "rotatable": true,
+      "icon": "assets/ui/items/datos.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    },
+    {
+      "id": "propuesta_municion",
+      "name": "Munición cinética",
+      "w": 2,
+      "h": 1,
+      "rotatable": true,
+      "icon": "assets/ui/items/municion.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    },
+    {
+      "id": "propuesta_celda_energia",
+      "name": "Celda energética",
+      "w": 1,
+      "h": 2,
+      "rotatable": true,
+      "icon": "assets/ui/items/celda_energia.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    },
+    {
+      "id": "propuesta_carga_plasma",
+      "name": "Carga de plasma",
+      "w": 2,
+      "h": 1,
+      "rotatable": true,
+      "icon": "assets/ui/items/carga_plasma.png",
+      "status": "visual_propuesto_mapear_a_item_real"
+    }
+  ],
+  "note": "IDs y tamaños propuestos, no IDs verificados del juego. No introducir capacidad espacial sin confirmar compatibilidad con inventario existente."
+}

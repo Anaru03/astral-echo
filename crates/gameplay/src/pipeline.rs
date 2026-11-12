@@ -66,6 +66,7 @@ impl GameplayProcessor {
                 system.observe_events(world);
             }
         }
+        world.refresh_ship_interactable_positions();
         result.unwrap_or_else(|| CommandResult::invalid(CommandInvalidity::UnsupportedCommand))
     }
 }

@@ -1,0 +1,91 @@
+# ECHO-7: diffuse only. Glass is opaque in this baseline.
+newmtl Panel_Verde
+Ka 0 0 0
+Kd 1 1 1
+Ks 0 0 0
+Ns 1
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/panel_verde_original.png
+
+newmtl Casco_Marfil
+Ka 0 0 0
+Kd 1 1 1
+Ks 0 0 0
+Ns 1
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_marfil.png
+
+newmtl Metal_Oscuro
+Ka 0 0 0
+Kd 1 1 1
+Ks 0 0 0
+Ns 1
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_metal_oscuro.png
+
+newmtl Metal_Gris
+Ka 0 0 0
+Kd 1 1 1
+Ks 0 0 0
+Ns 1
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_metal_gris.png
+
+newmtl Vidrio_Azul
+Ka 0 0 0
+Kd 1 1 1
+Ks 0 0 0
+Ns 1
+d 0.35
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_vidrio_azul.png
+
+newmtl Pantalla_Verde
+Ka 0 0 0
+Kd 1 1 1
+Ks 0 0 0
+Ns 1
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_pantalla_verde.png
+
+newmtl Tela_Verde
+Ka 0 0 0
+Kd 1 1 1
+Ks 0 0 0
+Ns 1
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_tela_verde.png
+
+newmtl Vegetacion
+Ka 0 0 0
+Kd 1 1 1
+Ks 0 0 0
+Ns 1
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_vegetacion.png
+
+newmtl Acento_Coral
+Ka 0 0 0
+Kd 1 1 1
+Ks 0 0 0
+Ns 1
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_coral.png
+
+newmtl Panel_Solar
+Ka 0 0 0
+Kd 1 1 1
+Ks 0 0 0
+Ns 1
+d 1
+illum 1
+map_Kd ../../../textures/ships/echo_7/base_panel_solar.png
+
