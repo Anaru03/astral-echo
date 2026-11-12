@@ -4498,13 +4498,15 @@ impl VisualBridge {
         if let Some(started) = self.takeoff_cinematic_started_at {
             if now.saturating_sub(started) >= game::render_bridge::TAKEOFF_CINEMATIC_DURATION_MS {
                 if let Some(planet) = self.surface_planet {
-                    if let Some(origin) =
-                        game::render_bridge::planet_surface_origin(self.session.world(), planet)
-                    {
+                    if let Some(origin) = game::render_bridge::surface_departure_position(
+                        self.session.world(),
+                        planet,
+                        10.0,
+                    ) {
                         let origin = GameplayVec3 {
                             x: origin.x,
                             y: origin.y,
-                            z: origin.z + 10.0,
+                            z: origin.z,
                         };
                         let _ = self.session.world_mut().restore_ship_position(origin);
                     }
@@ -4676,7 +4678,10 @@ fn run_visual(lan_connection: Option<(String, String)>) -> Result<(), String> {
             // Registering a large mesh can take time on the render thread and
             // must never prevent the cinematic timeout from being evaluated.
             bridge.advance_visual_time();
-            if bridge.landing_cinematic_started_at.is_none() && !bridge.surface_mode {
+            // Continue polling after landing: Nareth is loaded asynchronously
+            // and must be able to replace its landing proxy while the player
+            // is already exploring the surface.
+            if bridge.landing_cinematic_started_at.is_none() {
                 bridge.poll_visual_asset_events();
             }
             bridge.update_interior_motion();

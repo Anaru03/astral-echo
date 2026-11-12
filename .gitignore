@@ -1,6 +1,7 @@
 target
 /docs/
 /AGENTS.md
+target-validation
 
 # Python
 __pycache__/

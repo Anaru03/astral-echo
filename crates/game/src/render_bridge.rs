@@ -7,7 +7,7 @@ use render_core::{
     from_engine, Camera, CameraError, HudAutopilotState, HudFlightState, HudMissionObjective,
     HudMissionState, HudObjectiveState, HudState, MaterialHandle, MeshHandle, Projection, Quat,
     RenderSnapshot, RenderVisualEvent, RenderVisualEventKind, SnapshotLight, SnapshotNode,
-    Transform, Vec3, VisualAssets,
+    Transform, Vec3, VisualAssets, RenderLightKind,
 };
 
 pub const SUN_ENTITY: engine::EntityId = engine::EntityId::new(9_100);
@@ -562,9 +562,9 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         | gameplay::PlanetFlightState::Landed { planet } => Some(planet),
         _ => None,
     };
-    // Cinematics and surface exploration must have a tiny, deterministic
-    // render budget. In particular, do not keep processing the full space
-    // scene while the camera is close to a planet.
+    // Cinematics and surface exploration keep a small deterministic scene
+    // budget, while the selected planet remains present as the gravity and
+    // visual reference for the player.
     let limited_scene = surface_planet.is_some() || landing_planet.is_some();
     let mut snapshot = RenderSnapshot::new(
         tick,
@@ -921,6 +921,39 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
 
     snapshot.push_light(SnapshotLight::new(render_core::RenderLight::demo_point()));
     snapshot.push_light(SnapshotLight::new(render_core::RenderLight::demo_sun()));
+    if let Some(planet) = surface_planet {
+        if let Some(center) = world
+            .planet_position_at(planet, world.time().elapsed)
+            .map(from_engine)
+            .or_else(|| {
+                world
+                    .destination(planet)
+                    .map(|value| from_engine(value.position))
+            })
+        {
+            // A local fill light follows the explored planet. The fixed space
+            // lights are useful at orbital scale but leave the clock's
+            // detailed geometry almost black from the surface.
+            snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
+                color: Vec3::new(1.0, 0.88, 0.72),
+                intensity: 2.4,
+                kind: RenderLightKind::Point {
+                    position: center + Vec3::new(0.0, 32.0, 12.0),
+                    range: 95.0,
+                },
+                casts_shadow: false,
+            }));
+            snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
+                color: Vec3::new(0.55, 0.7, 1.0),
+                intensity: 0.8,
+                kind: RenderLightKind::Point {
+                    position: center + Vec3::new(-28.0, 8.0, -24.0),
+                    range: 80.0,
+                },
+                casts_shadow: false,
+            }));
+        }
+    }
 
     snapshot
 }
@@ -1563,6 +1596,24 @@ pub fn surface_ship_position(
     Some(center + direction * surface_radius)
 }
 
+pub fn surface_departure_position(
+    world: &GameplayWorld,
+    destination: gameplay::DestinationId,
+    altitude: f32,
+) -> Option<Vec3> {
+    let ship = surface_ship_position(world, destination)?;
+    let center = world
+        .planet_position_at(destination, world.time().elapsed)
+        .map(from_engine)
+        .or_else(|| {
+            world
+                .destination(destination)
+                .map(|value| from_engine(value.position))
+        })?;
+    let radial = (ship - center).normalize_or_zero();
+    Some(ship + radial * altitude.max(0.0))
+}
+
 fn surface_player_transform(
     world: &GameplayWorld,
     player: &gameplay::Player,
@@ -1669,16 +1720,21 @@ pub fn surface_camera_for_player(
         };
         up.cross(reference).normalize_or_zero()
     };
-    let position = player_position + up * 0.05;
+    // Use a third-person surface camera. Besides making the character
+    // readable, this keeps enough distance to see the clock geometry instead
+    // of looking at only one face of the planet. The positive radial offset
+    // keeps the camera outside the model even when walking over the sides.
+    let target = player_position + up * 0.25;
+    let position = player_position - forward * 4.5 + up * 2.2;
     Camera::new(
         position,
-        position + forward,
+        target,
         up,
         Projection::Perspective {
             fov_y_rad: 72.0_f32.to_radians(),
             aspect,
             near: 0.05,
-            far: 120.0,
+            far: 220.0,
         },
     )
 }
