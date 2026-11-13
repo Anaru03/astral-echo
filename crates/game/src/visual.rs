@@ -2658,7 +2658,7 @@ impl VisualBridge {
             }
             return;
         }
-        if self.selected_companion().is_some() {
+        if self.selected_interactable().is_none() && self.selected_companion().is_some() {
             self.start_erick_dialogue();
             return;
         }
@@ -3504,13 +3504,15 @@ impl VisualBridge {
                 });
             }
         }
-        if let Some(companion) = self.selected_companion() {
-            return Some(render_core::HudContextualAction {
-                target: companion.entity.value(),
-                object: "ERICK".to_owned(),
-                action: "CONSULTAR".to_owned(),
-                key: "I".to_owned(),
-            });
+        if self.selected_interactable().is_none() {
+            if let Some(companion) = self.selected_companion() {
+                return Some(render_core::HudContextualAction {
+                    target: companion.entity.value(),
+                    object: "ERICK".to_owned(),
+                    action: "CONSULTAR".to_owned(),
+                    key: "I".to_owned(),
+                });
+            }
         }
         if let Some(interactable) = self.selected_interactable() {
             let (object, action) = match interactable.behavior {
