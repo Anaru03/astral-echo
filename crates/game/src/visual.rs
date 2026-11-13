@@ -3287,10 +3287,6 @@ impl VisualBridge {
                 || !upper_deck_path_valid
                 || !stair_path_valid
                 || crossed_upper_edge
-                || (matches!(
-                    proposed_surface,
-                    game::render_bridge::Echo7SupportSurface::Stair
-                ) && (support - updated.position.y).abs() > 0.75)
             {
                 static COLLISION_REJECTION_REPORTED: std::sync::atomic::AtomicBool =
                     std::sync::atomic::AtomicBool::new(false);
@@ -3323,7 +3319,11 @@ impl VisualBridge {
                 self.session
                     .world_mut()
                     .initialize_player_position(self.player, reverted_position);
-            } else if (support - updated.position.y).abs() <= 0.75 {
+            } else if matches!(
+                proposed_surface,
+                game::render_bridge::Echo7SupportSurface::Stair
+            ) || (support - updated.position.y).abs() <= 0.75
+            {
                 let mut supported_position = updated.position;
                 supported_position.y = support;
                 self.session
