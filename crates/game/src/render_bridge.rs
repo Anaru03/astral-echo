@@ -128,10 +128,7 @@ const ECHO7_MODEL_YAW_OFFSET_RAD: f32 = -core::f32::consts::FRAC_PI_2;
 const ECHO7_CAMERA_TARGET_AFT_OFFSET: f32 = 2.0;
 
 fn echo7_local_to_world_rotation() -> Quat {
-    // The ECHO-7 OBJ is authored with its longitudinal axis already in the
-    // horizontal plane. Do not pitch it around X: that made the whole ship
-    // stand vertically in exterior pilot view.
-    Quat::IDENTITY
+    Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
 }
 pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
 pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
@@ -1244,15 +1241,20 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
             Quat::from_rotation_y(orientation.yaw_degrees.to_radians() + ECHO7_MODEL_YAW_OFFSET_RAD)
                 * Quat::from_rotation_x(orientation.pitch_degrees.to_radians())
         };
-        let model_rotation = rotation * echo7_local_to_world_rotation();
+        let model_basis = if interior {
+            echo7_local_to_world_rotation()
+        } else {
+            Quat::IDENTITY
+        };
+        let model_rotation = rotation * model_basis;
         let visual_position = if interior || pilot_mode {
             world.ship_position().map(from_engine).unwrap_or(pos)
         } else {
             pos
         };
         let mut transform = Transform::new(visual_position, model_rotation, ECHO7_VISUAL_SCALE);
-        transform.translation -= rotation
-            * (echo7_local_to_world_rotation() * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER));
+        transform.translation -=
+            rotation * (model_basis * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER));
         let meshes = if interior {
             [
                 ECHO7_MESH,
