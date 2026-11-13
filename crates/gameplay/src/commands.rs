@@ -379,6 +379,9 @@ pub enum GameplayCommand {
     CompleteMission {
         mission: MissionId,
     },
+    SkipMission {
+        mission: MissionId,
+    },
     StartObjective {
         objective: ObjectiveId,
     },

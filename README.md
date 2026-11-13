@@ -76,10 +76,24 @@ cargo run --manifest-path .\crates\game\Cargo.toml --example gameplay_visual -- 
 - `F4`: pausar o reanudar la música.
 - `F5`: activar o desactivar el mute.
 - `F6`: pasar a la siguiente canción.
+- `F7`: saltar la misión activa y marcar sus objetivos requeridos como completados (atajo de demostración).
 
 Para agregar música, coloca archivos `.mp3` en `assets/audio/music`. El juego los ordena por nombre al iniciar y los reproduce en secuencia, pasando automáticamente a la siguiente canción al terminar cada una. `F6` vuelve a leer la carpeta para detectar canciones agregadas mientras el juego está abierto.
 
 El panel `F1` muestra los controles del modo actual. `F2` oculta o muestra el HUD y `F3` abre o cierra el inventario. Si el HUD está visible, las acciones urgentes aparecen en pantalla cuando corresponden.
+### Controles de mando
+
+- Stick izquierdo: mover al personaje; durante el pilotaje, avanzar/retroceder y desplazarse.
+- Stick derecho: girar la cámara; durante el pilotaje, orientar ECHO-7.
+- `A`: comenzar, confirmar, interactuar, recoger o despegar junto a la nave.
+- `B`: cancelar o cerrar una pantalla.
+- `X`: escanear; `Y`: observar planetas.
+- Gatillo derecho: disparar con autoapuntado; gatillo izquierdo: frenar.
+- Bumper izquierdo: escudo; bumper derecho: boost.
+- `START`: panel de controles; `SELECT`: inventario; pulsar stick izquierdo: HUD.
+- Cruceta: acciones del modo actual (recursos y misión en el interior, altura/combustible/viaje durante el pilotaje, aterrizaje y equipamiento en el exterior).
+
+El mando se detecta y se vuelve a sincronizar en el mismo frame al conectarlo o desconectarlo. Al desconectarlo se liberan también disparo, boost, movimiento y cámara para que ningún control quede atascado.
 
 ### Recursos iniciales y balance
 
@@ -94,6 +108,7 @@ El jugador comienza con 5 unidades de oxígeno, suficientes para restaurar el so
 - Flechas: mirar con el personaje.
 - `I`: interactuar con el elemento contextual cercano.
 - `M`: iniciar la misión disponible.
+- `F7`: completar de inmediato la misión activa para la demostración.
 - `R`: reparar el sistema eléctrico cuando el panel y la condición de gameplay lo permiten.
 - `Y`: restaurar el soporte vital cuando el panel y la condición de gameplay lo permiten.
 - `Tab`: cambiar al siguiente arma disponible (cinética, energía y plasma cuando se haya encontrado).
