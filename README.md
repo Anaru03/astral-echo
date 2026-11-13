@@ -6,6 +6,59 @@ La version actual integra exploracion interior y planetaria, pilotaje de ECHO-7,
 navegacion entre destinos con selector y autopiloto, y guia de mision en el HUD.
 El HUD puede ocultarse o mostrarse con `F2`; la guia aparece al inicio del panel.
 Dentro de la nave, `W/A/S/D` mueve al personaje; durante el pilotaje, `W/S`
+## Estructura de ramas
+
+El proyecto esta organizado en ramas paralelas, cada una con un enfoque especializado:
+
+### Rama principal
+
+* `main` - Rama integrada y de referencia (HEAD). Contiene exploracion interior/planetaria, pilotaje de ECHO-7, navegacion con selector/autopiloto y guia de misiones en HUD.
+
+### Ramas especializadas
+
+* `ruth/multijugador` - Mejoras de renderizado (texturas PNG, materiales, PBR), modelo de nave y funcionalidad multiplayer por LAN (experimental). Detras de origin/ruth/multijugador (137 commits).
+* `saritah/motor-grafico` - Enfoque en graficos: alineacion de camaras, controles de pilotaje, escala espacial y proporciones visuales. Adelantada 4 commits a origin/saritah/motor-grafico.
+* `tiffany/gameplay` - Mejoras de gameplay: consola de pilotaje, minijuegos de navegacion, control de misiones, mapeo de teclas e inputs del gamepad.
+* `tiffany/temporal` - Codigo temporal y refactorizacion: logica de superficies esfericas, transiciones cinematograficas, optimizacion de renderizado y ajustes visuales.
+
+### Resumen de aportes por rama
+
+#### main
+- Exploracion interior y planetaria.
+- Pilotaje de ECHO-7 con consola de pilotaje.
+- Navegacion entre destinos con selector y autopiloto.
+- Guia de misiones en HUD (ocultable con F2).
+
+#### ruth/multijugador
+- Integracion de texturas PNG y materiales MTL para la nave (Charger, Shooter).
+- Texturas realistas del Sol y materiales PBR con instancing.
+- Carga automatica de modelos 3D y centralizacion del registro de assets.
+- Mejoras de renderizado: carga de texturas, expansion de submeshes, validacion de modelos OBJ.
+- Multiplayer por LAN experimental: sesion compartida de estado, inventario, comunicacion de interacciones y sincronizacion de nave/pasajeros.
+
+#### saritah/motor-grafico
+- Alineacion de camaras interior y exterior para el pilotaje de ECHO-7.
+- Control de escala espacial del protagonista y de las camaras.
+- Mejora de proporciones visuales del sistema planetario.
+- Activacion de la navegacion desde la vista de planetas.
+- Documentacion de movimiento y iluminacion graficos.
+
+#### tiffany/gameplay
+- Consola de pilotaje de ECHO-7 y mapeo de teclas ampliado.
+- Modo de pilotaje directo y pruebas de entradas de teclado para validar mapeos.
+- Funcionalidad de saltar mision con comandos del juego y mejoras en README.
+- Minijuegos de navegacion: wayfinding, interaccion en el minijuego, colisiones de escaleras, iluminacion de la nave, accesibilidad y golden guidance.
+- Mejoras de rendimiento de renderizado, HUD y colisiones interiores.
+- Controles de gamepad y funcionalidad de superficie de reloj.
+
+#### tiffany/temporal
+- Logica de superficies esfericas: movimiento, control de camara, distancia de retorno y validacion de posicion.
+- Implementacion del modelo ClockSurface y sincronizacion visual.
+- Cines de aterrizaje y funcionalidad de planetas de aterrizaje (proxy de malla, carga decimada).
+- Transiciones cinematograficas y logica visual.
+- Refactorizacion de codigo, legibilidad y limpieza de imports en render-core.
+- Minijuegos de defensa de asteroides, filtro de oxigeno y validacion de codigo/wiring.
+
 avanza y `A/D` gira la nave.
 
 Los ventanales de ECHO-7 usan alpha y mezcla en CPU y GPU para dejar ver el
