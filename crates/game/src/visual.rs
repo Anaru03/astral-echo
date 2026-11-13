@@ -2633,10 +2633,6 @@ impl VisualBridge {
             self.advance_erick_dialogue();
             return;
         }
-        if self.selected_companion().is_some() {
-            self.start_erick_dialogue();
-            return;
-        }
         let at_pilot_station = self.interior_mode
             && !self.legacy_exterior_controls
             && self
@@ -2660,6 +2656,10 @@ impl VisualBridge {
             {
                 self.enter_pilot();
             }
+            return;
+        }
+        if self.selected_companion().is_some() {
+            self.start_erick_dialogue();
             return;
         }
         let can_access_pilot_console = !self.pilot_mode
