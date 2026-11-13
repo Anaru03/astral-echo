@@ -3283,6 +3283,20 @@ impl VisualBridge {
                 // horizontal floor test here would classify the sloped stair
                 // as a wall as soon as the player's height changes.
                 true
+            } else if matches!(
+                current_surface,
+                game::render_bridge::Echo7SupportSurface::UpperBalcony
+            ) && matches!(
+                proposed_surface,
+                game::render_bridge::Echo7SupportSurface::UpperBalcony
+            ) {
+                // El anillo superior ya tiene su propia validación radial;
+                // no lo reclasificamos como suelo de una habitación.
+                game::render_bridge::echo7_upper_or_stair_surface_contains(
+                    updated.position,
+                    interior_origin,
+                    ship_yaw,
+                )
             } else {
                 let distance = ((updated.position.x - player.position.x).powi(2)
                     + (updated.position.z - player.position.z).powi(2))
