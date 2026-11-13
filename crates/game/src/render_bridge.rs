@@ -128,7 +128,10 @@ const ECHO7_MODEL_YAW_OFFSET_RAD: f32 = -core::f32::consts::FRAC_PI_2;
 const ECHO7_CAMERA_TARGET_AFT_OFFSET: f32 = 2.0;
 
 fn echo7_local_to_world_rotation() -> Quat {
-    Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+    // The ECHO-7 OBJ is authored with its longitudinal axis already in the
+    // horizontal plane. Do not pitch it around X: that made the whole ship
+    // stand vertically in exterior pilot view.
+    Quat::IDENTITY
 }
 pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
 pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
