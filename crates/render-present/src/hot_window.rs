@@ -486,7 +486,16 @@ impl ApplicationHandler for Host {
                 if focused {
                     return;
                 }
-                for code in [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD] {
+                for code in [
+                    KeyCode::KeyW,
+                    KeyCode::KeyA,
+                    KeyCode::KeyS,
+                    KeyCode::KeyD,
+                    KeyCode::ArrowLeft,
+                    KeyCode::ArrowRight,
+                    KeyCode::ArrowUp,
+                    KeyCode::ArrowDown,
+                ] {
                     (self.input)(code, ElementState::Released);
                 }
             }
