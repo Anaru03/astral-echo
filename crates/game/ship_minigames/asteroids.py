@@ -254,7 +254,11 @@ def open_asteroids_task(parent, on_success=None):
     win.resizable(False, False)
     task = AsteroidsTask(win, on_success=on_success, on_close=win.destroy)
     task.pack()
-    win.transient(parent)
+    # Mostrar el minijuego aunque la ventana principal este oculta.
+    win.update_idletasks()
+    win.deiconify()
+    win.lift()
+    win.focus_force()
     win.grab_set()
     return task
 
