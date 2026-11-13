@@ -2764,10 +2764,12 @@ impl VisualBridge {
                     mission.state == gameplay::domains::mission::MissionState::Active
                 });
             if first_mission_active {
-                if let Some(task) = self.ship_minigame_for_target(target) {
-                    if !self.completed_ship_minigames.contains(task) {
-                        self.start_ship_minigame(task, target);
-                        return;
+                if target != self.pilot_station {
+                    if let Some(task) = self.ship_minigame_for_target(target) {
+                        if !self.completed_ship_minigames.contains(task) {
+                            self.start_ship_minigame(task, target);
+                            return;
+                        }
                     }
                 }
             }
