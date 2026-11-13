@@ -171,6 +171,37 @@ fn snapshot_hud_reflects_flight_target_and_encounter_state() {
 }
 
 #[test]
+fn surface_snapshot_places_echo7_on_the_reachable_landing_area() {
+    let world = support::fixture_world();
+    let planet = gameplay::DestinationId::new(1);
+    let origin = planet_surface_origin(&world, planet).expect("fixture planet surface");
+    let station = surface_ship_position(&world, planet).expect("surface ship station");
+    let station_offset = station - origin;
+    assert_eq!(station_offset, Vec3::new(0.0, 0.0, -5.0));
+    assert!(station_offset.length() <= SURFACE_RETURN_DISTANCE);
+
+    let camera = interior_camera(&world, 16.0 / 9.0).unwrap();
+    let snapshot = snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface(
+        &world,
+        Default::default(),
+        &camera,
+        false,
+        false,
+        false,
+        Some(planet),
+    );
+    let ship = world.navigation().ship_id().unwrap();
+    let ship_node = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.entity == SnapshotId::Entity(ship))
+        .expect("surface snapshot should include ECHO-7");
+    assert!(ship_node.visible);
+    assert_eq!(ship_node.mesh, ECHO7_MESH);
+    assert!(ship_node.transform.translation.is_finite());
+}
+
+#[test]
 fn snapshot_assigns_tessara_mesh_only_to_destination_9601() {
     let mut world = support::fixture_world();
     let tessara = gameplay::DestinationId::new(TESSARA_DESTINATION_ID);

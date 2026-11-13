@@ -3,6 +3,7 @@ use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration as StdDuration;
+mod clock_surface;
 mod entry;
 mod model_registry;
 mod runtime_mode;

@@ -63,16 +63,7 @@ fn trace_mount_draws(scene: &SnapshotScene, prepared: &PreparedScene) {
 }
 
 fn cpu_culling_config(framebuffer: &Framebuffer) -> render_core::CullingConfig {
-    let mut config = render_core::CullingConfig {
-        width: framebuffer.width(),
-        height: framebuffer.height(),
-        ..Default::default()
-    };
-    if config.width <= 640 && config.height <= 360 {
-        config.low_threshold_px = f32::MAX;
-        config.high_threshold_px = f32::MAX;
-    }
-    config
+    render_core::CullingConfig::for_viewport(framebuffer.width(), framebuffer.height())
 }
 
 pub fn diagnostic_fragment_shader() -> Option<FragmentShader> {
@@ -103,11 +94,7 @@ pub fn render_snapshot_scene_with_stats(
     scene: &SnapshotScene,
     mode: RasterMode,
 ) -> Result<(PreparedSceneStats, PipelineStats), RasterError> {
-    let prepared = scene.prepare(render_core::CullingConfig {
-        width: framebuffer.width(),
-        height: framebuffer.height(),
-        ..Default::default()
-    });
+    let prepared = scene.prepare(cpu_culling_config(framebuffer));
     let prepared_stats = prepared.stats();
     trace_mount_draws(scene, &prepared);
     let pipeline_stats = render_prepared_scene_with_clear(

@@ -274,6 +274,17 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
     };
     let mut glyphs = Vec::new();
     for (row, text) in lines.iter().enumerate() {
+        let line_color = if text.starts_with("GUIA:") && text.contains("CAMINO DORADO") {
+            [255, 218, 112, 255]
+        } else if text.starts_with("GUIA:") {
+            [104, 224, 255, 255]
+        } else if text.starts_with("OBJETIVO:") || text == "OBJETIVOS:" {
+            [255, 218, 112, 255]
+        } else if text.starts_with("ALERTA:") {
+            [255, 110, 96, 255]
+        } else {
+            color
+        };
         for (column, ch) in text.chars().enumerate() {
             let Some(pattern) = glyph(normalize(ch)) else {
                 continue;
@@ -286,7 +297,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
                             y: margin + row as u32 * 8 * scale + glyph_row as u32 * scale,
                             width: scale,
                             height: scale,
-                            color,
+                            color: line_color,
                         });
                     }
                 }
@@ -348,12 +359,16 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             height: inventory_height,
             color: [12, 24, 44, 245],
         });
+        let max_columns = width
+            .saturating_sub(inventory_x + margin / 2)
+            .saturating_div(char_width)
+            .max(1) as usize;
         for (row, text) in inventory_lines
             .iter()
             .take(visible_text_rows(margin, margin / 2, height, scale))
             .enumerate()
         {
-            for (column, ch) in text.chars().enumerate() {
+            for (column, ch) in text.chars().take(max_columns).enumerate() {
                 let Some(pattern) = glyph(normalize(ch)) else {
                     continue;
                 };
@@ -485,12 +500,16 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             color: [5, 18, 36, 245],
         };
         glyphs.insert(0, panel);
+        let max_columns = width
+            .saturating_sub(panel.x + margin / 2)
+            .saturating_div(char_width)
+            .max(1) as usize;
         for (row, text) in panel_lines
             .iter()
             .take(visible_text_rows(panel.y, margin, height, scale))
             .enumerate()
         {
-            for (column, ch) in text.chars().enumerate() {
+            for (column, ch) in text.chars().take(max_columns).enumerate() {
                 let Some(pattern) = glyph(normalize(ch)) else {
                     continue;
                 };
