@@ -118,10 +118,14 @@ pub const STARS_MATERIAL: MaterialHandle = VisualAssets::STARS;
 const ECHO7_VISUAL_SCALE_FACTOR: f32 = 1.0;
 pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::splat(ECHO7_VISUAL_SCALE_FACTOR);
 pub const ECHO7_VISUAL_LENGTH: f32 = 93.4 * ECHO7_VISUAL_SCALE_FACTOR;
-// Bounds measured from ECHO7_Exterior_DosCubiertas.obj. The source model uses
+// Bounds measured from ECHO7_Exterior.obj, the exterior mesh registered for
+// MeshHandle::SHIP_PLACEHOLDER. The source model uses
 // X for its longitudinal axis and Z as up.
 const ECHO7_MODEL_CENTER: Vec3 = Vec3::new(3.7, 0.0, 0.0);
 const ECHO7_MODEL_AFT_EDGE_X: f32 = 50.4;
+// Measured from ECHO7_Exterior.obj: Z[-4.96, 16.0249541]. The gameplay
+// anchor is the lower-deck origin, so the visual hull center is above it.
+const ECHO7_MODEL_VISUAL_CENTER_Z: f32 = 5.532477;
 const ECHO7_AFT_EDGE_OFFSET: f32 =
     (ECHO7_MODEL_AFT_EDGE_X - ECHO7_MODEL_CENTER.x) * ECHO7_VISUAL_SCALE.x;
 // The OBJ faces -X, while gameplay considers yaw=0 forward along -Z.
@@ -131,7 +135,6 @@ const ECHO7_MODEL_YAW_OFFSET_RAD: f32 = -core::f32::consts::FRAC_PI_2;
 // Aim at the rear third of the hull. Aiming at the bow made the camera look
 // through the entire ship even though its position was already behind the
 // engines.
-const ECHO7_CAMERA_TARGET_AFT_OFFSET: f32 = 2.0;
 
 fn echo7_local_to_world_rotation() -> Quat {
     Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
@@ -762,7 +765,14 @@ fn station_nodes_for_view(world: &GameplayWorld, interior: bool) -> Vec<Snapshot
         {
             continue;
         }
-        if !interior && is_echo_interior_position(world, interactable.position) {
+        let anchored_to_echo = world
+            .navigation()
+            .ship_id()
+            .zip(world.ship_station_anchor(interactable.entity_id))
+            .is_some_and(|(ship, (anchor_ship, _))| ship == anchor_ship);
+        if !interior
+            && (anchored_to_echo || is_echo_interior_position(world, interactable.position))
+        {
             continue;
         }
         nodes.push(SnapshotNode::new(
@@ -2121,16 +2131,18 @@ pub fn pilot_camera(
     let pitch = orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);
     let rotation =
         Quat::from_rotation_y(yaw + ECHO7_MODEL_YAW_OFFSET_RAD) * Quat::from_rotation_x(pitch);
-    // echo-7.obj is longitudinal on X and its propulsion groups are on +X.
-    // Keep the ship's existing visual orientation and derive the chase camera
-    // from that same local axis, so the camera starts behind the engines.
-    let aft = (rotation * Vec3::X).normalize_or_zero();
-    let up = (rotation * Vec3::Z).normalize_or_zero();
+    let model_rotation = rotation * echo7_local_to_world_rotation();
+    // ECHO-7's OBJ is longitudinal on X, Z-up. Use the measured model axes
+    // so the camera is placed behind the engines and aimed at the hull, not
+    // at the lower-deck gameplay anchor.
+    let aft = (model_rotation * Vec3::X).normalize_or_zero();
+    let up = (model_rotation * Vec3::Z).normalize_or_zero();
+    let visual_center = ship + model_rotation * Vec3::new(0.0, 0.0, ECHO7_MODEL_VISUAL_CENTER_Z);
     let distance = distance.clamp(PILOT_CAMERA_MIN_DISTANCE, PILOT_CAMERA_MAX_DISTANCE);
-    // `ship` is the gameplay/model-center anchor, not the rear of the mesh.
-    // Start immediately behind the actual propulsion edge.
-    let position = ship + aft * (ECHO7_AFT_EDGE_OFFSET + distance) + Vec3::new(0.0, 3.0, 0.0);
-    let target = ship + aft * ECHO7_CAMERA_TARGET_AFT_OFFSET + Vec3::new(0.0, 1.15, 0.0);
+    // `ship` is the lower-deck anchor. Offset from the measured hull center
+    // and keep a small vertical lift for a readable third-person view.
+    let position = visual_center + aft * (ECHO7_AFT_EDGE_OFFSET + distance) + up * 3.0;
+    let target = visual_center;
     Camera::new(
         position,
         target,

@@ -483,6 +483,9 @@ struct VisualBridge {
     hud_visible: bool,
     inventory_open: bool,
     inventory_layout: InventoryLayout,
+    // K opens the dedicated Echo-7 view. I is the explicit action that takes
+    // control, so looking at the ship never occupies its piloting station.
+    pilot_view: bool,
     pilot_mode: bool,
     pilot_camera_distance: f32,
     surface_mode: bool,
@@ -1180,6 +1183,7 @@ impl VisualBridge {
             hud_visible: true,
             inventory_open: false,
             inventory_layout: InventoryLayout::default(),
+            pilot_view: false,
             pilot_mode: false,
             pilot_camera_distance: game::render_bridge::PILOT_CAMERA_DEFAULT_DISTANCE,
             surface_mode: false,
@@ -1429,6 +1433,7 @@ impl VisualBridge {
             if self.awakening_elapsed_ms >= 3_000 {
                 self.awakening_sequence = false;
                 self.interior_mode = true;
+                self.pilot_view = false;
                 self.pilot_mode = false;
                 self.surface_mode = false;
                 self.feedback = "DESPERTAR COMPLETADO - EXPLORACION INTERIOR".to_owned();
@@ -1690,6 +1695,16 @@ impl VisualBridge {
                 _ => {}
             }
         }
+        if self.pilot_view
+            && !self.pilot_mode
+            && state == ElementState::Pressed
+            && key == KeyCode::Escape
+        {
+            self.pilot_view = false;
+            self.interior_mode = true;
+            self.feedback = "VISTA DE ECHO-7 CERRADA — EXPLORACION INTERIOR".to_owned();
+            return;
+        }
         if self.pilot_mode && state == ElementState::Pressed && key == KeyCode::KeyN {
             self.toggle_navigation_selector();
             return;
@@ -1804,9 +1819,10 @@ impl VisualBridge {
             KeyCode::KeyM => self.start_presented_mission(),
             KeyCode::KeyT => self.retry_cooperative_mission_content(),
             KeyCode::KeyI if self.pilot_mode => self.exit_pilot(),
+            KeyCode::KeyI if self.pilot_view => self.enter_pilot_from_view(),
             KeyCode::KeyI if self.surface_mode => self.try_takeoff(),
             KeyCode::KeyI => self.guided_interaction(),
-            KeyCode::KeyK if self.interior_mode => self.enter_pilot_from_anywhere(),
+            KeyCode::KeyK if self.interior_mode => self.open_pilot_view(),
             KeyCode::KeyL => self.request_landing_from_current_position(),
             KeyCode::KeyR => self.restore_energy(),
             KeyCode::KeyY => self.restore_life_support(),
@@ -2030,7 +2046,147 @@ impl VisualBridge {
             println!("visual gameplay: {}", self.feedback);
             return;
         }
-        self.issue([GameplayCommand::SkipMission { mission }]);
+        if self.issue([GameplayCommand::SkipMission { mission }]) {
+            // F7 is a visual/demo shortcut, but it must leave the simulation
+            // in the same usable state as completing the first mission by
+            // hand.  SkipMission only changes mission progress, so apply the
+            // authoritative interaction commands and refill Echo-7 here too.
+            if mission == crate::el_despertar::EL_DESPERTAR {
+                self.complete_first_mission_demo_loadout();
+            }
+        }
+    }
+
+    fn issue_demo_interaction_at(
+        &mut self,
+        target: EntityId,
+        follow_up: impl IntoIterator<Item = GameplayCommand>,
+        aggregate: &mut FeedbackAggregate,
+    ) {
+        let original_position = self
+            .session
+            .world()
+            .player(self.player)
+            .map(|value| value.position);
+        if let Some(target_position) = self
+            .session
+            .world()
+            .interactable(target)
+            .map(|value| value.position)
+        {
+            // F7 is intentionally usable from any interior location. Move the
+            // authoritative player only for the validated interaction, then
+            // restore the exact position so the shortcut never teleports Echo.
+            self.session
+                .world_mut()
+                .initialize_player_position(self.player, target_position);
+            self.issue_into(
+                [GameplayCommand::Interact {
+                    player: self.player,
+                    target,
+                }],
+                aggregate,
+            );
+            self.issue_into(follow_up, aggregate);
+            if let Some(position) = original_position {
+                self.session
+                    .world_mut()
+                    .initialize_player_position(self.player, position);
+            }
+        }
+    }
+
+    fn complete_first_mission_demo_loadout(&mut self) {
+        let mut aggregate = FeedbackAggregate::default();
+
+        if self
+            .session
+            .world()
+            .electrical_panel(self.electrical_panel)
+            .is_some_and(|panel| !panel.is_repaired())
+        {
+            self.issue_demo_interaction_at(
+                self.electrical_panel,
+                [GameplayCommand::SetElectricalBreakerState {
+                    player: self.player,
+                    panel: self.electrical_panel,
+                    breaker: BreakerId::new(1),
+                    state: BreakerState::On,
+                }],
+                &mut aggregate,
+            );
+        }
+
+        if self
+            .session
+            .world()
+            .life_support_panel(self.life_support_panel)
+            .is_some_and(|panel| !panel.is_repaired())
+        {
+            self.issue_demo_interaction_at(
+                self.life_support_panel,
+                [
+                    GameplayCommand::SetOxygenAllocation {
+                        player: self.player,
+                        panel: self.life_support_panel,
+                        compartment: gameplay::CompartmentId::new(1),
+                        allocation: 3,
+                    },
+                    GameplayCommand::SetOxygenAllocation {
+                        player: self.player,
+                        panel: self.life_support_panel,
+                        compartment: gameplay::CompartmentId::new(2),
+                        allocation: 2,
+                    },
+                ],
+                &mut aggregate,
+            );
+        }
+
+        if let Some(door) = self.session.world().door(self.bridge_door) {
+            if matches!(door.state, gameplay::domains::door::DoorState::Locked) {
+                self.issue_into(
+                    [GameplayCommand::UnlockDoor {
+                        door: self.bridge_door,
+                    }],
+                    &mut aggregate,
+                );
+            }
+            if !matches!(door.state, gameplay::domains::door::DoorState::Open) {
+                self.issue_demo_interaction_at(self.bridge_door, [], &mut aggregate);
+            }
+        }
+
+        let fuel_to_load = self
+            .session
+            .world()
+            .ship_fuel(self.ship)
+            .zip(self.session.world().inventory(self.player))
+            .map(|(fuel, inventory)| {
+                fuel.capacity()
+                    .saturating_sub(fuel.current())
+                    .min(inventory.quantity(gameplay::FUEL_RESOURCE_ITEM))
+            })
+            .unwrap_or(0);
+        if fuel_to_load > 0 {
+            self.issue_into(
+                [GameplayCommand::UseFuelResource {
+                    player: self.player,
+                    ship: self.ship,
+                    item: gameplay::FUEL_RESOURCE_ITEM,
+                    amount: fuel_to_load,
+                }],
+                &mut aggregate,
+            );
+        }
+
+        if aggregate.is_complete() {
+            self.feedback =
+                "MISION COMPLETADA — ENERGIA, OXIGENO Y COMBUSTIBLE CARGADOS".to_owned();
+        } else {
+            self.feedback = format!("MISION COMPLETADA — CARGA PARCIAL: {}", aggregate.message());
+        }
+        println!("visual gameplay: {}", self.feedback);
     }
 
     fn mission_two_destinations() -> [Destination; 2] {
@@ -3371,6 +3527,14 @@ impl VisualBridge {
     }
 
     fn contextual_action(&self) -> Option<render_core::HudContextualAction> {
+        if self.pilot_view && !self.pilot_mode {
+            return Some(render_core::HudContextualAction {
+                target: self.ship.value(),
+                object: "ECHO-7".to_owned(),
+                action: "PILOTEAR".to_owned(),
+                key: "I".to_owned(),
+            });
+        }
         if self.surface_mode {
             if let Some(planet) = self.surface_planet {
                 if let (Some(player), Some(ship_position)) = (
@@ -3397,7 +3561,7 @@ impl VisualBridge {
                 }
             }
         }
-        if !self.interior_mode && !self.pilot_mode {
+        if !self.interior_mode && !self.pilot_mode && !self.pilot_view {
             if let Some(planet) = self.landing_target() {
                 return Some(render_core::HudContextualAction {
                     target: planet.value() as u64,
@@ -3699,6 +3863,10 @@ impl VisualBridge {
                 self.observation_target_label(),
             );
         }
+        if self.pilot_view {
+            return "VISTA DE ECHO-7: PULSA I PARA ACTIVAR EL PILOTAJE O ESC PARA VOLVER"
+                .to_owned();
+        }
         if let Some(prompt) = self.contextual_prompt() {
             return format!("{prompt} | PULSA LA TECLA INDICADA");
         }
@@ -3813,11 +3981,13 @@ impl VisualBridge {
                 gameplay::AutopilotState::Failed { .. } => "FALLIDO",
             };
             format!("MODO PILOTAJE ECHO-7 | W/S AVANCE/RETROCESO | A/D GIRAR | ESPACIO/CTRL o DPAD↑↓ ALTURA | P o DPAD← GUIA | U o DPAD→ COMBUSTIBLE | I SALIR | RT ATACAR | LB ESCUDO | RB BOOST | AUTO: {autopilot}")
+        } else if self.pilot_view {
+            "VISTA ECHO-7 | I/A ACTIVAR PILOTAJE | ESC/B VOLVER | STICK DER CAMARA".to_owned()
         } else if self.surface_mode {
             "WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | I/A DESPEGAR AL ACERCARTE A ECHO-7"
                 .to_owned()
         } else if self.interior_mode {
-            "WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | K PILOTAJE (B EN MANDO) | I/A USAR | M/DPAD← INICIAR | R/Y o DPAD↑↓ RECURSOS".to_owned()
+            "WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | K VISTA ECHO-7 (B) | I/A USAR | M/DPAD← INICIAR | R/Y o DPAD↑↓ RECURSOS".to_owned()
         } else if self
             .session
             .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
@@ -3859,6 +4029,12 @@ impl VisualBridge {
                 "P/DPAD← IR AL PLANETA DE LA GUIA - PILOTAJE".to_owned(),
                 "I SALIR DEL PILOTAJE - PILOTAJE".to_owned(),
             ]);
+        } else if self.pilot_view {
+            entries.extend([
+                "I/A ACTIVAR PILOTAJE DE ECHO-7".to_owned(),
+                "ESC/B CERRAR VISTA Y VOLVER AL INTERIOR".to_owned(),
+                "STICK DERECHO / FLECHAS GIRAR LA CAMARA".to_owned(),
+            ]);
         } else if self.surface_mode {
             entries.extend([
                 "WASD MOVER | FLECHAS MIRAR - EXPLORACION PLANETARIA".to_owned(),
@@ -3869,7 +4045,7 @@ impl VisualBridge {
                 "WASD MOVER - EXPLORACION".to_owned(),
                 "FLECHAS MIRAR - EXPLORACION".to_owned(),
                 "I/A INTERACTUAR - OBJETOS".to_owned(),
-                "K ENTRAR EN PILOTAJE DE ECHO-7 DESDE EL INTERIOR (B EN MANDO)".to_owned(),
+                "K ABRIR VISTA DE ECHO-7 (B EN MANDO) | I/A ACTIVAR PILOTAJE".to_owned(),
                 "M/DPAD← INICIAR MISION - GENERAL".to_owned(),
                 "R/DPAD↑ RESTAURAR ENERGIA - PANEL ELECTRICO".to_owned(),
                 "Y/DPAD↓ RESTAURAR SOPORTE VITAL - PANEL DE OXIGENO".to_owned(),
@@ -3981,10 +4157,26 @@ impl VisualBridge {
         self.finish_issue(aggregate);
     }
 
-    fn enter_pilot_from_anywhere(&mut self) {
-        // K is the direct Echo-7 pilot shortcut. It does not depend on
-        // mission progress or on a selected derelict; TakePilotControl still
-        // validates the real piloting station anchored to Echo-7.
+    fn open_pilot_view(&mut self) {
+        // K is only the direct Echo-7 view shortcut. It does not occupy the
+        // station or activate movement; I is the explicit pilot action.
+        if self.pilot_station_occupied_by(self.player) {
+            let _ = self.issue([GameplayCommand::ReleaseStation {
+                station: self.pilot_station,
+                player: self.player,
+            }]);
+        }
+        self.pilot_view = true;
+        self.pilot_mode = false;
+        self.interior_mode = false;
+        self.flight_keys = FlightKeys::default();
+        self.gamepad_flight = GameplayVec3::ZERO;
+        self.feedback = "VISTA DE ECHO-7 ACTIVA — I PILOTEAR | ESC VOLVER".to_owned();
+    }
+
+    fn enter_pilot_from_view(&mut self) {
+        // This is the same authoritative Echo-7 command used by the direct
+        // pilot shortcut, but it is deliberately delayed until I is pressed.
         self.enter_pilot_with_command(GameplayCommand::TakePilotControl {
             player: self.player,
             pilot_station: self.pilot_station,
@@ -4022,6 +4214,7 @@ impl VisualBridge {
                 )
             });
             self.pilot_mode = true;
+            self.pilot_view = false;
             self.interior_mode = false;
             self.fire_pressed = false;
             self.boost_pressed = false;
@@ -4105,6 +4298,7 @@ impl VisualBridge {
                     .initialize_player_position(self.player, position);
             }
             self.pilot_mode = false;
+            self.pilot_view = false;
             self.interior_mode = true;
             self.flight_keys = FlightKeys::default();
             self.gamepad_flight = GameplayVec3::ZERO;
@@ -4128,15 +4322,9 @@ impl VisualBridge {
         }
         // A/D are the primary steering controls. Arrow keys remain an
         // optional alternative for players who prefer them.
-        let gamepad_yaw = if self.gamepad_flight.x.abs() > 0.01 {
-            self.gamepad_flight.x.signum() as i8
-        } else {
-            0
-        };
         let yaw = ((self.flight_keys.left as i8 - self.flight_keys.right as i8)
             + self.look_left as i8
-            - self.look_right as i8
-            + gamepad_yaw)
+            - self.look_right as i8)
             .clamp(-1, 1);
         let pitch = self.look_down as i8 - self.look_up as i8;
         if yaw != 0 || pitch != 0 {
@@ -4248,15 +4436,9 @@ impl VisualBridge {
     fn current_flight_input(&self) -> GameplayVec3 {
         let keyboard = self.flight_keys.input();
         let local = GameplayVec3 {
-            // Keyboard A/D steer the ship; lateral thrust is reserved for
-            // gamepad input so WASD has one clear meaning.
-            x: (keyboard.x
-                + if self.pilot_mode {
-                    0.0
-                } else {
-                    self.gamepad_flight.x
-                })
-            .clamp(-1.0, 1.0),
+            // README controls: A/D rotate the ship. Lateral thrust is
+            // reserved for the gamepad's left stick.
+            x: self.gamepad_flight.x.clamp(-1.0, 1.0),
             y: keyboard.y,
             z: (keyboard.z + self.gamepad_flight.z).clamp(-1.0, 1.0),
         };
@@ -4352,6 +4534,9 @@ impl VisualBridge {
                     delta: Duration(16),
                 }]);
             }
+        } else if self.pilot_view {
+            // Echo-7 is visible, but the ship must not move until I/A
+            // explicitly activates the piloting station.
         } else if self.interior_mode {
             if frame.right_stick.x.abs() > 0.01 || frame.right_stick.y.abs() > 0.01 {
                 self.rotate_player(frame.right_stick.x * 6.0, frame.right_stick.y * 4.0);
@@ -4416,6 +4601,12 @@ impl VisualBridge {
             return match button {
                 ControllerButton::DPadLeft => Some(KeyCode::ArrowLeft),
                 ControllerButton::DPadRight => Some(KeyCode::ArrowRight),
+                _ => controller_key(button),
+            };
+        }
+        if self.pilot_view && !self.pilot_mode {
+            return match button {
+                ControllerButton::South => Some(KeyCode::KeyI),
                 _ => controller_key(button),
             };
         }
@@ -4907,6 +5098,7 @@ impl VisualBridge {
             self.landing_planet = Some(planet);
             self.landing_cinematic_started_at = Some(self.session.world().time().elapsed.0);
             self.landing_cinematic_wall_started_at = Some(Instant::now());
+            self.pilot_view = false;
             self.pilot_mode = false;
             self.flight_keys = FlightKeys::default();
             self.gamepad_flight = GameplayVec3::ZERO;
@@ -4931,6 +5123,7 @@ impl VisualBridge {
                 self.landing_planet = None;
                 self.surface_mode = true;
                 self.surface_planet = Some(planet);
+                self.pilot_view = false;
                 self.interior_mode = false;
                 self.legacy_exterior_controls = false;
                 if let Some(origin) =
@@ -5022,6 +5215,7 @@ impl VisualBridge {
                 self.surface_planet_center = None;
                 self.surface_camera_yaw = 0.0;
                 self.surface_camera_pitch = 0.0;
+                self.pilot_view = false;
                 self.pilot_mode = true;
                 self.feedback = "DESPEGUE COMPLETADO — ECHO-7 ESTA EN ORBITA".to_owned();
             }
@@ -5078,7 +5272,7 @@ impl VisualBridge {
         // returning the cinematic camera forever.
         self.update_planet_surface_transition();
         let world = self.session.world();
-        if self.interior_mode && !self.pilot_mode && !self.surface_mode {
+        if self.interior_mode && !self.pilot_mode && !self.pilot_view && !self.surface_mode {
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
         }
         if matches!(
@@ -5175,13 +5369,7 @@ impl VisualBridge {
             }
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
         }
-        if self.pilot_mode {
-            if (self.pilot_camera_distance - game::render_bridge::PILOT_CAMERA_DEFAULT_DISTANCE)
-                .abs()
-                < f32::EPSILON
-            {
-                return game::render_bridge::pilot_seated_camera(world, aspect);
-            }
+        if self.pilot_mode || self.pilot_view {
             return game::render_bridge::pilot_camera(world, aspect, self.pilot_camera_distance);
         }
         if self.interior_mode {
@@ -5259,7 +5447,7 @@ pub fn run() -> Result<(), String> {
                 &camera,
                 bridge.interior_mode,
                 bridge.nareth_visual_asset_ready(),
-                bridge.pilot_mode,
+                bridge.pilot_mode || bridge.pilot_view,
                 bridge.surface_planet,
                 bridge.surface_planet_transform,
             );
@@ -7452,14 +7640,15 @@ mod tests {
             .unwrap();
         assert_eq!(walking_ship.mesh, pilot_ship.mesh);
         assert_eq!(walking_ship.transform, pilot_ship.transform);
-        let seated = bridge.camera(16.0 / 9.0).unwrap();
-        let expected_eye = game::render_bridge::echo7_model_to_world(
-            game::render_bridge::ECHO7_PILOT_SEATED_LOCAL,
-            origin,
-            0.0,
-        );
-        assert!((seated.position().x - expected_eye.x).abs() < 0.01);
-        assert!((seated.position().y - expected_eye.y).abs() < 0.01);
+        assert!(pilot_snapshot
+            .nodes
+            .iter()
+            .all(|node| { node.entity != render_core::SnapshotId::Entity(bridge.pilot_station) }));
+        assert_eq!(pilot_ship.mesh, render_core::MeshHandle::SHIP_PLACEHOLDER);
+        let third_person = bridge.camera(16.0 / 9.0).unwrap();
+        assert!(third_person.position().x > origin.x + 30.0);
+        assert!((third_person.target().x - origin.x).abs() < 0.01);
+        assert!((third_person.target().z - origin.z).abs() < 0.01);
         let heading = bridge
             .session
             .world()
@@ -7672,7 +7861,8 @@ mod tests {
 
         bridge.handle_key(KeyCode::KeyK, ElementState::Pressed);
 
-        assert!(bridge.pilot_mode);
+        assert!(bridge.pilot_view);
+        assert!(!bridge.pilot_mode);
         assert!(!bridge.interior_mode);
         assert_eq!(
             bridge
@@ -7681,9 +7871,9 @@ mod tests {
                 .station(bridge.pilot_station)
                 .expect("pilot station should exist")
                 .occupant,
-            Some(bridge.player)
+            None
         );
-        assert_eq!(bridge.session.world().ship_control_active(), Some(true));
+        assert_eq!(bridge.session.world().ship_control_active(), Some(false));
         assert_eq!(
             bridge
                 .session
@@ -7692,6 +7882,20 @@ mod tests {
                 .expect("player should exist")
                 .position,
             original_position
+        );
+
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        assert!(bridge.pilot_mode);
+        assert!(!bridge.pilot_view);
+        assert_eq!(bridge.session.world().ship_control_active(), Some(true));
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .station(bridge.pilot_station)
+                .expect("pilot station should exist")
+                .occupant,
+            Some(bridge.player)
         );
     }
 
@@ -7722,8 +7926,23 @@ mod tests {
 
         bridge.handle_key(KeyCode::KeyK, ElementState::Pressed);
 
-        assert!(bridge.pilot_mode, "{}", bridge.feedback);
+        assert!(bridge.pilot_view, "{}", bridge.feedback);
+        assert!(!bridge.pilot_mode);
         assert!(!bridge.interior_mode);
+        assert_eq!(bridge.session.world().ship_control_active(), Some(false));
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .station(bridge.pilot_station)
+                .expect("Echo-7 piloting station should exist")
+                .occupant,
+            None
+        );
+
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        assert!(bridge.pilot_mode, "{}", bridge.feedback);
+        assert!(!bridge.pilot_view);
         assert_eq!(bridge.session.world().ship_control_active(), Some(true));
         assert_eq!(
             bridge
@@ -7754,6 +7973,46 @@ mod tests {
     }
 
     #[test]
+    fn pilot_snapshot_uses_echo7_and_hides_its_pilot_station_model() {
+        let mut bridge = VisualBridge::new_with_mode_and_enemy_distance(
+            true,
+            true,
+            VISUAL_INITIAL_SHIP_POSITION,
+            false,
+        )
+        .expect("visual bootstrap should work");
+        bridge.handle_key(KeyCode::KeyK, ElementState::Pressed);
+        assert!(bridge.pilot_view, "{}", bridge.feedback);
+        assert!(!bridge.pilot_mode);
+        bridge.handle_key(KeyCode::KeyI, ElementState::Pressed);
+        assert!(bridge.pilot_mode, "{}", bridge.feedback);
+
+        let camera = bridge
+            .camera(16.0 / 9.0)
+            .expect("pilot camera should exist");
+        let snapshot =
+            game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth_and_pilot(
+                bridge.session.world(),
+                Default::default(),
+                &camera,
+                false,
+                false,
+                true,
+            );
+        let echo = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.entity == render_core::SnapshotId::Entity(bridge.ship))
+            .expect("Echo-7 must be present in the pilot snapshot");
+        assert_eq!(echo.mesh, render_core::MeshHandle::SHIP_PLACEHOLDER);
+        assert_eq!(echo.material, game::render_bridge::ECHO7_MATERIAL);
+        assert!(snapshot
+            .nodes
+            .iter()
+            .all(|node| { node.entity != render_core::SnapshotId::Entity(bridge.pilot_station) }));
+    }
+
+    #[test]
     fn pilot_camera_remains_behind_the_propulsors_after_ship_rotation() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         bridge.guided_interaction();
@@ -7771,7 +8030,8 @@ mod tests {
             .camera(16.0 / 9.0)
             .expect("pilot camera should be valid");
         assert!(camera.position().x > ship.x + 30.0);
-        assert!(camera.target().x > ship.x + 10.0);
+        assert!((camera.target().x - ship.x).abs() < 0.01);
+        assert!((camera.target().z - ship.z).abs() < 0.01);
         assert!(camera.position().x > camera.target().x);
         assert!(camera.view_projection_matrix().is_finite());
     }
@@ -10048,6 +10308,48 @@ mod tests {
                 .expect("awakening should be registered")
                 .required_total
         );
+    }
+
+    #[test]
+    fn visual_skip_key_applies_first_mission_repairs_and_refills_echo7() {
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        bridge.session.update([GameplayCommand::RemoveShipFuel {
+            ship: bridge.ship,
+            amount: 25,
+        }]);
+
+        bridge.handle_key(KeyCode::F7, ElementState::Pressed);
+
+        assert!(bridge
+            .session
+            .world()
+            .electrical_panel(bridge.electrical_panel)
+            .expect("electrical panel should exist")
+            .is_repaired());
+        assert!(bridge
+            .session
+            .world()
+            .life_support_panel(bridge.life_support_panel)
+            .expect("life support panel should exist")
+            .is_repaired());
+        assert!(matches!(
+            bridge
+                .session
+                .world()
+                .door(bridge.bridge_door)
+                .expect("bridge door should exist")
+                .state,
+            gameplay::domains::door::DoorState::Open
+        ));
+        let fuel = bridge
+            .session
+            .world()
+            .ship_fuel(bridge.ship)
+            .expect("Echo-7 fuel should exist");
+        assert_eq!(fuel.current(), fuel.capacity());
+        assert!(bridge.feedback.contains("COMBUSTIBLE CARGADOS"));
     }
 
     #[test]
