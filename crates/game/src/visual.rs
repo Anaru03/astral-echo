@@ -952,32 +952,32 @@ impl VisualBridge {
         .map_err(|error| format!("crear estaci?n visual: {error:?}"))?;
         let engineering_station = session
             .create_station(
-                interior_position(GameplayVec3 {
-                    x: 2.5,
-                    y: 0.0,
-                    z: 0.0,
-                }),
+                game::render_bridge::echo7_model_to_world(
+                    render_core::Vec3::new(20.0, 14.0, 0.0),
+                    initial_ship_position,
+                    0.0,
+                ),
                 3.0,
                 StationType::Engineering,
             )
             .map_err(|error| format!("engineering station: {error:?}"))?;
         let _status_console = session
             .create_ship_status_console(
-                interior_position(GameplayVec3 {
-                    x: -2.0,
-                    y: 0.0,
-                    z: 0.0,
-                }),
+                game::render_bridge::echo7_model_to_world(
+                    render_core::Vec3::new(-31.0, 0.0, 0.0),
+                    initial_ship_position,
+                    0.0,
+                ),
                 3.0,
             )
             .map_err(|error| format!("crear consola de estado visual: {error:?}"))?;
         let electrical_panel = session
             .create_electrical_panel(
-                interior_position(GameplayVec3 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: -2.0,
-                }),
+                game::render_bridge::echo7_model_to_world(
+                    render_core::Vec3::new(20.0, 14.0, 0.0),
+                    initial_ship_position,
+                    0.0,
+                ),
                 3.0,
                 ElectricalPanelConfiguration::new(vec![ElectricalBreakerConfiguration {
                     id: BreakerId::new(1),
@@ -988,11 +988,11 @@ impl VisualBridge {
             .map_err(|error| format!("crear panel electrico visual: {error:?}"))?;
         let life_support_panel = session
             .create_life_support_panel(
-                interior_position(GameplayVec3 {
-                    x: 2.0,
-                    y: 0.0,
-                    z: 0.0,
-                }),
+                game::render_bridge::echo7_model_to_world(
+                    render_core::Vec3::new(0.0, 14.0, 0.0),
+                    initial_ship_position,
+                    0.0,
+                ),
                 3.0,
                 LifeSupportConfiguration::new(
                     5,
@@ -1013,6 +1013,30 @@ impl VisualBridge {
                 ),
             )
             .map_err(|error| format!("crear panel de soporte visual: {error:?}"))?;
+
+        // MINIJUEGOS_ECHO7_DISTRIBUIDOS_V2
+        // Anclar los puntos dentro de las habitaciones inferiores.
+        if !legacy_pilot_fixture {
+            let offset = |local: render_core::Vec3| {
+                game::render_bridge::echo7_model_to_world(
+                    local,
+                    GameplayVec3::ZERO,
+                    0.0,
+                )
+            };
+
+            for (entity, local) in [
+                (engineering_station, render_core::Vec3::new(24.0, 16.0, 0.0)),
+                (_status_console, render_core::Vec3::new(-31.0, 0.0, 0.0)),
+                (electrical_panel, render_core::Vec3::new(20.0, 14.0, 0.0)),
+                (life_support_panel, render_core::Vec3::new(0.0, 14.0, 0.0)),
+            ] {
+                session
+                    .world_mut()
+                    .anchor_interactable_to_ship(entity, ship, offset(local))
+                    .map_err(|error| format!("anclar minijuego: {error:?}"))?;
+            }
+        }
         let bridge_door = session
             .create_bridge_door(
                 interior_position(GameplayVec3 {
@@ -1567,6 +1591,54 @@ impl VisualBridge {
     }
 
     fn handle_key(&mut self, key: KeyCode, state: ElementState) {
+
+        // LABERINTOS PLANETARIOS F6
+        if state == ElementState::Pressed && key == KeyCode::F6 {
+            if !self.surface_mode {
+                self.feedback =
+                    "DEBES ATERRIZAR EN UN PLANETA PARA JUGAR".to_owned();
+                return;
+            }
+
+            let script = match self.surface_planet.map(|id| id.value()) {
+                Some(9002) => Some("building.py"),
+                Some(9601) => Some("clock.py"),
+                Some(9602) => Some("mecanic.py"),
+                Some(9603) => Some("seraphim.py"),
+                _ => None,
+            };
+
+            if let Some(script) = script {
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("maze_visuals")
+                    .join(script);
+
+                match std::process::Command::new("python3")
+                    .current_dir(path.parent().unwrap())
+                    .arg(&path)
+                    .spawn()
+                {
+                    Ok(_) => {
+                        self.feedback = format!(
+                            "LABERINTO INICIADO: {script}"
+                        );
+                    }
+                    Err(error) => {
+                        self.feedback = format!(
+                            "ERROR AL ABRIR LABERINTO: {error}"
+                        );
+                    }
+                }
+            } else {
+                self.feedback =
+                    "ESTE PLANETA NO TIENE LABERINTO".to_owned();
+            }
+
+            println!("visual gameplay: {}", self.feedback);
+            return;
+        }
+
+
         if !self.started {
             if state == ElementState::Pressed && key == KeyCode::Enter {
                 self.start_game();
@@ -2549,7 +2621,11 @@ impl VisualBridge {
         let mut launchers = configured_python
             .into_iter()
             .map(|value| (value, false))
-            .chain([("python".to_owned(), false), ("py".to_owned(), true)])
+            .chain([
+                ("python3".to_owned(), false),
+                ("python".to_owned(), false),
+                ("py".to_owned(), true),
+            ])
             .collect::<Vec<_>>();
         launchers.dedup_by(|left, right| left.0 == right.0);
         let mut child = None;
@@ -2605,7 +2681,11 @@ impl VisualBridge {
                 "MINIJUEGO COMPLETADO: {} — INTERACCION RESTAURADA",
                 active.task
             );
-            self.guided_interaction();
+            println!(
+                "MINIJUEGO REGISTRADO: {} | COMPLETADOS: {}/4",
+                active.task,
+                self.completed_ship_minigames.len()
+            );
         } else if exited.is_some() {
             let _ = std::fs::remove_file(&active.event_file);
             self.feedback = format!(
@@ -2745,7 +2825,7 @@ impl VisualBridge {
                 .is_some_and(|mission| {
                     mission.state == gameplay::domains::mission::MissionState::Active
                 });
-            if first_mission_active {
+            if first_mission_active || (self.interior_mode && self.started) {
                 if let Some(task) = self.ship_minigame_for_target(target) {
                     if !self.completed_ship_minigames.contains(task) {
                         self.start_ship_minigame(task, target);
@@ -3617,6 +3697,26 @@ impl VisualBridge {
             return None;
         }
         let player = self.session.world().player(self.player)?;
+        // Priorizar una puerta cuando el jugador esta junto a ella.
+        if let Some(door) = self.session.world().interactables()
+            .filter(|value| {
+                value.enabled
+                    && matches!(value.behavior, InteractionBehavior::Door { .. })
+            })
+            .filter_map(|value| {
+                let dx = player.position.x - value.position.x;
+                let dy = player.position.y - value.position.y;
+                let dz = player.position.z - value.position.z;
+                let distance_squared = dx * dx + dy * dy + dz * dz;
+                (distance_squared <= 1.5_f32.powi(2))
+                    .then_some((distance_squared, value))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, value)| value)
+        {
+            return Some(door);
+        }
+
         self.session
             .world()
             .interactables()
