@@ -4125,6 +4125,9 @@ impl VisualBridge {
             });
             self.pilot_mode = true;
             self.interior_mode = false;
+            // Start pilotaje con una cámara exterior alejada para encuadrar
+            // el casco completo, no la geometría desde dentro.
+            self.pilot_camera_distance = 28.0;
             self.fire_pressed = false;
             self.boost_pressed = false;
             self.shield_active = false;
@@ -4207,6 +4210,7 @@ impl VisualBridge {
                     .initialize_player_position(self.player, position);
             }
             self.pilot_mode = false;
+            self.pilot_camera_distance = game::render_bridge::PILOT_CAMERA_DEFAULT_DISTANCE;
             self.interior_mode = true;
             self.flight_keys = FlightKeys::default();
             self.gamepad_flight = GameplayVec3::ZERO;
