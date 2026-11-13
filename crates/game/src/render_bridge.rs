@@ -81,16 +81,16 @@ const SUN_MODEL_VISUAL_SCALE: f32 = (SUN_VISUAL_RADIUS * 2.0) / SUN_MODEL_MAX_DI
 pub const SURFACE_OBJECT_RADIAL_OFFSET: f32 = PLANET_VISUAL_RADIUS + 0.4;
 pub const ACADEMIC_SURFACE_OBJECT_SEED: u64 = 0xA57A_1E5D;
 pub const MAX_ACADEMIC_SURFACE_OBJECTS: usize = 64;
-pub const PLANET_OBSERVATION_RADIUS: f32 = 14.0;
+pub const PLANET_OBSERVATION_RADIUS: f32 = 3.5;
 pub const OBSERVATION_TRANSITION_DURATION_MS: u64 = 1_000;
 pub const LANDING_CINEMATIC_DURATION_MS: u64 = 1_800;
 pub const TAKEOFF_CINEMATIC_DURATION_MS: u64 = 1_500;
 pub const SURFACE_RETURN_DISTANCE: f32 = 5.0;
 const SUN_POSITION: Vec3 = Vec3::new(0.0, 0.0, -8.0);
-const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 28.0, 46.0);
-pub const PILOT_CAMERA_DEFAULT_DISTANCE: f32 = 8.0;
+const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 10.0, 18.0);
+pub const PILOT_CAMERA_DEFAULT_DISTANCE: f32 = 12.0;
 pub const PILOT_CAMERA_MIN_DISTANCE: f32 = 3.0;
-pub const PILOT_CAMERA_MAX_DISTANCE: f32 = 36.0;
+pub const PILOT_CAMERA_MAX_DISTANCE: f32 = 80.0;
 pub const SHIP_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
 pub const ENEMY_MESH: MeshHandle = MeshHandle::ENEMY_PLACEHOLDER;
 pub const PLAYER_MESH: MeshHandle = MeshHandle::CUBE;
@@ -102,7 +102,7 @@ pub const SUN_MESH: MeshHandle = MeshHandle::SUN_SPHERE;
 pub const SUN_MODEL_MESH: MeshHandle = MeshHandle::SUN_MODEL;
 pub const STARS_MESH: MeshHandle = MeshHandle::STARS;
 pub const COLLECTIBLE_MESH: MeshHandle = MeshHandle::COLLECTIBLE_PLACEHOLDER;
-const STAR_SHELL_SCALE: f32 = 6.0;
+const STAR_SHELL_SCALE: f32 = 120.0;
 pub const STATION_MESH: MeshHandle = MeshHandle::STATION;
 pub const DERELICT_MESH: MeshHandle = MeshHandle::DERELICT;
 pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
@@ -132,7 +132,7 @@ fn echo7_local_to_world_rotation() -> Quat {
 }
 pub const STATION_VISUAL_SCALE: Vec3 = Vec3::splat(0.35);
 pub const ENEMY_SHIP_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
-pub const PLAYER_VISUAL_SCALE: Vec3 = Vec3::splat(0.5);
+pub const PLAYER_VISUAL_SCALE: Vec3 = Vec3::splat(0.035);
 pub const ECHO7_INTERIOR_HALF_WIDTH: f32 = 9.0;
 pub const ECHO7_INTERIOR_HALF_DEPTH: f32 = 7.0;
 pub const ECHO7_INTERIOR_FLOOR_Y: f32 = -1.2;
@@ -1940,17 +1940,17 @@ pub fn pilot_camera(
     let distance = distance.clamp(PILOT_CAMERA_MIN_DISTANCE, PILOT_CAMERA_MAX_DISTANCE);
     // `ship` is the gameplay/model-center anchor, not the rear of the mesh.
     // Start immediately behind the actual propulsion edge.
-    let position = ship + aft * (ECHO7_AFT_EDGE_OFFSET + distance) + Vec3::new(0.0, 3.0, 0.0);
-    let target = ship + aft * ECHO7_CAMERA_TARGET_AFT_OFFSET + Vec3::new(0.0, 1.15, 0.0);
+    let position = ship + aft * (ECHO7_AFT_EDGE_OFFSET + distance) + Vec3::new(0.0, 2.0, 0.0);
+    let target = ship + aft * ECHO7_CAMERA_TARGET_AFT_OFFSET;
     Camera::new(
         position,
         target,
         up,
         Projection::Perspective {
-            fov_y_rad: 65.0_f32.to_radians(),
+            fov_y_rad: 58.0_f32.to_radians(),
             aspect,
             near: 0.1,
-            far: 2_000.0,
+            far: 50_000.0,
         },
     )
 }
@@ -2055,10 +2055,10 @@ pub fn observation_camera_for_destination(
         target,
         Vec3::Y,
         Projection::Perspective {
-            fov_y_rad: 65.0_f32.to_radians(),
+            fov_y_rad: 58.0_f32.to_radians(),
             aspect,
             near: 0.1,
-            far: 500.0,
+            far: 50_000.0,
         },
     )
 }
