@@ -2633,6 +2633,9 @@ impl VisualBridge {
             self.advance_erick_dialogue();
             return;
         }
+        let pilot_station_selected = self
+            .selected_interactable()
+            .is_some_and(|value| value.entity_id == self.pilot_station);
         let at_pilot_station = self.interior_mode
             && !self.legacy_exterior_controls
             && self
@@ -2647,7 +2650,7 @@ impl VisualBridge {
                     dx * dx + dy * dy + dz * dz
                         <= station.interaction_range * station.interaction_range
                 });
-        if at_pilot_station {
+        if at_pilot_station || pilot_station_selected {
             if self.pilot_station_occupied_by(self.player)
                 || self.issue([GameplayCommand::Interact {
                     player: self.player,
