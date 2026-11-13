@@ -106,8 +106,7 @@ pub fn load_obj_decimated(
     let mut vertices = Vec::with_capacity(faces.len() * 3);
     let mut indices = Vec::with_capacity(faces.len() * 3);
     for [a, b, c] in faces {
-        let (Some(a), Some(b), Some(c)) =
-            (positions.get(&a), positions.get(&b), positions.get(&c))
+        let (Some(a), Some(b), Some(c)) = (positions.get(&a), positions.get(&b), positions.get(&c))
         else {
             continue;
         };

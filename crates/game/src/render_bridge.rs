@@ -6,8 +6,8 @@ use gameplay::GameplayWorld;
 use render_core::{
     from_engine, Camera, CameraError, HudAutopilotState, HudFlightState, HudMissionObjective,
     HudMissionState, HudObjectiveState, HudState, MaterialHandle, MeshHandle, Projection, Quat,
-    RenderSnapshot, RenderVisualEvent, RenderVisualEventKind, SnapshotLight, SnapshotNode,
-    Transform, Vec3, VisualAssets, RenderLightKind,
+    RenderLightKind, RenderSnapshot, RenderVisualEvent, RenderVisualEventKind, SnapshotLight,
+    SnapshotNode, Transform, Vec3, VisualAssets,
 };
 
 pub const SUN_ENTITY: engine::EntityId = engine::EntityId::new(9_100);
@@ -869,17 +869,15 @@ fn echo7_guidance_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
                     role: gameplay::ConsoleRole::ShipStatus,
                 } => matches!(state, gameplay::ConsoleState::Off).then_some(0),
                 gameplay::InteractionBehavior::Door { door }
-                    if door.role == gameplay::DoorRole::CommandBridge => {
-                        (!matches!(
-                            door.state,
-                            gameplay::domains::door::DoorState::Open
-                        ))
-                        .then_some(2)
-                    }
+                    if door.role == gameplay::DoorRole::CommandBridge =>
+                {
+                    (!matches!(door.state, gameplay::domains::door::DoorState::Open)).then_some(2)
+                }
                 gameplay::InteractionBehavior::Station { station }
-                    if station.station_type == gameplay::StationType::Piloting => {
-                        station.occupant.is_none().then_some(3)
-                    }
+                    if station.station_type == gameplay::StationType::Piloting =>
+                {
+                    station.occupant.is_none().then_some(3)
+                }
                 _ => None,
             };
             let Some(priority) = priority else {
@@ -893,21 +891,18 @@ fn echo7_guidance_nodes(world: &GameplayWorld) -> Vec<SnapshotNode> {
             Some((priority, dx * dx + dz * dz, value.position))
         })
         .min_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then_with(|| {
-                    left.1
+            left.0.cmp(&right.0).then_with(|| {
+                left.1
                     .partial_cmp(&right.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                })
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         })
         .map(|(_, _, position)| position);
     let Some(target) = target else {
         return Vec::new();
     };
-    let distance = ((target.x - player.position.x).powi(2)
-        + (target.z - player.position.z).powi(2))
-    .sqrt();
+    let distance =
+        ((target.x - player.position.x).powi(2) + (target.z - player.position.z).powi(2)).sqrt();
     let count = (distance / 1.8).ceil().clamp(1.0, 12.0) as usize;
     (1..=count)
         .map(|index| {
@@ -1366,9 +1361,8 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         ));
     }
 
-    let surface_ship = surface_planet.and_then(|planet| {
-        surface_ship_position_with_transform(world, planet, surface_transform)
-    });
+    let surface_ship = surface_planet
+        .and_then(|planet| surface_ship_position_with_transform(world, planet, surface_transform));
     if let (Some(ship), Some(pos)) = (
         world.navigation().ship_id(),
         surface_ship.or_else(|| visual_ship_position(world)),
@@ -1464,7 +1458,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
 
     for player in world.players() {
         let transform = if let Some(planet) = surface_planet {
-            surface_player_transform(world, player, planet)
+            surface_player_transform(world, player, planet, surface_transform)
         } else {
             visual_transform(
                 player.position,
@@ -1513,10 +1507,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     }
 
     for dest in world.destinations() {
-        if limited_scene
-            && landing_planet != Some(dest.id)
-            && surface_planet != Some(dest.id)
-        {
+        if limited_scene && landing_planet != Some(dest.id) && surface_planet != Some(dest.id) {
             continue;
         }
         if dest.id == gameplay::DestinationId::new(9_001) {
@@ -1704,13 +1695,17 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     snapshot.push_light(SnapshotLight::new(render_core::RenderLight::demo_point()));
     snapshot.push_light(SnapshotLight::new(render_core::RenderLight::demo_sun()));
     if let Some(planet) = surface_planet {
-        if let Some(center) = world
-            .planet_position_at(planet, world.time().elapsed)
-            .map(from_engine)
+        if let Some(center) = surface_transform
+            .map(|transform| planet_surface_center_from_transform(planet, transform))
             .or_else(|| {
                 world
-                    .destination(planet)
-                    .map(|value| from_engine(value.position))
+                    .planet_position_at(planet, world.time().elapsed)
+                    .map(from_engine)
+                    .or_else(|| {
+                        world
+                            .destination(planet)
+                            .map(|value| from_engine(value.position))
+                    })
             })
         {
             // A local fill light follows the explored planet. The fixed space
@@ -2338,23 +2333,40 @@ fn surface_player_transform(
     world: &GameplayWorld,
     player: &gameplay::Player,
     destination: gameplay::DestinationId,
+    surface_transform: Option<Transform>,
 ) -> Transform {
     let position = from_engine(player.position);
-    let center = world
-        .planet_position_at(destination, world.time().elapsed)
-        .map(from_engine)
-        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))
+    let center = surface_transform
+        .map(|transform| planet_surface_center_from_transform(destination, transform))
+        .or_else(|| {
+            world
+                .planet_position_at(destination, world.time().elapsed)
+                .map(from_engine)
+                .or_else(|| {
+                    world
+                        .destination(destination)
+                        .map(|value| from_engine(value.position))
+                })
+        })
         .unwrap_or(Vec3::ZERO);
     let up = if destination.value() == TESSARA_DESTINATION_ID {
         Vec3::Y
     } else {
         (position - center).normalize_or_zero()
     };
-    let up = if up.length_squared() > 0.0 { up } else { Vec3::Y };
+    let up = if up.length_squared() > 0.0 {
+        up
+    } else {
+        Vec3::Y
+    };
     let gravity_alignment = Quat::from_rotation_arc(Vec3::Y, up);
     let local_view = Quat::from_rotation_y(player.orientation.yaw_degrees.to_radians())
         * Quat::from_rotation_x(player.orientation.pitch_degrees.to_radians());
-    Transform::new(position, gravity_alignment * local_view, PLAYER_VISUAL_SCALE)
+    Transform::new(
+        position,
+        gravity_alignment * local_view,
+        PLAYER_VISUAL_SCALE,
+    )
 }
 
 fn observation_distance(visual_radius: f32) -> f32 {
@@ -2403,27 +2415,78 @@ pub fn surface_camera_for_player_with_view(
     camera_yaw_offset: f32,
     camera_pitch_offset: f32,
 ) -> Result<Camera, CameraError> {
+    surface_camera_for_player_with_view_and_transform(
+        world,
+        player_id,
+        destination,
+        aspect,
+        camera_yaw_offset,
+        camera_pitch_offset,
+        None,
+    )
+}
+
+pub fn surface_camera_for_player_with_view_and_transform(
+    world: &GameplayWorld,
+    player_id: engine::EntityId,
+    destination: gameplay::DestinationId,
+    aspect: f32,
+    camera_yaw_offset: f32,
+    camera_pitch_offset: f32,
+    surface_transform: Option<Transform>,
+) -> Result<Camera, CameraError> {
     let player = world.player(player_id).ok_or(CameraError::InvalidAspect)?;
-    let center = world.planet_position_at(destination, world.time().elapsed).map(from_engine)
-        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))
+    let center = surface_transform
+        .map(|transform| planet_surface_center_from_transform(destination, transform))
+        .or_else(|| {
+            world
+                .planet_position_at(destination, world.time().elapsed)
+                .map(from_engine)
+                .or_else(|| {
+                    world
+                        .destination(destination)
+                        .map(|value| from_engine(value.position))
+                })
+        })
         .ok_or(CameraError::InvalidAspect)?;
     let player_position = from_engine(player.position);
-    let up = if destination.value() == TESSARA_DESTINATION_ID { Vec3::Y }
-        else { (player_position - center).normalize_or_zero() };
-    let up = if up.length_squared() > 0.0 { up } else { Vec3::Y };
+    let up = if destination.value() == TESSARA_DESTINATION_ID {
+        Vec3::Y
+    } else {
+        (player_position - center).normalize_or_zero()
+    };
+    let up = if up.length_squared() > 0.0 {
+        up
+    } else {
+        Vec3::Y
+    };
     let yaw = (player.orientation.yaw_degrees + camera_yaw_offset).to_radians();
-    let pitch = (player.orientation.pitch_degrees + camera_pitch_offset).to_radians().clamp(-1.2, 1.2);
+    let pitch = (player.orientation.pitch_degrees + camera_pitch_offset)
+        .to_radians()
+        .clamp(-1.2, 1.2);
     let horizontal = pitch.cos();
     let raw_forward = Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal);
     let forward = (raw_forward - up * raw_forward.dot(up)).normalize_or_zero();
-    let forward = if forward.length_squared() > 0.0 { forward } else {
-        up.cross(if up.dot(Vec3::Y).abs() < 0.9 { Vec3::Y } else { Vec3::X }).normalize_or_zero()
+    let forward = if forward.length_squared() > 0.0 {
+        forward
+    } else {
+        up.cross(if up.dot(Vec3::Y).abs() < 0.9 {
+            Vec3::Y
+        } else {
+            Vec3::X
+        })
+        .normalize_or_zero()
     };
     Camera::new(
         player_position - forward * 4.5 + up * 2.2,
         player_position + up * 0.25,
         up,
-        Projection::Perspective { fov_y_rad: 72.0_f32.to_radians(), aspect, near: 0.05, far: 220.0 },
+        Projection::Perspective {
+            fov_y_rad: 72.0_f32.to_radians(),
+            aspect,
+            near: 0.05,
+            far: 220.0,
+        },
     )
 }
 
@@ -2784,13 +2847,18 @@ pub fn planet_surface_transform(
     let position = world
         .planet_position_at(destination, world.time().elapsed)
         .map(from_engine)
-        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))?;
+        .or_else(|| {
+            world
+                .destination(destination)
+                .map(|value| from_engine(value.position))
+        })?;
     let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
     Some(match destination.value() {
         ACADEMIC_PLANET_DESTINATION_ID => {
             let mut transform = building_planet_transform(elapsed_seconds);
             transform.translation = position;
-            transform.translation -= transform.rotation * (transform.scale * BUILDING_PLANET_CENTER);
+            transform.translation -=
+                transform.rotation * (transform.scale * BUILDING_PLANET_CENTER);
             transform
         }
         TESSARA_DESTINATION_ID => tessara_planet_transform(position, elapsed_seconds),
@@ -2806,8 +2874,7 @@ pub fn planet_surface_center_from_transform(
 ) -> Vec3 {
     match destination.value() {
         ACADEMIC_PLANET_DESTINATION_ID => {
-            transform.translation
-                + transform.rotation * (transform.scale * BUILDING_PLANET_CENTER)
+            transform.translation + transform.rotation * (transform.scale * BUILDING_PLANET_CENTER)
         }
         TESSARA_DESTINATION_ID => {
             transform.translation + transform.rotation * (transform.scale * TESSARA_PLANET_CENTER)
