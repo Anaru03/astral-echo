@@ -4680,7 +4680,7 @@ impl VisualBridge {
             z: (keyboard.z + self.gamepad_flight.z).clamp(-1.0, 1.0),
         };
         let orientation = self.session.world().ship_orientation().unwrap_or_default();
-        let yaw = orientation.yaw_degrees.to_radians();
+        let yaw = -orientation.yaw_degrees.to_radians();
         let pitch = orientation.pitch_degrees.to_radians().clamp(-1.2, 1.2);
         let (sin_yaw, cos_yaw) = yaw.sin_cos();
         let (sin_pitch, cos_pitch) = pitch.sin_cos();
@@ -5580,8 +5580,9 @@ impl VisualBridge {
                 .landing_cinematic_wall_started_at
                 .map(|value| Instant::now().saturating_duration_since(value).as_millis() as u64)
                 .unwrap_or(0);
+            let cinematic_duration = game::render_bridge::LANDING_CINEMATIC_DURATION_MS.max(1);
             let progress = (simulation_elapsed.max(wall_elapsed) as f32
-                / game::render_bridge::LANDING_CINEMATIC_DURATION_MS as f32)
+                / cinematic_duration as f32)
                 .clamp(0.0, 1.0);
             let target = match world.planet_flight_state() {
                 gameplay::PlanetFlightState::Landing { planet }
@@ -6704,6 +6705,37 @@ mod tests {
             )
             .expect("visual physics checkpoint should restore");
         assert!(restored_visual.session.world().solar_physics().is_some());
+    }
+
+    #[test]
+    fn visual_runtime_initial_snapshot_is_finite() {
+        let mut bridge =
+            VisualBridge::new_visual_runtime().expect("visual runtime should initialize");
+        let camera = bridge.camera(16.0 / 9.0).expect("camera should initialize");
+        let snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth(
+            bridge.session.world(),
+            Default::default(),
+            &camera,
+            bridge.interior_mode,
+            false,
+        );
+        assert!(snapshot.view.is_finite(), "view matrix should be finite");
+        assert!(
+            snapshot.projection.is_finite(),
+            "projection matrix should be finite"
+        );
+        assert!(
+            snapshot.camera_position.is_finite(),
+            "camera position should be finite"
+        );
+        for node in &snapshot.nodes {
+            assert!(
+                node.transform.matrix().is_finite(),
+                "non-finite transform on entity {:?}: {:?}",
+                node.entity,
+                node.transform
+            );
+        }
     }
 
     #[test]
@@ -8329,23 +8361,28 @@ mod tests {
         assert_eq!(bridge.current_flight_input().x, 0.0);
         assert_eq!(bridge.current_flight_input().z, 0.0);
         bridge.update_pilot_motion();
-        assert_ne!(
-            bridge
-                .session
-                .world()
-                .ship_orientation()
-                .expect("ship orientation should exist")
-                .yaw_degrees,
-            heading_before
-        );
+        let heading_after_left = bridge
+            .session
+            .world()
+            .ship_orientation()
+            .expect("ship orientation should exist")
+            .yaw_degrees;
+        assert!(heading_after_left > heading_before);
         bridge.handle_key(KeyCode::KeyA, ElementState::Released);
 
         bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
         let input = bridge.current_flight_input();
         let magnitude = (input.x * input.x + input.y * input.y + input.z * input.z).sqrt();
         assert!(magnitude > 0.9);
+        assert!(input.x < 0.0);
         assert!(input.z < 0.0);
         bridge.handle_key(KeyCode::KeyW, ElementState::Released);
+
+        bridge.handle_key(KeyCode::KeyS, ElementState::Pressed);
+        let reverse_input = bridge.current_flight_input();
+        assert!(reverse_input.x > 0.0);
+        assert!(reverse_input.z > 0.0);
+        bridge.handle_key(KeyCode::KeyS, ElementState::Released);
     }
 
     #[test]

@@ -2209,7 +2209,7 @@ pub fn interior_camera_for_player(
         .clamp(-1.2, 1.2);
     let horizontal = pitch.cos();
     let direction =
-        Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal).normalize_or_zero();
+        Vec3::new(yaw.sin() * horizontal, -yaw.cos() * horizontal, pitch.sin()).normalize_or_zero();
     Camera::new(
         position,
         position + echo7_local_to_world_rotation() * direction,
