@@ -109,7 +109,7 @@ pub const ASTEROID_FIELD_MESH: MeshHandle = MeshHandle::ASTEROID_FIELD;
 pub const ECHO7_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
 pub const ECHO7_MATERIAL: MaterialHandle = VisualAssets::SHIP;
 pub const STARS_MATERIAL: MaterialHandle = VisualAssets::STARS;
-const ECHO7_VISUAL_SCALE_FACTOR: f32 = 0.035;
+const ECHO7_VISUAL_SCALE_FACTOR: f32 = 1.0;
 pub const ECHO7_VISUAL_SCALE: Vec3 = Vec3::splat(ECHO7_VISUAL_SCALE_FACTOR);
 pub const ECHO7_VISUAL_LENGTH: f32 = 93.4 * ECHO7_VISUAL_SCALE_FACTOR;
 // Bounds measured from ECHO7_Exterior_DosCubiertas.obj. The source model uses
@@ -1252,9 +1252,14 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         } else {
             pos
         };
-        let mut transform = Transform::new(visual_position, model_rotation, ECHO7_VISUAL_SCALE);
+        let ship_visual_scale = if interior || pilot_mode {
+            ECHO7_VISUAL_SCALE
+        } else {
+            Vec3::splat(ECHO7_VISUAL_SCALE_FACTOR * 0.035)
+        };
+        let mut transform = Transform::new(visual_position, model_rotation, ship_visual_scale);
         transform.translation -=
-            rotation * (model_basis * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER));
+            rotation * (model_basis * (ship_visual_scale * ECHO7_MODEL_CENTER));
         let meshes = if interior {
             [
                 ECHO7_MESH,
@@ -1943,8 +1948,11 @@ pub fn pilot_camera(
     let distance = distance.clamp(PILOT_CAMERA_MIN_DISTANCE, PILOT_CAMERA_MAX_DISTANCE);
     // `ship` is the gameplay/model-center anchor, not the rear of the mesh.
     // Start immediately behind the actual propulsion edge.
-    let position = ship + aft * (ECHO7_AFT_EDGE_OFFSET + distance) + Vec3::new(0.0, 2.0, 0.0);
-    let target = ship + aft * ECHO7_CAMERA_TARGET_AFT_OFFSET;
+    let ship_visual_center = ship + rotation * Vec3::new(0.0, 0.0, 5.53 * 0.035);
+    let position = ship_visual_center
+        + aft * (ECHO7_AFT_EDGE_OFFSET * 0.035 + distance)
+        + Vec3::new(0.0, 2.0, 0.0);
+    let target = ship_visual_center + aft * (ECHO7_CAMERA_TARGET_AFT_OFFSET * 0.035);
     Camera::new(
         position,
         target,
@@ -2163,8 +2171,20 @@ pub fn interior_camera_for_player(
     aspect: f32,
 ) -> Result<Camera, CameraError> {
     let player = world.player(player_id).ok_or(CameraError::InvalidAspect)?;
-    let position = from_engine(player.position) + Vec3::new(0.0, ECHO7_INTERIOR_EYE_HEIGHT, 0.0);
     let yaw = player.orientation.yaw_degrees.to_radians();
+    let ship_position = world.ship_position().unwrap_or_default();
+    let ship_yaw = world
+        .ship_orientation()
+        .map(|value| value.yaw_degrees)
+        .unwrap_or_default();
+    let local_eye = echo7_world_to_local(player.position, ship_position, ship_yaw);
+    let local_position =
+        local_eye + Vec3::new(0.0, 0.0, ECHO7_INTERIOR_EYE_HEIGHT / ECHO7_VISUAL_SCALE.z);
+    let position = from_engine(echo7_model_to_world(
+        local_position,
+        ship_position,
+        ship_yaw,
+    ));
     let pitch = player
         .orientation
         .pitch_degrees
@@ -2175,13 +2195,13 @@ pub fn interior_camera_for_player(
         Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal).normalize_or_zero();
     Camera::new(
         position,
-        position + direction,
+        position + echo7_local_to_world_rotation() * direction,
         Vec3::Y,
         Projection::Perspective {
             fov_y_rad: 72.0_f32.to_radians(),
             aspect,
             near: 0.05,
-            far: 120.0,
+            far: 300.0,
         },
     )
 }
