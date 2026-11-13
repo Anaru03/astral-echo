@@ -40,6 +40,7 @@ const INVENTORY_ROWS: u8 = 6;
 const ERICK_DIALOGUE: &str = include_str!("../../../assets/lore/erick_dialogue.txt");
 const ERICK_PORTRAIT_MATERIAL: MaterialHandle = MaterialHandle::new(700);
 const UPPER_DECK_WALK_SPEED_MULTIPLIER: f32 = 1.5;
+const STAIR_WALK_SPEED_MULTIPLIER: f32 = 1.75;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct InventoryPlacement {
@@ -3018,30 +3019,34 @@ impl VisualBridge {
         self.last_interior_update = now;
         // La velocidad efectiva la decide GameplayWorld; aquí solo convertimos
         // el tiempo transcurrido del frame a segundos para orientar el input.
-        let upper_deck = self.interior_mode
-            && self
-                .session
+        let walk_multiplier = if self.interior_mode {
+            self.session
                 .world()
                 .player(self.player)
-                .is_some_and(|player| {
-                    matches!(
-                        game::render_bridge::echo7_support_surface(
-                            player.position,
-                            self.session.world().ship_position().unwrap_or_default(),
-                            self.session
-                                .world()
-                                .ship_orientation()
-                                .map(|orientation| orientation.yaw_degrees)
-                                .unwrap_or_default(),
-                        ),
-                        game::render_bridge::Echo7SupportSurface::UpperBalcony
-                    )
-                });
-        let motion_delta_ms = if upper_deck {
-            (delta_ms as f32 * UPPER_DECK_WALK_SPEED_MULTIPLIER) as u64
+                .map(|player| {
+                    match game::render_bridge::echo7_support_surface(
+                        player.position,
+                        self.session.world().ship_position().unwrap_or_default(),
+                        self.session
+                            .world()
+                            .ship_orientation()
+                            .map(|orientation| orientation.yaw_degrees)
+                            .unwrap_or_default(),
+                    ) {
+                        game::render_bridge::Echo7SupportSurface::Stair => {
+                            STAIR_WALK_SPEED_MULTIPLIER
+                        }
+                        game::render_bridge::Echo7SupportSurface::UpperBalcony => {
+                            UPPER_DECK_WALK_SPEED_MULTIPLIER
+                        }
+                        game::render_bridge::Echo7SupportSurface::LowerDeck => 1.0,
+                    }
+                })
+                .unwrap_or(1.0)
         } else {
-            delta_ms
+            1.0
         };
+        let motion_delta_ms = (delta_ms as f32 * walk_multiplier) as u64;
         let seconds = motion_delta_ms as f32 / 1_000.0;
         let local = self.current_flight_input();
         let interior_origin = self
