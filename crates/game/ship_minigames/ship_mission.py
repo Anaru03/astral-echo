@@ -233,9 +233,19 @@ if __name__ == "__main__":
         # de atributos internos de cada clase.
         for window in root.winfo_children():
             if isinstance(window, tk.Toplevel):
+                try:
+                    window.attributes("-topmost", True)
+                except tk.TclError:
+                    pass
                 window.deiconify()
                 window.lift()
                 window.focus_force()
+                window.after(
+                    1200,
+                    lambda current=window: current.attributes("-topmost", False)
+                    if current.winfo_exists()
+                    else None,
+                )
     else:
         open_ship_maintenance_mission(
             root,

@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::Child;
+use std::process::{Child, Stdio};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -326,6 +326,20 @@ fn walking_input(keyboard: GameplayVec3, gamepad: GameplayVec3) -> GameplayVec3 
         y: 0.0,
         z: (keyboard.z + gamepad.z).clamp(-1.0, 1.0),
     }
+}
+
+fn free_navigation_needs_route(
+    destination: Option<DestinationId>,
+    travel: gameplay::TravelState,
+) -> bool {
+    destination.is_some_and(|destination| {
+        !matches!(
+            travel,
+            gameplay::TravelState::Completed {
+                destination: arrived
+            } if arrived == destination
+        )
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2806,38 +2820,65 @@ impl VisualBridge {
             .join("ship_minigames")
             .join("ship_mission.py");
         let configured_python = std::env::var("ASTRAL_ECHO_PYTHON").ok();
-        let mut launchers = configured_python
-            .into_iter()
-            .map(|value| (value, false))
-            .chain([
-                ("python3".to_owned(), false),
-                ("python".to_owned(), false),
-                ("py".to_owned(), true),
-            ])
-            .collect::<Vec<_>>();
-        launchers.dedup_by(|left, right| left.0 == right.0);
+        let mut launchers = Vec::new();
+        if let Some(configured) = configured_python {
+            launchers.push((configured, false));
+        }
+        for launcher in [
+            ("py".to_owned(), true),
+            ("python".to_owned(), false),
+            ("python3".to_owned(), false),
+        ] {
+            if !launchers
+                .iter()
+                .any(|(existing, _)| existing == &launcher.0)
+            {
+                launchers.push(launcher);
+            }
+        }
         let mut child = None;
+        let mut launch_error = String::new();
         for (launcher, python_launcher) in launchers {
+            let mut probe = std::process::Command::new(&launcher);
+            if python_launcher {
+                probe.arg("-3");
+            }
+            match probe.args(["-c", "import tkinter"]).output() {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => {
+                    launch_error = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                    continue;
+                }
+                Err(error) => {
+                    launch_error = error.to_string();
+                    continue;
+                }
+            }
             let mut command = std::process::Command::new(launcher);
             if python_launcher {
                 command.arg("-3");
             }
-            if let Ok(process) = command
+            match command
                 .current_dir(script.parent().unwrap_or(Path::new(".")))
                 .arg(&script)
                 .arg("--task")
                 .arg(task)
                 .arg("--event-file")
                 .arg(&event_file)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
                 .spawn()
             {
-                child = Some(process);
-                break;
+                Ok(process) => {
+                    child = Some(process);
+                    break;
+                }
+                Err(error) => launch_error = error.to_string(),
             }
         }
         let Some(child) = child else {
             self.feedback =
-                format!("NO SE PUDO ABRIR EL MINIJUEGO {task} — CONFIGURA ASTRAL_ECHO_PYTHON");
+                format!("NO SE PUDO ABRIR {task}: SE REQUIERE PYTHON CON TKINTER ({launch_error})");
             return false;
         };
         self.active_ship_minigame = Some(ActiveShipMinigame {
@@ -2875,11 +2916,20 @@ impl VisualBridge {
                 self.completed_ship_minigames.len()
             );
         } else if exited.is_some() {
+            let mut diagnostic = String::new();
+            if let Some(mut stderr) = active.child.stderr.take() {
+                let _ = std::io::Read::read_to_string(&mut stderr, &mut diagnostic);
+            }
             let _ = std::fs::remove_file(&active.event_file);
-            self.feedback = format!(
-                "MINIJUEGO CANCELADO: {} — VUELVE A INTERACTUAR PARA REINTENTAR",
-                active.task
-            );
+            let detail = diagnostic.trim();
+            self.feedback = if detail.is_empty() {
+                format!(
+                    "MINIJUEGO CERRADO: {} — VUELVE A INTERACTUAR PARA REINTENTAR",
+                    active.task
+                )
+            } else {
+                format!("MINIJUEGO {}: {}", active.task, detail)
+            };
         } else {
             self.active_ship_minigame = Some(active);
         }
@@ -2908,6 +2958,22 @@ impl VisualBridge {
                         <= station.interaction_range * station.interaction_range
                 });
         if at_pilot_station || pilot_station_selected {
+            if let Some(task) = self.ship_minigame_for_target(self.pilot_station) {
+                let first_mission_active = self
+                    .session
+                    .mission_progress(crate::el_despertar::EL_DESPERTAR)
+                    .is_some_and(|mission| {
+                        mission.state == gameplay::domains::mission::MissionState::Active
+                    });
+                if (first_mission_active || (self.interior_mode && self.started))
+                    && !self.completed_ship_minigames.contains(task)
+                {
+                    self.start_ship_minigame(task, self.pilot_station);
+                    if !self.completed_ship_minigames.contains(task) {
+                        return;
+                    }
+                }
+            }
             if self.pilot_station_occupied_by(self.player)
                 || self.issue([GameplayCommand::Interact {
                     player: self.player,
@@ -5322,12 +5388,7 @@ impl VisualBridge {
             return;
         }
         let free_destination = self.session.world().free_navigation_destination();
-        if free_destination.is_some()
-            && !matches!(
-                self.session.world().travel_state(),
-                gameplay::TravelState::Completed { .. }
-            )
-        {
+        if free_navigation_needs_route(free_destination, self.session.world().travel_state()) {
             if self.session.world().free_navigation_proposal().is_none()
                 || self.free_navigation_proposal_is_stale()
             {
@@ -5367,6 +5428,12 @@ impl VisualBridge {
                         .unwrap_or("DESTINO")
                 );
             }
+            return;
+        }
+        if free_destination.is_some()
+            && !free_navigation_needs_route(free_destination, self.session.world().travel_state())
+        {
+            self.feedback = "DESTINO ALCANZADO — USA N PARA ELEGIR OTRO PLANETA".to_owned();
             return;
         }
         if let Ok(guidance) = self.session.world().guidance_for_player(player) {
@@ -7281,6 +7348,49 @@ mod tests {
         assert!(bridge
             .guidance_prompt()
             .is_some_and(|guide| guide.contains("TESSARA") && guide.contains("ELEGIR E INICIAR")));
+    }
+
+    #[test]
+    fn pilot_station_interaction_routes_through_asteroids_minigame_first() {
+        let mut bridge =
+            VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
+        bridge.started = true;
+        bridge.awakening_sequence = false;
+        bridge.interior_mode = true;
+        let station_position = bridge
+            .session
+            .world()
+            .interactable(bridge.pilot_station)
+            .expect("pilot station should exist")
+            .position;
+        assert!(bridge
+            .session
+            .world_mut()
+            .initialize_player_position(bridge.player, station_position,));
+
+        bridge.guided_interaction();
+
+        assert!(bridge.completed_ship_minigames.contains("asteroids"));
+    }
+
+    #[test]
+    fn completed_free_route_allows_selecting_a_different_planet() {
+        assert!(!free_navigation_needs_route(
+            Some(TESSARA_DESTINATION),
+            gameplay::TravelState::Completed {
+                destination: TESSARA_DESTINATION,
+            },
+        ));
+        assert!(free_navigation_needs_route(
+            Some(KHARVEX_DESTINATION),
+            gameplay::TravelState::Completed {
+                destination: TESSARA_DESTINATION,
+            },
+        ));
+        assert!(free_navigation_needs_route(
+            Some(TESSARA_DESTINATION),
+            gameplay::TravelState::Idle,
+        ));
     }
 
     #[test]
