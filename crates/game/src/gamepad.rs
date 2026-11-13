@@ -333,17 +333,11 @@ impl GamepadInput {
                 }
                 EventType::ButtonChanged(button, value, _)
                     if self.active == Some(event.id)
-                        && matches!(
-                            button,
-                            Button::LeftTrigger | Button::RightTrigger
-                        ) =>
+                        && matches!(button, Button::LeftTrigger | Button::RightTrigger) =>
                 {
                     if let Some(mapped) = map_button(button) {
-                        self.state.set_button(
-                            mapped,
-                            value.is_finite() && value > 0.5,
-                            true,
-                        );
+                        self.state
+                            .set_button(mapped, value.is_finite() && value > 0.5, true);
                     }
                 }
                 EventType::AxisChanged(axis, value, _) if self.active == Some(event.id) => {
