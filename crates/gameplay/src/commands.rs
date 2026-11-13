@@ -254,6 +254,10 @@ pub enum GameplayCommand {
         pilot_station: EntityId,
         active: bool,
     },
+    TakePilotControl {
+        player: EntityId,
+        pilot_station: EntityId,
+    },
     SetShipShieldActive {
         player: EntityId,
         ship: EntityId,

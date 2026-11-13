@@ -279,6 +279,8 @@ const SIGNAL: DestinationId = DestinationId::new(9_003);
 const ENCOUNTER: EncounterId = EncounterId::new(9_004);
 const OBSERVATION_AZIMUTH_STEP: f32 = 0.2;
 const OBSERVATION_ELEVATION_STEP: f32 = 0.1;
+const SURFACE_CAMERA_YAW_SPEED: f32 = 180.0;
+const SURFACE_CAMERA_PITCH_SPEED: f32 = 120.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct FlightKeys {
@@ -1576,6 +1578,30 @@ impl VisualBridge {
         if self.awakening_sequence {
             return;
         }
+        if state == ElementState::Released {
+            let look_key = match key {
+                KeyCode::ArrowLeft => {
+                    self.look_left = false;
+                    true
+                }
+                KeyCode::ArrowRight => {
+                    self.look_right = false;
+                    true
+                }
+                KeyCode::ArrowUp => {
+                    self.look_up = false;
+                    true
+                }
+                KeyCode::ArrowDown => {
+                    self.look_down = false;
+                    true
+                }
+                _ => false,
+            };
+            if look_key {
+                return;
+            }
+        }
         if state == ElementState::Pressed && key == KeyCode::F1 {
             if !self.player_defeated {
                 self.controls_panel_open = !self.controls_panel_open;
@@ -1704,18 +1730,10 @@ impl VisualBridge {
             if state == ElementState::Pressed {
                 match key {
                     KeyCode::KeyO => self.toggle_observation(),
-                    KeyCode::ArrowLeft => self
-                        .observation
-                        .adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0),
-                    KeyCode::ArrowRight => {
-                        self.observation.adjust_orbit(OBSERVATION_AZIMUTH_STEP, 0.0)
-                    }
-                    KeyCode::ArrowUp => self
-                        .observation
-                        .adjust_orbit(0.0, OBSERVATION_ELEVATION_STEP),
-                    KeyCode::ArrowDown => self
-                        .observation
-                        .adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP),
+                    KeyCode::ArrowLeft => self.look_left = true,
+                    KeyCode::ArrowRight => self.look_right = true,
+                    KeyCode::ArrowUp => self.look_up = true,
+                    KeyCode::ArrowDown => self.look_down = true,
                     _ => {}
                 }
             }
@@ -1778,18 +1796,6 @@ impl VisualBridge {
             }
             return;
         }
-        if (self.interior_mode || self.pilot_mode || self.surface_mode)
-            && state == ElementState::Released
-        {
-            match key {
-                KeyCode::ArrowLeft => self.look_left = false,
-                KeyCode::ArrowRight => self.look_right = false,
-                KeyCode::ArrowUp => self.look_up = false,
-                KeyCode::ArrowDown => self.look_down = false,
-                _ => {}
-            }
-            return;
-        }
         if state != ElementState::Pressed {
             return;
         }
@@ -1800,6 +1806,7 @@ impl VisualBridge {
             KeyCode::KeyI if self.pilot_mode => self.exit_pilot(),
             KeyCode::KeyI if self.surface_mode => self.try_takeoff(),
             KeyCode::KeyI => self.guided_interaction(),
+            KeyCode::KeyK if self.interior_mode => self.enter_pilot_from_anywhere(),
             KeyCode::KeyL => self.request_landing_from_current_position(),
             KeyCode::KeyR => self.restore_energy(),
             KeyCode::KeyY => self.restore_life_support(),
@@ -1892,16 +1899,18 @@ impl VisualBridge {
                     self.rotate_ship_from_input(0.0, 1.0);
                 }
             }
-            KeyCode::ArrowLeft => self
-                .observation
-                .adjust_orbit(-OBSERVATION_AZIMUTH_STEP, 0.0),
-            KeyCode::ArrowRight => self.observation.adjust_orbit(OBSERVATION_AZIMUTH_STEP, 0.0),
-            KeyCode::ArrowUp => self
-                .observation
-                .adjust_orbit(0.0, OBSERVATION_ELEVATION_STEP),
-            KeyCode::ArrowDown => self
-                .observation
-                .adjust_orbit(0.0, -OBSERVATION_ELEVATION_STEP),
+            KeyCode::ArrowLeft => {
+                self.look_left = true;
+            }
+            KeyCode::ArrowRight => {
+                self.look_right = true;
+            }
+            KeyCode::ArrowUp => {
+                self.look_up = true;
+            }
+            KeyCode::ArrowDown => {
+                self.look_down = true;
+            }
             _ => {}
         }
     }
@@ -2619,7 +2628,6 @@ impl VisualBridge {
 
     fn guided_interaction(&mut self) {
         let at_pilot_station = self.interior_mode
-            && self.mission_one_completed()
             && !self.legacy_exterior_controls
             && self
                 .session
@@ -2644,10 +2652,8 @@ impl VisualBridge {
             }
             return;
         }
-        let can_access_pilot_console = !self.pilot_mode
-            && !self.legacy_exterior_controls
-            && !self.interior_mode
-            && self.mission_one_completed();
+        let can_access_pilot_console =
+            !self.pilot_mode && !self.legacy_exterior_controls && !self.interior_mode;
         if can_access_pilot_console {
             let mut aggregate = FeedbackAggregate::default();
             self.issue_into(
@@ -3001,7 +3007,12 @@ impl VisualBridge {
         }
         let look_yaw = self.look_right as i8 - self.look_left as i8;
         let look_pitch = self.look_down as i8 - self.look_up as i8;
-        if look_yaw != 0 || look_pitch != 0 {
+        if self.surface_mode {
+            self.surface_camera_yaw += f32::from(look_yaw) * SURFACE_CAMERA_YAW_SPEED * seconds;
+            self.surface_camera_pitch = (self.surface_camera_pitch
+                + f32::from(look_pitch) * SURFACE_CAMERA_PITCH_SPEED * seconds)
+                .clamp(-55.0, 55.0);
+        } else if look_yaw != 0 || look_pitch != 0 {
             self.rotate_player(
                 f32::from(look_yaw) * 6.0 * seconds / 0.016,
                 f32::from(look_pitch) * 4.0 * seconds / 0.016,
@@ -3806,7 +3817,7 @@ impl VisualBridge {
             "WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | I/A DESPEGAR AL ACERCARTE A ECHO-7"
                 .to_owned()
         } else if self.interior_mode {
-            "WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | I/A USAR | M/DPAD← INICIAR | R/Y o DPAD↑↓ RECURSOS".to_owned()
+            "WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | K PILOTAJE (B EN MANDO) | I/A USAR | M/DPAD← INICIAR | R/Y o DPAD↑↓ RECURSOS".to_owned()
         } else if self
             .session
             .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
@@ -3858,6 +3869,7 @@ impl VisualBridge {
                 "WASD MOVER - EXPLORACION".to_owned(),
                 "FLECHAS MIRAR - EXPLORACION".to_owned(),
                 "I/A INTERACTUAR - OBJETOS".to_owned(),
+                "K ENTRAR EN PILOTAJE DE ECHO-7 DESDE EL INTERIOR (B EN MANDO)".to_owned(),
                 "M/DPAD← INICIAR MISION - GENERAL".to_owned(),
                 "R/DPAD↑ RESTAURAR ENERGIA - PANEL ELECTRICO".to_owned(),
                 "Y/DPAD↓ RESTAURAR SOPORTE VITAL - PANEL DE OXIGENO".to_owned(),
@@ -3969,21 +3981,27 @@ impl VisualBridge {
         self.finish_issue(aggregate);
     }
 
+    fn enter_pilot_from_anywhere(&mut self) {
+        // K is the direct Echo-7 pilot shortcut. It does not depend on
+        // mission progress or on a selected derelict; TakePilotControl still
+        // validates the real piloting station anchored to Echo-7.
+        self.enter_pilot_with_command(GameplayCommand::TakePilotControl {
+            player: self.player,
+            pilot_station: self.pilot_station,
+        });
+    }
+
     fn enter_pilot(&mut self) {
-        if self.pilot_mode && !self.mission_one_completed() {
-            self.feedback =
-                "ERICK: primero debo completar la Misión 1 para preparar la nave.".to_owned();
-            return;
-        }
+        self.enter_pilot_with_command(GameplayCommand::SetShipControlActive {
+            player: self.player,
+            pilot_station: self.pilot_station,
+            active: true,
+        });
+    }
+
+    fn enter_pilot_with_command(&mut self, command: GameplayCommand) {
         let mut aggregate = FeedbackAggregate::default();
-        let accepted = self.issue_into(
-            [GameplayCommand::SetShipControlActive {
-                player: self.player,
-                pilot_station: self.pilot_station,
-                active: true,
-            }],
-            &mut aggregate,
-        );
+        let accepted = self.issue_into([command], &mut aggregate);
         if accepted {
             let ship_position = self
                 .session
@@ -4138,6 +4156,34 @@ impl VisualBridge {
         if self.fire_pressed {
             self.attack_auto_target();
         }
+    }
+
+    fn update_observation_motion(&mut self) {
+        if self.interior_mode
+            || self.pilot_mode
+            || self.surface_mode
+            || self.inventory_open
+            || self.controls_panel_open
+            || self.navigation_selector_open
+        {
+            return;
+        }
+        let yaw = self.look_right as i8 - self.look_left as i8;
+        let pitch = self.look_up as i8 - self.look_down as i8;
+        if yaw == 0 && pitch == 0 {
+            return;
+        }
+        let now = Instant::now();
+        let delta_ms = now
+            .saturating_duration_since(self.last_interior_update)
+            .as_millis()
+            .clamp(8, 50) as f32;
+        self.last_interior_update = now;
+        let frame_scale = delta_ms / 16.0;
+        self.observation.adjust_orbit(
+            f32::from(yaw) * OBSERVATION_AZIMUTH_STEP * frame_scale,
+            f32::from(pitch) * OBSERVATION_ELEVATION_STEP * frame_scale,
+        );
     }
 
     fn auto_target_enemy(&self) -> Option<EntityId> {
@@ -4375,6 +4421,7 @@ impl VisualBridge {
         }
         if self.interior_mode && !self.pilot_mode {
             return match button {
+                ControllerButton::East => Some(KeyCode::KeyK),
                 ControllerButton::DPadUp => Some(KeyCode::KeyR),
                 ControllerButton::DPadDown => Some(KeyCode::KeyY),
                 ControllerButton::DPadLeft => Some(KeyCode::KeyM),
@@ -5202,6 +5249,7 @@ pub fn run() -> Result<(), String> {
             bridge.poll_gamepad();
             bridge.update_interior_motion();
             bridge.update_pilot_motion();
+            bridge.update_observation_motion();
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
@@ -5939,6 +5987,47 @@ mod tests {
     }
     use super::*;
     use render_present::DeferredMeshRegistry;
+
+    #[test]
+    fn observation_arrow_keeps_rotating_until_release() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        let initial = bridge.observation.azimuth;
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
+        bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(16);
+        bridge.update_observation_motion();
+        let first = bridge.observation.azimuth;
+        bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(16);
+        bridge.update_observation_motion();
+        let second = bridge.observation.azimuth;
+
+        assert!(first > initial);
+        assert!(second > first);
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Released);
+        bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(16);
+        bridge.update_observation_motion();
+        assert_eq!(bridge.observation.azimuth, second);
+    }
+
+    #[test]
+    fn surface_camera_arrow_keeps_rotating_until_release() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        bridge.surface_mode = true;
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Pressed);
+
+        bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(16);
+        bridge.update_interior_motion();
+        let first = bridge.surface_camera_yaw;
+        bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(16);
+        bridge.update_interior_motion();
+        let second = bridge.surface_camera_yaw;
+
+        assert!(first > 0.0);
+        assert!(second > first);
+        bridge.handle_key(KeyCode::ArrowRight, ElementState::Released);
+        bridge.last_interior_update = Instant::now() - std::time::Duration::from_millis(16);
+        bridge.update_interior_motion();
+        assert_eq!(bridge.surface_camera_yaw, second);
+    }
 
     #[test]
     fn visual_runtime_requires_explicit_start_and_preserves_initial_campaign_state() {
@@ -7536,7 +7625,7 @@ mod tests {
     fn pilot_mode_moves_and_rotates_the_authoritative_ship_only() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         bridge.guided_interaction();
-        assert!(bridge.pilot_mode);
+        assert!(bridge.pilot_mode, "{}", bridge.feedback);
         let player_before = bridge
             .session
             .world()
@@ -7564,6 +7653,104 @@ mod tests {
                 .position,
             player_before
         );
+    }
+
+    #[test]
+    fn k_enters_pilot_mode_from_far_away_interior_position() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+        bridge.handle_key(KeyCode::F7, ElementState::Pressed);
+        let original_position = GameplayVec3 {
+            x: 1_000.0,
+            y: 1_000.0,
+            z: 1_000.0,
+        };
+        assert!(bridge
+            .session
+            .world_mut()
+            .initialize_player_position(bridge.player, original_position));
+
+        bridge.handle_key(KeyCode::KeyK, ElementState::Pressed);
+
+        assert!(bridge.pilot_mode);
+        assert!(!bridge.interior_mode);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .station(bridge.pilot_station)
+                .expect("pilot station should exist")
+                .occupant,
+            Some(bridge.player)
+        );
+        assert_eq!(bridge.session.world().ship_control_active(), Some(true));
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .player(bridge.player)
+                .expect("player should exist")
+                .position,
+            original_position
+        );
+    }
+
+    #[test]
+    fn k_enters_echo7_pilot_without_mission_or_derelict_station() {
+        let mut bridge = VisualBridge::new_with_mode_and_enemy_distance(
+            true,
+            true,
+            VISUAL_INITIAL_SHIP_POSITION,
+            false,
+        )
+        .expect("visual bootstrap should work");
+
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .ship_station_anchor(bridge.pilot_station)
+                .map(|(ship, _)| ship),
+            Some(bridge.ship)
+        );
+        assert!(!bridge.mission_one_completed());
+        assert!(!bridge
+            .session
+            .world()
+            .derelicts()
+            .any(|derelict| derelict.state == gameplay::DerelictState::Resolved));
+
+        bridge.handle_key(KeyCode::KeyK, ElementState::Pressed);
+
+        assert!(bridge.pilot_mode, "{}", bridge.feedback);
+        assert!(!bridge.interior_mode);
+        assert_eq!(bridge.session.world().ship_control_active(), Some(true));
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .station(bridge.pilot_station)
+                .expect("Echo-7 piloting station should exist")
+                .occupant,
+            Some(bridge.player)
+        );
+
+        let before = bridge
+            .session
+            .world()
+            .ship_position()
+            .expect("Echo-7 should have a position");
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        bridge.update_pilot_motion();
+        bridge.session.update([GameplayCommand::AdvanceTime {
+            delta: Duration(100),
+        }]);
+        let after = bridge
+            .session
+            .world()
+            .ship_position()
+            .expect("Echo-7 should remain navigable");
+        assert_ne!(before, after);
     }
 
     #[test]
@@ -7874,6 +8061,11 @@ mod tests {
         assert_eq!(
             controller_key(ControllerButton::DPadLeft),
             Some(KeyCode::ArrowLeft)
+        );
+        let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        assert_eq!(
+            bridge.controller_key_for_state(ControllerButton::East),
+            Some(KeyCode::KeyK)
         );
     }
 
