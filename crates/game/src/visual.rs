@@ -2636,7 +2636,6 @@ impl VisualBridge {
             return;
         }
         let at_pilot_station = self.interior_mode
-            && self.mission_one_completed()
             && !self.legacy_exterior_controls
             && self
                 .session
