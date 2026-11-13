@@ -3015,6 +3015,8 @@ impl VisualBridge {
             // runs faster than the display refresh rate.
             .clamp(8, 50) as u64;
         self.last_interior_update = now;
+        // La velocidad efectiva la decide GameplayWorld; aquí solo convertimos
+        // el tiempo transcurrido del frame a segundos para orientar el input.
         let seconds = delta_ms as f32 / 1_000.0;
         let local = self.current_flight_input();
         let interior_origin = self
@@ -3065,6 +3067,8 @@ impl VisualBridge {
                 f32::from(look_pitch) * 4.0 * seconds / 0.016,
             );
         }
+        // Normalizar evita que avanzar en diagonal sea más rápido que avanzar
+        // en línea recta. El límite de velocidad permanece en gameplay.
         let horizontal_magnitude = (direction.x * direction.x + direction.z * direction.z).sqrt();
         if horizontal_magnitude > 1.0 {
             direction.x /= horizontal_magnitude;
@@ -3271,6 +3275,8 @@ impl VisualBridge {
                     )
                 })
             };
+            // La escalera calcula la altura de apoyo a partir de la posición
+            // local; el jugador se eleva visualmente al nivel del peldaño.
             let support = game::render_bridge::echo7_walkable_height(
                 updated.position,
                 interior_origin,

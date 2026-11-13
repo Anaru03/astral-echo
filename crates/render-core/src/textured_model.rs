@@ -303,6 +303,7 @@ pub fn register_textured_model(
             .strip_prefix("ECHO7_26_Pasillos_Superiores__Pared_pasillo_")
             .and_then(|suffix| suffix.parse::<u32>().ok())
             .is_some_and(|segment| segment % 4 == 1);
+        // Estos paneles conservan el marco opaco, pero dejan pasar el espacio.
         let transparent_window = cabin_window || upper_window;
         let cloning_wall = part.name.starts_with("ECHO7_03_Clonacion__Pared_presion_")
             || part.name.starts_with("ECHO7_03_Clonacion__Pared_frente_");

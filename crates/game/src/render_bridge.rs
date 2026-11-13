@@ -487,6 +487,7 @@ pub fn echo7_support_surface(
     ship_position: engine::Vec3,
     ship_yaw_degrees: f32,
 ) -> Echo7SupportSurface {
+    // Clasifica el suelo actual para distinguir cubierta, escalera y balcón.
     let local = echo7_world_to_local(position, ship_position, ship_yaw_degrees);
     let stair_lateral_radius = ECHO7_PLAYER_RADIUS / ECHO7_VISUAL_SCALE.y;
     let on_stair = local.x >= ECHO7_STAIR_LOCAL_X_MIN
@@ -561,6 +562,7 @@ pub fn echo7_walkable_height(
     ship_position: engine::Vec3,
     ship_yaw_degrees: f32,
 ) -> f32 {
+    // Devuelve la altura de los pies; en la escalera interpola entre cubiertas.
     let local = echo7_world_to_local(position, ship_position, ship_yaw_degrees);
     if matches!(
         echo7_support_surface(position, ship_position, ship_yaw_degrees),
@@ -1157,6 +1159,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     }
 
     if interior {
+        // Luces puntuales independientes: una central y luminarias por módulo.
         let interior_origin = world.ship_position().map(from_engine).unwrap_or(Vec3::ZERO);
         let ship_yaw = world
             .ship_orientation()
