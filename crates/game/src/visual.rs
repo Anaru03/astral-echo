@@ -682,6 +682,7 @@ impl VisualBridge {
         } else {
             initial_ship_position
         };
+        let interior_mode = interior_mode || new_game_spawn;
         if !session
             .world_mut()
             .initialize_player_position(player, player_spawn)

@@ -1394,6 +1394,9 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                 ),
                 _ => (ASTEROID_FIELD_MESH, ASTEROID_MATERIAL, Vec3::splat(0.65)),
             };
+            if dest.destination_type == gameplay::DestinationType::Planet && mesh == PLANET_MESH {
+                continue;
+            }
             let transform = if academic_planet == Some(dest.id) {
                 let mut transform = building_planet_transform(elapsed_seconds);
                 if let Some(position) = world.planet_position_at(dest.id, world.time().elapsed) {
