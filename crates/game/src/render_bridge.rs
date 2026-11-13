@@ -87,7 +87,7 @@ pub const LANDING_CINEMATIC_DURATION_MS: u64 = 1_800;
 pub const TAKEOFF_CINEMATIC_DURATION_MS: u64 = 1_500;
 pub const SURFACE_RETURN_DISTANCE: f32 = 5.0;
 const SUN_POSITION: Vec3 = Vec3::new(0.0, 0.0, -8.0);
-const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 10.0, 18.0);
+const FLIGHT_CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 24.0, 44.0);
 pub const PILOT_CAMERA_DEFAULT_DISTANCE: f32 = 12.0;
 pub const PILOT_CAMERA_MIN_DISTANCE: f32 = 3.0;
 pub const PILOT_CAMERA_MAX_DISTANCE: f32 = 80.0;
@@ -1961,7 +1961,7 @@ pub fn pilot_camera(
             fov_y_rad: 58.0_f32.to_radians(),
             aspect,
             near: 0.1,
-            far: 50_000.0,
+            far: 500_000.0,
         },
     )
 }
@@ -2030,7 +2030,20 @@ pub fn observation_camera_for_destination(
     } else {
         0.0
     };
-    let flight_radius = FLIGHT_CAMERA_OFFSET.length();
+    let system_extent = observable_planets(world)
+        .into_iter()
+        .filter_map(|id| {
+            world
+                .planet_position_at(id, world.time().elapsed)
+                .map(|position| from_engine(position).distance(ship))
+                .or_else(|| {
+                    world
+                        .destination(id)
+                        .map(|destination| from_engine(destination.position).distance(ship))
+                })
+        })
+        .fold(0.0_f32, f32::max);
+    let flight_radius = FLIGHT_CAMERA_OFFSET.length().max(system_extent * 1.35);
     let flight_elevation = (FLIGHT_CAMERA_OFFSET.y
         / (FLIGHT_CAMERA_OFFSET.x * FLIGHT_CAMERA_OFFSET.x
             + FLIGHT_CAMERA_OFFSET.z * FLIGHT_CAMERA_OFFSET.z)
@@ -2044,7 +2057,11 @@ pub fn observation_camera_for_destination(
             flight_radius * flight_elevation.cos() * azimuth.cos(),
         );
     let space_position = flight_position;
-    let space_target = (SUN_POSITION + ship + planet) / 3.0;
+    let space_target = if transition <= 0.001 {
+        ship.lerp(planet, 0.18)
+    } else {
+        planet
+    };
     let surface_direction = Vec3::new(
         elevation.cos() * azimuth.cos(),
         elevation.sin(),
@@ -2069,7 +2086,7 @@ pub fn observation_camera_for_destination(
             fov_y_rad: 58.0_f32.to_radians(),
             aspect,
             near: 0.1,
-            far: 50_000.0,
+            far: 500_000.0,
         },
     )
 }

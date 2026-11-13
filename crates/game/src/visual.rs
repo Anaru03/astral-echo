@@ -1772,7 +1772,10 @@ impl VisualBridge {
             self.feedback = "VISTA DE ECHO-7 CERRADA — EXPLORACION INTERIOR".to_owned();
             return;
         }
-        if self.pilot_mode && state == ElementState::Pressed && key == KeyCode::KeyN {
+        if (self.pilot_mode || self.pilot_view)
+            && state == ElementState::Pressed
+            && key == KeyCode::KeyN
+        {
             self.toggle_navigation_selector();
             return;
         }
@@ -1836,7 +1839,10 @@ impl VisualBridge {
             }]);
             return;
         }
-        if self.pilot_mode && self.observation_is_active() && state == ElementState::Pressed {
+        if (self.pilot_mode || self.pilot_view)
+            && self.observation_is_active()
+            && state == ElementState::Pressed
+        {
             match key {
                 KeyCode::BracketLeft => {
                     self.select_observation_planet(-1);
@@ -1892,6 +1898,7 @@ impl VisualBridge {
             KeyCode::KeyT => self.retry_cooperative_mission_content(),
             KeyCode::KeyI if self.pilot_mode => self.exit_pilot(),
             KeyCode::KeyI if self.pilot_view => self.enter_pilot_from_view(),
+            KeyCode::KeyP if self.pilot_view => self.toggle_flight(player, pilot_station),
             KeyCode::KeyI if self.surface_mode => self.try_takeoff(),
             KeyCode::KeyI => self.guided_interaction(),
             KeyCode::KeyK if self.interior_mode => self.open_pilot_view(),
@@ -4198,7 +4205,7 @@ impl VisualBridge {
             };
             format!("MODO PILOTAJE ECHO-7 | W/S AVANCE/RETROCESO | A/D GIRAR | ESPACIO/CTRL o DPAD↑↓ ALTURA | P o DPAD← GUIA | U o DPAD→ COMBUSTIBLE | I SALIR | RT ATACAR | LB ESCUDO | RB BOOST | AUTO: {autopilot}")
         } else if self.pilot_view {
-            "VISTA ECHO-7 | I/A ACTIVAR PILOTAJE | ESC/B VOLVER | STICK DER CAMARA".to_owned()
+            "VISTA ECHO-7 | N ELEGIR PLANETA | I PILOTAR | ESC VOLVER".to_owned()
         } else if self.surface_mode {
             "WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | I/A DESPEGAR AL ACERCARTE A ECHO-7"
                 .to_owned()
@@ -4385,6 +4392,13 @@ impl VisualBridge {
         self.pilot_view = true;
         self.pilot_mode = false;
         self.interior_mode = false;
+        self.pilot_camera_distance = 80.0;
+        self.observation.from = 0.0;
+        self.observation.to = 0.0;
+        self.observation.started_at = self.session.world().time().elapsed.0;
+        self.observation_target = game::render_bridge::observable_planets(self.session.world())
+            .into_iter()
+            .next();
         self.flight_keys = FlightKeys::default();
         self.gamepad_flight = GameplayVec3::ZERO;
         self.feedback = "VISTA DE ECHO-7 ACTIVA — I PILOTEAR | ESC VOLVER".to_owned();
@@ -4397,6 +4411,9 @@ impl VisualBridge {
             player: self.player,
             pilot_station: self.pilot_station,
         });
+        if self.pilot_mode {
+            self.pilot_camera_distance = 80.0;
+        }
     }
 
     fn enter_pilot(&mut self) {
@@ -4568,7 +4585,7 @@ impl VisualBridge {
 
     fn update_observation_motion(&mut self) {
         if self.interior_mode
-            || self.pilot_mode
+            || (self.pilot_mode && !self.pilot_view)
             || self.surface_mode
             || self.inventory_open
             || self.controls_panel_open
@@ -5589,8 +5606,18 @@ impl VisualBridge {
             }
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
         }
-        if self.pilot_mode || self.pilot_view {
+        if self.pilot_mode {
             return game::render_bridge::pilot_camera(world, aspect, self.pilot_camera_distance);
+        }
+        if self.pilot_view {
+            return game::render_bridge::observation_camera_for_destination(
+                world,
+                aspect,
+                self.observation.progress(world.time().elapsed.0),
+                self.observation.azimuth,
+                self.observation.elevation,
+                self.observation_target,
+            );
         }
         if self.interior_mode {
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
