@@ -163,6 +163,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             status(hud),
             progress.as_deref().unwrap_or("-")
         )),
+        hud.guidance.as_deref().map(|v| format!("GUIA: {v}")),
         hud.mission_description
             .as_deref()
             .map(|v| format!("CONTEXTO: {v}")),
@@ -200,7 +201,6 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         Some("OBJETIVOS:".to_owned()).filter(|_| !hud.mission_objectives.is_empty()),
         None,
         None,
-        hud.guidance.as_deref().map(|v| format!("GUIA: {v}")),
         hud.interaction_prompt
             .as_deref()
             .map(|v| format!("INTERACCION: {v}")),
@@ -599,6 +599,27 @@ mod tests {
         };
         let overlay = hud_overlay(&hud, 640, 360);
         assert!(overlay.background.width > 0 && !overlay.glyphs.is_empty());
+    }
+
+    #[test]
+    fn mission_guidance_is_drawn_before_objective_details() {
+        let hud = HudState {
+            guidance: Some("M INICIAR MISION DISPONIBLE".into()),
+            mission_objectives: vec![crate::HudMissionObjective {
+                id: 1,
+                name: "RESTABLECER ENERGIA".into(),
+                progress: 0,
+                required_progress: 1,
+                state: crate::HudObjectiveState::Available,
+                required: true,
+            }],
+            ..Default::default()
+        };
+        let overlay = hud_overlay(&hud, 640, 360);
+        assert!(overlay
+            .glyphs
+            .iter()
+            .any(|glyph| { glyph.color == [104, 224, 255, 255] && glyph.y == 20 }));
     }
     #[test]
     fn hud_layout_scales_and_clips_long_text() {

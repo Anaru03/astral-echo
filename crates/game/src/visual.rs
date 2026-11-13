@@ -320,6 +320,14 @@ impl FlightKeys {
     }
 }
 
+fn walking_input(keyboard: GameplayVec3, gamepad: GameplayVec3) -> GameplayVec3 {
+    GameplayVec3 {
+        x: (keyboard.x + gamepad.x).clamp(-1.0, 1.0),
+        y: 0.0,
+        z: (keyboard.z + gamepad.z).clamp(-1.0, 1.0),
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ObservationTransition {
     from: f32,
@@ -1787,6 +1795,14 @@ impl VisualBridge {
                 KeyCode::ArrowLeft => self.select_free_navigation_candidate(-1),
                 KeyCode::ArrowRight => self.select_free_navigation_candidate(1),
                 KeyCode::Enter => self.confirm_free_navigation_candidate(),
+                KeyCode::KeyP => {
+                    self.confirm_free_navigation_candidate();
+                    if !self.navigation_selector_open
+                        && self.session.world().free_navigation_destination().is_some()
+                    {
+                        self.toggle_flight(self.player, self.pilot_station);
+                    }
+                }
                 _ => {}
             }
             return;
@@ -1976,10 +1992,10 @@ impl VisualBridge {
             KeyCode::ArrowUp if self.interior_mode || self.pilot_mode => {
                 self.look_up = true;
                 if self.interior_mode {
-                    self.rotate_player(0.0, -4.0);
+                    self.rotate_player(0.0, 4.0);
                 }
                 if self.pilot_mode {
-                    self.rotate_ship_from_input(0.0, -1.0);
+                    self.rotate_ship_from_input(0.0, 1.0);
                 }
             }
             KeyCode::ArrowDown if self.surface_mode => {
@@ -1988,10 +2004,10 @@ impl VisualBridge {
             KeyCode::ArrowDown if self.interior_mode || self.pilot_mode => {
                 self.look_down = true;
                 if self.interior_mode {
-                    self.rotate_player(0.0, 4.0);
+                    self.rotate_player(0.0, -4.0);
                 }
                 if self.pilot_mode {
-                    self.rotate_ship_from_input(0.0, 1.0);
+                    self.rotate_ship_from_input(0.0, -1.0);
                 }
             }
             KeyCode::ArrowLeft => {
@@ -3294,7 +3310,7 @@ impl VisualBridge {
         };
         let motion_delta_ms = (delta_ms as f32 * walk_multiplier) as u64;
         let seconds = motion_delta_ms as f32 / 1_000.0;
-        let local = self.current_flight_input();
+        let local = walking_input(self.flight_keys.input(), self.gamepad_flight);
         let interior_origin = self
             .session
             .world()
@@ -3336,7 +3352,7 @@ impl VisualBridge {
             }
         }
         let look_yaw = self.look_right as i8 - self.look_left as i8;
-        let look_pitch = self.look_down as i8 - self.look_up as i8;
+        let look_pitch = self.look_up as i8 - self.look_down as i8;
         if self.surface_mode {
             self.surface_camera_yaw += f32::from(look_yaw) * SURFACE_CAMERA_YAW_SPEED * seconds;
             self.surface_camera_pitch = (self.surface_camera_pitch
@@ -4058,7 +4074,7 @@ impl VisualBridge {
                     .map(Self::navigation_destination_label)
                     .unwrap_or("NINGUNO");
                 return format!(
-                    "SELECCIÓN DE DESTINO | CANDIDATO: {candidate} | FLECHAS CAMBIAR | ENTER CONFIRMAR | N CERRAR"
+                    "SELECCIÓN DE DESTINO | CANDIDATO: {candidate} | FLECHAS CAMBIAR | P ELEGIR E INICIAR | N CERRAR"
                 );
             }
             let confirmed = self
@@ -4082,7 +4098,7 @@ impl VisualBridge {
                 _ => "INACTIVO",
             };
             return format!(
-                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - F1/START CONTROLES - F2/L3 HUD - F3/SELECT INVENTARIO",
+                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - GUIA: N ELEGIR | P INICIAR/RECALCULAR | ESC CANCELAR - [/] OBSERVAR - F1/START CONTROLES - F2/L3 HUD - F3/SELECT INVENTARIO",
                 self.observation_target_label(),
             );
         }
@@ -4091,29 +4107,83 @@ impl VisualBridge {
                 .to_owned();
         }
         if let Some(prompt) = self.contextual_prompt() {
+            if self.interior_mode {
+                let guide = self
+                    .guidance_prompt()
+                    .unwrap_or_else(|| "SIN OBJETIVO ACTIVO".to_owned());
+                return format!(
+                    "GUIA DEL JUGADOR: {guide} | {prompt} | WASD MOVER | FLECHAS MIRAR"
+                );
+            }
             return format!("{prompt} | PULSA LA TECLA INDICADA");
         }
         if self.surface_mode {
             return "EXPLORACION PLANETARIA: WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | A DESPEGAR JUNTO A ECHO-7".to_owned();
         }
         if self.interior_mode {
-            if self
+            let guide = self
                 .guidance_prompt()
-                .is_some_and(|value| value.starts_with('M'))
-            {
-                return "PULSA M PARA INICIAR LA MISION DISPONIBLE".to_owned();
-            }
-            if let Some(waypoint) = self.ship_minigame_waypoint_hint() {
-                return format!(
-                    "EXPLORACION: {waypoint} | 4 PUNTOS: ESTADO-ENERGIA-O2-PILOTAJE | WASD/STICK IZQ | FLECHAS/STICK DER | A"
-                );
-            }
-            return "EXPLORACION: CAMINO DORADO | 4 PUNTOS: ESTADO-ENERGIA-O2-PILOTAJE | F1/START CONTROLES | F2/L3 HUD | F3/SELECT INVENTARIO".to_owned();
+                .unwrap_or_else(|| "SIN OBJETIVO ACTIVO".to_owned());
+            let waypoint = self
+                .ship_minigame_waypoint_hint()
+                .map(|hint| format!(" | PUNTO DE RUTA: {hint}"))
+                .unwrap_or_default();
+            return format!(
+                "GUIA DEL JUGADOR: {guide}{waypoint} | WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | I INTERACTUAR | F1 CONTROLES"
+            );
         }
         "EXTERIOR: SIGUE LA GUIA - A INTERACTUAR/RECOGER - F1/START CONTROLES - F3/SELECT INVENTARIO".to_owned()
     }
 
     fn guidance_prompt(&self) -> Option<String> {
+        if self.pilot_mode {
+            let objective_hint = self
+                .session
+                .world()
+                .guidance_for_player(self.player)
+                .ok()
+                .and_then(|guidance| {
+                    guidance.current_objective.and_then(|id| {
+                        guidance
+                            .objectives
+                            .iter()
+                            .find(|objective| objective.id == id)
+                            .map(|objective| objective.name.clone())
+                    })
+                })
+                .unwrap_or_else(|| "SIN OBJETIVO ACTIVO".to_owned());
+            let destination = self
+                .session
+                .world()
+                .free_navigation_destination()
+                .map(Self::navigation_destination_label);
+            let route = match self.session.world().travel_state() {
+                gameplay::TravelState::InProgress { .. }
+                    if self.session.world().autopilot_waiting_for_encounter() =>
+                {
+                    "AUTOPILOTO PAUSADO | P CONTINUAR | ESC CANCELAR".to_owned()
+                }
+                gameplay::TravelState::InProgress { .. } => {
+                    "AUTOPILOTO EN TRANSITO | ESC CANCELAR".to_owned()
+                }
+                gameplay::TravelState::Completed { .. } => {
+                    "VIAJE COMPLETADO | N ELEGIR OTRO DESTINO".to_owned()
+                }
+                _ if self.navigation_selector_open => format!(
+                    "{} | FLECHAS CAMBIAR | P ELEGIR E INICIAR",
+                    self.free_navigation_candidate
+                        .map(Self::navigation_destination_label)
+                        .unwrap_or("NINGUNO")
+                ),
+                _ if destination.is_some() => format!(
+                    "RUTA {} ({}) | P INICIAR/RECALCULAR | N CAMBIAR",
+                    destination.unwrap_or("NINGUNO"),
+                    self.free_navigation_proposal_status()
+                ),
+                _ => "N ELEGIR DESTINO | P VIAJAR POR OBJETIVO".to_owned(),
+            };
+            return Some(format!("OBJ: {objective_hint} | GUIA: {route}"));
+        }
         if let Some((created, cached)) = self.guidance_cache.borrow().as_ref() {
             if created.elapsed() < std::time::Duration::from_millis(180) {
                 return cached.clone();
@@ -4203,7 +4273,7 @@ impl VisualBridge {
                 gameplay::AutopilotState::Interrupted { .. } => "INTERRUMPIDO",
                 gameplay::AutopilotState::Failed { .. } => "FALLIDO",
             };
-            format!("MODO PILOTAJE ECHO-7 | W/S AVANCE/RETROCESO | A/D GIRAR | ESPACIO/CTRL o DPAD↑↓ ALTURA | P o DPAD← GUIA | U o DPAD→ COMBUSTIBLE | I SALIR | RT ATACAR | LB ESCUDO | RB BOOST | AUTO: {autopilot}")
+            format!("PILOTAJE ECHO-7 | W/S AVANZAR/RETROCEDER | A/D GIRAR | ESPACIO/CTRL ALTURA | N/DPAD IZQ DESTINOS | FLECHAS/DPAD IZQ-DER CAMBIAR | P/A/DPAD DER ELEGIR E INICIAR | U COMBUSTIBLE | I SALIR | RT ATACAR | LB ESCUDO | RB BOOST | AUTO: {autopilot}")
         } else if self.pilot_view {
             "VISTA ECHO-7 | N ELEGIR PLANETA | I PILOTAR | ESC VOLVER".to_owned()
         } else if self.surface_mode {
@@ -4246,10 +4316,10 @@ impl VisualBridge {
                 "X/LT FRENAR - PILOTAJE".to_owned(),
                 "L ATERRIZAR CUANDO EL PLANETA ESTE CERCA - PILOTAJE".to_owned(),
                 "[/] CAMBIAR PLANETA OBSERVADO - PILOTAJE".to_owned(),
-                "N SELECCIONAR DESTINO LIBRE - PILOTAJE".to_owned(),
+                "N/DPAD IZQ ABRIR DESTINOS | FLECHAS/DPAD IZQ-DER CAMBIAR - PILOTAJE".to_owned(),
                 "U/DPAD→ USAR COMBUSTIBLE - PILOTAJE".to_owned(),
                 "B EQUIPAR PLASMA - ARMAMENTO ENCONTRADO".to_owned(),
-                "P/DPAD← IR AL PLANETA DE LA GUIA - PILOTAJE".to_owned(),
+                "P/A/DPAD DER ELEGIR DESTINO E INICIAR RUTA - PILOTAJE".to_owned(),
                 "I SALIR DEL PILOTAJE - PILOTAJE".to_owned(),
             ]);
         } else if self.pilot_view {
@@ -4563,7 +4633,7 @@ impl VisualBridge {
             + self.look_left as i8
             - self.look_right as i8)
             .clamp(-1, 1);
-        let pitch = self.look_down as i8 - self.look_up as i8;
+        let pitch = self.look_up as i8 - self.look_down as i8;
         if yaw != 0 || pitch != 0 {
             self.issue([GameplayCommand::RotateShip {
                 player: self.player,
@@ -4759,7 +4829,7 @@ impl VisualBridge {
         self.set_gamepad_flight(GameplayVec3 {
             x: frame.left_stick.x,
             y: 0.0,
-            z: frame.left_stick.y,
+            z: -frame.left_stick.y,
         });
         if self.pilot_mode {
             if frame.right_stick.x.abs() > 0.01 || frame.right_stick.y.abs() > 0.01 {
@@ -4785,7 +4855,7 @@ impl VisualBridge {
         } else {
             self.observation.adjust_orbit(
                 frame.right_stick.x * OBSERVATION_AZIMUTH_STEP,
-                -frame.right_stick.y * OBSERVATION_ELEVATION_STEP,
+                frame.right_stick.y * OBSERVATION_ELEVATION_STEP,
             );
         }
         let mut handled = Vec::new();
@@ -4823,9 +4893,10 @@ impl VisualBridge {
     }
 
     fn controller_key_for_state(&self, button: ControllerButton) -> Option<KeyCode> {
-        if button == ControllerButton::South
-            && (!self.started || self.inventory_open || self.navigation_selector_open)
-        {
+        if button == ControllerButton::South && self.navigation_selector_open {
+            return Some(KeyCode::KeyP);
+        }
+        if button == ControllerButton::South && (!self.started || self.inventory_open) {
             return Some(KeyCode::Enter);
         }
         if self.inventory_open {
@@ -4861,8 +4932,8 @@ impl VisualBridge {
             return match button {
                 ControllerButton::DPadUp => Some(KeyCode::Space),
                 ControllerButton::DPadDown => Some(KeyCode::ControlLeft),
-                ControllerButton::DPadLeft => Some(KeyCode::KeyP),
-                ControllerButton::DPadRight => Some(KeyCode::KeyU),
+                ControllerButton::DPadLeft => Some(KeyCode::KeyN),
+                ControllerButton::DPadRight => Some(KeyCode::KeyP),
                 _ => controller_key(button),
             };
         }
@@ -5231,14 +5302,70 @@ impl VisualBridge {
     }
 
     fn toggle_flight(&mut self, player: EntityId, pilot_station: EntityId) {
-        if self.session.world().free_navigation_proposal().is_some() {
-            let started = self.issue([GameplayCommand::StartFreeNavigation {
+        if matches!(
+            self.session.world().travel_state(),
+            gameplay::TravelState::InProgress { .. }
+        ) {
+            if matches!(
+                self.session.world().autopilot_state(),
+                gameplay::AutopilotState::InTransit { .. }
+            ) {
+                if self.issue([GameplayCommand::ContinueAutopilot {
+                    player,
+                    pilot_station,
+                }]) {
+                    self.feedback = "AUTOPILOTO REANUDADO - LA NAVE CONTINUA LA RUTA".to_owned();
+                }
+            } else {
+                self.feedback = "VIAJE EN CURSO - USA ESC PARA CANCELAR".to_owned();
+            }
+            return;
+        }
+        let free_destination = self.session.world().free_navigation_destination();
+        if free_destination.is_some()
+            && !matches!(
+                self.session.world().travel_state(),
+                gameplay::TravelState::Completed { .. }
+            )
+        {
+            if self.session.world().free_navigation_proposal().is_none()
+                || self.free_navigation_proposal_is_stale()
+            {
+                let evaluation = self
+                    .session
+                    .update([GameplayCommand::EvaluateFreeNavigation {
+                        player,
+                        pilot_station,
+                    }]);
+                if !matches!(
+                    evaluation.first().map(|result| result.status),
+                    Some(gameplay::CommandStatus::Success { .. })
+                ) {
+                    self.feedback =
+                        "ERICK: no se pudo recalcular la ruta; vuelve a elegir destino con N."
+                            .to_owned();
+                    return;
+                }
+            }
+            let Some(proposal) = self.session.world().free_navigation_proposal() else {
+                self.feedback =
+                    "ERICK: la ruta no pudo validarse; selecciona otro destino con N.".to_owned();
+                return;
+            };
+            if proposal.evaluation != gameplay::FreeNavigationEvaluation::Viable {
+                self.feedback = self.free_navigation_proposal_feedback();
+                return;
+            }
+            if self.issue([GameplayCommand::StartFreeNavigation {
                 player,
                 pilot_station,
-            }]);
-            if started {
-                self.feedback = "ERICK: autopilotaje libre iniciado.".to_owned();
-                println!("visual gameplay: {}", self.feedback);
+            }]) {
+                self.feedback = format!(
+                    "AUTOPILOTO INICIADO HACIA {}",
+                    free_destination
+                        .map(Self::navigation_destination_label)
+                        .unwrap_or("DESTINO")
+                );
             }
             return;
         }
@@ -7142,6 +7269,21 @@ mod tests {
     }
 
     #[test]
+    fn navigation_selector_exposes_temporal_choose_and_start_action() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.started = true;
+        bridge.awakening_sequence = false;
+        bridge.pilot_mode = true;
+        bridge.navigation_selector_open = true;
+        bridge.free_navigation_candidate = Some(TESSARA_DESTINATION);
+
+        assert!(bridge.instructions_hint().contains("P ELEGIR E INICIAR"));
+        assert!(bridge
+            .guidance_prompt()
+            .is_some_and(|guide| guide.contains("TESSARA") && guide.contains("ELEGIR E INICIAR")));
+    }
+
+    #[test]
     fn free_navigation_selector_does_not_open_outside_pilot_mode() {
         let mut bridge =
             VisualBridge::new_with_mode(true).expect("visual bridge should initialize");
@@ -8472,7 +8614,7 @@ mod tests {
 
     #[test]
     fn interior_prompt_identifies_the_nearest_real_interactable() {
-        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         assert!(bridge
             .contextual_prompt()
             .is_some_and(|prompt| prompt.contains("[I]") && prompt.contains("PILOTAJE")));
@@ -8498,7 +8640,47 @@ mod tests {
         assert!(bridge
             .guidance_prompt()
             .is_some_and(|value| value.contains("I") || value.contains("Q")));
-        assert!(bridge.controls_hint().contains("I USAR"));
+        assert!(bridge.controls_hint().contains("I/A USAR"));
+    }
+
+    #[test]
+    fn player_guide_is_visible_in_interior_and_pilot_hud() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.started = true;
+        bridge.awakening_sequence = false;
+        bridge.interior_mode = true;
+        assert!(bridge.instructions_hint().contains("GUIA DEL JUGADOR:"));
+        assert!(bridge.guidance_prompt().is_some());
+
+        bridge.pilot_mode = true;
+        assert!(bridge
+            .guidance_prompt()
+            .is_some_and(|guide| guide.contains("OBJ:") && guide.contains("GUIA:")));
+    }
+
+    #[test]
+    fn surface_view_uses_planet_transform_and_orbits_from_player_position() {
+        let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let world = bridge.session.world();
+        let transform = game::render_bridge::planet_surface_transform(world, TESSARA_DESTINATION)
+            .expect("Tessara visual transform should exist");
+        let surface = game::render_bridge::surface_camera_for_player_with_view_and_transform(
+            world,
+            bridge.player,
+            TESSARA_DESTINATION,
+            16.0 / 9.0,
+            0.0,
+            0.0,
+            Some(transform),
+        )
+        .expect("surface camera should be valid");
+        let interior =
+            game::render_bridge::interior_camera_for_player(world, bridge.player, 16.0 / 9.0)
+                .expect("interior camera should be valid");
+
+        assert_ne!(surface.position(), interior.position());
+        assert!(surface.position().is_finite());
+        assert!(surface.view_matrix().is_finite());
     }
 
     #[test]
@@ -8519,7 +8701,9 @@ mod tests {
         bridge.advance_visual_time_by(Duration(3_000));
         assert!(bridge.interior_mode);
         assert!(!bridge.pilot_mode);
-        assert!(!bridge.instructions_hint().contains("DESPERTAR"));
+        assert!(!bridge
+            .instructions_hint()
+            .contains("SECUENCIA DE DESPERTAR"));
     }
 
     #[test]
@@ -8671,10 +8855,28 @@ mod tests {
             controller_key(ControllerButton::DPadLeft),
             Some(KeyCode::ArrowLeft)
         );
-        let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         assert_eq!(
             bridge.controller_key_for_state(ControllerButton::East),
             Some(KeyCode::KeyK)
+        );
+        bridge.pilot_mode = true;
+        assert_eq!(
+            bridge.controller_key_for_state(ControllerButton::DPadLeft),
+            Some(KeyCode::KeyN)
+        );
+        assert_eq!(
+            bridge.controller_key_for_state(ControllerButton::DPadRight),
+            Some(KeyCode::KeyP)
+        );
+        bridge.navigation_selector_open = true;
+        assert_eq!(
+            bridge.controller_key_for_state(ControllerButton::South),
+            Some(KeyCode::KeyP)
+        );
+        assert_eq!(
+            bridge.controller_key_for_state(ControllerButton::DPadLeft),
+            Some(KeyCode::ArrowLeft)
         );
     }
 
@@ -9050,6 +9252,43 @@ mod tests {
             assert!(keys.set(key, true));
             assert_eq!(keys.input(), expected);
         }
+    }
+
+    #[test]
+    fn walking_input_keeps_keyboard_strafe_and_gamepad_axes() {
+        let left = walking_input(
+            GameplayVec3 {
+                x: -1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            GameplayVec3::ZERO,
+        );
+        let right = walking_input(
+            GameplayVec3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            GameplayVec3::ZERO,
+        );
+        assert_eq!(left.x, -1.0);
+        assert_eq!(right.x, 1.0);
+        assert_eq!(
+            walking_input(
+                GameplayVec3::ZERO,
+                GameplayVec3 {
+                    x: -0.6,
+                    y: 0.0,
+                    z: 0.7,
+                },
+            ),
+            GameplayVec3 {
+                x: -0.6,
+                y: 0.0,
+                z: 0.7,
+            }
+        );
     }
 
     #[test]

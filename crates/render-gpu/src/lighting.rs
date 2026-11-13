@@ -103,7 +103,7 @@ impl LightingPass {
             });
         let shader_ms = shader_start.elapsed().as_secs_f64() * 1000.0;
         let pipeline_start = std::time::Instant::now();
-        let pipeline = lighting_pipeline(gpu, format, &pipeline_layout, &shader, false);
+        let pipeline = lighting_pipeline(gpu, format, &pipeline_layout, &shader, false, false);
         let pipeline_ms = pipeline_start.elapsed().as_secs_f64() * 1000.0;
         let texture_layout =
             gpu.device
@@ -152,7 +152,7 @@ impl LightingPass {
                 source: wgpu::ShaderSource::Wgsl(include_str!("lighting_textured.wgsl").into()),
             });
         let textured_pipeline =
-            lighting_pipeline(gpu, format, &textured_layout, &textured_shader, false);
+            lighting_pipeline(gpu, format, &textured_layout, &textured_shader, false, true);
         let validation_start = std::time::Instant::now();
         if let Some(error) = block_on(scope.pop()) {
             return Err(GpuError::Backend(error.to_string()));
@@ -340,6 +340,7 @@ pub(crate) fn lighting_pipeline(
     pipeline_layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     shadow: bool,
+    transparent: bool,
 ) -> wgpu::RenderPipeline {
     gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("instanced lighting"),layout:Some(pipeline_layout),
@@ -351,7 +352,7 @@ pub(crate) fn lighting_pipeline(
             primitive:wgpu::PrimitiveState {cull_mode:None,..Default::default()},
             depth_stencil:Some(wgpu::DepthStencilState {format:crate::renderer::DEPTH_FORMAT,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::Less),stencil:Default::default(),bias:Default::default()}),
             multisample:Default::default(),
-            fragment:Some(wgpu::FragmentState {module:shader,entry_point:Some(if shadow { "fs_shadow_lighting" } else { "fs_lighting" }),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),
+            fragment:Some(wgpu::FragmentState {module:shader,entry_point:Some(if shadow { "fs_shadow_lighting" } else { "fs_lighting" }),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format,blend:transparent.then_some(wgpu::BlendState::ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),
             multiview_mask:None,cache:None,
         })
 }

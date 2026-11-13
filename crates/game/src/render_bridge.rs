@@ -2149,28 +2149,118 @@ pub fn surface_ship_position(
 pub fn surface_ship_position_with_transform(
     world: &GameplayWorld,
     destination: gameplay::DestinationId,
-    _transform: Option<Transform>,
+    transform: Option<Transform>,
 ) -> Option<Vec3> {
+    if let Some(transform) = transform {
+        let center = planet_surface_center_from_transform(destination, transform);
+        return Some(center + Vec3::new(0.0, planet_visual_radius(destination) + 1.0, -5.0));
+    }
     surface_ship_position(world, destination)
 }
 
 pub fn planet_surface_transform(
-    _world: &GameplayWorld,
-    _destination: gameplay::DestinationId,
+    world: &GameplayWorld,
+    destination: gameplay::DestinationId,
 ) -> Option<Transform> {
-    None
+    let position = world
+        .planet_position_at(destination, world.time().elapsed)
+        .map(from_engine)
+        .or_else(|| {
+            world
+                .destination(destination)
+                .map(|value| from_engine(value.position))
+        })?;
+    let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
+    Some(match destination.value() {
+        ACADEMIC_PLANET_DESTINATION_ID => {
+            let mut transform = building_planet_transform(elapsed_seconds);
+            transform.translation = position;
+            transform.translation -=
+                transform.rotation * (transform.scale * BUILDING_PLANET_CENTER);
+            transform
+        }
+        TESSARA_DESTINATION_ID => tessara_planet_transform(position, elapsed_seconds),
+        KHARVEX_DESTINATION_ID => kharvex_planet_transform(position, elapsed_seconds),
+        NARETH_DESTINATION_ID => nareth_planet_transform(position, elapsed_seconds),
+        _ => Transform::from_translation(position),
+    })
+}
+
+fn planet_surface_center_from_transform(
+    destination: gameplay::DestinationId,
+    transform: Transform,
+) -> Vec3 {
+    let model_center = match destination.value() {
+        ACADEMIC_PLANET_DESTINATION_ID => BUILDING_PLANET_CENTER,
+        TESSARA_DESTINATION_ID => TESSARA_PLANET_CENTER,
+        KHARVEX_DESTINATION_ID => KHARVEX_PLANET_CENTER,
+        _ => Vec3::ZERO,
+    };
+    transform.translation + transform.rotation * (transform.scale * model_center)
 }
 
 pub fn surface_camera_for_player_with_view_and_transform(
     world: &GameplayWorld,
     player_id: engine::EntityId,
-    _destination: gameplay::DestinationId,
+    destination: gameplay::DestinationId,
     aspect: f32,
-    _yaw: f32,
-    _pitch: f32,
-    _transform: Option<Transform>,
+    yaw_offset: f32,
+    pitch_offset: f32,
+    transform: Option<Transform>,
 ) -> Result<Camera, CameraError> {
-    interior_camera_for_player(world, player_id, aspect)
+    let player = world.player(player_id).ok_or(CameraError::InvalidAspect)?;
+    let center = transform
+        .map(|value| planet_surface_center_from_transform(destination, value))
+        .or_else(|| {
+            world
+                .planet_position_at(destination, world.time().elapsed)
+                .map(from_engine)
+        })
+        .or_else(|| {
+            world
+                .destination(destination)
+                .map(|value| from_engine(value.position))
+        })
+        .ok_or(CameraError::InvalidAspect)?;
+    let player_position = from_engine(player.position);
+    let up = if destination.value() == TESSARA_DESTINATION_ID {
+        Vec3::Y
+    } else {
+        (player_position - center).normalize_or_zero()
+    };
+    let up = if up.length_squared() > 0.0 {
+        up
+    } else {
+        Vec3::Y
+    };
+    let yaw = (player.orientation.yaw_degrees + yaw_offset).to_radians();
+    let pitch = (player.orientation.pitch_degrees + pitch_offset)
+        .to_radians()
+        .clamp(-1.2, 1.2);
+    let horizontal = pitch.cos();
+    let raw_forward = Vec3::new(yaw.sin() * horizontal, pitch.sin(), -yaw.cos() * horizontal);
+    let forward = (raw_forward - up * raw_forward.dot(up)).normalize_or_zero();
+    let forward = if forward.length_squared() > 0.0 {
+        forward
+    } else {
+        let reference = if up.dot(Vec3::Y).abs() < 0.9 {
+            Vec3::Y
+        } else {
+            Vec3::X
+        };
+        up.cross(reference).normalize_or_zero()
+    };
+    Camera::new(
+        player_position - forward * 4.5 + up * 2.2,
+        player_position + up * 0.25,
+        up,
+        Projection::Perspective {
+            fov_y_rad: 72.0_f32.to_radians(),
+            aspect,
+            near: 0.05,
+            far: 220.0,
+        },
+    )
 }
 
 fn observation_distance(visual_radius: f32) -> f32 {

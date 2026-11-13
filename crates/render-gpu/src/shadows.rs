@@ -95,7 +95,7 @@ impl ShadowPass {
                 immediate_size: 0,
             });
         let color_pipeline =
-            crate::lighting::lighting_pipeline(gpu, format, &pipeline_layout, &shader, true);
+            crate::lighting::lighting_pipeline(gpu, format, &pipeline_layout, &shader, true, false);
         let depth_shader = gpu
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {

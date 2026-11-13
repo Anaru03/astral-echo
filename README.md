@@ -1,5 +1,17 @@
 # Astral Echo
 
+## Estado de la version integrada
+
+La version actual integra exploracion interior y planetaria, pilotaje de ECHO-7,
+navegacion entre destinos con selector y autopiloto, y guia de mision en el HUD.
+El HUD puede ocultarse o mostrarse con `F2`; la guia aparece al inicio del panel.
+Dentro de la nave, `W/A/S/D` mueve al personaje; durante el pilotaje, `W/S`
+avanza y `A/D` gira la nave.
+
+Los ventanales de ECHO-7 usan alpha y mezcla en CPU y GPU para dejar ver el
+espacio. La apariencia final del vidrio y la ausencia de piezas verdes flotantes
+requieren confirmacion visual en la ventana del juego.
+
 ## Ejecutar el juego en Windows
 
 ### Instalar Rust
