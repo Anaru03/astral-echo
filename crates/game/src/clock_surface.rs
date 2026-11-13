@@ -11,7 +11,7 @@ struct Triangle {
     c: Vec3,
 }
 
-const WALKABLE_CLOCK_RADIUS: f32 = 5.5;
+pub const WALKABLE_CLOCK_RADIUS: f32 = 5.5;
 
 pub struct ClockSurface {
     triangles: Vec<Triangle>,
@@ -116,6 +116,10 @@ impl ClockSurface {
 pub fn shared() -> Option<&'static ClockSurface> {
     static SURFACE: OnceLock<Option<ClockSurface>> = OnceLock::new();
     SURFACE.get_or_init(ClockSurface::load).as_ref()
+}
+
+pub fn surface_height(x: f32, z: f32) -> Option<f32> {
+    shared()?.sample_top(x, z)
 }
 
 #[cfg(test)]

@@ -1539,7 +1539,14 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                 ),
                 _ => (ASTEROID_FIELD_MESH, ASTEROID_MATERIAL, Vec3::splat(0.65)),
             };
-            let transform = if academic_planet == Some(dest.id) {
+            let surface_override = if surface_planet == Some(dest.id) {
+                surface_transform
+            } else {
+                None
+            };
+            let transform = if let Some(transform) = surface_override {
+                transform
+            } else if academic_planet == Some(dest.id) {
                 let mut transform = building_planet_transform(elapsed_seconds);
                 if let Some(position) = world.planet_position_at(dest.id, world.time().elapsed) {
                     transform.translation = from_engine(position);
@@ -1552,12 +1559,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                     .planet_position_at(dest.id, world.time().elapsed)
                     .map(from_engine)
                     .unwrap_or_else(|| from_engine(dest.position));
-                if surface_planet == Some(dest.id) {
-                    surface_transform
-                        .unwrap_or_else(|| tessara_planet_transform(position, elapsed_seconds))
-                } else {
-                    tessara_planet_transform(position, elapsed_seconds)
-                }
+                tessara_planet_transform(position, elapsed_seconds)
             } else if kharvex_planet == Some(dest.id) {
                 let position = world
                     .planet_position_at(dest.id, world.time().elapsed)
@@ -2325,6 +2327,10 @@ pub fn surface_ship_position_with_transform(
             return Some(transform.matrix().transform_point3(local_station));
         }
     }
+    if let Some(transform) = surface_transform {
+        let center = planet_surface_center_from_transform(destination, transform);
+        return Some(center + Vec3::new(0.0, planet_visual_radius(destination) + 1.0, -5.0));
+    }
     planet_surface_origin(world, destination).map(|origin| origin + SURFACE_SHIP_OFFSET)
 }
 
@@ -2769,6 +2775,48 @@ fn tessara_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
 
 pub fn clock_planet_transform(position: Vec3, elapsed_seconds: f64) -> Transform {
     tessara_planet_transform(position, elapsed_seconds)
+}
+
+pub fn planet_surface_transform(
+    world: &GameplayWorld,
+    destination: gameplay::DestinationId,
+) -> Option<Transform> {
+    let position = world
+        .planet_position_at(destination, world.time().elapsed)
+        .map(from_engine)
+        .or_else(|| world.destination(destination).map(|value| from_engine(value.position)))?;
+    let elapsed_seconds = world.time().elapsed.0 as f64 / 1_000.0;
+    Some(match destination.value() {
+        ACADEMIC_PLANET_DESTINATION_ID => {
+            let mut transform = building_planet_transform(elapsed_seconds);
+            transform.translation = position;
+            transform.translation -= transform.rotation * (transform.scale * BUILDING_PLANET_CENTER);
+            transform
+        }
+        TESSARA_DESTINATION_ID => tessara_planet_transform(position, elapsed_seconds),
+        KHARVEX_DESTINATION_ID => kharvex_planet_transform(position, elapsed_seconds),
+        NARETH_DESTINATION_ID => nareth_planet_transform(position, elapsed_seconds),
+        _ => Transform::from_translation(position),
+    })
+}
+
+pub fn planet_surface_center_from_transform(
+    destination: gameplay::DestinationId,
+    transform: Transform,
+) -> Vec3 {
+    match destination.value() {
+        ACADEMIC_PLANET_DESTINATION_ID => {
+            transform.translation
+                + transform.rotation * (transform.scale * BUILDING_PLANET_CENTER)
+        }
+        TESSARA_DESTINATION_ID => {
+            transform.translation + transform.rotation * (transform.scale * TESSARA_PLANET_CENTER)
+        }
+        KHARVEX_DESTINATION_ID => {
+            transform.translation + transform.rotation * (transform.scale * KHARVEX_PLANET_CENTER)
+        }
+        _ => transform.translation,
+    }
 }
 
 fn tessara_moon_transform(tessara_position: Vec3, elapsed_seconds: f64) -> Transform {

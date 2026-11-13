@@ -4,6 +4,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration as StdDuration;
 mod entry;
+mod clock_surface;
 mod model_registry;
 mod runtime_mode;
 mod runtime_types;

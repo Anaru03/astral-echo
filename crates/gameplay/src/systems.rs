@@ -4089,10 +4089,19 @@ impl CombatSystem {
             }
         }
         let attacker_position = if attacker_state.is_player {
-            let Some(player) = world.player(attacker) else {
-                return CommandResult::rejected(crate::commands::CommandRejection::PlayerNotFound);
-            };
-            player.position
+            if world.navigation().control_active() {
+                // While the player is piloting, the combatant remains attached
+                // to the interior pilot station. Ship weapons must nevertheless
+                // use Echo-7's authoritative position for range validation.
+                world.navigation().current_position()
+            } else {
+                let Some(player) = world.player(attacker) else {
+                    return CommandResult::rejected(
+                        crate::commands::CommandRejection::PlayerNotFound,
+                    );
+                };
+                player.position
+            }
         } else {
             attacker_state.position
         };

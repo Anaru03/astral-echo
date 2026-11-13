@@ -6,6 +6,7 @@ use std::process::Child;
 use std::rc::Rc;
 use std::time::Instant;
 
+use crate::clock_surface;
 use engine::{Duration, EntityId, Vec3 as GameplayVec3};
 use game::ProjectEchoSession;
 use gameplay::types::ItemId;
@@ -491,7 +492,8 @@ struct VisualBridge {
     // The visual reference is frozen when landing completes. The gameplay
     // planet may continue orbiting, but the player must not feel that motion
     // while exploring its surface.
-    clock_surface_transform: Option<render_core::Transform>,
+    surface_planet_transform: Option<render_core::Transform>,
+    surface_planet_center: Option<GameplayVec3>,
     landing_planet: Option<DestinationId>,
     landing_cinematic_started_at: Option<u64>,
     landing_cinematic_wall_started_at: Option<Instant>,
@@ -827,7 +829,7 @@ impl VisualBridge {
             },
             orbit_phase: 0.0,
             orbit_angular_speed: game::render_bridge::TESSARA_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
-            surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
+            surface_radius: game::render_bridge::TESSARA_VISUAL_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 24.0,
             gravitational_parameter: 24.0,
@@ -1181,7 +1183,8 @@ impl VisualBridge {
             surface_mode: false,
             surface_planet: None,
             clock_last_valid_surface_local: None,
-            clock_surface_transform: None,
+            surface_planet_transform: None,
+            surface_planet_center: None,
             landing_planet: None,
             landing_cinematic_started_at: None,
             landing_cinematic_wall_started_at: None,
@@ -1418,6 +1421,7 @@ impl VisualBridge {
         }
         self.session
             .update([GameplayCommand::AdvanceTime { delta }]);
+        self.collect_nearby_collectibles();
         if self.awakening_sequence {
             self.awakening_elapsed_ms = self.awakening_elapsed_ms.saturating_add(delta.0);
             if self.awakening_elapsed_ms >= 3_000 {
@@ -1452,6 +1456,7 @@ impl VisualBridge {
         }
         let commands: Vec<_> = commands.into_iter().collect();
         let results = self.session.update(commands.clone());
+        self.collect_nearby_collectibles();
         self.activate_introductory_threat_if_ready();
         self.refresh_player_defeat_state();
         let accepted = results
@@ -1520,6 +1525,42 @@ impl VisualBridge {
             self.player_defeated = true;
             self.feedback = "JUGADOR DERROTADO — SESION VISUAL DETENIDA".to_owned();
             println!("visual gameplay: {}", self.feedback);
+        }
+    }
+
+    fn collect_nearby_collectibles(&mut self) {
+        let Some(player) = self.session.world().player(self.player) else {
+            return;
+        };
+        let player_position = player.position;
+        let ship_position = self.session.world().ship_position();
+        let candidates: Vec<_> = self
+            .session
+            .world()
+            .collectibles()
+            .filter(|collectible| {
+                collectible.active
+                    && collectible
+                        .owner
+                        .is_none_or(|owner| owner == self.player)
+                    && (nearby(player_position, collectible.position, collectible.interaction_range)
+                        || ship_position.is_some_and(|ship| {
+                            nearby(ship, collectible.position, collectible.interaction_range)
+                        }))
+            })
+            .map(|collectible| (collectible.entity, collectible.amount))
+            .collect();
+        for (collectible, amount) in candidates {
+            let result = self.session.update([GameplayCommand::CollectItem {
+                player: self.player,
+                collectible,
+                amount,
+            }]);
+            if result.iter().any(|value| {
+                matches!(value.status, gameplay::CommandStatus::Success { .. })
+            }) {
+                self.feedback = "RECOMPENSA CARGADA AUTOMATICAMENTE EN EL INVENTARIO".to_owned();
+            }
         }
     }
 
@@ -1635,7 +1676,6 @@ impl VisualBridge {
         }
         let player = self.player;
         let ship = self.ship;
-        let enemy = self.enemy;
         let pilot_station = self.pilot_station;
         if self.pilot_mode
             && state == ElementState::Pressed
@@ -1728,7 +1768,7 @@ impl VisualBridge {
         if key == KeyCode::KeyF && self.pilot_mode {
             self.fire_pressed = state == ElementState::Pressed;
             if self.fire_pressed {
-                self.issue([GameplayCommand::AttackEnemy { player, enemy }]);
+                self.attack_auto_target();
             }
             return;
         }
@@ -1776,7 +1816,7 @@ impl VisualBridge {
                 if self.landing_target().is_some() {
                     self.request_landing_from_current_position();
                 } else if self.ship_flight_controls_enabled() {
-                    self.issue([GameplayCommand::AttackEnemy { player, enemy }]);
+                    self.attack_auto_target();
                 }
             }
             KeyCode::KeyE => {
@@ -2643,6 +2683,17 @@ impl VisualBridge {
             }
             return;
         }
+        if let Some(collectible) = self.selected_collectible() {
+            if self.issue([GameplayCommand::CollectItem {
+                player: self.player,
+                collectible: collectible.entity,
+                amount: collectible.amount,
+            }]) {
+                self.feedback = "RECOMPENSA CARGADA EN EL INVENTARIO".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+            }
+            return;
+        }
         // The object currently shown by the contextual HUD is authoritative
         // for I. Mission guidance must not steal the interaction while the
         // player is standing next to a visible console, door or panel.
@@ -2944,6 +2995,10 @@ impl VisualBridge {
                 delta: Duration(delta_ms),
             }]);
         }
+        if self.surface_mode {
+            self.constrain_surface_player(player.position);
+            return;
+        }
         if let Some(updated) = self.session.world().player(self.player).copied() {
             let ship_yaw = self
                 .session
@@ -3209,6 +3264,67 @@ impl VisualBridge {
         }
     }
 
+    fn constrain_surface_player(&mut self, previous: GameplayVec3) {
+        let Some(planet) = self.surface_planet else {
+            return;
+        };
+        let Some(updated) = self.session.world().player(self.player).copied() else {
+            return;
+        };
+        let Some(center) = self.surface_planet_center.or_else(|| {
+            self.session
+                .world()
+                .planet_position_at(planet, self.session.world().time().elapsed)
+        }) else {
+            self.session
+                .world_mut()
+                .initialize_player_position(self.player, previous);
+            return;
+        };
+        if planet == TESSARA_DESTINATION {
+            let Some(transform) = self.surface_planet_transform else {
+                self.session
+                    .world_mut()
+                    .initialize_player_position(self.player, previous);
+                return;
+            };
+            let local = transform
+                .matrix()
+                .inverse()
+                .transform_point3(render_core::from_engine(updated.position));
+            let Some(surface_y) = clock_surface::surface_height(local.x, local.z) else {
+                self.session
+                    .world_mut()
+                    .initialize_player_position(self.player, previous);
+                return;
+            };
+            let local_clearance = game::render_bridge::PLAYER_SURFACE_CLEARANCE
+                / transform.scale.y.abs().max(0.0001);
+            let constrained = transform.matrix().transform_point3(render_core::Vec3::new(
+                local.x,
+                surface_y + local_clearance,
+                local.z,
+            ));
+            self.session
+                .world_mut()
+                .initialize_player_position(
+                    self.player,
+                    GameplayVec3 {
+                        x: constrained.x,
+                        y: constrained.y,
+                        z: constrained.z,
+                    },
+                );
+            return;
+        }
+        self.session.world_mut().constrain_player_to_surface(
+            self.player,
+            center,
+            game::render_bridge::planet_visual_radius(planet),
+            game::render_bridge::PLAYER_SURFACE_CLEARANCE,
+        );
+    }
+
     fn contextual_prompt(&self) -> Option<String> {
         self.contextual_action()
             .map(|action| format!("{} [{}] {}", action.object, action.key, action.action))
@@ -3222,7 +3338,7 @@ impl VisualBridge {
                     game::render_bridge::surface_ship_position_with_transform(
                         self.session.world(),
                         planet,
-                        self.clock_surface_transform,
+                        self.surface_planet_transform,
                     ),
                 ) {
                     let dx = player.position.x - ship_position.x;
@@ -3328,6 +3444,14 @@ impl VisualBridge {
                     }
                 })
             })
+            .or_else(|| {
+                self.selected_collectible().map(|collectible| render_core::HudContextualAction {
+                    target: collectible.entity.value(),
+                    object: "RECOMPENSA".to_owned(),
+                    action: "RECOGER".to_owned(),
+                    key: "I".to_owned(),
+                })
+            })
     }
 
     fn selected_derelict(&self) -> Option<&gameplay::Derelict> {
@@ -3430,6 +3554,34 @@ impl VisualBridge {
             .map(|(_, value)| value)
     }
 
+    fn selected_collectible(&self) -> Option<gameplay::Collectible> {
+        if self.interior_mode || self.pilot_mode {
+            return None;
+        }
+        let player_position = self.session.world().player(self.player)?.position;
+        let ship_position = self.session.world().ship_position();
+        self.session
+            .world()
+            .collectibles()
+            .filter(|value| value.active)
+            .filter_map(|value| {
+                let player_distance = distance_squared(player_position, value.position);
+                let ship_distance = ship_position
+                    .map(|position| distance_squared(position, value.position))
+                    .unwrap_or(f32::INFINITY);
+                let distance = player_distance.min(ship_distance);
+                (distance <= value.interaction_range * value.interaction_range)
+                    .then_some((distance, *value))
+            })
+            .min_by(|left, right| {
+                left.0
+                    .partial_cmp(&right.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.1.entity.cmp(&right.1.entity))
+            })
+            .map(|(_, value)| value)
+    }
+
     fn selected_interactable(&self) -> Option<&gameplay::Interactable> {
         if !self.interior_mode || self.pilot_mode {
             return None;
@@ -3466,7 +3618,7 @@ impl VisualBridge {
 
     fn instructions_hint(&self) -> String {
         if !self.started {
-            return "PULSA ENTER PARA COMENZAR".to_owned();
+            return "PULSA ENTER O A (MANDO) PARA COMENZAR".to_owned();
         }
         if self.awakening_sequence {
             return "DESPERTAR EN CURSO — ESPERA".to_owned();
@@ -3502,7 +3654,7 @@ impl VisualBridge {
                 _ => "INACTIVO",
             };
             return format!(
-                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - F1 CONTROLES - F2 HUD - F3 INVENTARIO",
+                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - F1/START CONTROLES - F2/L3 HUD - F3/SELECT INVENTARIO",
                 self.observation_target_label(),
             );
         }
@@ -3510,7 +3662,7 @@ impl VisualBridge {
             return format!("{prompt} | PULSA LA TECLA INDICADA");
         }
         if self.surface_mode {
-            return "EXPLORACION PLANETARIA: WASD MOVER | FLECHAS MIRAR | ACERCATE A ECHO-7 Y PULSA I PARA DESPEGAR".to_owned();
+            return "EXPLORACION PLANETARIA: WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | A DESPEGAR JUNTO A ECHO-7".to_owned();
         }
         if self.interior_mode {
             if self
@@ -3521,12 +3673,12 @@ impl VisualBridge {
             }
             if let Some(waypoint) = self.ship_minigame_waypoint_hint() {
                 return format!(
-                    "EXPLORACION: {waypoint} | 4 PUNTOS: ESTADO-ENERGIA-O2-PILOTAJE | WASD | FLECHAS | I"
+                    "EXPLORACION: {waypoint} | 4 PUNTOS: ESTADO-ENERGIA-O2-PILOTAJE | WASD/STICK IZQ | FLECHAS/STICK DER | A"
                 );
             }
-            return "EXPLORACION: CAMINO DORADO | 4 PUNTOS: ESTADO-ENERGIA-O2-PILOTAJE | F1 CONTROLES | F2 HUD | F3 INVENTARIO".to_owned();
+            return "EXPLORACION: CAMINO DORADO | 4 PUNTOS: ESTADO-ENERGIA-O2-PILOTAJE | F1/START CONTROLES | F2/L3 HUD | F3/SELECT INVENTARIO".to_owned();
         }
-        "EXTERIOR: SIGUE LA GUIA - F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned()
+        "EXTERIOR: SIGUE LA GUIA - A INTERACTUAR/RECOGER - F1/START CONTROLES - F3/SELECT INVENTARIO".to_owned()
     }
 
     fn guidance_prompt(&self) -> Option<String> {
@@ -3609,7 +3761,7 @@ impl VisualBridge {
 
     fn controls_hint(&self) -> String {
         if !self.started {
-            "ENTER COMENZAR".to_owned()
+            "ENTER/A COMENZAR | B CANCELAR | START CONTROLES | SELECT INVENTARIO".to_owned()
         } else if self.pilot_mode {
             let autopilot = match self.session.world().autopilot_state() {
                 gameplay::AutopilotState::Inactive => "INACTIVO",
@@ -3619,11 +3771,11 @@ impl VisualBridge {
                 gameplay::AutopilotState::Interrupted { .. } => "INTERRUMPIDO",
                 gameplay::AutopilotState::Failed { .. } => "FALLIDO",
             };
-            format!("MODO PILOTAJE ECHO-7 | W/S AVANCE/RETROCESO | A/D GIRAR | ESPACIO/CTRL ALTURA | PGUP/PGDN DISTANCIA CAMARA | P IR AL PLANETA DE LA GUIA | I SALIR | AUTO: {autopilot}")
+            format!("MODO PILOTAJE ECHO-7 | W/S AVANCE/RETROCESO | A/D GIRAR | ESPACIO/CTRL o DPAD↑↓ ALTURA | P o DPAD← GUIA | U o DPAD→ COMBUSTIBLE | I SALIR | RT ATACAR | LB ESCUDO | RB BOOST | AUTO: {autopilot}")
         } else if self.surface_mode {
-            "WASD MOVER | FLECHAS MIRAR | I DESPEGAR AL ACERCARTE A ECHO-7".to_owned()
+            "WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | I/A DESPEGAR AL ACERCARTE A ECHO-7".to_owned()
         } else if self.interior_mode {
-            "WASD MOVER | FLECHAS MIRAR | I USAR | M INICIAR".to_owned()
+            "WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | I/A USAR | M/DPAD← INICIAR | R/Y o DPAD↑↓ RECURSOS".to_owned()
         } else if self
             .session
             .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
@@ -3631,9 +3783,9 @@ impl VisualBridge {
                 mission.state == gameplay::domains::mission::MissionState::Active
             })
         {
-            "Q ESCANEAR | P VIAJAR | F ATACAR | E RECOGER | T RECUPERAR".to_owned()
+                "Q/X ESCANEAR | P/DPAD↑ VIAJAR | F/RT ATACAR | E/A RECOGER | T/DPAD→ RECUPERAR".to_owned()
         } else {
-            "Q ESCANEAR | P VIAJAR | F ATACAR | E RECOGER".to_owned()
+            "Q/X ESCANEAR | P/DPAD↑ VIAJAR | L/DPAD↓ ATERRIZAR | F/RT ATACAR | E/A RECOGER | V/B/DPAD←→ EQUIPAR".to_owned()
         }
     }
 
@@ -3642,37 +3794,40 @@ impl VisualBridge {
             "F1 ABRIR O CERRAR PANEL".to_owned(),
             "F2 OCULTAR O MOSTRAR HUD".to_owned(),
             "F3 ABRIR O CERRAR INVENTARIO".to_owned(),
+            "MANDO: A USAR/CONFIRMAR | B CANCELAR | X ESCANEAR | Y OBSERVAR".to_owned(),
+            "MANDO: RT ATACAR | LT FRENAR | LB ESCUDO | RB BOOST | START CONTROLES | SELECT INVENTARIO | L3 HUD | R3 ACCION SECUNDARIA".to_owned(),
+            "MANDO: STICK IZQ MOVER | STICK DER CAMARA | DPAD ACCIONES DEL MODO ACTUAL".to_owned(),
         ];
         if self.pilot_mode {
             entries.extend([
                 "W AVANZAR | S RETROCEDER | A/D GIRAR - PILOTAJE".to_owned(),
                 "ESPACIO SUBIR | CTRL BAJAR - PILOTAJE".to_owned(),
                 "PGUP/PGDN ACERCAR/ALEJAR CAMARA - PILOTAJE".to_owned(),
-                "F DISPARAR - PILOTAJE".to_owned(),
-                "G ESCUDO - PILOTAJE".to_owned(),
-                "SHIFT BOOST - PILOTAJE".to_owned(),
-                "X FRENAR - PILOTAJE".to_owned(),
+                "F/RT DISPARAR CON AUTOAPUNTADO - PILOTAJE".to_owned(),
+                "G/LB ESCUDO - PILOTAJE".to_owned(),
+                "SHIFT/RB BOOST - PILOTAJE".to_owned(),
+                "X/LT FRENAR - PILOTAJE".to_owned(),
                 "L ATERRIZAR CUANDO EL PLANETA ESTE CERCA - PILOTAJE".to_owned(),
                 "[/] CAMBIAR PLANETA OBSERVADO - PILOTAJE".to_owned(),
                 "N SELECCIONAR DESTINO LIBRE - PILOTAJE".to_owned(),
-                "U USAR COMBUSTIBLE - PILOTAJE".to_owned(),
+                "U/DPAD→ USAR COMBUSTIBLE - PILOTAJE".to_owned(),
                 "B EQUIPAR PLASMA - ARMAMENTO ENCONTRADO".to_owned(),
-                "P IR AL PLANETA DE LA GUIA - PILOTAJE".to_owned(),
+                "P/DPAD← IR AL PLANETA DE LA GUIA - PILOTAJE".to_owned(),
                 "I SALIR DEL PILOTAJE - PILOTAJE".to_owned(),
             ]);
         } else if self.surface_mode {
             entries.extend([
                 "WASD MOVER | FLECHAS MIRAR - EXPLORACION PLANETARIA".to_owned(),
-                "I DESPEGAR AL ACERCARTE A ECHO-7".to_owned(),
+                "I/A DESPEGAR AL ACERCARTE A ECHO-7".to_owned(),
             ]);
         } else if self.interior_mode {
             entries.extend([
                 "WASD MOVER - EXPLORACION".to_owned(),
                 "FLECHAS MIRAR - EXPLORACION".to_owned(),
-                "I INTERACTUAR - OBJETOS".to_owned(),
-                "M INICIAR MISION - GENERAL".to_owned(),
-                "R RESTAURAR ENERGIA - PANEL ELECTRICO".to_owned(),
-                "Y RESTAURAR SOPORTE VITAL - PANEL DE OXIGENO".to_owned(),
+                "I/A INTERACTUAR - OBJETOS".to_owned(),
+                "M/DPAD← INICIAR MISION - GENERAL".to_owned(),
+                "R/DPAD↑ RESTAURAR ENERGIA - PANEL ELECTRICO".to_owned(),
+                "Y/DPAD↓ RESTAURAR SOPORTE VITAL - PANEL DE OXIGENO".to_owned(),
                 "TAB CAMBIAR ARMA - INVENTARIO".to_owned(),
             ]);
         } else {
@@ -3682,7 +3837,7 @@ impl VisualBridge {
                 "O OBSERVAR PLANETAS | [/] CAMBIAR OBJETIVO".to_owned(),
                 "L ATERRIZAR AL ESTAR CERCA DE UN PLANETA".to_owned(),
                 "F ATACAR - COMBATE".to_owned(),
-                "E RECOGER - EXTERIOR".to_owned(),
+                "E/A RECOGER - EXTERIOR".to_owned(),
                 "TAB CAMBIAR ARMA - INVENTARIO".to_owned(),
             ]);
             if self
@@ -3922,9 +4077,15 @@ impl VisualBridge {
         }
         // A/D are the primary steering controls. Arrow keys remain an
         // optional alternative for players who prefer them.
+        let gamepad_yaw = if self.gamepad_flight.x.abs() > 0.01 {
+            self.gamepad_flight.x.signum() as i8
+        } else {
+            0
+        };
         let yaw = ((self.flight_keys.left as i8 - self.flight_keys.right as i8)
             + self.look_left as i8
-            - self.look_right as i8)
+            - self.look_right as i8
+            + gamepad_yaw)
             .clamp(-1, 1);
         let pitch = self.look_down as i8 - self.look_up as i8;
         if yaw != 0 || pitch != 0 {
@@ -3942,11 +4103,54 @@ impl VisualBridge {
             input: self.current_flight_input(),
         }]);
         if self.fire_pressed {
-            self.issue([GameplayCommand::AttackEnemy {
-                player: self.player,
-                enemy: self.enemy,
-            }]);
+            self.attack_auto_target();
         }
+    }
+
+    fn auto_target_enemy(&self) -> Option<EntityId> {
+        let world = self.session.world();
+        let anchor = world
+            .player(self.player)
+            .map(|player| player.position)
+            .or_else(|| world.ship_position())?;
+        let range = world
+            .equipped_weapon(self.player)
+            .map(|weapon| weapon.range as f32);
+        let mut candidates: Vec<_> = world
+            .enemies()
+            .filter(|enemy| enemy.active && !enemy.is_defeated())
+            .filter_map(|enemy| {
+                let dx = enemy.position.x - anchor.x;
+                let dy = enemy.position.y - anchor.y;
+                let dz = enemy.position.z - anchor.z;
+                let distance_squared = dx * dx + dy * dy + dz * dz;
+                (range.is_none_or(|value| distance_squared <= value * value))
+                    .then_some((distance_squared, enemy.entity))
+            })
+            .collect();
+        candidates.sort_by(|left, right| {
+            left.0
+                .partial_cmp(&right.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+        if candidates.iter().any(|(_, enemy)| *enemy == self.enemy) {
+            Some(self.enemy)
+        } else {
+            candidates.first().map(|(_, enemy)| *enemy)
+        }
+    }
+
+    fn attack_auto_target(&mut self) {
+        let Some(enemy) = self.auto_target_enemy() else {
+            self.feedback = "NO HAY NAVE ENEMIGA EN RANGO DE ATAQUE".to_owned();
+            return;
+        };
+        self.enemy = enemy;
+        self.issue([GameplayCommand::AttackEnemy {
+            player: self.player,
+            enemy,
+        }]);
     }
 
     fn rotate_ship_from_input(&mut self, yaw_input: f32, pitch_input: f32) {
@@ -3967,7 +4171,12 @@ impl VisualBridge {
         let local = GameplayVec3 {
             // Keyboard A/D steer the ship; lateral thrust is reserved for
             // gamepad input so WASD has one clear meaning.
-            x: ((if self.pilot_mode { 0.0 } else { keyboard.x }) + self.gamepad_flight.x)
+            x: (keyboard.x
+                + if self.pilot_mode {
+                    0.0
+                } else {
+                    self.gamepad_flight.x
+                })
                 .clamp(-1.0, 1.0),
             y: keyboard.y,
             z: (keyboard.z + self.gamepad_flight.z).clamp(-1.0, 1.0),
@@ -4045,6 +4254,7 @@ impl VisualBridge {
             return;
         }
         if !frame.connected {
+            self.release_gamepad_controls();
             self.set_gamepad_flight(GameplayVec3::ZERO);
             return;
         }
@@ -4053,13 +4263,33 @@ impl VisualBridge {
             y: 0.0,
             z: frame.left_stick.y,
         });
-        self.observation.adjust_orbit(
-            frame.right_stick.x * OBSERVATION_AZIMUTH_STEP,
-            -frame.right_stick.y * OBSERVATION_ELEVATION_STEP,
-        );
+        if self.pilot_mode {
+            if frame.right_stick.x.abs() > 0.01 || frame.right_stick.y.abs() > 0.01 {
+                self.issue([GameplayCommand::RotateShip {
+                    player: self.player,
+                    pilot_station: self.pilot_station,
+                    yaw_input: frame.right_stick.x,
+                    pitch_input: frame.right_stick.y,
+                    delta: Duration(16),
+                }]);
+            }
+        } else if self.interior_mode {
+            if frame.right_stick.x.abs() > 0.01 || frame.right_stick.y.abs() > 0.01 {
+                self.rotate_player(frame.right_stick.x * 6.0, frame.right_stick.y * 4.0);
+            }
+        } else if self.surface_mode {
+            self.surface_camera_yaw += frame.right_stick.x * 4.0;
+            self.surface_camera_pitch =
+                (self.surface_camera_pitch + frame.right_stick.y * 3.0).clamp(-55.0, 55.0);
+        } else {
+            self.observation.adjust_orbit(
+                frame.right_stick.x * OBSERVATION_AZIMUTH_STEP,
+                -frame.right_stick.y * OBSERVATION_ELEVATION_STEP,
+            );
+        }
         let mut handled = Vec::new();
         for button in frame.pressed {
-            let Some(key) = controller_key(button) else {
+            let Some(key) = self.controller_key_for_state(button) else {
                 continue;
             };
             if handled.contains(&key) {
@@ -4071,6 +4301,73 @@ impl VisualBridge {
             handled.push(key);
             self.handle_key(key, ElementState::Pressed);
         }
+        for button in frame.released {
+            if let Some(key) = self.controller_key_for_state(button) {
+                self.handle_key(key, ElementState::Released);
+            }
+        }
+    }
+
+    fn release_gamepad_controls(&mut self) {
+        if self.fire_pressed {
+            self.handle_key(KeyCode::KeyF, ElementState::Released);
+        }
+        if self.boost_pressed {
+            self.handle_key(KeyCode::ShiftLeft, ElementState::Released);
+        }
+        self.look_left = false;
+        self.look_right = false;
+        self.look_up = false;
+        self.look_down = false;
+    }
+
+    fn controller_key_for_state(&self, button: ControllerButton) -> Option<KeyCode> {
+        if button == ControllerButton::South
+            && (!self.started || self.inventory_open || self.navigation_selector_open)
+        {
+            return Some(KeyCode::Enter);
+        }
+        if self.inventory_open {
+            return match button {
+                ControllerButton::RightStick => Some(KeyCode::KeyR),
+                _ => controller_key(button),
+            };
+        }
+        if self.navigation_selector_open {
+            return match button {
+                ControllerButton::DPadLeft => Some(KeyCode::ArrowLeft),
+                ControllerButton::DPadRight => Some(KeyCode::ArrowRight),
+                _ => controller_key(button),
+            };
+        }
+        if self.interior_mode && !self.pilot_mode {
+            return match button {
+                ControllerButton::DPadUp => Some(KeyCode::KeyR),
+                ControllerButton::DPadDown => Some(KeyCode::KeyY),
+                ControllerButton::DPadLeft => Some(KeyCode::KeyM),
+                ControllerButton::DPadRight => Some(KeyCode::KeyT),
+                _ => controller_key(button),
+            };
+        }
+        if self.pilot_mode {
+            return match button {
+                ControllerButton::DPadUp => Some(KeyCode::Space),
+                ControllerButton::DPadDown => Some(KeyCode::ControlLeft),
+                ControllerButton::DPadLeft => Some(KeyCode::KeyP),
+                ControllerButton::DPadRight => Some(KeyCode::KeyU),
+                _ => controller_key(button),
+            };
+        }
+        if !self.surface_mode {
+            return match button {
+                ControllerButton::DPadUp => Some(KeyCode::KeyP),
+                ControllerButton::DPadDown => Some(KeyCode::KeyL),
+                ControllerButton::DPadLeft => Some(KeyCode::KeyV),
+                ControllerButton::DPadRight => Some(KeyCode::KeyB),
+                _ => controller_key(button),
+            };
+        }
+        controller_key(button)
     }
 
     fn neutralize_gamepad(&mut self) {
@@ -4564,19 +4861,22 @@ impl VisualBridge {
                         y: origin.y,
                         z: origin.z,
                     };
+                    self.surface_planet_center = self
+                        .session
+                        .world()
+                        .planet_position_at(planet, self.session.world().time().elapsed)
+                        .or_else(|| {
+                            self.session
+                                .world()
+                                .destination(planet)
+                                .map(|destination| destination.position)
+                        });
+                    let frozen_transform = game::render_bridge::planet_surface_transform(
+                        self.session.world(),
+                        planet,
+                    );
+                    self.surface_planet_transform = frozen_transform;
                     if planet == TESSARA_DESTINATION {
-                        let frozen_transform = self
-                            .session
-                            .world()
-                            .planet_position_at(planet, self.session.world().time().elapsed)
-                            .map(render_core::from_engine)
-                            .map(|center| {
-                                game::render_bridge::clock_planet_transform(
-                                    center,
-                                    self.session.world().time().elapsed.0 as f64 / 1_000.0,
-                                )
-                            });
-                        self.clock_surface_transform = frozen_transform;
                         self.clock_last_valid_surface_local = frozen_transform.map(|transform| {
                             let value = transform
                                 .matrix()
@@ -4590,7 +4890,6 @@ impl VisualBridge {
                         });
                     } else {
                         self.clock_last_valid_surface_local = None;
-                        self.clock_surface_transform = None;
                     }
                     // Keep the authoritative ship at the same station used
                     // by rendering and by the boarding distance check.
@@ -4598,7 +4897,7 @@ impl VisualBridge {
                         game::render_bridge::surface_ship_position_with_transform(
                             self.session.world(),
                             planet,
-                            self.clock_surface_transform,
+                            self.surface_planet_transform,
                         )
                     {
                         let _ = self.session.world_mut().restore_ship_position(GameplayVec3 {
@@ -4634,7 +4933,8 @@ impl VisualBridge {
                 self.surface_mode = false;
                 self.surface_planet = None;
                 self.clock_last_valid_surface_local = None;
-                self.clock_surface_transform = None;
+                self.surface_planet_transform = None;
+                self.surface_planet_center = None;
                 self.surface_camera_yaw = 0.0;
                 self.surface_camera_pitch = 0.0;
                 self.pilot_mode = true;
@@ -4651,7 +4951,7 @@ impl VisualBridge {
             game::render_bridge::surface_ship_position_with_transform(
                 self.session.world(),
                 planet,
-                self.clock_surface_transform,
+                self.surface_planet_transform,
             )
         else {
             return;
@@ -4862,9 +5162,9 @@ pub fn run() -> Result<(), String> {
             if bridge.landing_cinematic_started_at.is_none() {
                 bridge.poll_visual_asset_events();
             }
+            bridge.poll_gamepad();
             bridge.update_interior_motion();
             bridge.update_pilot_motion();
-            bridge.poll_gamepad();
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
@@ -4876,7 +5176,7 @@ pub fn run() -> Result<(), String> {
                 bridge.nareth_visual_asset_ready(),
                 bridge.pilot_mode,
                 bridge.surface_planet,
-                bridge.clock_surface_transform,
+                bridge.surface_planet_transform,
             );
             if bridge.awakening_sequence {
                 let progress = (bridge.awakening_elapsed_ms as f32 / 3_000.0).clamp(0.0, 1.0);
@@ -5445,14 +5745,34 @@ pub fn run() -> Result<(), String> {
 
 fn controller_key(button: ControllerButton) -> Option<KeyCode> {
     match button {
-        ControllerButton::South | ControllerButton::RightTrigger => Some(KeyCode::KeyF),
-        ControllerButton::North | ControllerButton::East => Some(KeyCode::KeyO),
+        ControllerButton::South => Some(KeyCode::KeyI),
+        ControllerButton::East => Some(KeyCode::Escape),
+        ControllerButton::North => Some(KeyCode::KeyO),
         ControllerButton::West => Some(KeyCode::KeyQ),
+        ControllerButton::LeftTrigger => Some(KeyCode::KeyX),
+        ControllerButton::RightTrigger => Some(KeyCode::KeyF),
+        ControllerButton::LeftShoulder => Some(KeyCode::KeyG),
+        ControllerButton::RightShoulder => Some(KeyCode::ShiftLeft),
+        ControllerButton::Start => Some(KeyCode::F1),
+        ControllerButton::Select => Some(KeyCode::F3),
+        ControllerButton::LeftStick => Some(KeyCode::F2),
+        ControllerButton::RightStick => Some(KeyCode::KeyC),
         ControllerButton::DPadUp => Some(KeyCode::ArrowUp),
         ControllerButton::DPadDown => Some(KeyCode::ArrowDown),
         ControllerButton::DPadLeft => Some(KeyCode::ArrowLeft),
         ControllerButton::DPadRight => Some(KeyCode::ArrowRight),
     }
+}
+
+fn nearby(left: GameplayVec3, right: GameplayVec3, range: f32) -> bool {
+    range.is_finite() && range > 0.0 && distance_squared(left, right) <= range * range
+}
+
+fn distance_squared(left: GameplayVec3, right: GameplayVec3) -> f32 {
+    let dx = left.x - right.x;
+    let dy = left.y - right.y;
+    let dz = left.z - right.z;
+    dx * dx + dy * dy + dz * dz
 }
 
 fn guidance_action_label(action: Option<gameplay::GuidanceAction>) -> String {
@@ -7305,13 +7625,19 @@ mod tests {
     fn instructions_follow_title_exploration_and_pilot_modes() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         bridge.started = false;
-        assert_eq!(bridge.instructions_hint(), "PULSA ENTER PARA COMENZAR");
-        assert_eq!(bridge.controls_hint(), "ENTER COMENZAR");
+        assert_eq!(
+            bridge.instructions_hint(),
+            "PULSA ENTER O A (MANDO) PARA COMENZAR"
+        );
+        assert_eq!(
+            bridge.controls_hint(),
+            "ENTER/A COMENZAR | B CANCELAR | START CONTROLES | SELECT INVENTARIO"
+        );
 
         bridge.start_game();
         assert!(bridge
             .instructions_hint()
-            .contains("PULSA LA TECLA INDICADA"));
+            .contains("DESPERTAR"));
         bridge.guided_interaction();
         assert!(bridge.pilot_mode);
         assert!(bridge.instructions_hint().contains("PILOTAJE ACTIVO"));
@@ -7456,7 +7782,7 @@ mod tests {
 
     #[test]
     fn controller_bindings_reuse_existing_keyboard_actions() {
-        assert_eq!(controller_key(ControllerButton::South), Some(KeyCode::KeyF));
+        assert_eq!(controller_key(ControllerButton::South), Some(KeyCode::KeyI));
         assert_eq!(
             controller_key(ControllerButton::RightTrigger),
             Some(KeyCode::KeyF)
