@@ -86,7 +86,7 @@ El panel `F1` muestra los controles del modo actual. `F2` oculta o muestra el HU
 - Stick izquierdo: mover al personaje; durante el pilotaje, avanzar/retroceder y desplazarse.
 - Stick derecho: girar la cámara; durante el pilotaje, orientar ECHO-7.
 - `A`: comenzar, confirmar, interactuar, recoger o despegar junto a la nave.
-- `B`: cancelar o cerrar una pantalla.
+- `B`: cancelar o cerrar una pantalla; en el interior, entrar directamente en modo piloto después de completar la primera misión.
 - `X`: escanear; `Y`: observar planetas.
 - Gatillo derecho: disparar con autoapuntado; gatillo izquierdo: frenar.
 - Bumper izquierdo: escudo; bumper derecho: boost.
@@ -107,6 +107,7 @@ El jugador comienza con 5 unidades de oxígeno, suficientes para restaurar el so
 - `W/A/S/D`: mover al personaje dentro de ECHO-7.
 - Flechas: mirar con el personaje.
 - `I`: interactuar con el elemento contextual cercano.
+- `K`: entrar en modo piloto directamente desde cualquier lugar del interior, una vez completada la primera misión.
 - `M`: iniciar la misión disponible.
 - `F7`: completar de inmediato la misión activa para la demostración.
 - `R`: reparar el sistema eléctrico cuando el panel y la condición de gameplay lo permiten.

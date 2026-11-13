@@ -1092,6 +1092,56 @@ impl PilotSystem {
         }
     }
 
+    fn take_control(
+        &self,
+        world: &mut GameplayWorld,
+        player: engine::EntityId,
+        station_id: engine::EntityId,
+    ) -> CommandResult {
+        let ship = match validate_pilot_station_access(world, player, station_id) {
+            Ok(ship) => ship,
+            Err(result) => return result,
+        };
+        let Some(interactable) = world.interactable(station_id).copied() else {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::PilotStationNotFound,
+            );
+        };
+        let crate::interaction::InteractionBehavior::Station { mut station } =
+            interactable.behavior
+        else {
+            return CommandResult::rejected(
+                crate::commands::CommandRejection::IncompatibleInteraction,
+            );
+        };
+        if station.occupant.is_some_and(|occupant| occupant != player) {
+            return CommandResult::rejected(crate::commands::CommandRejection::StationOccupied);
+        }
+
+        let claimed = station.occupant.is_none();
+        if claimed {
+            station.occupant = Some(player);
+            let Some(stored) = world.interactable_mut(station_id) else {
+                return CommandResult::rejected(
+                    crate::commands::CommandRejection::PilotStationNotFound,
+                );
+            };
+            stored.behavior = crate::interaction::InteractionBehavior::Station { station };
+            world.publish(crate::events::GameplayEvent::StationOccupied {
+                station: station_id,
+                player,
+                state: crate::station::StationState::Occupied,
+                station_type: crate::station::StationType::Piloting,
+            });
+        }
+
+        let changed = world.navigation_mut().set_control_active(true);
+        if changed {
+            world.publish(crate::events::GameplayEvent::ShipControlChanged { ship, active: true });
+        }
+        CommandResult::success(claimed || changed)
+    }
+
     fn accelerate(
         &self,
         world: &mut GameplayWorld,
@@ -1230,6 +1280,10 @@ impl GameplaySystem for PilotSystem {
                 pilot_station,
                 active,
             } => self.set_active(world, player, pilot_station, active),
+            GameplayCommand::TakePilotControl {
+                player,
+                pilot_station,
+            } => self.take_control(world, player, pilot_station),
             _ => return None,
         };
         Some(result)
@@ -2716,6 +2770,64 @@ fn validate_pilot_access(
         ));
     }
     Ok(())
+}
+
+fn validate_pilot_station_access(
+    world: &GameplayWorld,
+    player_id: engine::EntityId,
+    station_id: engine::EntityId,
+) -> Result<engine::EntityId, CommandResult> {
+    if world.phase() != crate::types::SimulationPhase::Running {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::SimulationNotRunning,
+        ));
+    }
+    let Some(player) = world.player(player_id) else {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::PlayerNotFound,
+        ));
+    };
+    if !world.entities().contains(player_id) || !player.is_active {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::PlayerInactive,
+        ));
+    }
+    let Some(interactable) = world.interactable(station_id) else {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::PilotStationNotFound,
+        ));
+    };
+    if !interactable.enabled {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::PilotStationDisabled,
+        ));
+    }
+    let crate::interaction::InteractionBehavior::Station { station } = interactable.behavior else {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::IncompatibleInteraction,
+        ));
+    };
+    if station.station_type != crate::station::StationType::Piloting {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::IncompatibleInteraction,
+        ));
+    }
+    let Some(ship) = world.navigation().ship_id() else {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::ShipNotFound,
+        ));
+    };
+    if !world.entities().contains(ship) {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::ShipNotFound,
+        ));
+    }
+    if world.ship_is_destroyed(ship) == Some(true) {
+        return Err(CommandResult::rejected(
+            crate::commands::CommandRejection::ShipDestroyed,
+        ));
+    }
+    Ok(ship)
 }
 
 impl NavigationSystem {
