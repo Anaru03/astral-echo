@@ -1250,7 +1250,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         let mut transform = Transform::new(visual_position, model_rotation, ECHO7_VISUAL_SCALE);
         transform.translation -= rotation
             * (echo7_local_to_world_rotation() * (ECHO7_VISUAL_SCALE * ECHO7_MODEL_CENTER));
-        let meshes = if interior || pilot_mode {
+        let meshes = if interior {
             [
                 ECHO7_MESH,
                 MeshHandle::ECHO7_INTERIOR_LOWER,
@@ -1265,9 +1265,9 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
                 MeshHandle::new(0),
             ]
         };
-        let count = if interior || pilot_mode { 4 } else { 1 };
+        let count = if interior { 4 } else { 1 };
         for (index, mesh) in meshes.into_iter().take(count).enumerate() {
-            let entity = if interior || pilot_mode {
+            let entity = if interior {
                 [
                     ship,
                     INTERIOR_LOWER_ENTITY,
