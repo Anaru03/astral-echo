@@ -152,6 +152,7 @@ const ECHO7_BALCONY_LOCAL_CONNECTION_X_MAX: f32 = 3.45;
 const ECHO7_BALCONY_LOCAL_CONNECTION_Y_MIN: f32 = -8.5;
 const ECHO7_BALCONY_LOCAL_CONNECTION_Y_MAX: f32 = -6.0;
 pub const ECHO7_PLAYER_RADIUS: f32 = 0.45;
+pub const PLAYER_SURFACE_CLEARANCE: f32 = 0.6;
 pub const INTERIOR_FLOOR_ENTITY: engine::EntityId = engine::EntityId::new(9_401);
 pub const INTERIOR_BACK_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_402);
 pub const INTERIOR_LEFT_WALL_ENTITY: engine::EntityId = engine::EntityId::new(9_403);
@@ -1059,6 +1060,27 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot(
         nareth_mesh_ready,
         pilot_mode,
         None,
+    )
+}
+
+pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface_transform(
+    world: &GameplayWorld,
+    params: BridgeParams<'_>,
+    camera: &Camera,
+    interior: bool,
+    nareth_mesh_ready: bool,
+    pilot_mode: bool,
+    surface_planet: Option<gameplay::DestinationId>,
+    _surface_transform: Option<Transform>,
+) -> RenderSnapshot {
+    snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface(
+        world,
+        params,
+        camera,
+        interior,
+        nareth_mesh_ready,
+        pilot_mode,
+        surface_planet,
     )
 }
 
@@ -2056,7 +2078,7 @@ pub fn is_observable_planet(world: &GameplayWorld, destination: gameplay::Destin
     })
 }
 
-fn planet_visual_radius(destination: gameplay::DestinationId) -> f32 {
+pub fn planet_visual_radius(destination: gameplay::DestinationId) -> f32 {
     match destination.value() {
         ACADEMIC_PLANET_DESTINATION_ID => PLANET_VISUAL_RADIUS,
         TESSARA_DESTINATION_ID => TESSARA_VISUAL_RADIUS,
@@ -2086,6 +2108,33 @@ pub fn surface_ship_position(
     destination: gameplay::DestinationId,
 ) -> Option<Vec3> {
     planet_surface_origin(world, destination).map(|origin| origin + Vec3::new(4.0, 0.0, 4.0))
+}
+
+pub fn surface_ship_position_with_transform(
+    world: &GameplayWorld,
+    destination: gameplay::DestinationId,
+    _transform: Option<Transform>,
+) -> Option<Vec3> {
+    surface_ship_position(world, destination)
+}
+
+pub fn planet_surface_transform(
+    _world: &GameplayWorld,
+    _destination: gameplay::DestinationId,
+) -> Option<Transform> {
+    None
+}
+
+pub fn surface_camera_for_player_with_view_and_transform(
+    world: &GameplayWorld,
+    player_id: engine::EntityId,
+    _destination: gameplay::DestinationId,
+    aspect: f32,
+    _yaw: f32,
+    _pitch: f32,
+    _transform: Option<Transform>,
+) -> Result<Camera, CameraError> {
+    interior_camera_for_player(world, player_id, aspect)
 }
 
 fn observation_distance(visual_radius: f32) -> f32 {

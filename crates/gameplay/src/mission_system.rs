@@ -108,6 +108,44 @@ impl MissionSystem {
         CommandResult::success(true)
     }
 
+    fn skip_mission(&mut self, world: &mut GameplayWorld, id: MissionId) -> CommandResult {
+        let Some(mission) = world.mission_mut(id) else {
+            return reject(crate::commands::CommandRejection::MissionNotFound);
+        };
+        if mission.state() != MissionState::Active {
+            return reject(crate::commands::CommandRejection::InvalidMissionTransition);
+        }
+
+        let mut completed = Vec::new();
+        for objective in mission.objectives_mut() {
+            if objective.required && objective.state() != ObjectiveState::Completed {
+                objective.add_progress(objective.required_progress());
+                objective.set_state(ObjectiveState::Completed);
+                completed.push(objective.id);
+            }
+        }
+        let available = mission.activate_available_objectives();
+        mission.complete();
+
+        for objective in completed {
+            world.publish(GameplayEvent::ObjectiveCompleted {
+                objective,
+                state: ObjectiveState::Completed,
+            });
+        }
+        for objective in available {
+            world.publish(GameplayEvent::ObjectiveAvailable {
+                objective,
+                state: ObjectiveState::Available,
+            });
+        }
+        world.publish(GameplayEvent::MissionCompleted {
+            mission: id,
+            state: MissionState::Completed,
+        });
+        CommandResult::success(true)
+    }
+
     fn start_objective(&mut self, world: &mut GameplayWorld, id: ObjectiveId) -> CommandResult {
         let Some(mission_id) = world.objective(id).map(|objective| objective.mission_id) else {
             return reject(crate::commands::CommandRejection::ObjectiveNotFound);
@@ -341,6 +379,7 @@ impl GameplaySystem for MissionSystem {
             GameplayCommand::StartMission { mission } => self.start_mission(world, mission),
             GameplayCommand::FailMission { mission } => self.fail_mission(world, mission),
             GameplayCommand::CompleteMission { mission } => self.complete_mission(world, mission),
+            GameplayCommand::SkipMission { mission } => self.skip_mission(world, mission),
             GameplayCommand::StartObjective { objective } => self.start_objective(world, objective),
             GameplayCommand::CompleteObjective { objective } => {
                 self.complete_objective(world, objective)
@@ -367,5 +406,132 @@ impl GameplaySystem for MissionSystem {
 fn reject(reason: crate::commands::CommandRejection) -> CommandResult {
     CommandResult {
         status: CommandStatus::Rejected { reason },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        domains::objective::ObjectiveState,
+        events::GameplayEvent,
+        objective::ObjectiveTrigger,
+        types::{MissionId, ObjectiveId},
+        Mission,
+    };
+
+    #[test]
+    fn skipping_active_mission_completes_required_objectives_and_emits_events() {
+        let mission_id = MissionId(1);
+        let first = ObjectiveId(1);
+        let second = ObjectiveId(2);
+        let optional = ObjectiveId(3);
+        let mission = Mission::new(
+            mission_id,
+            "Demo",
+            vec![
+                crate::Objective::new(
+                    first,
+                    mission_id,
+                    "Discover two planets",
+                    true,
+                    ObjectiveTrigger::PlanetsDiscovered { count: 2 },
+                ),
+                crate::Objective::new(
+                    second,
+                    mission_id,
+                    "Finish the mission",
+                    true,
+                    ObjectiveTrigger::Manual,
+                )
+                .with_dependencies([first]),
+                crate::Objective::new(
+                    optional,
+                    mission_id,
+                    "Optional objective",
+                    false,
+                    ObjectiveTrigger::Manual,
+                )
+                .with_dependencies([second]),
+            ],
+        )
+        .expect("mission definition should be valid");
+        let mut world = GameplayWorld::new();
+        world
+            .register_mission(mission)
+            .expect("mission should register");
+        let mut system = MissionSystem::new();
+
+        let rejected = system
+            .process(
+                &mut world,
+                GameplayCommand::SkipMission {
+                    mission: mission_id,
+                },
+            )
+            .expect("mission system should handle skip");
+        assert_eq!(
+            rejected.status,
+            CommandStatus::Rejected {
+                reason: crate::commands::CommandRejection::InvalidMissionTransition,
+            }
+        );
+
+        system
+            .process(
+                &mut world,
+                GameplayCommand::UnlockMission {
+                    mission: mission_id,
+                },
+            )
+            .expect("mission system should handle unlock");
+        system
+            .process(
+                &mut world,
+                GameplayCommand::StartMission {
+                    mission: mission_id,
+                },
+            )
+            .expect("mission system should handle start");
+        let result = system
+            .process(
+                &mut world,
+                GameplayCommand::SkipMission {
+                    mission: mission_id,
+                },
+            )
+            .expect("mission system should handle skip");
+
+        assert_eq!(result.status, CommandStatus::Success { changed: true });
+        let mission = world.mission(mission_id).expect("mission should exist");
+        assert_eq!(mission.state(), MissionState::Completed);
+        assert_eq!(mission.progress().required_completed, 2);
+        assert_eq!(mission.progress().required_total, 2);
+        assert_eq!(world.objective(first).unwrap().progress(), 2);
+        assert_eq!(world.objective(second).unwrap().progress(), 1);
+        assert_eq!(
+            world.objective(first).unwrap().state(),
+            ObjectiveState::Completed
+        );
+        assert_eq!(
+            world.objective(second).unwrap().state(),
+            ObjectiveState::Completed
+        );
+        assert_eq!(
+            world.objective(optional).unwrap().state(),
+            ObjectiveState::Available
+        );
+        assert!(world.events().iter().any(|event| matches!(
+            event,
+            GameplayEvent::MissionCompleted { mission, .. } if *mission == mission_id
+        )));
+        assert_eq!(
+            world
+                .events()
+                .iter()
+                .filter(|event| matches!(event, GameplayEvent::ObjectiveCompleted { .. }))
+                .count(),
+            2
+        );
     }
 }

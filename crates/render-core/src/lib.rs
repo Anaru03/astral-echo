@@ -49,7 +49,7 @@ pub use math::{
     transform_normal, Mat4, Quat, Vec2, Vec3, Vec4,
 };
 pub use mesh::{MeshHandle, Vertex};
-pub use model_loader::{load_obj, load_obj_reader, ObjLoadError};
+pub use model_loader::{load_obj, load_obj_decimated, load_obj_reader, ObjLoadError};
 pub use scene::{RenderCamera, RenderLight, RenderLightKind, RenderNode, RenderScene};
 pub use shadows::{shadow_fixture, ShadowConfig, ShadowConfigError, ShadowResolution};
 pub use snapshot::{

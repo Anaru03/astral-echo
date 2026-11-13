@@ -162,6 +162,7 @@ impl MeshHandle {
     pub const ECHO7_INTERIOR_UPPER: Self = Self(20);
     pub const ECHO7_INTERIOR_CORE: Self = Self(21);
     pub const ERICK: Self = Self(22);
+    pub const LANDING_PLANET_PROXY: Self = Self(22);
 
     pub const fn new(value: u32) -> Self {
         Self(value)

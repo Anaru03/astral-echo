@@ -1,10 +1,12 @@
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::rc::Rc;
 use std::time::Instant;
 
+use crate::clock_surface;
 use engine::{Duration, EntityId, Vec3 as GameplayVec3};
 use game::ProjectEchoSession;
 use gameplay::types::ItemId;
@@ -486,7 +488,18 @@ struct VisualBridge {
     pilot_camera_distance: f32,
     surface_mode: bool,
     surface_planet: Option<DestinationId>,
+    // Last position confirmed against the clock mesh in model-local space.
+    // Keeping it local prevents the planet's rotation from turning a valid
+    // checkpoint into an invalid world-space position between frames.
+    clock_last_valid_surface_local: Option<GameplayVec3>,
+    // The visual reference is frozen when landing completes. The gameplay
+    // planet may continue orbiting, but the player must not feel that motion
+    // while exploring its surface.
+    surface_planet_transform: Option<render_core::Transform>,
+    surface_planet_center: Option<GameplayVec3>,
+    landing_planet: Option<DestinationId>,
     landing_cinematic_started_at: Option<u64>,
+    landing_cinematic_wall_started_at: Option<Instant>,
     takeoff_cinematic_started_at: Option<u64>,
     fire_pressed: bool,
     boost_pressed: bool,
@@ -496,13 +509,24 @@ struct VisualBridge {
     look_right: bool,
     look_up: bool,
     look_down: bool,
+    surface_camera_yaw: f32,
+    surface_camera_pitch: f32,
     last_interior_update: Instant,
     last_world_update: Instant,
+    guidance_cache: RefCell<Option<(Instant, Option<String>)>>,
     visual_asset_client: Option<VisualAssetClient>,
     visual_asset_states: BTreeMap<String, VisualAssetState>,
     gpu_asset_states: BTreeMap<(MeshHandle, LodLevel), (u64, u64, GpuAssetState)>,
     nareth_diag_snapshot_mesh: Option<MeshHandle>,
     echo7_pick_requested: bool,
+    active_ship_minigame: Option<ActiveShipMinigame>,
+    completed_ship_minigames: BTreeSet<&'static str>,
+}
+
+struct ActiveShipMinigame {
+    task: &'static str,
+    event_file: PathBuf,
+    child: Child,
 }
 
 impl VisualBridge {
@@ -808,7 +832,7 @@ impl VisualBridge {
             },
             orbit_phase: 0.0,
             orbit_angular_speed: game::render_bridge::TESSARA_ORBIT_ANGULAR_SPEED_RAD_PER_SECOND,
-            surface_radius: game::render_bridge::PLANET_SURFACE_RADIUS,
+            surface_radius: game::render_bridge::TESSARA_VISUAL_RADIUS,
             ship_radius: 1.0,
             gravity_influence_radius: 24.0,
             gravitational_parameter: 24.0,
@@ -1162,7 +1186,12 @@ impl VisualBridge {
             pilot_camera_distance: game::render_bridge::PILOT_CAMERA_DEFAULT_DISTANCE,
             surface_mode: false,
             surface_planet: None,
+            clock_last_valid_surface_local: None,
+            surface_planet_transform: None,
+            surface_planet_center: None,
+            landing_planet: None,
             landing_cinematic_started_at: None,
+            landing_cinematic_wall_started_at: None,
             takeoff_cinematic_started_at: None,
             fire_pressed: false,
             boost_pressed: false,
@@ -1172,13 +1201,18 @@ impl VisualBridge {
             look_right: false,
             look_up: false,
             look_down: false,
+            surface_camera_yaw: 0.0,
+            surface_camera_pitch: 0.0,
             last_interior_update: Instant::now(),
             last_world_update: Instant::now(),
+            guidance_cache: RefCell::new(None),
             visual_asset_client: None,
             visual_asset_states: BTreeMap::new(),
             gpu_asset_states: BTreeMap::new(),
             nareth_diag_snapshot_mesh: None,
             echo7_pick_requested: false,
+            active_ship_minigame: None,
+            completed_ship_minigames: BTreeSet::new(),
         })
     }
 
@@ -1333,6 +1367,12 @@ impl VisualBridge {
     }
 
     fn request_nareth_visual_asset(&mut self) {
+        if matches!(
+            self.visual_asset_states.get(NARETH_RESOURCE_ID),
+            Some(VisualAssetState::Loading | VisualAssetState::Ready)
+        ) {
+            return;
+        }
         let request = nareth_visual_asset_request();
         let size = std::fs::metadata(&request.path)
             .map(|metadata| metadata.len())
@@ -1362,11 +1402,12 @@ impl VisualBridge {
         self.awakening_elapsed_ms = 0;
         self.last_world_update = Instant::now();
         self.last_interior_update = Instant::now();
-        self.feedback = "DESPERTAR: SECUENCIA DE DESPERTAR EN CURSO".to_owned();
+        self.feedback = "ECHO-7: DESPERTAR: SECUENCIA DE DESPERTAR EN CURSO".to_owned();
         println!("visual gameplay: {}", self.feedback);
     }
 
     fn advance_visual_time(&mut self) {
+        self.poll_ship_minigame();
         let now = Instant::now();
         let delta_ms = now
             .saturating_duration_since(self.last_world_update)
@@ -1384,6 +1425,7 @@ impl VisualBridge {
         }
         self.session
             .update([GameplayCommand::AdvanceTime { delta }]);
+        self.collect_nearby_collectibles();
         if self.awakening_sequence {
             self.awakening_elapsed_ms = self.awakening_elapsed_ms.saturating_add(delta.0);
             if self.awakening_elapsed_ms >= 3_000 {
@@ -1418,6 +1460,7 @@ impl VisualBridge {
         }
         let commands: Vec<_> = commands.into_iter().collect();
         let results = self.session.update(commands.clone());
+        self.collect_nearby_collectibles();
         self.activate_introductory_threat_if_ready();
         self.refresh_player_defeat_state();
         let accepted = results
@@ -1489,6 +1532,44 @@ impl VisualBridge {
         }
     }
 
+    fn collect_nearby_collectibles(&mut self) {
+        let Some(player) = self.session.world().player(self.player) else {
+            return;
+        };
+        let player_position = player.position;
+        let ship_position = self.session.world().ship_position();
+        let candidates: Vec<_> = self
+            .session
+            .world()
+            .collectibles()
+            .filter(|collectible| {
+                collectible.active
+                    && collectible.owner.is_none_or(|owner| owner == self.player)
+                    && (nearby(
+                        player_position,
+                        collectible.position,
+                        collectible.interaction_range,
+                    ) || ship_position.is_some_and(|ship| {
+                        nearby(ship, collectible.position, collectible.interaction_range)
+                    }))
+            })
+            .map(|collectible| (collectible.entity, collectible.amount))
+            .collect();
+        for (collectible, amount) in candidates {
+            let result = self.session.update([GameplayCommand::CollectItem {
+                player: self.player,
+                collectible,
+                amount,
+            }]);
+            if result
+                .iter()
+                .any(|value| matches!(value.status, gameplay::CommandStatus::Success { .. }))
+            {
+                self.feedback = "RECOMPENSA CARGADA AUTOMATICAMENTE EN EL INVENTARIO".to_owned();
+            }
+        }
+    }
+
     fn handle_key(&mut self, key: KeyCode, state: ElementState) {
         if !self.started {
             if state == ElementState::Pressed && key == KeyCode::Enter {
@@ -1531,6 +1612,10 @@ impl VisualBridge {
         }
         if state == ElementState::Pressed && key == KeyCode::F4 {
             self.echo7_pick_requested = true;
+            return;
+        }
+        if state == ElementState::Pressed && key == KeyCode::F7 {
+            self.skip_presented_mission();
             return;
         }
         if self.controls_panel_open {
@@ -1601,7 +1686,6 @@ impl VisualBridge {
         }
         let player = self.player;
         let ship = self.ship;
-        let enemy = self.enemy;
         let pilot_station = self.pilot_station;
         if self.pilot_mode
             && state == ElementState::Pressed
@@ -1694,11 +1778,13 @@ impl VisualBridge {
         if key == KeyCode::KeyF && self.pilot_mode {
             self.fire_pressed = state == ElementState::Pressed;
             if self.fire_pressed {
-                self.issue([GameplayCommand::AttackEnemy { player, enemy }]);
+                self.attack_auto_target();
             }
             return;
         }
-        if (self.interior_mode || self.pilot_mode) && state == ElementState::Released {
+        if (self.interior_mode || self.pilot_mode || self.surface_mode)
+            && state == ElementState::Released
+        {
             match key {
                 KeyCode::ArrowLeft => self.look_left = false,
                 KeyCode::ArrowRight => self.look_right = false,
@@ -1745,7 +1831,7 @@ impl VisualBridge {
                 if self.landing_target().is_some() {
                     self.request_landing_from_current_position();
                 } else if self.ship_flight_controls_enabled() {
-                    self.issue([GameplayCommand::AttackEnemy { player, enemy }]);
+                    self.attack_auto_target();
                 }
             }
             KeyCode::KeyE => {
@@ -1767,6 +1853,9 @@ impl VisualBridge {
                 self.toggle_flight(player, pilot_station)
             }
             KeyCode::KeyO => self.toggle_observation(),
+            KeyCode::ArrowLeft if self.surface_mode => {
+                self.look_left = true;
+            }
             KeyCode::ArrowLeft if self.interior_mode || self.pilot_mode => {
                 self.look_left = true;
                 if self.interior_mode {
@@ -1775,6 +1864,9 @@ impl VisualBridge {
                 if self.pilot_mode {
                     self.rotate_ship_from_input(1.0, 0.0);
                 }
+            }
+            KeyCode::ArrowRight if self.surface_mode => {
+                self.look_right = true;
             }
             KeyCode::ArrowRight if self.interior_mode || self.pilot_mode => {
                 self.look_right = true;
@@ -1785,6 +1877,9 @@ impl VisualBridge {
                     self.rotate_ship_from_input(-1.0, 0.0);
                 }
             }
+            KeyCode::ArrowUp if self.surface_mode => {
+                self.look_up = true;
+            }
             KeyCode::ArrowUp if self.interior_mode || self.pilot_mode => {
                 self.look_up = true;
                 if self.interior_mode {
@@ -1793,6 +1888,9 @@ impl VisualBridge {
                 if self.pilot_mode {
                     self.rotate_ship_from_input(0.0, -1.0);
                 }
+            }
+            KeyCode::ArrowDown if self.surface_mode => {
+                self.look_down = true;
             }
             KeyCode::ArrowDown if self.interior_mode || self.pilot_mode => {
                 self.look_down = true;
@@ -1913,6 +2011,26 @@ impl VisualBridge {
             return;
         }
         self.finish_issue(aggregate);
+    }
+
+    fn skip_presented_mission(&mut self) {
+        let Some(mission) = game::render_bridge::presentation_mission(self.session.world()) else {
+            self.feedback = "NO HAY MISION ACTIVA PARA SALTAR".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+            return;
+        };
+        if !self
+            .session
+            .mission_progress(mission)
+            .is_some_and(|progress| {
+                progress.state == gameplay::domains::mission::MissionState::Active
+            })
+        {
+            self.feedback = "NO HAY MISION ACTIVA PARA SALTAR".to_owned();
+            println!("visual gameplay: {}", self.feedback);
+            return;
+        }
+        self.issue([GameplayCommand::SkipMission { mission }]);
     }
 
     fn mission_two_destinations() -> [Destination; 2] {
@@ -2295,6 +2413,219 @@ impl VisualBridge {
         println!("visual gameplay: {}", self.feedback);
     }
 
+    fn ship_minigame_for_target(&self, target: EntityId) -> Option<&'static str> {
+        match self
+            .session
+            .world()
+            .interactable(target)
+            .map(|value| value.behavior)
+        {
+            Some(InteractionBehavior::ElectricalPanel) => Some("wiring"),
+            Some(InteractionBehavior::LifeSupportPanel) => Some("filter"),
+            Some(InteractionBehavior::Console {
+                role: gameplay::ConsoleRole::ShipStatus,
+                ..
+            }) => Some("code"),
+            Some(InteractionBehavior::Station { station })
+                if station.station_type == StationType::Piloting =>
+            {
+                Some("asteroids")
+            }
+            _ => None,
+        }
+    }
+
+    fn ship_minigame_label(task: &str) -> &'static str {
+        match task {
+            "wiring" => "PANEL ELECTRICO / CABLEADO",
+            "filter" => "SOPORTE VITAL / FILTRO O2",
+            "code" => "CONSOLA DE ESTADO / CODIGOS",
+            "asteroids" => "CONSOLA DE PILOTAJE / DEFENSA",
+            "bridge" => "PUERTA DEL PUENTE / ACCESO",
+            _ => "SISTEMA DE LA NAVE",
+        }
+    }
+
+    fn ship_minigame_waypoint_hint(&self) -> Option<String> {
+        if !self.started || !self.interior_mode || self.pilot_mode {
+            return None;
+        }
+        if let Some(active) = self.active_ship_minigame.as_ref() {
+            return Some(format!(
+                "MINIJUEGO ACTIVO: {} | COMPLETALO PARA CONTINUAR",
+                Self::ship_minigame_label(active.task)
+            ));
+        }
+        let player = self.session.world().player(self.player)?;
+        let guided_target = self
+            .session
+            .world()
+            .guidance_for_player(self.player)
+            .ok()
+            .and_then(|guidance| match guidance.recommended_action {
+                Some(gameplay::GuidanceAction::Interact(target)) => Some(target),
+                _ => None,
+            });
+        let target = self
+            .session
+            .world()
+            .interactables()
+            .filter_map(|value| {
+                if guided_target.is_some_and(|target| target != value.entity_id) {
+                    return None;
+                }
+                let (priority, task) = match value.behavior {
+                    InteractionBehavior::Console {
+                        role: gameplay::ConsoleRole::ShipStatus,
+                        state: gameplay::ConsoleState::Off,
+                    } => (0, "code"),
+                    InteractionBehavior::ElectricalPanel => (1, "wiring"),
+                    InteractionBehavior::LifeSupportPanel => (1, "filter"),
+                    InteractionBehavior::Door { door }
+                        if door.role == gameplay::DoorRole::CommandBridge
+                            && !matches!(door.state, gameplay::domains::door::DoorState::Open) =>
+                    {
+                        (2, "bridge")
+                    }
+                    InteractionBehavior::Station { station }
+                        if station.station_type == StationType::Piloting
+                            && station.occupant.is_none() =>
+                    {
+                        (3, "asteroids")
+                    }
+                    _ => return None,
+                };
+                if task != "bridge" && self.completed_ship_minigames.contains(task) {
+                    return None;
+                }
+                let dx = value.position.x - player.position.x;
+                let dz = value.position.z - player.position.z;
+                Some((priority, dx * dx + dz * dz, dx, dz, task))
+            })
+            .min_by(|left, right| {
+                left.0.cmp(&right.0).then_with(|| {
+                    left.1
+                        .partial_cmp(&right.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+            })?;
+        let distance = target.1.sqrt();
+        let yaw = player.orientation.yaw_degrees.to_radians();
+        let (sin_yaw, cos_yaw) = yaw.sin_cos();
+        let forward = target.3 * -cos_yaw + target.2 * sin_yaw;
+        let right = target.2 * cos_yaw + target.3 * sin_yaw;
+        let direction = if forward.abs() >= right.abs() {
+            if forward >= 0.0 {
+                "ADELANTE"
+            } else {
+                "ATRAS"
+            }
+        } else if right >= 0.0 {
+            "DERECHA"
+        } else {
+            "IZQUIERDA"
+        };
+        Some(format!(
+            "CAMINO DORADO >> {} | {} | {distance:.1} m",
+            Self::ship_minigame_label(target.4),
+            direction,
+        ))
+    }
+
+    fn start_ship_minigame(&mut self, task: &'static str, _target: EntityId) -> bool {
+        if self.completed_ship_minigames.contains(task) || self.active_ship_minigame.is_some() {
+            return false;
+        }
+
+        // Unit tests use the gameplay interaction directly and must not open
+        // a desktop Tk window. The real visual runtime uses the same path
+        // through the Python minigame bridge below.
+        if cfg!(test) {
+            self.completed_ship_minigames.insert(task);
+            return false;
+        }
+
+        let event_file = std::env::temp_dir().join(format!(
+            "astral_echo_ship_minigame_{}_{}.events",
+            std::process::id(),
+            task
+        ));
+        let _ = std::fs::remove_file(&event_file);
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("ship_minigames")
+            .join("ship_mission.py");
+        let configured_python = std::env::var("ASTRAL_ECHO_PYTHON").ok();
+        let mut launchers = configured_python
+            .into_iter()
+            .map(|value| (value, false))
+            .chain([("python".to_owned(), false), ("py".to_owned(), true)])
+            .collect::<Vec<_>>();
+        launchers.dedup_by(|left, right| left.0 == right.0);
+        let mut child = None;
+        for (launcher, python_launcher) in launchers {
+            let mut command = std::process::Command::new(launcher);
+            if python_launcher {
+                command.arg("-3");
+            }
+            if let Ok(process) = command
+                .current_dir(script.parent().unwrap_or(Path::new(".")))
+                .arg(&script)
+                .arg("--task")
+                .arg(task)
+                .arg("--event-file")
+                .arg(&event_file)
+                .spawn()
+            {
+                child = Some(process);
+                break;
+            }
+        }
+        let Some(child) = child else {
+            self.feedback =
+                format!("NO SE PUDO ABRIR EL MINIJUEGO {task} — CONFIGURA ASTRAL_ECHO_PYTHON");
+            return false;
+        };
+        self.active_ship_minigame = Some(ActiveShipMinigame {
+            task,
+            event_file,
+            child,
+        });
+        self.feedback = format!("MINIJUEGO INICIADO: {task} — COMPLETALO PARA CONTINUAR LA MISION");
+        true
+    }
+
+    fn poll_ship_minigame(&mut self) {
+        let Some(mut active) = self.active_ship_minigame.take() else {
+            return;
+        };
+        let completed = std::fs::read_to_string(&active.event_file)
+            .map(|contents| {
+                contents.lines().any(|line| {
+                    line.contains(&format!("\"task\": \"{}\"", active.task))
+                        || line.contains(&format!("\"task\":\"{}\"", active.task))
+                })
+            })
+            .unwrap_or(false);
+        let exited = active.child.try_wait().ok().flatten();
+        if completed {
+            let _ = std::fs::remove_file(&active.event_file);
+            self.completed_ship_minigames.insert(active.task);
+            self.feedback = format!(
+                "MINIJUEGO COMPLETADO: {} — INTERACCION RESTAURADA",
+                active.task
+            );
+            self.guided_interaction();
+        } else if exited.is_some() {
+            let _ = std::fs::remove_file(&active.event_file);
+            self.feedback = format!(
+                "MINIJUEGO CANCELADO: {} — VUELVE A INTERACTUAR PARA REINTENTAR",
+                active.task
+            );
+        } else {
+            self.active_ship_minigame = Some(active);
+        }
+    }
+
     fn guided_interaction(&mut self) {
         if self.erick_dialogue_line.is_some() {
             self.advance_erick_dialogue();
@@ -2400,12 +2731,46 @@ impl VisualBridge {
             }
             return;
         }
-        let action = self
-            .session
-            .world()
-            .guidance_for_player(self.player)
-            .ok()
-            .and_then(|guidance| guidance.recommended_action);
+        if let Some(collectible) = self.selected_collectible() {
+            if self.issue([GameplayCommand::CollectItem {
+                player: self.player,
+                collectible: collectible.entity,
+                amount: collectible.amount,
+            }]) {
+                self.feedback = "RECOMPENSA CARGADA EN EL INVENTARIO".to_owned();
+                println!("visual gameplay: {}", self.feedback);
+            }
+            return;
+        }
+        // The object currently shown by the contextual HUD is authoritative
+        // for I. Mission guidance must not steal the interaction while the
+        // player is standing next to a visible console, door or panel.
+        let selected_interaction = self.selected_interactable().map(|value| value.entity_id);
+        let action = selected_interaction
+            .map(gameplay::GuidanceAction::Interact)
+            .or_else(|| {
+                self.session
+                    .world()
+                    .guidance_for_player(self.player)
+                    .ok()
+                    .and_then(|guidance| guidance.recommended_action)
+            });
+        if let Some(target) = selected_interaction {
+            let first_mission_active = self
+                .session
+                .mission_progress(crate::el_despertar::EL_DESPERTAR)
+                .is_some_and(|mission| {
+                    mission.state == gameplay::domains::mission::MissionState::Active
+                });
+            if first_mission_active {
+                if let Some(task) = self.ship_minigame_for_target(target) {
+                    if !self.completed_ship_minigames.contains(task) {
+                        self.start_ship_minigame(task, target);
+                        return;
+                    }
+                }
+            }
+        }
         let pilot_console_available = action.is_none()
             && !self.pilot_mode
             && !self.legacy_exterior_controls
@@ -2647,7 +3012,9 @@ impl VisualBridge {
         let delta_ms = now
             .saturating_duration_since(self.last_interior_update)
             .as_millis()
-            .clamp(1, 50) as u64;
+            // Keep movement deterministic when the render loop temporarily
+            // runs faster than the display refresh rate.
+            .clamp(8, 50) as u64;
         self.last_interior_update = now;
         let seconds = delta_ms as f32 / 1_000.0;
         let local = self.current_flight_input();
@@ -2663,6 +3030,34 @@ impl VisualBridge {
             y: 0.0,
             z: local.x * sin_yaw + local.z * cos_yaw,
         };
+        if self.surface_mode {
+            if let Some(planet) = self.surface_planet {
+                if let Some(center) = self.surface_planet_center.or_else(|| {
+                    self.session
+                        .world()
+                        .planet_position_at(planet, self.session.world().time().elapsed)
+                }) {
+                    let offset = GameplayVec3 {
+                        x: player.position.x - center.x,
+                        y: player.position.y - center.y,
+                        z: player.position.z - center.z,
+                    };
+                    let length = (offset.x * offset.x + offset.y * offset.y + offset.z * offset.z)
+                        .sqrt()
+                        .max(0.0001);
+                    let normal = GameplayVec3 {
+                        x: offset.x / length,
+                        y: offset.y / length,
+                        z: offset.z / length,
+                    };
+                    let radial =
+                        direction.x * normal.x + direction.y * normal.y + direction.z * normal.z;
+                    direction.x -= normal.x * radial;
+                    direction.y -= normal.y * radial;
+                    direction.z -= normal.z * radial;
+                }
+            }
+        }
         let look_yaw = self.look_right as i8 - self.look_left as i8;
         let look_pitch = self.look_down as i8 - self.look_up as i8;
         if look_yaw != 0 || look_pitch != 0 {
@@ -2689,6 +3084,10 @@ impl VisualBridge {
                 direction: GameplayVec3::ZERO,
                 delta: Duration(delta_ms),
             }]);
+        }
+        if self.surface_mode {
+            self.constrain_surface_player(player.position);
+            return;
         }
         if let Some(updated) = self.session.world().player(self.player).copied() {
             let ship_yaw = self
@@ -2723,7 +3122,13 @@ impl VisualBridge {
                         })
                     })
                 });
-            let lower_deck_path_valid = if matches!(
+            let lower_deck_path_valid = if self.room_doors.is_empty() {
+                // The legacy test/runtime fixture has no authoritative room
+                // doors and uses the original rectangular interior layout.
+                // The real ECHO-7 scene always has room doors and follows the
+                // modeled floor validator below.
+                true
+            } else if matches!(
                 current_surface,
                 game::render_bridge::Echo7SupportSurface::LowerDeck
             ) {
@@ -2823,6 +3228,50 @@ impl VisualBridge {
             } else {
                 true
             };
+            // Always validate the proposed path against the authoritative
+            // floor/door geometry, even when the movement started on another
+            // deck. This closes the gaps where a large step could cross a
+            // wall or balcony edge between two specialized validators.
+            let model_path_valid = if self.room_doors.is_empty() {
+                true
+            } else if matches!(
+                current_surface,
+                game::render_bridge::Echo7SupportSurface::Stair
+            ) || game::render_bridge::echo7_stair_path_position_valid(
+                engine::Vec3 {
+                    x: updated.position.x,
+                    y: updated.position.y,
+                    z: updated.position.z,
+                },
+                interior_origin,
+                ship_yaw,
+            ) {
+                // The stair validator owns transitions between decks. A full
+                // horizontal floor test here would classify the sloped stair
+                // as a wall as soon as the player's height changes.
+                true
+            } else {
+                let distance = ((updated.position.x - player.position.x).powi(2)
+                    + (updated.position.z - player.position.z).powi(2))
+                .sqrt();
+                let samples = (distance / 0.05).ceil().max(1.0) as u32;
+                (1..=samples).all(|step| {
+                    let fraction = step as f32 / samples as f32;
+                    let candidate = GameplayVec3 {
+                        x: player.position.x + (updated.position.x - player.position.x) * fraction,
+                        y: player.position.y + (updated.position.y - player.position.y) * fraction,
+                        z: player.position.z + (updated.position.z - player.position.z) * fraction,
+                    };
+                    let upper = candidate.y > 1.0;
+                    game::render_bridge::echo7_model_floor_position_valid(
+                        candidate,
+                        interior_origin,
+                        ship_yaw,
+                        upper,
+                        &room_open,
+                    )
+                })
+            };
             let support = game::render_bridge::echo7_walkable_height(
                 updated.position,
                 interior_origin,
@@ -2834,7 +3283,8 @@ impl VisualBridge {
                     interior_origin,
                     ship_yaw,
                 );
-            if !lower_deck_path_valid
+            if !model_path_valid
+                || !lower_deck_path_valid
                 || !upper_deck_path_valid
                 || !stair_path_valid
                 || crossed_upper_edge
@@ -2904,6 +3354,65 @@ impl VisualBridge {
         }
     }
 
+    fn constrain_surface_player(&mut self, previous: GameplayVec3) {
+        let Some(planet) = self.surface_planet else {
+            return;
+        };
+        let Some(updated) = self.session.world().player(self.player).copied() else {
+            return;
+        };
+        let Some(center) = self.surface_planet_center.or_else(|| {
+            self.session
+                .world()
+                .planet_position_at(planet, self.session.world().time().elapsed)
+        }) else {
+            self.session
+                .world_mut()
+                .initialize_player_position(self.player, previous);
+            return;
+        };
+        if planet == TESSARA_DESTINATION {
+            let Some(transform) = self.surface_planet_transform else {
+                self.session
+                    .world_mut()
+                    .initialize_player_position(self.player, previous);
+                return;
+            };
+            let local = transform
+                .matrix()
+                .inverse()
+                .transform_point3(render_core::from_engine(updated.position));
+            let Some(surface_y) = clock_surface::surface_height(local.x, local.z) else {
+                self.session
+                    .world_mut()
+                    .initialize_player_position(self.player, previous);
+                return;
+            };
+            let local_clearance =
+                game::render_bridge::PLAYER_SURFACE_CLEARANCE / transform.scale.y.abs().max(0.0001);
+            let constrained = transform.matrix().transform_point3(render_core::Vec3::new(
+                local.x,
+                surface_y + local_clearance,
+                local.z,
+            ));
+            self.session.world_mut().initialize_player_position(
+                self.player,
+                GameplayVec3 {
+                    x: constrained.x,
+                    y: constrained.y,
+                    z: constrained.z,
+                },
+            );
+            return;
+        }
+        self.session.world_mut().constrain_player_to_surface(
+            self.player,
+            center,
+            game::render_bridge::planet_visual_radius(planet),
+            game::render_bridge::PLAYER_SURFACE_CLEARANCE,
+        );
+    }
+
     fn contextual_prompt(&self) -> Option<String> {
         self.contextual_action()
             .map(|action| format!("{} [{}] {}", action.object, action.key, action.action))
@@ -2914,7 +3423,11 @@ impl VisualBridge {
             if let Some(planet) = self.surface_planet {
                 if let (Some(player), Some(ship_position)) = (
                     self.session.world().player(self.player),
-                    game::render_bridge::surface_ship_position(self.session.world(), planet),
+                    game::render_bridge::surface_ship_position_with_transform(
+                        self.session.world(),
+                        planet,
+                        self.surface_planet_transform,
+                    ),
                 ) {
                     let dx = player.position.x - ship_position.x;
                     let dy = player.position.y - ship_position.y;
@@ -2932,13 +3445,15 @@ impl VisualBridge {
                 }
             }
         }
-        if let Some(planet) = self.landing_target() {
-            return Some(render_core::HudContextualAction {
-                target: planet.value() as u64,
-                object: Self::navigation_destination_label(planet).to_owned(),
-                action: "ATERRIZAR".to_owned(),
-                key: "L".to_owned(),
-            });
+        if !self.interior_mode && !self.pilot_mode {
+            if let Some(planet) = self.landing_target() {
+                return Some(render_core::HudContextualAction {
+                    target: planet.value() as u64,
+                    object: Self::navigation_destination_label(planet).to_owned(),
+                    action: "ATERRIZAR".to_owned(),
+                    key: "L".to_owned(),
+                });
+            }
         }
         if let Some(companion) = self.selected_companion() {
             return Some(render_core::HudContextualAction {
@@ -3024,6 +3539,15 @@ impl VisualBridge {
                         key: "I".to_owned(),
                     }
                 })
+            })
+            .or_else(|| {
+                self.selected_collectible()
+                    .map(|collectible| render_core::HudContextualAction {
+                        target: collectible.entity.value(),
+                        object: "RECOMPENSA".to_owned(),
+                        action: "RECOGER".to_owned(),
+                        key: "I".to_owned(),
+                    })
             })
     }
 
@@ -3127,6 +3651,34 @@ impl VisualBridge {
             .map(|(_, value)| value)
     }
 
+    fn selected_collectible(&self) -> Option<gameplay::Collectible> {
+        if self.interior_mode || self.pilot_mode {
+            return None;
+        }
+        let player_position = self.session.world().player(self.player)?.position;
+        let ship_position = self.session.world().ship_position();
+        self.session
+            .world()
+            .collectibles()
+            .filter(|value| value.active)
+            .filter_map(|value| {
+                let player_distance = distance_squared(player_position, value.position);
+                let ship_distance = ship_position
+                    .map(|position| distance_squared(position, value.position))
+                    .unwrap_or(f32::INFINITY);
+                let distance = player_distance.min(ship_distance);
+                (distance <= value.interaction_range * value.interaction_range)
+                    .then_some((distance, *value))
+            })
+            .min_by(|left, right| {
+                left.0
+                    .partial_cmp(&right.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.1.entity.cmp(&right.1.entity))
+            })
+            .map(|(_, value)| value)
+    }
+
     fn selected_interactable(&self) -> Option<&gameplay::Interactable> {
         if !self.interior_mode || self.pilot_mode {
             return None;
@@ -3163,7 +3715,7 @@ impl VisualBridge {
 
     fn instructions_hint(&self) -> String {
         if !self.started {
-            return "PULSA ENTER PARA COMENZAR".to_owned();
+            return "PULSA ENTER O A (MANDO) PARA COMENZAR".to_owned();
         }
         if self.awakening_sequence {
             return "DESPERTAR EN CURSO — ESPERA".to_owned();
@@ -3199,7 +3751,7 @@ impl VisualBridge {
                 _ => "INACTIVO",
             };
             return format!(
-                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - F1 CONTROLES - F2 HUD - F3 INVENTARIO",
+                "PILOTAJE ACTIVO: OBSERVANDO {} - DESTINO LIBRE: {confirmed} ({proposal}) - AUTOPILOTAJE: {autopilot} - N SELECCIONAR - [/] OBSERVAR - F1/START CONTROLES - F2/L3 HUD - F3/SELECT INVENTARIO",
                 self.observation_target_label(),
             );
         }
@@ -3207,7 +3759,7 @@ impl VisualBridge {
             return format!("{prompt} | PULSA LA TECLA INDICADA");
         }
         if self.surface_mode {
-            return "EXPLORACION PLANETARIA: WASD MOVER | FLECHAS MIRAR | ACERCATE A ECHO-7 Y PULSA I PARA DESPEGAR".to_owned();
+            return "EXPLORACION PLANETARIA: WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | A DESPEGAR JUNTO A ECHO-7".to_owned();
         }
         if self.interior_mode {
             if self
@@ -3216,18 +3768,28 @@ impl VisualBridge {
             {
                 return "PULSA M PARA INICIAR LA MISION DISPONIBLE".to_owned();
             }
-            return "EXPLORACION: F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned();
+            if let Some(waypoint) = self.ship_minigame_waypoint_hint() {
+                return format!(
+                    "EXPLORACION: {waypoint} | 4 PUNTOS: ESTADO-ENERGIA-O2-PILOTAJE | WASD/STICK IZQ | FLECHAS/STICK DER | A"
+                );
+            }
+            return "EXPLORACION: CAMINO DORADO | 4 PUNTOS: ESTADO-ENERGIA-O2-PILOTAJE | F1/START CONTROLES | F2/L3 HUD | F3/SELECT INVENTARIO".to_owned();
         }
-        "EXTERIOR: SIGUE LA GUIA - F1 CONTROLES - F2 HUD - F3 INVENTARIO".to_owned()
+        "EXTERIOR: SIGUE LA GUIA - A INTERACTUAR/RECOGER - F1/START CONTROLES - F3/SELECT INVENTARIO".to_owned()
     }
 
     fn guidance_prompt(&self) -> Option<String> {
+        if let Some((created, cached)) = self.guidance_cache.borrow().as_ref() {
+            if created.elapsed() < std::time::Duration::from_millis(180) {
+                return cached.clone();
+            }
+        }
         let guidance = self.session.world().guidance_for_player(self.player).ok()?;
         let objective = guidance
             .current_objective
             .and_then(|id| guidance.objectives.iter().find(|value| value.id == id));
         let Some(objective) = objective else {
-            return self
+            let result = self
                 .session
                 .world()
                 .missions()
@@ -3244,25 +3806,59 @@ impl VisualBridge {
                         .then_some("M DESPERTAR Y COMENZAR MISION 1".to_owned())
                 })
                 .or_else(|| Some("SIN OBJETIVO ACTIVO".to_owned()));
+            *self.guidance_cache.borrow_mut() = Some((Instant::now(), result.clone()));
+            return result;
         };
-        if let Some(requirement) = objective.missing_requirements.first() {
-            return Some(format!(
+        let route_hint = objective
+            .recommended_action
+            .and_then(|action| self.guidance_destination_hint(action));
+        let result = if let Some(requirement) = objective.missing_requirements.first() {
+            Some(format!(
                 "{} | {} | PENDIENTE: {}",
                 objective.name,
                 guidance_action_label(objective.recommended_action),
                 guidance_requirement_label(*requirement),
-            ));
-        }
+            ))
+        } else {
+            Some(format!(
+                "{} | {}",
+                objective.name,
+                guidance_action_label(objective.recommended_action)
+            ))
+        };
+        let result = result.map(|text| {
+            route_hint
+                .or_else(|| self.ship_minigame_waypoint_hint())
+                .map_or(text.clone(), |hint| format!("{text} | {hint}"))
+        });
+        *self.guidance_cache.borrow_mut() = Some((Instant::now(), result.clone()));
+        result
+    }
+
+    fn guidance_destination_hint(&self, action: gameplay::GuidanceAction) -> Option<String> {
+        let destination = match action {
+            gameplay::GuidanceAction::TravelTo(destination)
+            | gameplay::GuidanceAction::DiscoverDestination(destination) => destination,
+            _ => return None,
+        };
+        let world = self.session.world();
+        let player = world.player(self.player)?;
+        let target = world
+            .planet_position_at(destination, world.time().elapsed)
+            .or_else(|| world.destination(destination).map(|value| value.position))?;
+        let dx = target.x - player.position.x;
+        let dy = target.y - player.position.y;
+        let dz = target.z - player.position.z;
+        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
         Some(format!(
-            "{} | {}",
-            objective.name,
-            guidance_action_label(objective.recommended_action)
+            "RUMBO DESTINO-{} | DISTANCIA {distance:.0}",
+            destination.value()
         ))
     }
 
     fn controls_hint(&self) -> String {
         if !self.started {
-            "ENTER COMENZAR".to_owned()
+            "ENTER/A COMENZAR | B CANCELAR | START CONTROLES | SELECT INVENTARIO".to_owned()
         } else if self.pilot_mode {
             let autopilot = match self.session.world().autopilot_state() {
                 gameplay::AutopilotState::Inactive => "INACTIVO",
@@ -3272,11 +3868,12 @@ impl VisualBridge {
                 gameplay::AutopilotState::Interrupted { .. } => "INTERRUMPIDO",
                 gameplay::AutopilotState::Failed { .. } => "FALLIDO",
             };
-            format!("MODO PILOTAJE ECHO-7 | W/S AVANCE/RETROCESO | A/D GIRAR | ESPACIO/CTRL ALTURA | PGUP/PGDN DISTANCIA CAMARA | P IR AL PLANETA DE LA GUIA | I SALIR | AUTO: {autopilot}")
+            format!("MODO PILOTAJE ECHO-7 | W/S AVANCE/RETROCESO | A/D GIRAR | ESPACIO/CTRL o DPAD↑↓ ALTURA | P o DPAD← GUIA | U o DPAD→ COMBUSTIBLE | I SALIR | RT ATACAR | LB ESCUDO | RB BOOST | AUTO: {autopilot}")
         } else if self.surface_mode {
-            "WASD MOVER | FLECHAS MIRAR | I DESPEGAR AL ACERCARTE A ECHO-7".to_owned()
+            "WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | I/A DESPEGAR AL ACERCARTE A ECHO-7"
+                .to_owned()
         } else if self.interior_mode {
-            "WASD MOVER | FLECHAS MIRAR | I USAR | M INICIAR".to_owned()
+            "WASD/STICK IZQ MOVER | FLECHAS/STICK DER MIRAR | I/A USAR | M/DPAD← INICIAR | R/Y o DPAD↑↓ RECURSOS".to_owned()
         } else if self
             .session
             .mission_progress(crate::cooperacion::PROGRESION_COOPERATIVA)
@@ -3284,9 +3881,10 @@ impl VisualBridge {
                 mission.state == gameplay::domains::mission::MissionState::Active
             })
         {
-            "Q ESCANEAR | P VIAJAR | F ATACAR | E RECOGER | T RECUPERAR".to_owned()
+            "Q/X ESCANEAR | P/DPAD↑ VIAJAR | F/RT ATACAR | E/A RECOGER | T/DPAD→ RECUPERAR"
+                .to_owned()
         } else {
-            "Q ESCANEAR | P VIAJAR | F ATACAR | E RECOGER".to_owned()
+            "Q/X ESCANEAR | P/DPAD↑ VIAJAR | L/DPAD↓ ATERRIZAR | F/RT ATACAR | E/A RECOGER | V/B/DPAD←→ EQUIPAR".to_owned()
         }
     }
 
@@ -3295,37 +3893,41 @@ impl VisualBridge {
             "F1 ABRIR O CERRAR PANEL".to_owned(),
             "F2 OCULTAR O MOSTRAR HUD".to_owned(),
             "F3 ABRIR O CERRAR INVENTARIO".to_owned(),
+            "F7 SALTAR MISION ACTIVA - DEMOSTRACION".to_owned(),
+            "MANDO: A USAR/CONFIRMAR | B CANCELAR | X ESCANEAR | Y OBSERVAR".to_owned(),
+            "MANDO: RT ATACAR | LT FRENAR | LB ESCUDO | RB BOOST | START CONTROLES | SELECT INVENTARIO | L3 HUD | R3 ACCION SECUNDARIA".to_owned(),
+            "MANDO: STICK IZQ MOVER | STICK DER CAMARA | DPAD ACCIONES DEL MODO ACTUAL".to_owned(),
         ];
         if self.pilot_mode {
             entries.extend([
                 "W AVANZAR | S RETROCEDER | A/D GIRAR - PILOTAJE".to_owned(),
                 "ESPACIO SUBIR | CTRL BAJAR - PILOTAJE".to_owned(),
                 "PGUP/PGDN ACERCAR/ALEJAR CAMARA - PILOTAJE".to_owned(),
-                "F DISPARAR - PILOTAJE".to_owned(),
-                "G ESCUDO - PILOTAJE".to_owned(),
-                "SHIFT BOOST - PILOTAJE".to_owned(),
-                "X FRENAR - PILOTAJE".to_owned(),
+                "F/RT DISPARAR CON AUTOAPUNTADO - PILOTAJE".to_owned(),
+                "G/LB ESCUDO - PILOTAJE".to_owned(),
+                "SHIFT/RB BOOST - PILOTAJE".to_owned(),
+                "X/LT FRENAR - PILOTAJE".to_owned(),
                 "L ATERRIZAR CUANDO EL PLANETA ESTE CERCA - PILOTAJE".to_owned(),
                 "[/] CAMBIAR PLANETA OBSERVADO - PILOTAJE".to_owned(),
                 "N SELECCIONAR DESTINO LIBRE - PILOTAJE".to_owned(),
-                "U USAR COMBUSTIBLE - PILOTAJE".to_owned(),
+                "U/DPAD→ USAR COMBUSTIBLE - PILOTAJE".to_owned(),
                 "B EQUIPAR PLASMA - ARMAMENTO ENCONTRADO".to_owned(),
-                "P IR AL PLANETA DE LA GUIA - PILOTAJE".to_owned(),
+                "P/DPAD← IR AL PLANETA DE LA GUIA - PILOTAJE".to_owned(),
                 "I SALIR DEL PILOTAJE - PILOTAJE".to_owned(),
             ]);
         } else if self.surface_mode {
             entries.extend([
                 "WASD MOVER | FLECHAS MIRAR - EXPLORACION PLANETARIA".to_owned(),
-                "I DESPEGAR AL ACERCARTE A ECHO-7".to_owned(),
+                "I/A DESPEGAR AL ACERCARTE A ECHO-7".to_owned(),
             ]);
         } else if self.interior_mode {
             entries.extend([
                 "WASD MOVER - EXPLORACION".to_owned(),
                 "FLECHAS MIRAR - EXPLORACION".to_owned(),
-                "I INTERACTUAR - OBJETOS".to_owned(),
-                "M INICIAR MISION - GENERAL".to_owned(),
-                "R RESTAURAR ENERGIA - PANEL ELECTRICO".to_owned(),
-                "Y RESTAURAR SOPORTE VITAL - PANEL DE OXIGENO".to_owned(),
+                "I/A INTERACTUAR - OBJETOS".to_owned(),
+                "M/DPAD← INICIAR MISION - GENERAL".to_owned(),
+                "R/DPAD↑ RESTAURAR ENERGIA - PANEL ELECTRICO".to_owned(),
+                "Y/DPAD↓ RESTAURAR SOPORTE VITAL - PANEL DE OXIGENO".to_owned(),
                 "TAB CAMBIAR ARMA - INVENTARIO".to_owned(),
             ]);
         } else {
@@ -3335,7 +3937,7 @@ impl VisualBridge {
                 "O OBSERVAR PLANETAS | [/] CAMBIAR OBJETIVO".to_owned(),
                 "L ATERRIZAR AL ESTAR CERCA DE UN PLANETA".to_owned(),
                 "F ATACAR - COMBATE".to_owned(),
-                "E RECOGER - EXTERIOR".to_owned(),
+                "E/A RECOGER - EXTERIOR".to_owned(),
                 "TAB CAMBIAR ARMA - INVENTARIO".to_owned(),
             ]);
             if self
@@ -3575,9 +4177,15 @@ impl VisualBridge {
         }
         // A/D are the primary steering controls. Arrow keys remain an
         // optional alternative for players who prefer them.
+        let gamepad_yaw = if self.gamepad_flight.x.abs() > 0.01 {
+            self.gamepad_flight.x.signum() as i8
+        } else {
+            0
+        };
         let yaw = ((self.flight_keys.left as i8 - self.flight_keys.right as i8)
             + self.look_left as i8
-            - self.look_right as i8)
+            - self.look_right as i8
+            + gamepad_yaw)
             .clamp(-1, 1);
         let pitch = self.look_down as i8 - self.look_up as i8;
         if yaw != 0 || pitch != 0 {
@@ -3595,11 +4203,54 @@ impl VisualBridge {
             input: self.current_flight_input(),
         }]);
         if self.fire_pressed {
-            self.issue([GameplayCommand::AttackEnemy {
-                player: self.player,
-                enemy: self.enemy,
-            }]);
+            self.attack_auto_target();
         }
+    }
+
+    fn auto_target_enemy(&self) -> Option<EntityId> {
+        let world = self.session.world();
+        let anchor = world
+            .player(self.player)
+            .map(|player| player.position)
+            .or_else(|| world.ship_position())?;
+        let range = world
+            .equipped_weapon(self.player)
+            .map(|weapon| weapon.range as f32);
+        let mut candidates: Vec<_> = world
+            .enemies()
+            .filter(|enemy| enemy.active && !enemy.is_defeated())
+            .filter_map(|enemy| {
+                let dx = enemy.position.x - anchor.x;
+                let dy = enemy.position.y - anchor.y;
+                let dz = enemy.position.z - anchor.z;
+                let distance_squared = dx * dx + dy * dy + dz * dz;
+                (range.is_none_or(|value| distance_squared <= value * value))
+                    .then_some((distance_squared, enemy.entity))
+            })
+            .collect();
+        candidates.sort_by(|left, right| {
+            left.0
+                .partial_cmp(&right.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+        if candidates.iter().any(|(_, enemy)| *enemy == self.enemy) {
+            Some(self.enemy)
+        } else {
+            candidates.first().map(|(_, enemy)| *enemy)
+        }
+    }
+
+    fn attack_auto_target(&mut self) {
+        let Some(enemy) = self.auto_target_enemy() else {
+            self.feedback = "NO HAY NAVE ENEMIGA EN RANGO DE ATAQUE".to_owned();
+            return;
+        };
+        self.enemy = enemy;
+        self.issue([GameplayCommand::AttackEnemy {
+            player: self.player,
+            enemy,
+        }]);
     }
 
     fn rotate_ship_from_input(&mut self, yaw_input: f32, pitch_input: f32) {
@@ -3620,8 +4271,13 @@ impl VisualBridge {
         let local = GameplayVec3 {
             // Keyboard A/D steer the ship; lateral thrust is reserved for
             // gamepad input so WASD has one clear meaning.
-            x: ((if self.pilot_mode { 0.0 } else { keyboard.x }) + self.gamepad_flight.x)
-                .clamp(-1.0, 1.0),
+            x: (keyboard.x
+                + if self.pilot_mode {
+                    0.0
+                } else {
+                    self.gamepad_flight.x
+                })
+            .clamp(-1.0, 1.0),
             y: keyboard.y,
             z: (keyboard.z + self.gamepad_flight.z).clamp(-1.0, 1.0),
         };
@@ -3698,6 +4354,7 @@ impl VisualBridge {
             return;
         }
         if !frame.connected {
+            self.release_gamepad_controls();
             self.set_gamepad_flight(GameplayVec3::ZERO);
             return;
         }
@@ -3706,13 +4363,33 @@ impl VisualBridge {
             y: 0.0,
             z: frame.left_stick.y,
         });
-        self.observation.adjust_orbit(
-            frame.right_stick.x * OBSERVATION_AZIMUTH_STEP,
-            -frame.right_stick.y * OBSERVATION_ELEVATION_STEP,
-        );
+        if self.pilot_mode {
+            if frame.right_stick.x.abs() > 0.01 || frame.right_stick.y.abs() > 0.01 {
+                self.issue([GameplayCommand::RotateShip {
+                    player: self.player,
+                    pilot_station: self.pilot_station,
+                    yaw_input: frame.right_stick.x,
+                    pitch_input: frame.right_stick.y,
+                    delta: Duration(16),
+                }]);
+            }
+        } else if self.interior_mode {
+            if frame.right_stick.x.abs() > 0.01 || frame.right_stick.y.abs() > 0.01 {
+                self.rotate_player(frame.right_stick.x * 6.0, frame.right_stick.y * 4.0);
+            }
+        } else if self.surface_mode {
+            self.surface_camera_yaw += frame.right_stick.x * 4.0;
+            self.surface_camera_pitch =
+                (self.surface_camera_pitch + frame.right_stick.y * 3.0).clamp(-55.0, 55.0);
+        } else {
+            self.observation.adjust_orbit(
+                frame.right_stick.x * OBSERVATION_AZIMUTH_STEP,
+                -frame.right_stick.y * OBSERVATION_ELEVATION_STEP,
+            );
+        }
         let mut handled = Vec::new();
         for button in frame.pressed {
-            let Some(key) = controller_key(button) else {
+            let Some(key) = self.controller_key_for_state(button) else {
                 continue;
             };
             if handled.contains(&key) {
@@ -3724,6 +4401,73 @@ impl VisualBridge {
             handled.push(key);
             self.handle_key(key, ElementState::Pressed);
         }
+        for button in frame.released {
+            if let Some(key) = self.controller_key_for_state(button) {
+                self.handle_key(key, ElementState::Released);
+            }
+        }
+    }
+
+    fn release_gamepad_controls(&mut self) {
+        if self.fire_pressed {
+            self.handle_key(KeyCode::KeyF, ElementState::Released);
+        }
+        if self.boost_pressed {
+            self.handle_key(KeyCode::ShiftLeft, ElementState::Released);
+        }
+        self.look_left = false;
+        self.look_right = false;
+        self.look_up = false;
+        self.look_down = false;
+    }
+
+    fn controller_key_for_state(&self, button: ControllerButton) -> Option<KeyCode> {
+        if button == ControllerButton::South
+            && (!self.started || self.inventory_open || self.navigation_selector_open)
+        {
+            return Some(KeyCode::Enter);
+        }
+        if self.inventory_open {
+            return match button {
+                ControllerButton::RightStick => Some(KeyCode::KeyR),
+                _ => controller_key(button),
+            };
+        }
+        if self.navigation_selector_open {
+            return match button {
+                ControllerButton::DPadLeft => Some(KeyCode::ArrowLeft),
+                ControllerButton::DPadRight => Some(KeyCode::ArrowRight),
+                _ => controller_key(button),
+            };
+        }
+        if self.interior_mode && !self.pilot_mode {
+            return match button {
+                ControllerButton::DPadUp => Some(KeyCode::KeyR),
+                ControllerButton::DPadDown => Some(KeyCode::KeyY),
+                ControllerButton::DPadLeft => Some(KeyCode::KeyM),
+                ControllerButton::DPadRight => Some(KeyCode::KeyT),
+                _ => controller_key(button),
+            };
+        }
+        if self.pilot_mode {
+            return match button {
+                ControllerButton::DPadUp => Some(KeyCode::Space),
+                ControllerButton::DPadDown => Some(KeyCode::ControlLeft),
+                ControllerButton::DPadLeft => Some(KeyCode::KeyP),
+                ControllerButton::DPadRight => Some(KeyCode::KeyU),
+                _ => controller_key(button),
+            };
+        }
+        if !self.surface_mode {
+            return match button {
+                ControllerButton::DPadUp => Some(KeyCode::KeyP),
+                ControllerButton::DPadDown => Some(KeyCode::KeyL),
+                ControllerButton::DPadLeft => Some(KeyCode::KeyV),
+                ControllerButton::DPadRight => Some(KeyCode::KeyB),
+                _ => controller_key(button),
+            };
+        }
+        controller_key(button)
     }
 
     fn neutralize_gamepad(&mut self) {
@@ -4075,9 +4819,6 @@ impl VisualBridge {
         self.observation_target = Some(selected);
         self.observation
             .retarget(self.session.world().time().elapsed.0);
-        if selected == NARETH_DESTINATION {
-            self.request_nareth_visual_asset();
-        }
         self.feedback = format!("OBSERVANDO: {}", self.observation_target_label());
     }
 
@@ -4183,9 +4924,12 @@ impl VisualBridge {
             return;
         };
         if self.session.world_mut().request_planet_landing(planet) {
+            self.landing_planet = Some(planet);
             self.landing_cinematic_started_at = Some(self.session.world().time().elapsed.0);
+            self.landing_cinematic_wall_started_at = Some(Instant::now());
             self.pilot_mode = false;
             self.flight_keys = FlightKeys::default();
+            self.gamepad_flight = GameplayVec3::ZERO;
             self.feedback = format!(
                 "ATERRIZAJE INICIADO EN {} — CINEMATICA EN CURSO",
                 Self::navigation_destination_label(planet)
@@ -4203,6 +4947,8 @@ impl VisualBridge {
         ) {
             if now.saturating_sub(started) >= game::render_bridge::LANDING_CINEMATIC_DURATION_MS {
                 self.landing_cinematic_started_at = None;
+                self.landing_cinematic_wall_started_at = None;
+                self.landing_planet = None;
                 self.surface_mode = true;
                 self.surface_planet = Some(planet);
                 self.interior_mode = false;
@@ -4215,10 +4961,60 @@ impl VisualBridge {
                         y: origin.y,
                         z: origin.z,
                     };
+                    self.surface_planet_center = self
+                        .session
+                        .world()
+                        .planet_position_at(planet, self.session.world().time().elapsed)
+                        .or_else(|| {
+                            self.session
+                                .world()
+                                .destination(planet)
+                                .map(|destination| destination.position)
+                        });
+                    let frozen_transform =
+                        game::render_bridge::planet_surface_transform(self.session.world(), planet);
+                    self.surface_planet_transform = frozen_transform;
+                    if planet == TESSARA_DESTINATION {
+                        self.clock_last_valid_surface_local = frozen_transform.map(|transform| {
+                            let value = transform
+                                .matrix()
+                                .inverse()
+                                .transform_point3(render_core::from_engine(origin));
+                            GameplayVec3 {
+                                x: value.x,
+                                y: value.y,
+                                z: value.z,
+                            }
+                        });
+                    } else {
+                        self.clock_last_valid_surface_local = None;
+                    }
+                    // Keep the authoritative ship at the same station used
+                    // by rendering and by the boarding distance check.
+                    if let Some(ship_position) =
+                        game::render_bridge::surface_ship_position_with_transform(
+                            self.session.world(),
+                            planet,
+                            self.surface_planet_transform,
+                        )
+                    {
+                        let _ = self
+                            .session
+                            .world_mut()
+                            .restore_ship_position(GameplayVec3 {
+                                x: ship_position.x,
+                                y: ship_position.y,
+                                z: ship_position.z,
+                            });
+                    }
                     let _ = self
                         .session
                         .world_mut()
                         .initialize_player_position(self.player, origin);
+                    // Snap immediately to the model-derived walkable surface
+                    // so the first post-cinematic frame cannot show the player
+                    // inside the planet or above an artificial sphere.
+                    self.constrain_surface_player(origin);
                 }
                 self.feedback = "ATERRIZAJE COMPLETADO — EXPLORA EL PLANETA. ACERCATE A ECHO-7 Y PULSA I PARA DESPEGAR".to_owned();
             }
@@ -4232,7 +5028,7 @@ impl VisualBridge {
                         let origin = GameplayVec3 {
                             x: origin.x,
                             y: origin.y,
-                            z: origin.z + 10.0,
+                            z: origin.z,
                         };
                         let _ = self.session.world_mut().restore_ship_position(origin);
                     }
@@ -4241,6 +5037,11 @@ impl VisualBridge {
                 self.takeoff_cinematic_started_at = None;
                 self.surface_mode = false;
                 self.surface_planet = None;
+                self.clock_last_valid_surface_local = None;
+                self.surface_planet_transform = None;
+                self.surface_planet_center = None;
+                self.surface_camera_yaw = 0.0;
+                self.surface_camera_pitch = 0.0;
                 self.pilot_mode = true;
                 self.feedback = "DESPEGUE COMPLETADO — ECHO-7 ESTA EN ORBITA".to_owned();
             }
@@ -4251,9 +5052,11 @@ impl VisualBridge {
         let Some(planet) = self.surface_planet else {
             return;
         };
-        let Some(ship_position) =
-            game::render_bridge::surface_ship_position(self.session.world(), planet)
-        else {
+        let Some(ship_position) = game::render_bridge::surface_ship_position_with_transform(
+            self.session.world(),
+            planet,
+            self.surface_planet_transform,
+        ) else {
             return;
         };
         let Some(player) = self.session.world().player(self.player) else {
@@ -4289,7 +5092,11 @@ impl VisualBridge {
             })
     }
 
-    fn camera(&self, aspect: f32) -> Result<render_core::Camera, render_core::CameraError> {
+    fn camera(&mut self, aspect: f32) -> Result<render_core::Camera, render_core::CameraError> {
+        // Final watchdog for the landing cinematic. This runs immediately
+        // before producing a frame, so a stalled simulation update cannot keep
+        // returning the cinematic camera forever.
+        self.update_planet_surface_transition();
         let world = self.session.world();
         if self.interior_mode && !self.pilot_mode && !self.surface_mode {
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
@@ -4357,19 +5164,35 @@ impl VisualBridge {
             return game::render_bridge::upper_corridor_inspection_camera(world, aspect);
         }
         if let Some(started) = self.landing_cinematic_started_at {
-            let progress = (world.time().elapsed.0.saturating_sub(started) as f32
+            let simulation_elapsed = world.time().elapsed.0.saturating_sub(started);
+            let wall_elapsed = self
+                .landing_cinematic_wall_started_at
+                .map(|value| Instant::now().saturating_duration_since(value).as_millis() as u64)
+                .unwrap_or(0);
+            let progress = (simulation_elapsed.max(wall_elapsed) as f32
                 / game::render_bridge::LANDING_CINEMATIC_DURATION_MS as f32)
                 .clamp(0.0, 1.0);
             let target = match world.planet_flight_state() {
                 gameplay::PlanetFlightState::Landing { planet }
                 | gameplay::PlanetFlightState::Landed { planet } => Some(planet),
-                _ => self.landing_target(),
+                _ => self.landing_planet.or_else(|| self.landing_target()),
             };
             return game::render_bridge::observation_camera_for_destination(
                 world, aspect, progress, 0.0, 0.2, target,
             );
         }
         if self.surface_mode {
+            if let Some(planet) = self.surface_planet {
+                return game::render_bridge::surface_camera_for_player_with_view_and_transform(
+                    world,
+                    self.player,
+                    planet,
+                    aspect,
+                    self.surface_camera_yaw,
+                    self.surface_camera_pitch,
+                    self.surface_planet_transform,
+                );
+            }
             return game::render_bridge::interior_camera_for_player(world, self.player, aspect);
         }
         if self.pilot_mode {
@@ -4433,15 +5256,23 @@ pub fn run() -> Result<(), String> {
         config,
         Box::new(move |width, height| {
             let mut bridge = snapshot_runtime.borrow_mut();
-            bridge.poll_visual_asset_events();
+            // Advance the landing deadline before touching deferred assets.
+            // Registering a large mesh can take time on the render thread and
+            // must never prevent the cinematic timeout from being evaluated.
             bridge.advance_visual_time();
+            // Continue polling after landing: Nareth is loaded asynchronously
+            // and must be able to replace its landing proxy while the player
+            // is already exploring the surface.
+            if bridge.landing_cinematic_started_at.is_none() {
+                bridge.poll_visual_asset_events();
+            }
+            bridge.poll_gamepad();
             bridge.update_interior_motion();
             bridge.update_pilot_motion();
-            bridge.poll_gamepad();
             let camera = bridge
                 .camera(width as f32 / height.max(1) as f32)
                 .map_err(|error| format!("cámara visual: {error:?}"))?;
-            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface(
+            let mut snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface_transform(
                 bridge.session.world(),
                 Default::default(),
                 &camera,
@@ -4449,6 +5280,7 @@ pub fn run() -> Result<(), String> {
                 bridge.nareth_visual_asset_ready(),
                 bridge.pilot_mode,
                 bridge.surface_planet,
+                bridge.surface_planet_transform,
             );
             if parts_for_snapshot
                 .borrow()
@@ -4589,13 +5421,54 @@ pub fn run() -> Result<(), String> {
                         .next()
                         .and_then(|player| bridge.session.world().inventory(player.entity_id))
                         .map(|inventory| {
-                            inventory.entries().filter(|(_, amount)| *amount > 0).map(|(item, amount)| {
-                                let placement = bridge.inventory_layout.placements.iter().find(|value| value.item == item);
-                                placement.map_or_else(
-                                    || format!("ITEM {}  CANTIDAD {}", item.0, amount),
-                                    |value| format!("ITEM {}  CANTIDAD {}  CELDA {},{} {}x{}{}", item.0, amount, value.x + 1, value.y + 1, value.width, value.height, if Some(value) == bridge.inventory_layout.selected.and_then(|index| bridge.inventory_layout.placements.get(index)) { "  SELECCIONADO" } else { "" }),
-                                )
-                            }).collect()
+                            let mut items = vec![format!(
+                                "CAPACIDAD {}/{}",
+                                inventory.used_capacity(),
+                                inventory.capacity()
+                            )];
+                            let equipped = bridge
+                                .session
+                                .world()
+                                .equipped_weapon(bridge.player)
+                                .map(|weapon| match weapon.attack_type {
+                                    gameplay::AttackType::Kinetic => "CINETICA",
+                                    gameplay::AttackType::Energy => "ENERGIA",
+                                    gameplay::AttackType::Plasma => "PLASMA",
+                                })
+                                .unwrap_or("NINGUNA");
+                            items.push(format!("ARMA EQUIPADA: {equipped}"));
+                            items.extend(inventory.entries().filter(|(_, amount)| *amount > 0).map(
+                                |(item, amount)| {
+                                    let placement = bridge
+                                        .inventory_layout
+                                        .placements
+                                        .iter()
+                                        .find(|value| value.item == item);
+                                    placement.map_or_else(
+                                        || format!("ITEM {}  CANTIDAD {}", item.0, amount),
+                                        |value| format!(
+                                            "ITEM {}  CANTIDAD {}  CELDA {},{} {}x{}{}",
+                                            item.0,
+                                            amount,
+                                            value.x + 1,
+                                            value.y + 1,
+                                            value.width,
+                                            value.height,
+                                            if Some(value)
+                                                == bridge
+                                                    .inventory_layout
+                                                    .selected
+                                                    .and_then(|index| bridge.inventory_layout.placements.get(index))
+                                            {
+                                                "  SELECCIONADO"
+                                            } else {
+                                                ""
+                                            }
+                                        ),
+                                    )
+                                },
+                            ));
+                            items
                         })
                         .unwrap_or_default();
                 }
@@ -4721,7 +5594,10 @@ pub fn run() -> Result<(), String> {
             }
             Ok(snapshot)
         }),
-        false,
+        !matches!(
+            std::env::var("ASTRAL_ECHO_FORCE_CPU").as_deref(),
+            Ok("1") | Ok("true")
+        ),
         move |key, state| input_runtime.borrow_mut().handle_key(key, state),
         move |focused| {
             let mut bridge = focus_runtime.borrow_mut();
@@ -4874,17 +5750,126 @@ pub fn run() -> Result<(), String> {
                 }
             }
 
-            // Modelos de main que aun no tienen entrada en el registro texturizado.
+            // Registrar las mallas originales para mantener compatibilidad
+            // con snapshots, LOD y referencias existentes del juego.
             for (relative_path, mesh, material) in [
-                ("moon/moon.obj", render_core::MeshHandle::MOON, VisualAssets::PLANET),
-                ("building/building_planet.obj", render_core::MeshHandle::BUILDING_PLANET, VisualAssets::PLANET),
-                ("clock/clock_planet.obj", render_core::MeshHandle::TESSARA_PLANET, VisualAssets::PLANET),
-                ("mecanic/mecanic_planet.obj", render_core::MeshHandle::KHARVEX_PLANET, VisualAssets::PLANET),
+                (
+                    "clock/clock_planet.obj",
+                    render_core::MeshHandle::TESSARA_PLANET,
+                    VisualAssets::PLANET,
+                ),
+                (
+                    "mecanic/mecanic_planet.obj",
+                    render_core::MeshHandle::KHARVEX_PLANET,
+                    VisualAssets::PLANET,
+                ),
+                (
+                    "building/building_planet.obj",
+                    render_core::MeshHandle::BUILDING_PLANET,
+                    VisualAssets::PLANET,
+                ),
             ] {
                 let path = assets_root.join(relative_path);
                 match render_core::load_obj(&path) {
-                    Ok(mesh_data) => scene.register_mesh(mesh, material, mesh_data),
-                    Err(error) => eprintln!("modelo no cargado {}: {error}", path.display()),
+                    Ok(mesh_data) => {
+                        scene.register_mesh(mesh, material, mesh_data);
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "Modelo original no cargado {}: {}",
+                            path.display(),
+                            error
+                        );
+                    }
+                }
+            }
+
+            // Planetas con materiales originales exportados desde Blender.
+            // No se modifican los archivos OBJ originales.
+            for (index, relative_path, mesh, material, fallback_path) in [
+                (
+                    0u32,
+                    "clock/clock.obj",
+                    render_core::MeshHandle::TESSARA_PLANET,
+                    VisualAssets::PLANET,
+                    "clock/clock_planet.obj",
+                ),
+                (
+                    1u32,
+                    "mecanic/mecanic.obj",
+                    render_core::MeshHandle::KHARVEX_PLANET,
+                    VisualAssets::PLANET,
+                    "mecanic/mecanic_planet.obj",
+                ),
+                (
+                    2u32,
+                    "building/building.obj",
+                    render_core::MeshHandle::BUILDING_PLANET,
+                    VisualAssets::PLANET,
+                    "building/building_planet.obj",
+                ),
+            ] {
+                let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../assets/models_exportados")
+                    .join(relative_path);
+
+                let first_id = 500_000u32 + index * 20_000;
+
+                match render_core::register_textured_model(
+                    scene,
+                    &path,
+                    first_id,
+                    first_id,
+                ) {
+                    Ok(parts) if !parts.is_empty() => {
+                        println!(
+                            "PLANETA TEXTURIZADO: {} ({} submallas)",
+                            path.display(),
+                            parts.len()
+                        );
+
+                        parts_for_setup
+                            .borrow_mut()
+                            .insert((mesh, material), parts);
+                    }
+                    result => {
+                        eprintln!(
+                            "No se pudo cargar el planeta texturizado {}: {:?}",
+                            path.display(),
+                            result.err()
+                        );
+
+                        let fallback = assets_root.join(fallback_path);
+                        match render_core::load_obj(&fallback) {
+                            Ok(mesh_data) => {
+                                scene.register_mesh(mesh, material, mesh_data);
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "Modelo de respaldo no cargado {}: {}",
+                                    fallback.display(),
+                                    error
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // La Luna conserva su modelo original.
+            {
+                let path = assets_root.join("moon/moon.obj");
+                match render_core::load_obj(&path) {
+                    Ok(mesh_data) => scene.register_mesh(
+                        render_core::MeshHandle::MOON,
+                        VisualAssets::PLANET,
+                        mesh_data,
+                    ),
+                    Err(error) => eprintln!(
+                        "Modelo lunar no cargado {}: {}",
+                        path.display(),
+                        error
+                    ),
                 }
             }
             scene.set_material(VisualAssets::SHIP, MaterialInfo::ship());
@@ -4921,14 +5906,34 @@ pub fn run() -> Result<(), String> {
 
 fn controller_key(button: ControllerButton) -> Option<KeyCode> {
     match button {
-        ControllerButton::South | ControllerButton::RightTrigger => Some(KeyCode::KeyF),
-        ControllerButton::North | ControllerButton::East => Some(KeyCode::KeyO),
+        ControllerButton::South => Some(KeyCode::KeyI),
+        ControllerButton::East => Some(KeyCode::Escape),
+        ControllerButton::North => Some(KeyCode::KeyO),
         ControllerButton::West => Some(KeyCode::KeyQ),
+        ControllerButton::LeftTrigger => Some(KeyCode::KeyX),
+        ControllerButton::RightTrigger => Some(KeyCode::KeyF),
+        ControllerButton::LeftShoulder => Some(KeyCode::KeyG),
+        ControllerButton::RightShoulder => Some(KeyCode::ShiftLeft),
+        ControllerButton::Start => Some(KeyCode::F1),
+        ControllerButton::Select => Some(KeyCode::F3),
+        ControllerButton::LeftStick => Some(KeyCode::F2),
+        ControllerButton::RightStick => Some(KeyCode::KeyC),
         ControllerButton::DPadUp => Some(KeyCode::ArrowUp),
         ControllerButton::DPadDown => Some(KeyCode::ArrowDown),
         ControllerButton::DPadLeft => Some(KeyCode::ArrowLeft),
         ControllerButton::DPadRight => Some(KeyCode::ArrowRight),
     }
+}
+
+fn nearby(left: GameplayVec3, right: GameplayVec3, range: f32) -> bool {
+    range.is_finite() && range > 0.0 && distance_squared(left, right) <= range * range
+}
+
+fn distance_squared(left: GameplayVec3, right: GameplayVec3) -> f32 {
+    let dx = left.x - right.x;
+    let dy = left.y - right.y;
+    let dz = left.z - right.z;
+    dx * dx + dy * dy + dz * dz
 }
 
 fn guidance_action_label(action: Option<gameplay::GuidanceAction>) -> String {
@@ -5424,10 +6429,7 @@ mod tests {
         }
 
         assert_eq!(bridge.observation_target, Some(NARETH_DESTINATION));
-        assert_eq!(
-            bridge.visual_asset_states.get(NARETH_RESOURCE_ID),
-            Some(&VisualAssetState::Loading)
-        );
+        assert!(!bridge.visual_asset_states.contains_key(NARETH_RESOURCE_ID));
         assert!(bridge.feedback.contains("NARETH"));
 
         let snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view_and_nareth(
@@ -5437,14 +6439,14 @@ mod tests {
             false,
             false,
         );
-        let nareth = snapshot
+        let resident_nareth = snapshot
             .nodes
             .iter()
             .find(|node| {
                 node.entity == render_core::SnapshotId::Destination(NARETH_DESTINATION.value())
             })
             .expect("Nareth should remain in the snapshot while loading");
-        assert_eq!(nareth.mesh, render_core::MeshHandle::PLANET_SPHERE);
+        assert_eq!(resident_nareth.mesh, render_core::MeshHandle::PLANET_SPHERE);
 
         bridge
             .visual_asset_states
@@ -6425,10 +7427,11 @@ mod tests {
             .player(bridge.player)
             .unwrap()
             .position;
+        let walking_camera = bridge.camera(16.0 / 9.0).unwrap();
         let walking_snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
             bridge.session.world(),
             Default::default(),
-            &bridge.camera(16.0 / 9.0).unwrap(),
+            &walking_camera,
             true,
         );
         let walking_ship = walking_snapshot
@@ -6442,10 +7445,11 @@ mod tests {
         }]));
         bridge.enter_pilot();
         assert!(bridge.pilot_mode);
+        let pilot_camera = bridge.camera(16.0 / 9.0).unwrap();
         let pilot_snapshot = game::render_bridge::snapshot_from_world_with_camera_and_view(
             bridge.session.world(),
             Default::default(),
-            &bridge.camera(16.0 / 9.0).unwrap(),
+            &pilot_camera,
             false,
         );
         let pilot_ship = pilot_snapshot
@@ -6768,7 +7772,7 @@ mod tests {
 
     #[test]
     fn interior_prompt_identifies_the_nearest_real_interactable() {
-        let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         assert!(bridge
             .contextual_prompt()
             .is_some_and(|prompt| prompt.contains("[I]") && prompt.contains("PILOTAJE")));
@@ -6801,17 +7805,21 @@ mod tests {
     fn instructions_follow_title_exploration_and_pilot_modes() {
         let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         bridge.started = false;
-        assert_eq!(bridge.instructions_hint(), "PULSA ENTER PARA COMENZAR");
-        assert_eq!(bridge.controls_hint(), "ENTER COMENZAR");
+        assert_eq!(
+            bridge.instructions_hint(),
+            "PULSA ENTER O A (MANDO) PARA COMENZAR"
+        );
+        assert_eq!(
+            bridge.controls_hint(),
+            "ENTER/A COMENZAR | B CANCELAR | START CONTROLES | SELECT INVENTARIO"
+        );
 
         bridge.start_game();
-        assert!(bridge
-            .instructions_hint()
-            .contains("PULSA LA TECLA INDICADA"));
-        bridge.guided_interaction();
-        assert!(bridge.pilot_mode);
-        assert!(bridge.instructions_hint().contains("PILOTAJE ACTIVO"));
-        assert!(bridge.contextual_prompt().is_none());
+        assert!(bridge.instructions_hint().contains("DESPERTAR"));
+        bridge.advance_visual_time_by(Duration(3_000));
+        assert!(bridge.interior_mode);
+        assert!(!bridge.pilot_mode);
+        assert!(!bridge.instructions_hint().contains("DESPERTAR"));
     }
 
     #[test]
@@ -6876,7 +7884,7 @@ mod tests {
 
     #[test]
     fn echo7_interior_uses_one_full_ship_mesh_with_visible_hull() {
-        let bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
         let camera = bridge
             .camera(16.0 / 9.0)
             .expect("character camera should be valid");
@@ -6926,7 +7934,7 @@ mod tests {
 
     #[test]
     fn echo7_exterior_uses_full_ship_representation() {
-        let bridge = VisualBridge::new_with_mode(false).expect("visual bootstrap should work");
+        let mut bridge = VisualBridge::new_with_mode(false).expect("visual bootstrap should work");
         let camera = bridge
             .camera(16.0 / 9.0)
             .expect("character camera should be valid");
@@ -6952,7 +7960,7 @@ mod tests {
 
     #[test]
     fn controller_bindings_reuse_existing_keyboard_actions() {
-        assert_eq!(controller_key(ControllerButton::South), Some(KeyCode::KeyF));
+        assert_eq!(controller_key(ControllerButton::South), Some(KeyCode::KeyI));
         assert_eq!(
             controller_key(ControllerButton::RightTrigger),
             Some(KeyCode::KeyF)
@@ -8918,6 +9926,35 @@ mod tests {
     }
 
     #[test]
+    fn visual_skip_key_completes_the_active_mission() {
+        let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
+        bridge.handle_key(KeyCode::KeyM, ElementState::Pressed);
+
+        bridge.handle_key(KeyCode::F7, ElementState::Pressed);
+
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::el_despertar::EL_DESPERTAR)
+                .expect("awakening should be registered")
+                .state,
+            gameplay::domains::mission::MissionState::Completed
+        );
+        assert_eq!(
+            bridge
+                .session
+                .mission_progress(crate::el_despertar::EL_DESPERTAR)
+                .expect("awakening should be registered")
+                .required_completed,
+            bridge
+                .session
+                .mission_progress(crate::el_despertar::EL_DESPERTAR)
+                .expect("awakening should be registered")
+                .required_total
+        );
+    }
+
+    #[test]
     fn derelict_weapon_can_be_collected_equipped_and_restored() {
         let mut bridge = VisualBridge::new().expect("visual bridge should initialize");
         let player = bridge.player;
@@ -8955,17 +9992,6 @@ mod tests {
             Some(gameplay::DerelictState::Exploring)
         );
         assert_eq!(
-            bridge.contextual_action().map(|value| value.object),
-            Some("ARMA DE ENERGIA".to_owned())
-        );
-        assert!(bridge
-            .session
-            .world()
-            .collectibles()
-            .any(|value| value.active && value.item == gameplay::ENERGY_WEAPON_ITEM));
-
-        bridge.guided_interaction();
-        assert_eq!(
             bridge
                 .session
                 .world()
@@ -8974,6 +10000,13 @@ mod tests {
                 .quantity(gameplay::ENERGY_WEAPON_ITEM),
             1
         );
+        assert!(bridge
+            .session
+            .world()
+            .collectibles()
+            .all(|value| !value.active || value.item != gameplay::ENERGY_WEAPON_ITEM));
+
+        bridge.guided_interaction();
         assert!(bridge.contextual_action().is_none());
         assert!(matches!(
             bridge
@@ -9094,16 +10127,16 @@ mod tests {
             .find(|value| value.item == gameplay::FUEL_RESOURCE_ITEM)
             .copied()
             .expect("fuel derelict should create a collectible");
-        assert!(fuel_collectible.active);
-        let collect_result = bridge.session.update([GameplayCommand::CollectItem {
-            player: bridge.player,
-            collectible: fuel_collectible.entity,
-            amount: fuel_collectible.amount,
-        }]);
-        assert!(matches!(
-            collect_result.first().map(|value| value.status),
-            Some(gameplay::CommandStatus::Success { changed: true })
-        ));
+        assert!(!fuel_collectible.active);
+        assert_eq!(
+            bridge
+                .session
+                .world()
+                .inventory(bridge.player)
+                .expect("fuel inventory should exist")
+                .quantity(gameplay::FUEL_RESOURCE_ITEM),
+            204
+        );
         assert!(
             !bridge
                 .session
