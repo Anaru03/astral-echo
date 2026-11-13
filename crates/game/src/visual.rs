@@ -39,6 +39,7 @@ const INVENTORY_COLUMNS: u8 = 12;
 const INVENTORY_ROWS: u8 = 6;
 const ERICK_DIALOGUE: &str = include_str!("../../../assets/lore/erick_dialogue.txt");
 const ERICK_PORTRAIT_MATERIAL: MaterialHandle = MaterialHandle::new(700);
+const UPPER_DECK_WALK_SPEED_MULTIPLIER: f32 = 1.5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct InventoryPlacement {
@@ -3017,7 +3018,31 @@ impl VisualBridge {
         self.last_interior_update = now;
         // La velocidad efectiva la decide GameplayWorld; aquí solo convertimos
         // el tiempo transcurrido del frame a segundos para orientar el input.
-        let seconds = delta_ms as f32 / 1_000.0;
+        let upper_deck = self.interior_mode
+            && self
+                .session
+                .world()
+                .player(self.player)
+                .is_some_and(|player| {
+                    matches!(
+                        game::render_bridge::echo7_support_surface(
+                            player.position,
+                            self.session.world().ship_position().unwrap_or_default(),
+                            self.session
+                                .world()
+                                .ship_orientation()
+                                .map(|orientation| orientation.yaw_degrees)
+                                .unwrap_or_default(),
+                        ),
+                        game::render_bridge::Echo7SupportSurface::UpperBalcony
+                    )
+                });
+        let motion_delta_ms = if upper_deck {
+            (delta_ms as f32 * UPPER_DECK_WALK_SPEED_MULTIPLIER) as u64
+        } else {
+            delta_ms
+        };
+        let seconds = motion_delta_ms as f32 / 1_000.0;
         let local = self.current_flight_input();
         let interior_origin = self
             .session
@@ -3079,13 +3104,13 @@ impl VisualBridge {
             self.session.update([GameplayCommand::MovePlayer {
                 player: self.player,
                 direction,
-                delta: Duration(delta_ms),
+                delta: Duration(motion_delta_ms),
             }]);
         } else if player.velocity != GameplayVec3::ZERO {
             self.session.update([GameplayCommand::MovePlayer {
                 player: self.player,
                 direction: GameplayVec3::ZERO,
-                delta: Duration(delta_ms),
+                delta: Duration(motion_delta_ms),
             }]);
         }
         if self.surface_mode {
