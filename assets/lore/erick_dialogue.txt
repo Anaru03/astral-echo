@@ -1,0 +1,3 @@
+ERICK: Puedo consultar el estado real de los sistemas y orientar la navegación.
+ERICK: La misión y las reparaciones solo avanzan cuando el sistema de juego las confirma.
+ERICK: No pilotaré ni combatiré por ti. Puedo señalar la siguiente acción disponible.

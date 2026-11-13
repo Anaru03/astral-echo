@@ -35,6 +35,8 @@ use gamepad::{ControllerButton, GamepadInput, HapticEvent};
 
 const INVENTORY_COLUMNS: u8 = 12;
 const INVENTORY_ROWS: u8 = 6;
+const ERICK_DIALOGUE: &str = include_str!("../../../assets/lore/erick_dialogue.txt");
+const ERICK_PORTRAIT_MATERIAL: MaterialHandle = MaterialHandle::new(700);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct InventoryPlacement {
@@ -455,6 +457,7 @@ struct VisualBridge {
     room_doors: Vec<EntityId>,
     enemy: EntityId,
     feedback: String,
+    erick_dialogue_line: Option<usize>,
     observation: ObservationTransition,
     observation_target: Option<DestinationId>,
     navigation_selector_open: bool,
@@ -1130,6 +1133,7 @@ impl VisualBridge {
             room_doors,
             enemy,
             feedback: "ESCENA INICIALIZADA".to_owned(),
+            erick_dialogue_line: None,
             observation: ObservationTransition::default(),
             observation_target: Some(DESTINATION),
             navigation_selector_open: false,
@@ -1705,6 +1709,11 @@ impl VisualBridge {
             return;
         }
         if state != ElementState::Pressed {
+            return;
+        }
+        if key == KeyCode::Escape && self.erick_dialogue_line.is_some() {
+            self.erick_dialogue_line = None;
+            self.feedback = "ERICK: consulta cancelada".to_owned();
             return;
         }
         self.last_discrete_action = Some(key);
@@ -2287,6 +2296,14 @@ impl VisualBridge {
     }
 
     fn guided_interaction(&mut self) {
+        if self.erick_dialogue_line.is_some() {
+            self.advance_erick_dialogue();
+            return;
+        }
+        if self.selected_companion().is_some() {
+            self.start_erick_dialogue();
+            return;
+        }
         let at_pilot_station = self.interior_mode
             && self.mission_one_completed()
             && !self.legacy_exterior_controls
@@ -2569,6 +2586,45 @@ impl VisualBridge {
         }
     }
 
+    fn selected_companion(&self) -> Option<&gameplay::Companion> {
+        let player = self.session.world().player(self.player)?;
+        let distance_squared = |position: engine::Vec3| {
+            let dx = player.position.x - position.x;
+            let dy = player.position.y - position.y;
+            let dz = player.position.z - position.z;
+            dx * dx + dy * dy + dz * dz
+        };
+        self.session
+            .world()
+            .companions()
+            .filter(|companion| {
+                companion.active && distance_squared(companion.position) <= 3.0_f32.powi(2)
+            })
+            .min_by(|left, right| {
+                distance_squared(left.position)
+                    .partial_cmp(&distance_squared(right.position))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+
+    fn advance_erick_dialogue(&mut self) {
+        let next = self.erick_dialogue_line.map_or(0, |line| line + 1);
+        let Some(line) = ERICK_DIALOGUE.lines().nth(next) else {
+            self.erick_dialogue_line = None;
+            self.feedback = "ERICK: consulta finalizada".to_owned();
+            return;
+        };
+        {
+            self.erick_dialogue_line = Some(next);
+            self.feedback = line.to_owned();
+        }
+    }
+
+    fn start_erick_dialogue(&mut self) {
+        self.erick_dialogue_line = Some(0);
+        self.feedback = ERICK_DIALOGUE.lines().next().unwrap_or_default().to_owned();
+    }
+
     fn rotate_player(&mut self, yaw_delta_degrees: f32, pitch_delta_degrees: f32) {
         self.issue([GameplayCommand::RotatePlayer {
             player: self.player,
@@ -2579,6 +2635,9 @@ impl VisualBridge {
 
     fn update_interior_motion(&mut self) {
         if (!self.interior_mode && !self.surface_mode) || self.player_defeated {
+            return;
+        }
+        if self.erick_dialogue_line.is_some() {
             return;
         }
         let Some(player) = self.session.world().player(self.player).copied() else {
@@ -2879,6 +2938,14 @@ impl VisualBridge {
                 object: Self::navigation_destination_label(planet).to_owned(),
                 action: "ATERRIZAR".to_owned(),
                 key: "L".to_owned(),
+            });
+        }
+        if let Some(companion) = self.selected_companion() {
+            return Some(render_core::HudContextualAction {
+                target: companion.entity.value(),
+                object: "ERICK".to_owned(),
+                action: "CONSULTAR".to_owned(),
+                key: "I".to_owned(),
             });
         }
         if let Some(interactable) = self.selected_interactable() {
@@ -4383,6 +4450,17 @@ pub fn run() -> Result<(), String> {
                 bridge.pilot_mode,
                 bridge.surface_planet,
             );
+            if parts_for_snapshot
+                .borrow()
+                .contains_key(&(MeshHandle::ASTRONAUT, game::render_bridge::PLAYER_MATERIAL))
+            {
+                if let Some(player_node) = snapshot.nodes.iter_mut().find(|node| {
+                    node.entity == render_core::SnapshotId::Entity(bridge.player)
+                }) {
+                    player_node.mesh = MeshHandle::ASTRONAUT;
+                    player_node.material = game::render_bridge::PLAYER_MATERIAL;
+                }
+            }
             if bridge.awakening_sequence {
                 let progress = (bridge.awakening_elapsed_ms as f32 / 3_000.0).clamp(0.0, 1.0);
                 snapshot.overlay.fade_to_black = 1.0;
@@ -4615,6 +4693,7 @@ pub fn run() -> Result<(), String> {
             } else {
                 snapshot.overlay.hud.interaction_prompt = bridge.contextual_prompt();
                 snapshot.overlay.hud.contextual_action = bridge.contextual_action();
+                snapshot.overlay.hud.dialogue_portrait = bridge.erick_dialogue_line.is_some();
                 snapshot.overlay.hud.controls_panel = if bridge.started {
                     render_core::HudControlsPanel {
                         open: bridge.controls_panel_open,
@@ -4674,6 +4753,10 @@ pub fn run() -> Result<(), String> {
                     inventory_icon_root.join(icon),
                 );
             }
+            let _ = scene.register_material_texture(
+                ERICK_PORTRAIT_MATERIAL,
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/portraits/ERICK_retrato.png"),
+            );
             // Registra modelos completos, incluyendo todas sus submallas y texturas.
             // Si falta un archivo, conserva los modelos procedurales existentes.
             for (model_index, definition) in
@@ -5898,6 +5981,19 @@ mod tests {
             .expect("player should remain present")
             .position;
         assert!(lower.y < 0.5, "player did not descend the stair: {lower:?}");
+    }
+
+    #[test]
+    fn erick_dialogue_advances_and_escape_restores_controls() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.start_erick_dialogue();
+        assert_eq!(bridge.erick_dialogue_line, Some(0));
+        assert!(bridge.feedback.contains("estado real"));
+        bridge.advance_erick_dialogue();
+        assert_eq!(bridge.erick_dialogue_line, Some(1));
+        bridge.handle_key(KeyCode::Escape, ElementState::Pressed);
+        assert_eq!(bridge.erick_dialogue_line, None);
+        assert!(bridge.feedback.contains("cancelada"));
     }
 
     #[test]

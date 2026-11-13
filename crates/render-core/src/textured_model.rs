@@ -280,6 +280,19 @@ pub fn register_textured_model(
                         .file_name()
                         .is_some_and(|name| name == "base_marfil.png")
                 });
+        let cabin_window = matches!(
+            part.name.as_str(),
+            "ECHO7_30_Exterior_Unificado__Mamparo_cabina_01"
+                | "ECHO7_30_Exterior_Unificado__Mamparo_cabina_02"
+                | "ECHO7_30_Exterior_Unificado__Mamparo_cabina_03"
+                | "ECHO7_30_Exterior_Unificado__Mamparo_cabina_04"
+        );
+        let upper_window = part
+            .name
+            .strip_prefix("ECHO7_26_Pasillos_Superiores__Pared_pasillo_")
+            .and_then(|suffix| suffix.parse::<u32>().ok())
+            .is_some_and(|segment| segment % 4 == 1);
+        let transparent_window = cabin_window || upper_window;
         let cloning_wall = part.name.starts_with("ECHO7_03_Clonacion__Pared_presion_")
             || part.name.starts_with("ECHO7_03_Clonacion__Pared_frente_");
         let cloning_wall = cloning_wall
@@ -492,6 +505,11 @@ pub fn register_textured_model(
             || enfermeria_equipment_marfil
             || enfermeria_equipment_green
             || panel_verde_original;
+        if transparent_window {
+            for vertex in &mut part.mesh.vertices {
+                vertex.color.w = 0.38;
+            }
+        }
         if repeat_wall {
             for vertex in &mut part.mesh.vertices {
                 if habitat_ring_wall {
@@ -594,7 +612,9 @@ pub fn register_textured_model(
         if let Some(index) = part.material_index {
             scene.set_material(material, model.materials[index].info);
             if let Some(texture) = model.materials[index].diffuse_texture.as_ref() {
-                let texture_path = if repeat_wall {
+                let texture_path = if transparent_window {
+                    texture.with_file_name("base_vidrio_azul.png")
+                } else if repeat_wall {
                     if cloning_green_panel || awakening_door_leaf || panel_verde_original {
                         texture.with_file_name("panel_verde_seamless.png")
                     } else {

@@ -193,5 +193,6 @@ pub fn draw_menu(menu: &MenuOverlay, width: u32, height: u32) -> crate::hud::Hud
     HudOverlay {
         background: HudOverlayRect {x:0,y:0,width:0,height:0,color:[0;4]},
         glyphs, contextual_button:None, controls_button:None, controls_close_button:None,
+        dialogue_portrait: None,
     }
 }

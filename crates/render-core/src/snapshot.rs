@@ -252,6 +252,7 @@ pub struct HudState {
     pub feedback: Option<String>,
     pub inventory_open: bool,
     pub inventory_items: Vec<String>,
+    pub dialogue_portrait: bool,
 }
 
 pub const GAME_OVER_GLYPHS: [[u8; 7]; 8] = [

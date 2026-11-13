@@ -1,0 +1,108 @@
+newmtl Piel_marfil
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Piel_marfil.png
+
+newmtl Piel_luz
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Piel_luz.png
+
+newmtl Piel_sombra
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Piel_sombra.png
+
+newmtl Rubor
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Rubor.png
+
+newmtl Labio
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Labio.png
+
+newmtl Metal_gris
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Metal_gris.png
+
+newmtl Metal_claro
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Metal_claro.png
+
+newmtl Metal_oscuro
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Metal_oscuro.png
+
+newmtl Marfil_carcasa
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Marfil_carcasa.png
+
+newmtl Cabello
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Cabello.png
+
+newmtl Cuenca
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Cuenca.png
+
+newmtl Esclerotica
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Esclerotica.png
+
+newmtl Iris_verde
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Iris_verde.png
+
+newmtl Iris_luz
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Iris_luz.png
+
+newmtl Iris_oscuro
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Iris_oscuro.png
+
+newmtl Pupila
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Pupila.png
+
+newmtl Reflejo
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Reflejo.png
+
+newmtl Sensor_rojo
+Kd 1 1 1
+d 1
+illum 1
+map_Kd ../../textures/erick/Sensor_rojo.png
+

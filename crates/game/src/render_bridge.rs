@@ -94,7 +94,7 @@ pub const PILOT_CAMERA_MAX_DISTANCE: f32 = 36.0;
 pub const SHIP_MESH: MeshHandle = MeshHandle::SHIP_PLACEHOLDER;
 pub const ENEMY_MESH: MeshHandle = MeshHandle::ENEMY_PLACEHOLDER;
 pub const PLAYER_MESH: MeshHandle = MeshHandle::CUBE;
-pub const ERICK_MESH: MeshHandle = MeshHandle::DESTINATION_PLACEHOLDER;
+pub const ERICK_MESH: MeshHandle = MeshHandle::ERICK;
 pub const PLACEHOLDER_MESH: MeshHandle = MeshHandle::CUBE;
 pub const DESTINATION_MESH: MeshHandle = MeshHandle::DESTINATION_PLACEHOLDER;
 pub const PLANET_MESH: MeshHandle = MeshHandle::PLANET_SPHERE;
@@ -1093,7 +1093,7 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
         Transform::new(star_center, Quat::IDENTITY, Vec3::splat(STAR_SHELL_SCALE)),
         STARS_MESH,
         STARS_MATERIAL,
-        !interior && surface_planet.is_none(),
+        surface_planet.is_none(),
     ));
     if let Some(fade) = world.impact_fade_to_black() {
         snapshot.overlay.fade_to_black = fade;
@@ -1148,17 +1148,30 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
             intensity: 52.0,
             kind: render_core::RenderLightKind::Point {
                 position: from_engine(local_light(Vec3::new(0.0, 5.6, 0.0))),
-                range: 32.0,
+                range: 18.0,
             },
             casts_shadow: false,
         }));
-        for local_position in [Vec3::new(-6.0, 3.5, 0.0), Vec3::new(6.0, 3.5, 0.0)] {
+        for local_position in [
+            Vec3::new(-6.0, 3.5, 0.0),
+            Vec3::new(6.0, 3.5, 0.0),
+            Vec3::new(-20.0, 3.6, 0.0),
+            Vec3::new(-10.0, 3.6, 0.0),
+            Vec3::new(10.0, 3.6, 0.0),
+            Vec3::new(20.0, 3.6, 0.0),
+            Vec3::new(-4.0, 3.6, -7.0),
+            Vec3::new(3.0, 3.6, -7.0),
+            Vec3::new(-4.0, 3.6, 7.0),
+            Vec3::new(3.0, 3.6, 7.0),
+            Vec3::new(-7.5, 3.6, -3.0),
+            Vec3::new(7.5, 3.6, 3.0),
+        ] {
             snapshot.push_light(SnapshotLight::new(render_core::RenderLight {
                 color: Vec3::new(0.86, 0.92, 1.0),
-                intensity: 34.0,
+                intensity: 20.0,
                 kind: render_core::RenderLightKind::Point {
                     position: from_engine(local_light(local_position)),
-                    range: 24.0,
+                    range: 13.0,
                 },
                 casts_shadow: false,
             }));
@@ -1712,6 +1725,7 @@ fn hud_state(world: &GameplayWorld, academic_planet: Option<gameplay::Destinatio
         feedback: None,
         inventory_open: false,
         inventory_items: Vec::new(),
+        dialogue_portrait: false,
     }
 }
 
@@ -2599,7 +2613,7 @@ mod tests {
                     matches!(light.light.kind, render_core::RenderLightKind::Point { .. })
                 })
                 .count(),
-            4
+            15
         );
     }
 

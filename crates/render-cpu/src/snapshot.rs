@@ -153,6 +153,45 @@ pub fn compose_hud_overlay(
             }
         }
     }
+    if let (Some(rect), Some(texture)) = (
+        overlay.dialogue_portrait,
+        scene.texture_image(render_core::MaterialHandle::new(700)),
+    ) {
+        for py in 0..rect.height {
+            for px in 0..rect.width {
+                let x = rect.x + px;
+                let y = rect.y + py;
+                if x >= framebuffer.width() || y >= framebuffer.height() {
+                    continue;
+                }
+                let sx = (px * texture.width / rect.width).min(texture.width.saturating_sub(1));
+                let sy = (py * texture.height / rect.height).min(texture.height.saturating_sub(1));
+                let offset = ((sy * texture.width + sx) * 4) as usize;
+                if offset + 3 >= texture.pixels.len() || texture.pixels[offset + 3] == 0 {
+                    continue;
+                }
+                let alpha = texture.pixels[offset + 3];
+                let Some(destination) = framebuffer.pixel(x, y) else {
+                    continue;
+                };
+                let blend = |source: u8, target: u8| {
+                    (u16::from(source) * u16::from(alpha) / 255
+                        + u16::from(target) * u16::from(255 - alpha) / 255)
+                        as u8
+                };
+                framebuffer.set_pixel(
+                    x,
+                    y,
+                    Color::new(
+                        blend(texture.pixels[offset], destination.r),
+                        blend(texture.pixels[offset + 1], destination.g),
+                        blend(texture.pixels[offset + 2], destination.b),
+                        255,
+                    ),
+                );
+            }
+        }
+    }
     if hud.inventory_open {
         let scale = (framebuffer.width() / 480).clamp(1, 3);
         let margin = 12 * scale;

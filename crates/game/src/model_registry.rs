@@ -14,6 +14,11 @@ pub fn registered_models() -> Vec<ModelDefinition> {
             material: VisualAssets::PLAYER,
         },
         ModelDefinition {
+            path: "erick/ERICK.obj",
+            mesh: MeshHandle::ERICK,
+            material: VisualAssets::DESTINATION,
+        },
+        ModelDefinition {
             path: "echo_7/componentes/ECHO7_Exterior.obj",
             mesh: MeshHandle::SHIP_PLACEHOLDER,
             material: VisualAssets::SHIP,

@@ -16,6 +16,7 @@ pub struct HudOverlay {
     pub contextual_button: Option<HudOverlayRect>,
     pub controls_button: Option<HudOverlayRect>,
     pub controls_close_button: Option<HudOverlayRect>,
+    pub dialogue_portrait: Option<HudOverlayRect>,
 }
 
 const FONT: [([u8; 7], char); 39] = [
@@ -147,6 +148,7 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
             contextual_button: None,
             controls_button: None,
             controls_close_button: None,
+            dialogue_portrait: None,
         };
     }
     let scale = (width / 480).clamp(1, 3);
@@ -523,6 +525,13 @@ pub fn hud_overlay(hud: &HudState, width: u32, height: u32) -> HudOverlay {
         contextual_button,
         controls_button: controls_available.then_some(indicator),
         controls_close_button,
+        dialogue_portrait: hud.dialogue_portrait.then_some(HudOverlayRect {
+            x: margin,
+            y: height.saturating_sub(92 * scale),
+            width: 64 * scale,
+            height: 64 * scale,
+            color: [255, 255, 255, 255],
+        }),
     }
 }
 
