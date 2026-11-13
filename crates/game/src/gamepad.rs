@@ -198,7 +198,14 @@ pub enum ControllerButton {
     East,
     North,
     West,
+    LeftTrigger,
     RightTrigger,
+    LeftShoulder,
+    RightShoulder,
+    Start,
+    Select,
+    LeftStick,
+    RightStick,
     DPadUp,
     DPadDown,
     DPadLeft,
@@ -308,9 +315,7 @@ impl GamepadInput {
 
         while let Some(event) = gilrs.next_event() {
             match event.event {
-                EventType::Connected => {
-                    let _ = event.id;
-                }
+                EventType::Connected => {}
                 EventType::Disconnected if self.active == Some(event.id) => {
                     self.haptics.stop();
                     self.active = None;
@@ -327,13 +332,13 @@ impl GamepadInput {
                     }
                 }
                 EventType::ButtonChanged(button, value, _)
-                    if self.active == Some(event.id) && button == Button::RightTrigger =>
+                    if self.active == Some(event.id)
+                        && matches!(button, Button::LeftTrigger | Button::RightTrigger) =>
                 {
-                    self.state.set_button(
-                        ControllerButton::RightTrigger,
-                        value.is_finite() && value > 0.5,
-                        true,
-                    );
+                    if let Some(mapped) = map_button(button) {
+                        self.state
+                            .set_button(mapped, value.is_finite() && value > 0.5, true);
+                    }
                 }
                 EventType::AxisChanged(axis, value, _) if self.active == Some(event.id) => {
                     Self::set_axis(&mut self.state, self.deadzone, axis, value);
@@ -350,7 +355,7 @@ impl GamepadInput {
             {
                 self.active = Some(id);
                 self.haptics.reset_for_reconnect();
-                Self::sync_gamepad(&mut self.state, self.deadzone, gilrs, id, false);
+                Self::sync_gamepad(&mut self.state, self.deadzone, gilrs, id, true);
             }
         }
         if let Some(id) = self.active {
@@ -459,13 +464,20 @@ fn map_button(button: Button) -> Option<ControllerButton> {
         .find_map(|(source, target)| (source == button).then_some(target))
 }
 
-fn mapped_buttons() -> [(Button, ControllerButton); 9] {
+fn mapped_buttons() -> [(Button, ControllerButton); 16] {
     [
         (Button::South, ControllerButton::South),
         (Button::East, ControllerButton::East),
         (Button::North, ControllerButton::North),
         (Button::West, ControllerButton::West),
+        (Button::LeftTrigger, ControllerButton::LeftTrigger),
         (Button::RightTrigger, ControllerButton::RightTrigger),
+        (Button::LeftTrigger2, ControllerButton::LeftShoulder),
+        (Button::RightTrigger2, ControllerButton::RightShoulder),
+        (Button::Start, ControllerButton::Start),
+        (Button::Select, ControllerButton::Select),
+        (Button::LeftThumb, ControllerButton::LeftStick),
+        (Button::RightThumb, ControllerButton::RightStick),
         (Button::DPadUp, ControllerButton::DPadUp),
         (Button::DPadDown, ControllerButton::DPadDown),
         (Button::DPadLeft, ControllerButton::DPadLeft),
