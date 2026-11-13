@@ -8032,8 +8032,44 @@ mod tests {
         assert!(camera.position().x > ship.x + 30.0);
         assert!((camera.target().x - ship.x).abs() < 0.01);
         assert!((camera.target().z - ship.z).abs() < 0.01);
+        assert!(camera.target().y > ship.y + 5.0);
         assert!(camera.position().x > camera.target().x);
         assert!(camera.view_projection_matrix().is_finite());
+    }
+
+    #[test]
+    fn pilot_keyboard_matches_readme_axes() {
+        let mut bridge = VisualBridge::new_with_mode(true).expect("visual bootstrap should work");
+        bridge.guided_interaction();
+        assert!(bridge.pilot_mode);
+
+        let heading_before = bridge
+            .session
+            .world()
+            .ship_orientation()
+            .expect("ship orientation should exist")
+            .yaw_degrees;
+        bridge.handle_key(KeyCode::KeyA, ElementState::Pressed);
+        assert_eq!(bridge.current_flight_input().x, 0.0);
+        assert_eq!(bridge.current_flight_input().z, 0.0);
+        bridge.update_pilot_motion();
+        assert_ne!(
+            bridge
+                .session
+                .world()
+                .ship_orientation()
+                .expect("ship orientation should exist")
+                .yaw_degrees,
+            heading_before
+        );
+        bridge.handle_key(KeyCode::KeyA, ElementState::Released);
+
+        bridge.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        let input = bridge.current_flight_input();
+        let magnitude = (input.x * input.x + input.y * input.y + input.z * input.z).sqrt();
+        assert!(magnitude > 0.9);
+        assert!(input.z < 0.0);
+        bridge.handle_key(KeyCode::KeyW, ElementState::Released);
     }
 
     #[test]
