@@ -252,7 +252,10 @@ def open_code_task(parent, on_success=None):
     win.resizable(False, False)
     task = CodeGame(win, on_success=on_success, on_close=win.destroy)
     win.protocol('WM_DELETE_WINDOW', task.close)
-    win.transient(parent)
+    win.update_idletasks()
+    win.deiconify()
+    win.lift()
+    win.focus_force()
     win.grab_set()
     return task
 

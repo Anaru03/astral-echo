@@ -229,8 +229,13 @@ if __name__ == "__main__":
         task = opener(root, on_success=task_complete)
         # The game launches this process from a running renderer. Explicitly
         # raise and focus the Tk window so it cannot remain behind the game.
-        task.master.lift()
-        task.master.focus_force()
+        # Mostrar la ventana del minijuego sin depender
+        # de atributos internos de cada clase.
+        for window in root.winfo_children():
+            if isinstance(window, tk.Toplevel):
+                window.deiconify()
+                window.lift()
+                window.focus_force()
     else:
         open_ship_maintenance_mission(
             root,

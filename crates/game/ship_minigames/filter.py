@@ -605,7 +605,11 @@ def open_o2_task(parent, on_success=None):
     win.bind("<r>", task.restart)
     win.bind("<R>", task.restart)
     win.protocol("WM_DELETE_WINDOW", task.close)
-    win.transient(parent)
+    # Mostrar el minijuego aunque la ventana principal este oculta.
+    win.update_idletasks()
+    win.deiconify()
+    win.lift()
+    win.focus_force()
     win.grab_set()
     return task
 
