@@ -1298,9 +1298,23 @@ pub fn snapshot_from_world_with_camera_and_view_and_nareth_and_pilot_and_surface
     }
 
     for companion in world.companions() {
+        let companion_position = if interior {
+            world
+                .ship_position()
+                .map(|ship_position| {
+                    let yaw = world
+                        .ship_orientation()
+                        .map(|orientation| orientation.yaw_degrees)
+                        .unwrap_or_default();
+                    echo7_model_to_world(ECHO7_PILOT_SEATED_LOCAL, ship_position, yaw)
+                })
+                .unwrap_or(companion.position)
+        } else {
+            companion.position
+        };
         snapshot.push_node(SnapshotNode::new(
             companion.entity,
-            Transform::from_translation(from_engine(companion.position)),
+            Transform::from_translation(from_engine(companion_position)),
             ERICK_MESH,
             ERICK_MATERIAL,
             companion.active && world.entities().contains(companion.entity),
